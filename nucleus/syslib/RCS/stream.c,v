@@ -1,0 +1,1537 @@
+head	1.25;
+access;
+symbols
+	Helios_1_3_1:1.25
+	Helios_C40_1_3_Official_Release:1.25
+	Alenia_release:1.25
+	Helios1_3:1.25
+	C40_Field_Test_2:1.25
+	C40_Field_Test_R1:1.18
+	Helios13_beta:1.18
+	Helios1_2_2:1.15
+	Helios1_2_2Beta:1.15
+	Helios1_2_1:1.13
+	Helios1_2:1.8
+	V1_2Beta0:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.25
+date	92.09.04.10.31.46;	author nickc;	state Exp;
+branches;
+next	1.24;
+
+1.24
+date	92.08.26.11.55.22;	author bart;	state Exp;
+branches;
+next	1.23;
+
+1.23
+date	92.08.14.15.10.51;	author nickc;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	92.08.12.18.43.38;	author paul;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	92.07.21.16.57.54;	author nickc;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	92.07.06.16.08.45;	author paul;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	92.07.06.15.55.24;	author paul;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	92.06.11.15.43.46;	author nickc;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.06.03.19.03.12;	author paul;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.05.01.16.52.11;	author nickc;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	91.08.08.11.23.45;	author nick;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	91.08.05.12.27.44;	author nick;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	91.03.25.11.38.37;	author nick;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	91.03.22.18.07.36;	author nick;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	91.02.07.16.56.28;	author nick;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	91.01.16.11.49.16;	author nick;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.01.04.12.22.42;	author nick;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	90.12.03.18.37.28;	author nick;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	90.11.29.14.49.50;	author nick;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.11.29.12.17.53;	author nick;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.11.28.17.31.49;	author nick;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.01.15.38.09;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.10.16.10.24.50;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.05.12.56.31;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.12.12.35;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@Operations on open streams
+@
+
+
+1.25
+log
+@fixed compile time warnings
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S   N U C L E U S                      --
+--                     ---------------------------                      --
+--                                                                      --
+--            Copyright (C) 1987,1990, Perihelion Software Ltd.         --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- syslib/stream.c							--
+--                                                                      --
+--	Stream operation.						--
+--									--
+--                                                                      --
+--	Author:  NHG 16/8/87						--
+--		 NHG 03/8/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId:	 %W%	%G% Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: stream.c,v 1.24 1992/08/26 11:55:22 bart Exp nickc $ */
+
+#define _in_stream
+
+#include "sys.h"
+
+static word _Seek(Stream *stream, WORD mode, WORD pos);
+
+/*--------------------------------------------------------
+-- ReOpen						--
+--							--
+-- Reopen a stream which has been timed out by the	--
+-- the server.						--
+--							--
+--------------------------------------------------------*/
+
+extern word ReOpen(Stream *stream)
+{
+	word rc = Err_Null;
+	MCB *mcb;
+	IOCReply1 *rep;
+	Port reply;
+	word mode = stream->Flags & Flags_SaveMode;
+
+#ifdef SYSDEB
+	SysDebug(stream)("ReOpen(%S)",stream);
+#endif
+	if( (rc=CheckStream(stream,0)) != Err_Null ) return rc;
+	
+	/* Re-allocate reply port. This avoids confusion and allows for */
+	/* very long intervals during which the reply port may have been*/
+	/* garbage collected.						*/
+	
+	rc = FreePort(stream->Reply);
+	reply = stream->Reply = NewPort();
+
+#if 0	
+	if( (stream->Type != Type_Pseudo) && (stream->Flags & Flags_NoReOpen) )
+	{
+		/* On a no-reopen stream, try and re-allocate the reply	*/
+		/* port before failing totally				*/
+		if( rc >= Err_Null )
+		{
+			rc = EC_Error|SS_SysLib|EG_Broken|EO_Stream;
+			stream->Result2 = rc;
+			return rc;
+		}
+		else return Err_Null;
+	}
+#endif
+	
+	mcb = NewMsgBuf(0);
+	rep = (IOCReply1 *)mcb->Control;
+	
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_Open|stream->FnMod);
+
+	/* Flag that this is a ReOpen except when its a Pseudo Stream */
+	if( stream->Type != Type_Pseudo ) mcb->MsgHdr.FnRc |= FF_ReOpen;
+	
+	MarshalString(mcb,stream->Name);
+	MarshalWord(mcb,-1);
+	MarshalWord(mcb,1);
+	MarshalCap(mcb,&stream->Access);
+	MarshalWord(mcb,stream->Flags & Flags_SaveMode);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null )
+	  {
+	    goto Done;
+	  }
+	
+
+	if( SetupStream( stream, mcb ) ) stream->Flags |= mode;
+			
+	rc = Err_Null;
+
+	if( mode & Flags_Append ) _Seek(stream, S_End, 0);
+    Done:
+
+#ifdef SYSDEB
+	SysDebug(stream)("ReOpen: %S %E",stream,rc);
+#endif
+
+	FreeMsgBuf(mcb);
+
+	stream->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- Read							--
+--							--
+-- Read a buffer full of data from the stream.		--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC word Read(Stream *s, byte *buf, word size, word timeout)
+{
+	typedef struct { MCB mcb; ReadWrite rw; } Req;
+	Req r;
+	Port server;
+	Port reply;
+	word e = 0;
+	word res = 0;
+	word seq;
+	word reqtime;
+	bool extended = false;
+	
+	extern word PipeReOpen(Stream *s);
+	WordFnPtr reopen = ReOpen;
+	
+#ifdef SYSDEB
+	SysDebug(stream)("Read(%S,%P,%d,%d) from %s",s,buf,size,timeout,procname(returnlink_(s)));
+#endif
+
+	if ( (e = CheckStream(s,C_ReOpen)) != Err_Null ) return e;
+
+	if( s->Type == Type_Pipe ) reopen = PipeReOpen;
+			
+	r.mcb.Control = (word *)&r.rw;
+	
+	Wait( &s->Mutex );
+	
+retry:
+	if( (e = FindPorts(s,FG_Read,&server,&reply)) != Err_Null) goto done;
+
+	if( server == NullPort ) { e = ReadRc_EOF; goto done; }
+		
+	extended = s->Flags & Flags_Extended;
+	
+	res = 0;
+	
+	InitMCB(&r.mcb,MsgHdr_Flags_preserve,server,reply,FC_GSP|FG_Read|s->FnMod);
+	
+	reqtime = (timeout != -1) && (timeout < IdleTimeout) ? timeout : IdleTimeout;
+	
+	MarshalWord(&r.mcb,s->Pos);
+	MarshalWord(&r.mcb,size);
+	MarshalWord(&r.mcb,reqtime);
+
+	if( (e = PutMsg( &r.mcb ) ) != Err_Null ) 
+	{
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( ((e & EC_Mask) == EC_Warn) && (e = reopen(s)) != Err_Null ) goto done;
+		goto retry;
+	}
+
+	r.mcb.MsgHdr.Dest = reply;
+	r.mcb.MsgHdr.Reply = NullPort;
+	r.mcb.Data	= buf;
+	r.mcb.Timeout	= s->Timeout+reqtime;
+
+	seq = 0;
+
+	do
+	{
+		word dsize;
+		word csize;
+
+		e = GetMsg(&r.mcb);
+
+		if( r.mcb.MsgHdr.Reply != NullPort )
+		{
+#ifdef SYSDEB
+			_SysDebug("Unexpected reply port in read %M",&r.mcb);
+#endif
+			FreePort(r.mcb.MsgHdr.Reply);
+			r.mcb.MsgHdr.Reply = NullPort;
+		}
+
+		if ( e < Err_Null )
+		{
+			if( ((e&EG_Mask)==EG_Timeout) && (timeout != -1) )
+			{
+				timeout -= reqtime;
+				if( timeout <= 0 ) goto done;
+			}
+#ifdef SYSDEB
+			SysDebug(error)("Read Data Error %F on %S",e,s);
+#endif
+			if( (e & EC_Mask) >= EC_Error ) goto done1;
+			if( ((e & EC_Mask) == EC_Warn) && (e = reopen(s)) != Err_Null ) goto done;
+			goto retry;
+		}
+
+		if( (e & ~ReadRc_Mask) != seq )
+		{ 
+#ifdef SYSDEB
+			SysDebug(error)("Read sequence error e %d seq %d",e,seq);
+#endif
+			FreePort(reply);
+			s->Reply = reply = NewPort();
+			e = EC_Warn;
+			goto done;
+		}
+
+		/* we have a message */
+		dsize = r.mcb.MsgHdr.DataSize;
+		csize = r.mcb.MsgHdr.ContSize;
+
+#ifdef SYSDEB
+		if( (dsize+4*csize) > (size-res) ) IOdebug("Read: data > buffer dsize %d, csize %d, size %d, res %d (now %d > toget %d)",dsize,csize,size,res, dsize+4*csize, size-res);
+#endif
+		/* we also allow some data to be sent in the control vector */
+		/* this usually only happens when we are being sent a full  */
+		/* 64k.							    */
+		if ( csize > 0 )
+		{
+			memcpy(	&buf[res+dsize],
+				(byte *)(r.mcb.Control),
+				(int)csize*sizeof(word) );
+			dsize += csize*sizeof(word);
+		}
+
+		res       += dsize;
+
+		r.mcb.Data = &buf[res];
+
+		seq       += ReadRc_SeqInc;
+
+	} while( (e & ReadRc_Mask) == ReadRc_More );
+
+done:
+	if( extended )
+	{
+		word err = e;
+
+		
+		InitMCB(&r.mcb,MsgHdr_Flags_preserve,server,reply,FC_GSP|FG_ReadAck|s->FnMod);
+		
+		r.mcb.Timeout         = s->Timeout * 2;
+		r.mcb.Control[0]      = err < 0 ? err : res;
+		r.mcb.MsgHdr.ContSize = 1;
+		
+		e = XchMsg(&r.mcb,0);
+		
+		if( ((word)(err & EC_Mask) <= (word)EC_Warn) && (timeout > 0) )
+			goto retry;
+		
+		e = err;
+	}
+done1:
+	s->Pos += res;
+	if( e < Err_Null )
+	{
+		s->Result2 = e;
+	}
+	else
+	{
+		s->Result2 = e & ReadRc_Mask;
+		if( res == 0 && e == ReadRc_EOF ) res = -1;
+	}
+	Signal( &s->Mutex );
+	
+#ifdef SYSDEB
+	SysDebug(stream)("Read: %d %x",res,s->Result2);
+#endif
+
+	return res;
+}
+
+/*--------------------------------------------------------
+-- Write						--
+--							--
+-- Write a buffer full of data to the stream.		--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC WORD Write(Stream *s, byte *buf, word size, word timeout)
+{
+	typedef struct { MCB mcb; ReadWrite rw; } Req;
+	struct { word send; word sent; word pos; } tfr,tot;
+	Port server;
+	Port reply;
+	Port dataport;
+	word e = 0;
+	word seq;
+	word dsize;
+	word reqtime;
+	WriteReply *rep;
+	Req r;
+	
+	extern word PipeReOpen(Stream *s);
+	WordFnPtr reopen = ReOpen;
+	
+#ifdef SYSDEB
+	SysDebug(stream)("Write(%S,%P,%d,%d) from %s",s,buf,size,timeout,procname(returnlink_(s)));
+#endif
+	
+	if( (e = CheckStream(s,C_ReOpen)) != Err_Null ) return e;
+
+	if( s->Type == Type_Pipe ) reopen = PipeReOpen;
+	
+	r.mcb.Control  = (word *)&r.rw;
+	rep = (WriteReply *)r.mcb.Control;
+
+	Wait(&s->Mutex);
+	
+	tot.send = size;
+	tot.sent = 0;
+	tot.pos = s->Pos;
+	
+retry:
+	tfr.send = tot.send-tot.sent;
+	tfr.sent = 0;
+	tfr.pos = tot.pos;
+#ifdef SYSDEB
+	SysDebug(stream)("Write: tfr send %d sent %d pos %d",tfr);
+#endif
+	
+	if( (e = FindPorts(s,FG_Write,&server,&reply)) != Err_Null) {
+		Signal( &s->Mutex );
+		return e;
+	}
+
+	/* if no server, just pretend to send data */
+	if( server == NullPort ) {tot.sent = tot.send; goto done; }
+
+	dataport = server;
+		
+	seq = 0;
+	
+	InitMCB(&r.mcb,MsgHdr_Flags_preserve,
+		server,reply,FC_GSP+FG_Write|s->FnMod);
+
+	reqtime = (timeout!=-1)&&(timeout<IdleTimeout)?timeout:IdleTimeout;
+	
+	MarshalWord(&r.mcb,tfr.pos);
+	MarshalWord(&r.mcb,tfr.send);
+	MarshalWord(&r.mcb,reqtime);
+
+	/* if this is a small write, send the data with the request	*/
+	/* this trades two extra messages for a copy in the server	*/
+	if( (s->Flags&Flags_NoIData) == 0 && tfr.send <= IOCDataMax )
+	{
+#ifdef SYSDEB
+		SysDebug(stream)("Write: Immediate Data %d",tfr.send);
+#endif
+		r.mcb.Data = buf;
+		r.mcb.MsgHdr.DataSize = (unsigned short)tfr.send;
+		tfr.sent += tfr.send;
+		seq += ReadRc_SeqInc;
+	}
+
+	/* send off request */
+	while( (e = PutMsg( &r.mcb ) ) != Err_Null ) 
+	{
+#ifdef SYSDEB
+		SysDebug(error)("Write: Request Error %x",e);
+#endif
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( (e & EC_Mask) == EC_Warn )
+		{
+			if( (e = reopen(s)) != Err_Null ) goto done;
+			goto retry;
+		}
+	}
+
+	/* now wait for first reply... */
+
+	r.mcb.MsgHdr.Dest = reply;
+	r.mcb.Timeout = s->Timeout+reqtime;
+
+	if ( (e = GetMsg(&r.mcb)) < Err_Null )
+	{
+		if( ((e&EG_Mask)==EG_Timeout) && (timeout != -1) )
+		{
+			timeout -= reqtime;
+			if( timeout <= 0 ) goto done;
+		}
+#ifdef SYSDEB
+		SysDebug(error)("Write: Reply1 Error %x",e);
+#endif
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( ((e & EC_Mask) == EC_Warn) && (e = reopen(s)) != Err_Null ) goto done;
+		goto retry;
+	}
+
+	if( e == WriteRc_Done ) 
+	{
+#ifdef SYSDEB
+		SysDebug(stream)("Write: Immediate write done");
+#endif		
+		/* In the case of immediate data, the server has no	*/
+		/* opportunity to redefine the tfr size as it does with	*/
+		/* the Sizes reply. Therefore it is allowed to ACK a	*/
+		/* different value to indicate that not all data has	*/
+		/* been written.					*/
+		if( r.mcb.MsgHdr.ContSize > 0 ) tfr.sent = rep->first;
+		goto writedone;
+	}
+	elif( e == WriteRc_Already )
+	{
+#ifdef SYSDEB
+		SysDebug(stream)("Write: Data already at server");
+#endif		
+		tfr.sent = rep->first;
+		goto writedone;
+	}
+	
+	/* Here the server has replied with the first and subsequent	*/
+	/* data sizes.							*/
+
+	dsize = rep->first;
+
+	/* if rest is zero, then only send a block of size of first	*/
+
+	if( rep->rest == 0 ) tfr.send = dsize;
+
+	/* if present Control[2] is a max size for the tfr		*/
+	/* this and the rep->rest feature should not be used together	*/
+
+	if( r.mcb.MsgHdr.ContSize >= 3 ) tfr.send = rep->max;
+
+	if( r.mcb.MsgHdr.Reply != NullPort ) dataport = r.mcb.MsgHdr.Reply;
+	InitMCB(&r.mcb,MsgHdr_Flags_preserve,dataport,NullPort,0);
+	r.mcb.Data = buf;
+	r.mcb.Timeout = s->Timeout;
+	
+#ifdef SYSDEB
+	SysDebug(stream)("Write: Reply1 first %d rest %d max %d dataport %x",
+					dsize,rep->rest,rep->max,dataport);
+	{
+		PortInfo info;
+		GetPortInfo(dataport,&info);
+		SysDebug(stream)("Write: dataport %x : %x %x %x",dataport,info);
+	}
+#endif
+
+	while( tfr.sent < tfr.send )
+	{
+		if ( dsize > tfr.send-tfr.sent ) dsize = tfr.send-tfr.sent;
+
+		if( dsize == (64*1024) )
+		{	/* fix to get 64k message */
+			r.mcb.MsgHdr.DataSize = (unsigned short)dsize - 4;
+			r.mcb.Control = (word *)(r.mcb.Data + dsize - 4);
+			r.mcb.MsgHdr.ContSize = 1;
+		}
+		else r.mcb.MsgHdr.DataSize = (unsigned short)dsize;
+
+		if( tfr.sent+dsize == tfr.send )
+		{
+			r.mcb.MsgHdr.FnRc = seq|ReadRc_EOD;
+			if( dataport != server  ) r.mcb.MsgHdr.Flags = 0;
+		}
+		else r.mcb.MsgHdr.FnRc = seq;
+
+#ifdef SYSDEB
+		SysDebug(stream)("Write: Sending seq %x size %d",r.mcb.MsgHdr.FnRc,dsize);
+#endif
+		if( (e = PutMsg( &r.mcb ) ) < Err_Null )
+		{
+#ifdef SYSDEB
+			SysDebug(error)("Write: Data PutMsg error %E",e);
+#endif
+			if( (e & EC_Mask) >= EC_Error ) goto done;
+			if( ((e & EC_Mask) == EC_Warn) && (e = reopen(s)) != Err_Null ) goto done;
+			goto retry;	
+		}
+#ifdef SYSDEB
+		SysDebug(stream)("Write: Send completed, return val = %x",e);
+#endif
+
+		tfr.sent += dsize;
+		dsize = rep->rest;	
+		r.mcb.Data = &buf[tfr.sent];
+		seq += ReadRc_SeqInc;
+	}
+
+	/* now get confirmation message */
+
+	r.mcb.MsgHdr.Dest = reply;
+	r.mcb.Timeout = s->Timeout+reqtime;
+
+	if ( (e = GetMsg(&r.mcb)) < Err_Null )
+	{
+#ifdef SYSDEB
+		SysDebug(error)("Write: Confirmation error %E",e);
+#endif
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( ((e & EC_Mask) == EC_Warn) && (e = reopen(s)) != Err_Null ) goto done;
+		goto retry;
+	}
+
+writedone:
+#ifdef SYSDEB
+	SysDebug(stream)("Write: Confirm got %d wrote %d",rep->first,r.mcb.MsgHdr.ContSize==2?rep->rest:rep->first);
+#endif
+	/* The first word of the final reply indicates how much data the   */
+	/* server received, If this disagrees with what we sent, try again */
+	
+	if( tfr.sent != rep->first ) goto retry;
+
+	/* If the second word of the reply has been sent, this indicates */
+	/* how much of this data the server actually wrote. If this does */
+	/* not agree with the first word, terminate the tfr here.	 */
+	
+	if( r.mcb.MsgHdr.ContSize == 2 && rep->rest != rep->first )
+	{
+		tot.sent += rep->rest;
+		goto done;
+	}
+	
+	tot.sent += tfr.sent;
+	
+	if( tot.sent < tot.send )
+	{
+		buf += tfr.sent;
+		tot.pos += tfr.sent;
+		goto retry;
+	}
+
+done:
+#ifdef SYSDEB
+	SysDebug(stream)("Write: %d %x",tot.sent,e);
+#endif
+	s->Result2 = e;
+	s->Pos += tot.sent;
+	Signal( &s->Mutex );
+	if( tot.sent > 0 ) return tot.sent;
+	else return e<0?e:0;
+}
+
+/*--------------------------------------------------------
+-- Seek							--
+--							--
+-- Seek the current file position in the file. Since	--
+-- all servers are stateless and do not maintain a file --
+-- position, this is purely local to syslib.		--
+-- 							--
+--------------------------------------------------------*/
+
+static WORD _Seek(Stream *stream, WORD mode, word pos)
+{ 	MCB		mcb;
+  	SeekRequest 	seekreq;
+	word		e;
+
+	mcb.Control = (word *)&seekreq;
+
+	InitMCB(&mcb,MsgHdr_Flags_preserve,
+		stream->Server,stream->Reply,FC_GSP+FG_Seek|stream->FnMod);
+
+	MarshalWord(&mcb,stream->Pos);
+	MarshalWord(&mcb,mode);
+	MarshalWord(&mcb,pos);
+
+	if( (e = StreamMsg(&mcb, stream )) >= Err_Null )
+		stream->Pos = seekreq.CurPos;
+
+	if( mcb.MsgHdr.Reply != NullPort ) FreePort(mcb.MsgHdr.Reply);
+	stream->Result2 = e;
+	return(e);
+}
+
+PUBLIC WORD
+Seek(
+     Stream *	stream,
+     WORD	mode,
+     WORD	pos )
+{
+	word e = Err_Null;
+	word res = -1;
+
+#ifdef SYSDEB
+	SysDebug(stream)("Seek(%S,SEEK_%s,%d)",stream,
+		mode==0?"SET":mode==1?"CUR":mode==2?"END":"???",pos);
+#endif
+
+	if( (e = CheckStream(stream,C_ReOpen)) != Err_Null ) return e;
+	
+	/* if no server, no seek possible */
+	if( stream->Server == NullPort ) return 0;
+
+	Wait(&stream->Mutex);
+
+	if ((e = _Seek(stream, mode, pos)) >= Err_Null)
+ 	 res = stream->Pos;
+
+#ifdef SYSDEB
+	SysDebug(stream)("Seek: %d error %E",res,e);
+#endif
+	Signal(&stream->Mutex);
+	return res;
+}
+
+/*--------------------------------------------------------
+-- GetFileSize						--
+--							--
+-- Get the size of the file. 				--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+GetFileSize( Stream * stream )
+{
+	word e = Err_Null;
+	word res = 0;
+	MCB mcb;
+	Port server,reply;
+	
+#ifdef SYSDEB
+	SysDebug(stream)("GetFileSize(%S)",stream);
+#endif
+
+	if( (e = CheckStream(stream,C_ReOpen)) != Err_Null ) return e;
+
+	mcb.Control = &res;
+
+	Wait(&stream->Mutex);
+
+	if( (e=FindPorts(stream,FG_GetSize,&server,&reply)) != Err_Null ) goto done;
+
+	if( server == NullPort ) goto done;
+
+	InitMCB(&mcb,MsgHdr_Flags_preserve,
+		server,reply,FC_GSP+FG_GetSize|stream->FnMod);
+
+	if( (e = StreamMsg( &mcb, stream) ) != Err_Null ) goto done;
+	
+done:
+#ifdef SYSDEB
+	SysDebug(stream)("GetFileSize: %d error %E",res,e);
+	if( mcb.MsgHdr.Reply != NullPort ) SysDebug(error)("GetFileSize: Non-Null Reply port %x",mcb.MsgHdr.Reply);
+#endif
+	if( mcb.MsgHdr.Reply != NullPort ) FreePort(mcb.MsgHdr.Reply);
+	stream->Result2 = e;
+	Signal(&stream->Mutex);
+	return res;
+
+}
+
+/*--------------------------------------------------------
+-- SetFileSize						--
+--							--
+-- Set the size of the file. This may truncate a file.	--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+SetFileSize(
+	    Stream *	stream,
+	    WORD	size )
+{
+	word e = Err_Null;
+	word res = size;
+	MCB mcb;
+	Port server,reply;
+
+#ifdef SYSDEB
+	SysDebug(stream)("SetFileSize(%S,%d)",stream,size);
+#endif
+
+	if( (e = CheckStream(stream,C_ReOpen)) != Err_Null ) return e;
+
+	mcb.Control = &res;
+
+	Wait(&stream->Mutex);
+
+	if( (e=FindPorts(stream,FG_GetSize,&server,&reply)) != Err_Null ) goto done;
+
+	if( server == NullPort ) goto done;
+	
+	InitMCB(&mcb,MsgHdr_Flags_preserve,
+		server,reply,FC_GSP+FG_SetSize|stream->FnMod);
+
+	mcb.MsgHdr.ContSize = 1;
+	
+	if ( (e = StreamMsg(&mcb, stream)) < Err_Null ) goto done;
+
+	if( res < stream->Pos ) stream->Pos = res;
+	
+done:
+#ifdef SYSDEB
+	SysDebug(stream)("SetFileSize: %d error %E",res,e);
+	if( mcb.MsgHdr.Reply != NullPort ) SysDebug(error)("SetFileSize: Non-Null Reply port %x",mcb.MsgHdr.Reply);
+#endif
+	if( mcb.MsgHdr.Reply != NullPort ) FreePort(mcb.MsgHdr.Reply);
+	stream->Result2 = e;
+	Signal(&stream->Mutex);
+	return res;
+}
+
+
+/*--------------------------------------------------------
+-- EnableEvents						--
+--							--
+-- Enable the reporting of events on the given stream	--
+-- this is used to get mouse movements, keypresses and	--
+-- console signals from the device.			--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC Port EnableEvents(Stream *stream, word mask)
+{
+	word e = Err_Null;
+	MCB m;
+	Port eventport;
+	
+#ifdef SYSDEB
+	SysDebug(stream)("EnableEvents(%S,%x)",stream,mask);
+#endif
+	eventport = NullPort;
+	
+	if( (e = CheckStream(stream,C_ReOpen)) != Err_Null ) goto done;
+
+	eventport = NewPort();
+
+	Wait(&stream->Mutex);
+
+	InitMCB(&m,MsgHdr_Flags_preserve,
+		stream->Server,eventport,FC_GSP+FG_EnableEvents|stream->FnMod);
+
+	m.Control = &mask;
+	m.MsgHdr.ContSize = 1;
+
+	e = StreamMsg( &m, stream );
+	
+done:
+	if( e < Err_Null || mask == 0 )
+	{
+		FreePort(eventport);
+		eventport = NullPort;
+		stream->Result2 = e;
+	}
+	else {
+		stream->Result2 = mask;
+	}
+#ifdef SYSDEB
+	SysDebug(stream)("EnableEvents: %x %E",eventport,stream->Result2);
+	if( m.MsgHdr.Reply != NullPort ) SysDebug(error)("EnableEvents: Non-Null Reply port %x",m.MsgHdr.Reply);
+#endif
+	if( m.MsgHdr.Reply != NullPort ) FreePort(m.MsgHdr.Reply);
+	Signal(&stream->Mutex);
+	return eventport;
+}
+
+
+/*--------------------------------------------------------
+-- NegAcknowledge					--
+-- Acknowledge						--
+--							--
+-- Acknowledge routines for Event protocol.		--
+--							--
+--------------------------------------------------------*/
+
+void NegAcknowledge(Stream *stream, word counter)
+{
+	MCB m;
+#ifdef SYSDEB
+	SysDebug(stream)("NegAcknowledge(%S,%d)",stream,counter);
+#endif
+
+	if( CheckStream(stream,C_ReOpen) != Err_Null ) return;
+
+	Wait(&stream->Mutex);
+
+	InitMCB(&m,MsgHdr_Flags_preserve,
+		stream->Server,NullPort,FC_GSP+FG_NegAcknowledge | stream->FnMod);
+
+	m.Control = &counter;
+	m.MsgHdr.ContSize = 1;
+	
+	PutMsg( &m );
+	
+	Signal(&stream->Mutex);
+}
+
+void Acknowledge(Stream *stream, WORD counter)
+{
+	MCB m;
+#ifdef SYSDEB
+	SysDebug(stream)("Acknowledge(%S,%d)",stream,counter);
+#endif
+
+	if( CheckStream(stream,C_ReOpen) != Err_Null ) return;
+
+	Wait(&stream->Mutex);
+
+	InitMCB(&m,MsgHdr_Flags_preserve,
+		stream->Server,NullPort,FC_GSP+FG_Acknowledge | stream->FnMod);
+
+	m.Control = &counter;
+	m.MsgHdr.ContSize = 1;
+	
+	PutMsg( &m );
+	
+	Signal(&stream->Mutex);
+}
+
+/* end of stream.c */
+@
+
+
+1.24
+log
+@Attempted fix for problems with inherited streams which have the O_Append
+flag set. The ReOpen routine was calling Seek() while the stream was
+locked.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.23 1992/08/14 15:10:51 nickc Exp $ */
+d722 2
+a723 1
+
+@
+
+
+1.23
+log
+@minor cosmetic changes
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.22 1992/08/12 18:43:38 paul Exp nickc $ */
+d25 2
+d95 1
+a95 1
+	if( mode & Flags_Append ) Seek(stream, S_End, 0);
+d553 22
+a582 2
+	MCB mcb;
+	SeekRequest seekreq;
+a592 2
+	
+	mcb.Control = (word *)&seekreq;
+d596 2
+a597 2
+	InitMCB(&mcb,MsgHdr_Flags_preserve,
+		stream->Server,stream->Reply,FC_GSP+FG_Seek|stream->FnMod);
+a598 10
+	MarshalWord(&mcb,stream->Pos);
+	MarshalWord(&mcb,mode);
+	MarshalWord(&mcb,pos);
+
+	if( (e = StreamMsg(&mcb, stream )) != Err_Null ) goto done;
+	
+	res = seekreq.CurPos;	/* reply contains new pos */
+	stream->Pos = res;
+
+done:
+a600 1
+	if( mcb.MsgHdr.Reply != NullPort ) SysDebug(error)("Seek: Non-Null Reply port %x",mcb.MsgHdr.Reply);
+a601 2
+	if( mcb.MsgHdr.Reply != NullPort ) FreePort(mcb.MsgHdr.Reply);
+	stream->Result2 = e;
+@
+
+
+1.22
+log
+@fixed mutex when write detects a fail in findports
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.21 1992/07/21 16:57:54 nickc Exp $ */
+d83 5
+a87 1
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+d133 1
+a133 1
+	if( (e = CheckStream(s,C_ReOpen)) != Err_Null ) return e;
+d152 1
+a152 1
+	reqtime = (timeout!=-1)&&(timeout<IdleTimeout)?timeout:IdleTimeout;
+d233 1
+d244 2
+d247 3
+a249 2
+		r.mcb.Timeout = s->Timeout*2;
+		r.mcb.Control[0] = err<0?err:res;
+d251 1
+d253 1
+d256 1
+a258 1
+
+d275 1
+d551 5
+a555 4
+PUBLIC WORD Seek(stream,mode,pos)
+Stream *stream;
+WORD mode;
+WORD pos;
+d606 2
+a607 2
+PUBLIC WORD GetFileSize(stream)
+Stream *stream;
+d652 4
+a655 3
+PUBLIC WORD SetFileSize(stream,size)
+Stream *stream;
+WORD size;
+@
+
+
+1.21
+log
+@added a little more debugging
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.20 1992/07/06 16:08:45 paul Exp nickc $ */
+d317 4
+a320 1
+	if( (e = FindPorts(s,FG_Write,&server,&reply)) != Err_Null) return e;
+@
+
+
+1.20
+log
+@fixed for unsigned comparison
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.19 1992/07/06 15:55:24 paul Exp $ */
+d464 3
+@
+
+
+1.19
+log
+@fixed unsigned comparison
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.18 1992/06/11 15:43:46 nickc Exp paul $ */
+d244 2
+a245 1
+		if( ((err&EC_Mask) <= (word)EC_Warn) && (timeout > 0) ) goto retry;
+@
+
+
+1.18
+log
+@minor cosmetic changes
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.17 1992/06/03 19:03:12 paul Exp nickc $ */
+d244 1
+a244 1
+		if( ((err&EC_Mask) <= EC_Warn) && (timeout > 0) ) goto retry;
+@
+
+
+1.17
+log
+@added debug
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.16 1992/05/01 16:52:11 nickc Exp $ */
+d172 1
+a172 1
+		
+d216 1
+a216 1
+#endif		
+d220 1
+a220 1
+		if( csize > 0 )
+d228 1
+a228 1
+		res += dsize;
+d231 1
+a231 1
+		seq += ReadRc_SeqInc;
+@
+
+
+1.16
+log
+@removed a compiler warning
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.15 1991/08/08 11:23:45 nick Exp nickc $ */
+d215 1
+a215 1
+		if( (dsize+4*csize) > (size-res) ) IOdebug("Read: data > buffer");
+@
+
+
+1.15
+log
+@In Read(), an EC_Error in receiving the data now bypasses sending the
+ReadAck since this can cause lockups when a pipe is Closed with running
+readers (Bart does this a lot!).
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.14 1991/08/05 12:27:44 nick Exp nick $ */
+d224 1
+a224 1
+				csize*sizeof(word) );
+d342 1
+a342 1
+		r.mcb.MsgHdr.DataSize = tfr.send;
+d438 1
+a438 1
+			r.mcb.MsgHdr.DataSize = dsize-4;
+d442 1
+a442 1
+		else r.mcb.MsgHdr.DataSize = dsize;
+@
+
+
+1.14
+log
+@Test for unexpected reply ports added to Read().
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.13 1991/03/25 11:38:37 nick Exp $ */
+d194 1
+a194 1
+			if( (e & EC_Mask) >= EC_Error ) goto done;
+d248 1
+@
+
+
+1.13
+log
+@Test for immediate data in Write changed to <= IOCDataMax. Old test never
+let us send exactly IOCDataMax.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.12 1991/03/22 18:07:36 nick Exp nick $ */
+d162 1
+d173 12
+a184 1
+		if ( (e = GetMsg(&r.mcb)) < Err_Null )
+@
+
+
+1.12
+log
+@Test for size change response to immediate data in Write changed, the
+old test appeared to be rubbish!!.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.11 1991/02/07 16:56:28 nick Exp nick $ */
+d323 1
+a323 1
+	if( (s->Flags&Flags_NoIData) == 0 && tfr.send < IOCDataMax )
+@
+
+
+1.11
+log
+@WriteRc_Already added to allow server to ACK data already received.
+Server is now allowed to ACK less than data sent when immediate data sent.
+Read/Write size reductions on congestion removed.
+In Write s->Pos updated regardless of error, caused problems in non-blocking
+writes.
+Some minor tidies and debug message improvements.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.10 91/01/16 11:49:16 nick Exp $ */
+d378 1
+a378 1
+		if( rep->first > 0 ) tfr.sent = rep->first;
+@
+
+
+1.10
+log
+@Timeouts in Read and Write are now based on the stream Timeout field. Also,
+if congestion errors are seen in Write, the transfer size is halved.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.9 91/01/04 12:22:42 nick Exp $ */
+d121 1
+a121 1
+
+d201 4
+a204 1
+		
+a296 1
+retry1:
+a364 1
+		if( (e & EG_Mask) == EG_Congested ) { tfr.send /= 2; goto retry1; }
+d373 6
+d381 9
+a389 1
+
+d409 10
+a468 1
+		if( (e & EG_Mask) == EG_Congested ) { tfr.send /= 2; goto retry1; }
+d505 1
+a505 1
+	if( e >= 0 ) s->Pos += tot.sent;
+@
+
+
+1.9
+log
+@minor change to debugging message in Write
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.8 90/12/03 18:37:28 nick Exp $ */
+d163 1
+a163 1
+	r.mcb.Timeout	= IOCTimeout+reqtime;
+d294 1
+d349 1
+a349 1
+	r.mcb.Timeout = IOCTimeout+reqtime;
+d363 1
+d392 2
+a393 1
+
+d435 1
+a435 1
+	r.mcb.Timeout = IOCTimeout+reqtime;
+d444 1
+@
+
+
+1.8
+log
+@in Write, MCB is only re-initialized after data has been taken out of it
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.7 90/11/29 14:49:50 nick Exp Locker: nick $ */
+d446 1
+a446 1
+	SysDebug(error)("Write: Confirm got %d wrote %d",rep->first,r.mcb.MsgHdr.ContSize==2?rep->rest:rep->first);
+@
+
+
+1.7
+log
+@Write tidied to give proper behaviour in the case of partial and failed writes.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.6 90/11/29 12:17:53 nick Exp Locker: nick $ */
+a375 4
+	if( r.mcb.MsgHdr.Reply != NullPort ) dataport = r.mcb.MsgHdr.Reply;
+	InitMCB(&r.mcb,MsgHdr_Flags_preserve,dataport,NullPort,0);
+	r.mcb.Data = buf;
+
+d386 4
+@
+
+
+1.6
+log
+@if a write-confirmation message contains a second word, this indicates
+how much of the data was actually written by the server.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.5 90/11/28 17:31:49 nick Exp $ */
+a270 1
+	bool extended;
+a306 2
+	extended = s->Flags & Flags_Extended;
+
+d327 1
+a369 2
+		if( tfr.send != rep->first ) goto retry;
+		tfr.sent = rep->first;
+d386 1
+a386 1
+	/* in extended protocol Control[3] is a max size for the tfr	*/
+d389 1
+a389 1
+	if( extended ) tfr.send = rep->max;
+d444 4
+a462 1
+writedone:
+d479 2
+a480 1
+	return tot.sent;
+@
+
+
+1.5
+log
+@bugs introduced by previous fix to SetupStream fixed
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.4 90/11/01 15:38:09 nick Exp Locker: nick $ */
+d387 1
+d392 1
+d448 3
+a450 1
+	/* if the sizes do not agree, try again */
+d452 10
+@
+
+
+1.4
+log
+@ReOpen now sets FF_ReOpen, Read and Write allow pipes to have their own
+reopen function, debugging messages improved.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.3 90/10/16 10:24:50 nick Exp $ */
+d85 1
+a85 2
+	SetupStream( stream, mcb );
+	stream->Flags |= mode;
+@
+
+
+1.3
+log
+@Flag_NoReOpen now stops ReOpen trying. Errors from ReOpen now checked in
+all calls.
+@
+text
+@d19 1
+a19 1
+/* $Id: stream.c,v 1.2 90/09/05 12:56:31 nick Exp Locker: nick $ */
+d50 1
+a50 1
+	FreePort(stream->Reply);
+d52 2
+a53 1
+	
+d56 9
+a64 3
+		rc = EC_Error|SS_SysLib|EG_Broken|EO_Stream;
+		stream->Result2 = rc;
+		return rc;
+d66 1
+d74 3
+d94 1
+a94 1
+	SysDebug(error)("ReOpen: %S %E",stream,rc);
+d122 3
+d127 1
+a127 1
+	SysDebug(stream)("Read(%S,%P,%d,%d)",s,buf,size,timeout);
+a130 2
+		
+	Wait( &s->Mutex );
+d132 2
+d136 1
+d158 1
+a158 1
+		if( ((e & EC_Mask) == EC_Warn) && (e = ReOpen(s)) != Err_Null ) goto done;
+d180 3
+a182 1
+
+d184 1
+a184 1
+			if( ((e & EC_Mask) == EC_Warn) && (e = ReOpen(s)) != Err_Null ) goto done;
+d190 3
+d226 1
+d273 4
+a276 1
+
+d278 1
+a278 1
+	SysDebug(stream)("Write(%S,%P,%d,%d)",s,buf,size,timeout);
+d283 2
+d298 3
+d326 3
+d337 3
+d343 1
+a343 1
+			if( (e = ReOpen(s)) != Err_Null ) goto done;
+d351 1
+a351 1
+	r.mcb.Timeout = s->Timeout+reqtime;
+d360 3
+d364 1
+a364 1
+		if( ((e & EC_Mask) == EC_Warn) && (e = ReOpen(s)) != Err_Null ) goto done;
+d370 3
+d413 3
+d418 3
+d422 1
+a422 1
+			if( ((e & EC_Mask) == EC_Warn) && (e = ReOpen(s)) != Err_Null ) goto done;
+d435 1
+a435 1
+	r.mcb.Timeout = s->Timeout+reqtime;
+d439 3
+d443 1
+a443 1
+		if( ((e & EC_Mask) == EC_Warn) && (e = ReOpen(s)) != Err_Null ) goto done;
+d461 3
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d19 1
+a19 1
+/* $Id$ */
+d53 7
+d143 1
+a143 1
+		if( (e & EC_Mask) == EC_Warn) ReOpen(s); 
+d167 1
+a167 1
+			if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+d306 5
+a310 1
+		if( (e & EC_Mask) == EC_Warn ) { ReOpen(s); goto retry; }
+d326 1
+a326 1
+		if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+d375 1
+a375 1
+			if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+d393 1
+a393 1
+		if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 1
+a19 5
+/* $Id$
+ *
+ * $Log$
+ *
+ */
+@

@@ -1,0 +1,650 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.4
+	Helios_C40_1_3_Official_Release:1.4
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	C40_Field_Test_R1:1.3
+	Helios13_beta:1.3
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.2
+	Helios1_2:1.1
+	V1_2Beta0:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	93.04.20.09.32.18;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.06.11.08.11.47;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.01.25.10.29.29;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.05.13.39.14;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@readv() and writev()
+@
+
+
+1.4
+log
+@fixed compile time warnings
+@
+text
+@/*
+ * readv() and writev() emulation routines for Helios
+ *
+ * Originally written by Dr Nick Garnet.
+ * 'Improved' (ahem) by Nick Clifton.
+ *
+ * Copyright (c) 1991-1993 Perihelion Software Ltd.
+ * All Rights Reserved.
+ */
+
+/* $Id: rwv.c,v 1.3 1991/06/11 08:11:47 nickc Exp nickc $ */
+
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/uio.h>
+
+extern void IOdebug( const char * message, ... );
+
+/*
+ * readv( fd, iov, num_iov ) - read data into iov structure
+ *
+ * read data from 'fd' into the buffers
+ * pointed at by 'iov'.  At most 'num_iov'
+ * will be filled, and each iovector will be completly
+ * filled in turn, starting with the first.
+ * Upon successful completion readv() returns the total
+ * number of bytes read.  0 is returned upon end-of-file,
+ * and -1 is returned upon error.  In this case errno is
+ * set as for read() or possibly :-
+ *
+ * [EINVAL]	if 'num_iovectors' is less than or equal to 0 or
+ * 		greater than MAXIOV .
+ *
+ * [EINVAL]	one of the iovectors had a negative length,
+ *              or a NULL base address.
+ *
+ * [EINVAL]	the sum of the sizes of the iovector
+ * 		lengths overflowed a 'unsigned long' integer.
+ */
+
+extern int
+readv(
+      int		fd,
+      struct iovec *	iov,
+      int 		num_iov )
+{
+  unsigned long		total  = 0;
+  int			oflags = fcntl( fd, F_GETFL );
+  int			nflags = oflags;
+  
+  
+  if (oflags < 0)
+    {
+      /* errno set by the call to fcntl() */
+      
+      return -1;
+    }
+  
+  if (num_iov <= 0 || num_iov > MAXIOV)
+    {
+      errno = EINVAL;
+      
+      return -1;
+    }
+  
+  /* set the file into non-blocking mode so that we can pull 	*/
+  /* out as much data as is available			   	*/
+  
+  nflags |= O_NONBLOCK;
+  
+  fcntl( fd, F_SETFL, nflags );
+  
+  while (num_iov--)
+    {
+      signed int 	size;
+      signed int	len = iov->iov_len;
+      
+      
+      if (iov->iov_base == NULL || len < 0)
+	{
+	  (void) fcntl( fd, F_SETFL, oflags );
+	  
+	  errno = EINVAL;
+	  
+	  return -1;
+	}
+      
+      if (len == 0)
+	{
+	  /*
+	   * do not bother reading zero bytes as this can
+	   * cause read to return with EAGAIN, which means
+	   * that readv will return -1 and so any data read
+	   * into earlier vectors will be lost.  *sigh*
+	   */
+	  
+	  iov++;
+	  
+	  continue;
+	}
+      
+      size = read( fd, iov->iov_base, len );
+      
+      if (size < 0)
+	{
+	  int	save_err = errno;
+	  
+	  
+	  /*
+	   * There is a problem here - what if we
+	   * are half way through filling the vectors
+	   * when an error occurs.  Returning -1 (as we
+	   * are supposed to do) will mean that the
+	   * invoking software will loose all the
+	   * data we have already read
+	   */
+	  
+	  (void) fcntl( fd, F_SETFL, oflags );
+	  
+	  errno = save_err;
+	  
+	  if (errno == EAGAIN && total > 0)
+	    {
+	      /* EAGAIN is non-fatal */
+	      
+	      errno = 0;
+	      
+	      return (int)total;
+	    }
+	  
+	  return -1;
+	}
+      
+      if (total + size < total)
+	{
+	  /* overflow */
+	  
+	  (void) fcntl( fd, F_SETFL, oflags );
+	  
+	  errno = EINVAL;
+	  
+	  /* see comment with size < 0 */
+	  
+	  return -1;
+	}
+      
+      total += size;
+      
+      if (size != len)
+	{
+	  break;
+	}
+      
+      iov++;
+    }
+  
+  (void) fcntl( fd, F_SETFL, oflags );
+  
+  return (int)total;
+  
+} /* readv */
+
+
+
+/*
+ * writev( fd, iov, num_iov ) - write data from iovec structure
+ *
+ * write data to 'fd' from the buffers
+ * pointed at by 'iov'.  At most 'num_iov'
+ * will be emptied, and each iovector will be completly
+ * emptied in turn, starting with the first.
+ * Upon successful completion writev() returns the total
+ * number of bytes written.  -1 is returned upon error.
+ * In this case errno is set as for write() or possibly :-
+ *
+ * [EINVAL]	if 'num_iov' is less than or equal to 0 or
+ * 		greater than MAXIOV .
+ *
+ * [EINVAL]	one of the iovectors had a negative length
+ *              or a NULL start address.
+ *
+ * [EINVAL]	the sum of the sizes of the iovector
+ * 		lengths overflowed a 'unsigned long' integer.
+ */
+
+extern int
+writev(
+       int		fd,
+       struct iovec *	iov,
+       int 		num_iov )
+{
+  unsigned long		total = 0;
+  
+
+  if (num_iov <= 0 || num_iov > MAXIOV)
+    {
+      errno = EINVAL;
+      
+      return -1;
+    }
+  
+  while (num_iov--)
+    {
+      signed int	amount = iov->iov_len;
+      unsigned char *	start  = (unsigned char *)iov->iov_base;
+      
+      
+      if (amount < 0 || start == NULL)
+	{
+	  errno = EINVAL;
+	  
+	  return -1;
+	}
+      
+      while (amount > 0)
+	{
+	  signed int	size = write( fd, (char *)start, amount );
+
+	  
+	  /* check for an error result from the write */
+	  
+	  if (size < 0)
+	    {
+	      if (errno == EAGAIN && total > 0)
+		{
+		  /* EAGAIN is non-fatal */
+		  
+		  errno = 0;
+		  
+		  return (int)total;
+		}
+	      
+	      return -1;
+	    }
+
+	  /* check to see if anything was written */
+	  
+	  if (size == 0)
+	    {
+	      return (int)total;
+	    }
+
+	  /* check for overflow in our counter */
+	  
+	  if (total + size < total)
+	    {
+	      /* overflow */
+	      
+	      errno = EINVAL;
+	      
+	      return -1;
+	    }
+
+	  /* increment counters and pointers and repeat loop */
+	  
+	  total  += size;
+	  start  += size;
+	  amount -= size;
+
+	  if (amount > 0)
+	    {
+	      /*
+	       * some bytes still left to write - we can either try again
+	       * or return right now.  Currently (10/6/91) there is a bug
+	       * in the POSIX write routine whereby two calls to write()
+	       * in very quick succession, when the first call failed to
+	       * write all the data specified, will cause the second write()
+	       * to corrupt the data sent in the first write!  Hence we return
+	       * here rather than carrying on the loop.
+	       */
+	      
+	      return (int) total;
+	    }	  
+	}
+
+      /* process next iovector */
+      
+      iov++;
+    }
+
+  /* finished - return number of bytes written */
+  
+  return (int)total;
+  
+} /* writev */
+@
+
+
+1.3
+log
+@added more comments to writev() and
+put in a fix for a bug detected in the POSIX write() call - see writev() for details
+@
+text
+@d7 1
+a7 1
+ * Copyright (c) 1991 Perihelion Software Ltd.
+d11 1
+a11 1
+/* $Id$ */
+d130 1
+a130 1
+	      return total;
+d161 1
+a161 1
+  return total;
+d232 1
+a232 1
+		  return total;
+d242 1
+a242 1
+	      return total;
+d274 1
+a274 1
+	      return total;
+d285 1
+a285 1
+  return total;
+@
+
+
+1.2
+log
+@rewritten to conform to full spec (including generation of errno values)
+plus they now do not attempt to read or write 0 bytes
+@
+text
+@d1 10
+d19 2
+d45 3
+a47 3
+	int		fd,
+	struct iovec *	iov,
+	int 		num_iov )
+d49 33
+a81 6
+	unsigned long	total  = 0;
+	int		oflags = fcntl( fd, F_GETFL );
+	int		nflags = oflags;
+	
+
+	if (oflags < 0)
+d83 5
+a87 3
+		/* errno set by the call to fcntl() */
+		
+		return -1;
+d89 2
+a90 2
+
+	if (num_iov <= 0 || num_iov > MAXIOV)
+d92 10
+a101 3
+		errno = EINVAL;
+		
+		return -1;
+d103 4
+a106 9
+	
+	/* set the file into non-blocking mode so that we can pull */
+	/* out as much data as is available			   */
+		
+	nflags |= O_NONBLOCK;
+	
+	fcntl( fd, F_SETFL, nflags );
+	
+	while (num_iov--)
+d108 26
+a133 79
+		int 	size;
+		
+		
+		if (iov->iov_base == NULL || iov->iov_len < 0)
+		{
+			(void) fcntl( fd, F_SETFL, oflags );
+			
+			errno = EINVAL;
+			
+			return -1;
+		}
+
+		if (iov->iov_len == 0)
+		{
+			/*
+			 * do not bother reading zero bytes as this can
+			 * cause read to return with EAGAIN, which means
+			 * that readv will return -1 and so any data read
+			 * into earlier vectors will be lost.  *sigh*
+			 */
+			 
+			iov++;
+			
+			continue;
+		}
+					
+		size = read( fd, iov->iov_base, iov->iov_len );
+	
+		if (size < 0)
+		{
+			int	save_err = errno;
+			
+
+			/*
+			 * There is a problem here - what if we
+			 * are half way through filling the vectors
+			 * when an error occurs.  Returning -1 (as we
+			 * are supposed to do will mean that the
+			 * invoking software will loose all the
+			 * data we have already read
+			 */
+			 
+			(void) fcntl( fd, F_SETFL, oflags );
+
+			errno = save_err;
+			
+			if (errno == EAGAIN && total > 0)
+			{
+				/* EAGAIN is non-fatal */
+				
+				errno = 0;
+				
+				return total;
+			}
+			
+			return -1;
+		}
+		
+		if (total + size < total)
+		{
+			/* overflow */
+			
+			(void) fcntl( fd, F_SETFL, oflags );
+
+			errno = EINVAL;
+			
+			/* see comment with size < 0 */
+			
+			return -1;
+		}
+		
+		total += size;
+
+		if (size != iov->iov_len)
+		{
+			break;
+		}
+		
+		iov++;
+d135 28
+a162 5
+
+	(void) fcntl( fd, F_SETFL, oflags );
+
+	return total;
+
+d190 3
+a192 3
+	int		fd,
+	struct iovec *	iov,
+	int 		num_iov )
+d194 2
+a195 2
+	unsigned long	total = 0;
+	
+d197 14
+a210 1
+	if (num_iov <= 0 || num_iov > MAXIOV)
+d212 3
+a214 3
+		errno = EINVAL;
+		
+		return -1;
+d216 2
+a217 2
+	
+	while (num_iov--)
+d219 8
+a226 5
+		int	amount = iov->iov_len;
+		caddr_t	start  = iov->iov_base;
+		
+	
+		if (amount < 0 || start == NULL)
+d228 5
+a232 3
+			errno = EINVAL;
+			
+			return -1;
+d234 42
+a275 42
+		
+		while (amount)
+		{
+			int	size = write( fd, start, amount );
+		
+			
+			if (size < 0)
+			{
+				if (errno == EAGAIN && total > 0)
+				{
+					/* EAGAIN is non-fatal */
+					
+					errno = 0;
+					
+					return total;
+				}
+				
+				return -1;
+			}
+	
+			if (size == 0)
+			{
+				num_iov = 0;
+				
+				break;
+			}
+				
+			if (total + size < total)
+			{
+				/* overflow */
+				
+				errno = EINVAL;
+				
+				return -1;
+			}
+			
+			total  += size;
+			start  += size;
+			amount -= size;
+		}
+		
+		iov++;
+a276 2
+	
+	return total;
+d278 9
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+d6 2
+d9 27
+a35 1
+extern int readv(int fd, struct iovec *iov, int iovlen)
+d37 3
+a39 3
+	int total = 0;
+	int oflags = fcntl(fd,F_GETFL);
+	int nflags = oflags;
+a40 1
+	if( oflags < 0 ) return -1;
+d42 14
+d61 1
+a61 1
+	fcntl(fd,F_SETFL,nflags);
+d63 1
+a63 1
+	while( iovlen )
+d65 4
+a68 3
+		int size = read(fd,iov->iov_base,iov->iov_len);
+		if( size < 0 ) break;
+		if( size != iov->iov_len )
+d70 70
+a139 1
+			total += size;
+d142 1
+a142 1
+		total += size;
+a143 1
+		iovlen--;
+d146 1
+a146 1
+	fcntl(fd,F_SETFL,oflags);
+a148 1
+}
+d150 30
+a179 1
+extern int writev(int fd, struct iovec *iov, int iovlen)
+d181 4
+a184 2
+	int total = 0;
+	while( iovlen )
+d186 58
+a243 4
+		int size = write(fd,iov->iov_base,iov->iov_len);
+		if( size <= 0 ) break;
+		total += size;
+		iovlen--;
+d248 2
+a249 1
+}
+@

@@ -1,0 +1,2201 @@
+head	1.12;
+access;
+symbols
+	Helios_1_3_1:1.10
+	Helios_C40_1_3_Official_Release:1.9
+	Alenia_release:1.9
+	Helios1_3:1.6
+	C40_Field_Test_2:1.6
+	C40_Field_Test_R1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.12
+date	94.03.16.10.33.11;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	94.03.13.13.49.11;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	93.08.08.19.38.47;	author paul;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.12.04.19.02.42;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.12.04.18.36.15;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.11.18.14.45.32;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.09.22.16.09.17;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.08.21.16.31.44;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.08.11.10.30.36;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.07.13.11.11.15;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.07.10.08.30.29;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.07.01.12.32.19;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@display the state of all threads in the system
+@
+
+
+1.12
+log
+@added display of Resume Queue for RT systems
+@
+text
+@/*{{{  Header */
+
+/*------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S  C O M M A N D                      --
+--                      --------------------------                      --
+--                                                                      --
+--             Copyright (C) 1993 - 1994, Perihelion Software Ltd.      --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- tps.c								--
+--                                                                      --
+-- Print information about the current set of threads in the system.	--
+-- Does not use any floating point code					--
+--                                                                      --
+--                                                                      --
+-- This command will only work for processors with the generic		--
+-- executive.								--
+--                                                                      --
+-- Author: PAB 23/4/92							--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Id: threadps.c,v 1.11 1994/03/13 13:49:11 nickc Exp nickc $ */
+
+/*}}}*/
+/*{{{  Includes */
+
+#include "kernel.h"	/* for Id */
+
+#ifdef NEW_SYSTEM
+#include "gexec.h"	/* for GetExecRoot() */
+#endif
+
+#include <message.h>
+#include <root.h>
+#include <task.h>
+#include <cpustate.h>
+#include <process.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <syslib.h>
+#include <nonansi.h>
+#include <string.h>
+#include <ctype.h>
+#include <syslib.h>
+#include <module.h>
+#include <root.h>
+#include <event.h>
+#include <time.h>
+#include <ctype.h>
+
+/*}}}*/
+/*{{{  Types */
+
+/* *Warning*: STOLEN from servlib.h due to incompatible headers: */
+/* (kernel.h vs servlib.h)*/
+
+typedef struct ObjNode
+  {
+	Node		Node;		/* link in directory list	*/
+	char		Name[NameMax];	/* entry name			*/
+	word		Type;		/* entry type			*/
+	word		Flags;		/* flag word			*/
+	Matrix		Matrix;		/* access matrix		*/
+	Semaphore	Lock;		/* locking semaphore		*/
+	Key		Key;		/* protection key		*/
+	struct DirNode  *Parent;	/* parent directory		*/
+	DateSet		Dates;		/* dates of object		*/
+	word		Account;	/* owning account		*/
+	word		Size;		/* object size			*/
+	List		Contents;	/* whatever this object contains*/
+					/* may be cast to something else*/
+      }
+ObjNode ;
+
+
+typedef struct ThreadInfo
+  {
+    word	ss;
+    word	pc;
+    word	mt;
+    word	sp;
+    word	wakeup;
+    word	status;
+    word	pri;
+    word	cputotal;
+    word	timestart;
+  }
+ThreadInfo;
+
+/*}}}*/
+/*{{{  Constants */
+
+#define TQSTORESIZE	100
+#define	RQSTORESIZE	1000
+#define	KTQSTORESIZE	1000
+#define FnNameMax	16	/* max length of fn name allowed */
+
+/*}}}*/
+/*{{{  Macros */
+
+#define HeadNode_( type, pList, field )\
+  (type *)((char *)((pList)->Head) - offsetof( type, field ))
+    
+#define NextNode_( type, pStruct, field )\
+  (type *)((char *)((pStruct)->field.Next) - offsetof( type, field ))
+    
+
+/*}}}*/
+/*{{{  Variables */
+
+#ifdef NEW_SYSTEM
+ExecInfo	sExecInfo;
+#endif
+
+Semaphore capture;
+Semaphore display;
+
+word	rate 		= OneSec; /* capture rate */
+word	repeat		= FALSE;
+word	verbose		= FALSE;
+word	all		= TRUE;
+word	TQCaptureTime	= 0;
+word	TQCaptureTime2	= 0;
+word	TQSize		= 0;
+word	RQSize		= 0;
+#ifdef NEW_SYSTEM
+word	ResumeQSize	= 0;
+word	HighestAvailPri = 8;
+#endif
+word	KTQSize		= 0;
+
+
+ThreadInfo TQStore[  TQSTORESIZE ];
+ThreadInfo RQStore[  RQSTORESIZE ];
+#ifdef NEW_SYSTEM
+ThreadInfo ResumeQStore[  RQSTORESIZE ];
+#endif
+ThreadInfo KTQStore[ KTQSTORESIZE ];
+
+/*}}}*/
+/*{{{  Code */
+
+/*{{{  StatusText() */
+
+#ifdef NEW_SYSTEM
+/*{{{  StatusText() */
+
+const char *
+StatusText( word iStatus )
+{
+  static char 	aStatus[ 256 ];		/* XXX arbitary size for array */
+
+
+  aStatus[ 0 ] = '\0';
+  
+  while (iStatus)			/* loop on status bits */
+    {
+      word	iBit;
+      
+
+      iBit = iStatus & (-iStatus); 	/* get least significant bit in status */
+
+      iStatus &= ~iBit;			/* remove this bit from status */
+
+      switch (iBit)			/* add text based on this bit */
+	{
+	case THREAD_SLICED:	strcat( aStatus, "Sliced" ); break;
+	case THREAD_RUNNABLE:	strcat( aStatus, "Runnable" ); break;
+	case THREAD_RUNNING:	strcat( aStatus, "Running" ); break;
+	case THREAD_SLEEP:	strcat( aStatus, "Sleeping" ); break;
+	case THREAD_SEMAPHORE:	strcat( aStatus, "Waiting on Semaphore" ); break;
+	case THREAD_MSGREAD:	strcat( aStatus, "Waiting in GetMsg" ); break;
+	case THREAD_MSGWRITE:	strcat( aStatus, "Waiting in PutMsg" ); break;
+	case THREAD_MULTIWAIT:	strcat( aStatus, "MultiWaiting" ); break;
+	case THREAD_MUTEX:	strcat( aStatus, "Waiting on Mutex" ); break;
+	case THREAD_GRABMUTEX:	strcat( aStatus, "Waiting to Grab Mutexes" ); break;
+	case THREAD_SAVED:	strcat( aStatus, "Saved" ); break;
+	case THREAD_RESUMED:	strcat( aStatus, "Resumed" ); break;
+	case THREAD_KILLED:	strcat( aStatus, "Killed" ); break;
+	case THREAD_LINKWRITEQ:	strcat( aStatus, "Link Write Q" ); break;
+	case THREAD_LINKREADQ:	strcat( aStatus, "Link Read Q" ); break;
+	case THREAD_LINKRX:	strcat( aStatus, "LinkRx" ); break;
+	case THREAD_LINKTX:	strcat( aStatus, "LinkTx" ); break;
+	case THREAD_LINKWAIT:	strcat( aStatus, "LinkWait" ); break;
+	case THREAD_LINKXOFF:	strcat( aStatus, "LinkXOff" ); break;
+	case THREAD_LINKBUF:	strcat( aStatus, "LinkBuf" ); break;
+	case THREAD_REAPED:	strcat( aStatus, "Reaped" ); break;
+	default:		sprintf( aStatus, "<unknown %lx %lx>", iBit, iStatus );
+	  return aStatus;
+	}
+      
+      if (iStatus)
+ 	strcat( aStatus, ", " ); 	/* if we are going to loop, then add a comma */
+    }
+
+  return aStatus;			/* return composite status string */
+}
+
+/*}}}*/
+#else
+/*{{{  threadstatus[] */
+
+struct threadstatus
+  {
+    int	code;
+    char	*description;
+  }
+threadstatus[] =
+  {
+      {  THREAD_STARTUP,	"new thread about to startup  "},
+	{THREAD_SLICED,		"runnable, was sliced         "},
+	{THREAD_RUNNABLE,	"runnable, rescheduled        "},
+	{THREAD_RUNNING,	"current CPU thread           "},
+	{THREAD_KILLED,		"thread has been Stop()'ed    "},
+	{THREAD_BOGUS,		"illegal state of thread      "},
+      /* THREAD_SLICED status in normal dispatch */
+	{THREAD_SAVED,	 	"user SaveCPUState()          "},
+	{THREAD_SLEEP,		"on timer Q                   "},
+	{THREAD_TIMEDWAIT, 	"blocked on timer & semaphore "},
+	{THREAD_SEMAPHORE,	"blocked on semaphore         "},
+	{THREAD_MSGREAD	,	"blocked reading msg          "},
+	{THREAD_MSGWRITE,	"blocked writing internal msg "},
+	{THREAD_MULTIWAIT,	"blocked during MultiWait()   "},
+	{THREAD_LINKRX,		"blocked reading link msg     "},
+	{THREAD_LINKTX,		"blocked writing link msg     "},
+	{THREAD_LINKWRITEQ,	"blocked on link msg write Q  "},
+	{THREAD_LINKWAIT,	"guardian waiting on dumb link"},
+	{THREAD_LINKEND,	"blocked waiting to use link  "},
+				/* TaskKill/JumpLink */
+	{THREAD_LINKXOFF,	"waiting for XON on link      "},
+	{THREAD_LINKTHRU1,	"single buffer thru-routed msg"},
+	{THREAD_LINKTHRU2,	"double buffer thru-routed msg"},
+#ifdef __C40
+	{THREAD_DMAREQ,		"waiting for a DMA engine     "}, /* unused */
+#else
+	{0,			"Unused"},
+#endif
+	{THREAD_MSGWRITE2,	"blocked writing internal msg "}
+};
+
+/*}}}*/
+/*{{{  StatusText() */
+
+char *StatusText(word i)
+{
+	/* should be sequential, but check */
+	if(threadstatus[i].code != i)
+		return "illegal status value";
+
+	return threadstatus[i].description;
+}
+
+/*}}}*/
+#endif
+
+/*}}}*/
+/*{{{  VerboseDumpTQ() */
+
+void
+VerboseDumpTQ( void )
+{
+  int 		i;
+
+#ifdef NEW_SYSTEM
+  Id * 		pId;
+
+
+  WaitMutex( sExecInfo.TimerQLock );
+  
+  pId = Head_( Id, GetExecRoot()->TimerQ );
+#else
+  SaveState *	s;
+  
+  s = TimerQHead();
+#endif
+  
+  TQCaptureTime = _cputime() * 10000;
+  
+  for (i = 0;
+#ifdef NEW_SYSTEM
+       !EndOfList_( pId ) && i < TQSTORESIZE;
+       pId = Next_( Id, pId ), i++
+#else
+       s != NULL && i < TQSTORESIZE;
+       i++, s = P_TimerNext( s )
+#endif
+       )
+    {
+#ifdef NEW_SYSTEM
+      SaveState *	s = pId->state;
+#endif
+
+      
+      TQStore[i].ss        = (word) CtoM_( s );
+#ifdef __C40
+      TQStore[i].pc        = s->CPUcontext.PC;
+      TQStore[i].sp        = s->CPUcontext.R_USP;
+#else
+      TQStore[i].pc        = s->CPUcontext.R_PC;
+#ifdef __ARM6
+      TQStore[i].sp        = s->CPUcontext.R_USR_SP;
+#else
+      TQStore[i].sp        = s->CPUcontext.R_USER_SP;
+#endif
+#endif
+      TQStore[i].mt        = s->CPUcontext.R_MT;
+#ifdef NEW_SYSTEM	  
+      TQStore[i].wakeup    = pId->endtime;
+#else
+      TQStore[i].wakeup    = s->endtime;
+#endif
+      TQStore[i].pri       = s->priority;
+      TQStore[i].cputotal  = s->CPUTimeTotal;
+      TQStore[i].timestart = s->InitialTime;
+    }
+  
+#ifdef NEW_SYSTEM
+  SignalMutex( sExecInfo.TimerQLock );
+#endif
+  
+  TQSize = i;
+}
+
+/*}}}*/
+/*{{{  NormalDumpTQ() */
+
+void
+NormalDumpTQ( void )
+{
+  int 		i;
+  
+#ifdef NEW_SYSTEM
+  Id * 		pId;
+
+
+  WaitMutex( sExecInfo.TimerQLock );
+  
+  pId = Head_( Id, GetExecRoot()->TimerQ );
+#else
+  SaveState *	s;
+  
+  s = TimerQHead();
+#endif
+  
+  TQCaptureTime = _cputime() * 10000;
+  
+  for (i = 0;
+#ifdef NEW_SYSTEM
+       !EndOfList_( pId )   && i < TQSTORESIZE;
+       pId = Next_( Id, pId ), i++
+#else
+       s != NULL && i < TQSTORESIZE;
+       i++, s = P_TimerNext( s )
+#endif
+	 )
+    {
+#ifdef NEW_SYSTEM	  
+      TQStore[i].ss     = (word) CtoM_( pId->state );
+      TQStore[i].mt     = pId->state->CPUcontext.R_MT;
+      TQStore[i].wakeup = pId->endtime;
+#else
+      TQStore[i].ss     = (word) CtoM_( s );
+      TQStore[i].mt     = s->CPUcontext.R_MT;
+      TQStore[i].wakeup = s->endtime;
+#endif
+    }
+
+#ifdef NEW_SYSTEM
+  SignalMutex( sExecInfo.TimerQLock );
+#endif
+  
+  TQSize = i;
+}
+
+/*}}}*/
+/*{{{  VerboseDumpRQ() */
+
+void
+VerboseDumpRQ( word range )
+{
+  int 		i = 0;
+  word		j;
+  SaveState *	s;
+
+  
+  for (j = range; j--;)
+    {
+#ifdef NEW_SYSTEM
+      s = Head_( SaveState, GetExecRoot()->Queues[ j ] );
+#else
+      s = ReadyQBase( j )->head;
+#endif
+      
+      while (
+#ifdef NEW_SYSTEM
+	     !EndOfList_( s )
+#else
+	     s != NULL
+#endif
+	     )
+	{
+	  if (i >= RQSTORESIZE)
+	    break;
+	  RQStore[i].ss        = (word) CtoM_( s );
+#ifdef __C40
+	  RQStore[i].pc        = s->CPUcontext.PC;
+	  RQStore[i].sp        = s->CPUcontext.R_USP;
+#else
+	  RQStore[i].pc        = s->CPUcontext.R_PC;
+#ifdef __ARM6
+	  RQStore[i].sp        = s->CPUcontext.R_USR_SP;
+#else
+	  RQStore[i].sp        = s->CPUcontext.R_USER_SP;
+#endif
+#endif
+	  RQStore[i].mt        = s->CPUcontext.R_MT;
+	  RQStore[i].pri       = j;
+	  RQStore[i].status    = s->status;
+	  RQStore[i].cputotal  = s->CPUTimeTotal;
+	  RQStore[i].timestart = s->InitialTime;
+	  
+	  i++;
+#ifdef NEW_SYSTEM
+	  s = Next_( SaveState, s );
+#else
+	  s = P_RunqNext( s );
+#endif
+	}
+    }
+  
+  RQSize = i;
+}
+
+/*}}}*/
+/*{{{  NormalDumpRQ() */
+
+void
+NormalDumpRQ( word range )
+{
+  int 		i = 0;
+  word		j;
+  SaveState *	s;
+
+  
+  for (j = range; j--;)
+    {
+#ifdef NEW_SYSTEM
+      s = Head_( SaveState, GetExecRoot()->Queues[ j ] );
+#else
+      s = ReadyQBase( j )->head;
+#endif
+      
+      while (
+#ifdef NEW_SYSTEM
+	     !EndOfList_( s )
+#else
+	     s != NULL
+#endif
+	     )
+	{
+	  if (i >= RQSTORESIZE)
+	    break;
+	  
+	  RQStore[i].mt        = s->CPUcontext.R_MT;
+	  RQStore[i].status    = s->status;
+#ifdef __C40
+	  RQStore[i].ss        = C40WordAddress( s );
+#else
+	  RQStore[i].ss        = (word)s;
+#endif
+	  i++;
+
+#ifdef NEW_SYSTEM
+	  s = Next_( SaveState, s );
+#else
+	  s = P_RunqNext( s );
+#endif
+	}
+    }
+  
+  RQSize = i;
+}
+
+/*}}}*/
+#ifdef NEW_SYSTEM
+/*{{{  VerboseDumpResumeQ() */
+
+void
+VerboseDumpResumeQ( word range )
+{
+  int 		i = 0;
+  word		j;
+  SaveState *	s;
+
+  HighestAvailPri = GetExecRoot()->HighestAvailPri;
+  
+  for (j = range; j--;)
+    {
+      s = Head_( SaveState, GetExecRoot()->ResumeQueues[ j ] );
+      
+      while (!EndOfList_( s ))
+	{
+	  if (i >= RQSTORESIZE)
+	    break;
+	  
+	  ResumeQStore[i].ss        = (word) CtoM_( s );
+#ifdef __C40
+	  ResumeQStore[i].pc        = s->CPUcontext.PC;
+	  ResumeQStore[i].sp        = s->CPUcontext.R_USP;
+#else
+	  ResumeQStore[i].pc        = s->CPUcontext.R_PC;
+#ifdef __ARM6
+	  ResumeQStore[i].sp        = s->CPUcontext.R_USR_SP;
+#else
+	  ResumeQStore[i].sp        = s->CPUcontext.R_USER_SP;
+#endif
+#endif
+	  ResumeQStore[i].mt        = s->CPUcontext.R_MT;
+	  ResumeQStore[i].pri       = j;
+	  ResumeQStore[i].status    = s->status;
+	  ResumeQStore[i].cputotal  = s->CPUTimeTotal;
+	  ResumeQStore[i].timestart = s->InitialTime;
+	  
+	  i++;
+
+	  s = Next_( SaveState, s );
+	}
+    }
+  
+  ResumeQSize = i;
+}
+
+/*}}}*/
+/*{{{  NormalDumpResumeQ() */
+
+void
+NormalDumpResumeQ( word range )
+{
+  int 		i = 0;
+  word		j;
+  SaveState *	s;
+
+
+  for (j = range; j--;)
+    {
+      s = Head_( SaveState, GetExecRoot()->ResumeQueues[ j ] );
+      
+      while (!EndOfList_( s ))
+	{
+	  if (i >= RQSTORESIZE)
+	    break;
+	  
+	  ResumeQStore[i].mt        = s->CPUcontext.R_MT;
+	  ResumeQStore[i].status    = s->status;
+#ifdef __C40
+	  ResumeQStore[i].ss        = C40WordAddress( s );
+#else
+	  ResumeQStore[i].ss        = (word)s;
+#endif
+	  i++;
+
+	  s = Next_( SaveState, s );
+	}
+    }
+  
+  ResumeQSize = i;
+}
+
+/*}}}*/
+#endif
+/*{{{  VerboseDumpKTQ() */
+
+/* Dump all known threads and their status from known thread Q */
+void
+VerboseDumpKTQ( void )
+{
+  SaveState * s; 
+  int i;
+
+#ifdef NEW_SYSTEM
+  WaitMutex( sExecInfo.KnownThreadsLock );
+
+  s = HeadNode_( SaveState, sExecInfo.KnownThreads, threadlist );
+#else
+  s = GetExecRoot()->KnownThreads;
+#endif
+
+  for (i = 0;
+#ifdef NEW_SYSTEM
+       ! EndOfList_( s ) && i < KTQSTORESIZE;
+       s = NextNode_( SaveState, s, threadlist ), i++
+#else
+       s != NULL && i < KTQSTORESIZE;
+       i++, s = s->nextknown
+#endif
+       )
+    {
+      KTQStore[i].ss        = (word) CtoM_( s );
+#ifdef __C40
+      KTQStore[i].pc        = s->CPUcontext.R_LR;
+      KTQStore[i].sp        = s->CPUcontext.R_USP;
+#else
+#ifdef __ARM6
+      KTQStore[i].pc        = s->CPUcontext.R_USR_LR;
+      KTQStore[i].sp        = s->CPUcontext.R_USR_SP;
+#else
+      KTQStore[i].pc        = s->CPUcontext.R_USER_LR;
+      KTQStore[i].sp        = s->CPUcontext.R_USER_SP;
+#endif
+#endif
+      KTQStore[i].mt        = s->CPUcontext.R_MT;
+      KTQStore[i].pri       = s->priority;
+      KTQStore[i].status    = s->status;
+      KTQStore[i].cputotal  = s->CPUTimeTotal;
+      KTQStore[i].timestart = s->InitialTime;
+    }
+  
+  KTQSize = i;
+
+#ifdef NEW_SYSTEM
+  SignalMutex( sExecInfo.KnownThreadsLock );
+#endif
+  
+}
+
+/*}}}*/
+/*{{{  NormalDumpKTQ() */
+
+void
+NormalDumpKTQ( void )
+{
+  SaveState *	pThread; 
+  int		i = 0;
+
+
+#ifdef NEW_SYSTEM
+  WaitMutex( sExecInfo.KnownThreadsLock );
+#endif
+
+  for (
+#ifdef NEW_SYSTEM
+                           pThread = HeadNode_( SaveState, sExecInfo.KnownThreads, threadlist );
+       i < KTQSTORESIZE && !EndOfList_( &pThread->threadlist );
+       i++,                pThread = NextNode_( SaveState, pThread, threadlist )
+#else
+                           pThread = GetExecRoot()->KnownThreads;
+       i < KTQSTORESIZE && pThread != NULL;
+       i++,                pThread = pThread->nextknown
+#endif
+       )
+    {
+      KTQStore[ i ].ss     = (word) CtoM_( pThread );
+      KTQStore[ i ].mt     = pThread->CPUcontext.R_MT;
+      KTQStore[ i ].status = pThread->status;
+    }
+  
+#ifdef NEW_SYSTEM
+  SignalMutex( sExecInfo.KnownThreadsLock );
+#endif
+  
+  KTQSize = i;
+
+  return;
+}
+
+/*}}}*/
+/*{{{  TaskName() */
+
+/* get validated taskname from mt reg. */
+/* and pad it to FnNameMax chars */
+bool
+TaskName(
+	 word *	mt,
+	 char *	name )
+{
+  word *	km;
+  int		i;
+  ObjNode *	objnode;
+  Task *	tp;
+  char *	tn;
+  Pool *	syspool;
+  Pool *	freepool;
+
+  
+  if (mt == NULL)
+    {
+      strcpy( name, "<mt> is NULL!  " );
+      return false;
+    }
+  
+#ifdef __C40
+  mt = (word *)C40CAddress((word)mt);
+#endif
+  
+  syspool  = &(GetRoot()->SysPool);
+  freepool = GetRoot()->FreePool;
+  
+  if (InPool( (void *)mt, syspool ))
+    {
+      strcpy(name, "System");
+      strncat(name, "                ", FnNameMax - 6);
+      return false;
+    }
+  
+  if (InPool( (void *)mt, freepool) )
+    {
+      strcpy(name, "ModTab is Free ");
+      return false;
+    }
+  
+  if (*mt != (word) mt)
+    {
+      /* check its a module table pointer */
+      strcpy(name, "Invalid ModTab  ");
+      return false;
+    }
+  
+#ifdef __SMT /* Split module table  version */
+  km = (word *) *(mt + 2); /* kernel module */
+  
+  tp = (Task *) *(km); /* data entry 0 points at task struct */
+#else
+  km = (word *) *(mt + 1); /* kernel module */
+  
+  tp = (Task *) *(km + 48); /* entry 48 points at task struct */
+#endif
+  
+  /* get first element of taskentry */
+  objnode = (ObjNode *) tp->TaskEntry;
+  
+  tn = objnode->Name;
+  
+  for (i =0 ; i < NameMax; i++)
+    {
+      if (tn[i] == '\0')
+	{
+	  strcpy(name, tn);
+	  strncat(name, "                ", FnNameMax-i);
+	  return true;
+	}
+      
+      if (!isprint(tn[i]))
+	{
+#if 1
+	  /* tn[i]=' '; */
+	  sprintf( name, "0x%*.*p", -(FnNameMax - 3), FnNameMax - 3, tn );
+#else
+	  strcpy(name, "Corrupt name    ");
+	  return false;
+#endif
+	}
+    }
+  
+  strcpy(name, "Invalid name");
+  return false;
+  
+} /* TaskName */
+
+/*}}}*/
+
+# ifdef __ARM
+/*{{{  EmbeddedName() */
+
+char *
+EmbeddedName( VoidFnPtr pFn )
+{
+  word w, i;
+  word *  fn;
+
+  
+  fn = (word *)((word)pFn & ~0xfc000003);	/* remove any flags and word align */
+
+  if (fn == NULL)
+    return NULL;
+
+  /* Search up to 10 words before the STM looking for */
+  /* the marker that shows where the function name is. */
+  
+  for (i = 0; (i < 10); i++)
+    {
+      w = *--fn;
+
+      if ((w & 0xffff0000) == 0xff000000)
+	{
+	  return (char *)fn - (w & 0xffff);
+	}
+    }
+  
+  return NULL;
+}
+
+/*}}}*/
+#endif /* __ARM */
+
+/*{{{  FnName() */
+
+void
+FnName(
+       VoidFnPtr 	fn,
+       const char *	name )
+{
+  char *	pName =
+#if defined __ARM
+	      EmbeddedName( fn )
+#else
+	      procname( fn )
+#endif
+    ;
+
+  
+#ifdef __ARM
+  if (pName == NULL)
+    pName = procname( fn );
+#endif
+
+  if (pName == NULL)
+    {
+      sprintf( (char *) name, "0x%*.*p", -(FnNameMax - 3), FnNameMax - 3, fn );
+      return;
+    }
+  
+  if (sprintf( (char *) name, "%*.*s", -(FnNameMax - 1), FnNameMax - 1, pName ))
+    {
+      int	i;
+      for (i = strlen( name ); i--;)
+	if (!isprint( name[ i ] ))
+	  {
+	    sprintf( (char *) name, "0x%*.*p", -(FnNameMax - 3), FnNameMax - 3, fn );
+	    break;
+	  }
+    }
+  else
+    ((char *)name)[ 0 ] ='\0';
+
+  return;
+}
+
+/*}}}*/
+/*{{{  ShowQs() */
+
+void
+ShowQs( void )
+{
+  int		i;
+  uword		wakeup;
+#ifdef NEW_SYSTEM
+  const char *	status;
+#else
+  char *	status;
+#endif
+  char		taskname[ NameMax ];
+  char		threadname[ FnNameMax ];
+
+  
+  do
+    {
+      Wait( &display );
+      
+      wakeup = 0; /* I do not know the real top of Q wakeup time ! */
+      
+/*{{{  Timer Q */
+
+      printf("\fTimer Queue:\n");
+      
+      if (verbose)
+	{
+	  printf("Number of sleeping threads: %ld\n",TQSize);
+	  printf("Timer value at capture time: %#8lx\n", TQCaptureTime);
+	}
+      
+      for (i = 0; i < TQSize; i++)
+	{
+	  TaskName((word *)(TQStore[i].mt), taskname);
+	  
+	  if (!all)
+	    {
+	      /*
+	       * @@@@@@ Should also knock out signal handler processes
+	       * but this is difficult without any names.
+	       */
+	      
+	      if (strncmp( taskname, "ProcMan.0", 9 ) == 0 ||
+		  strncmp( taskname, "System", 6 )    == 0  )
+		continue;
+	    }			
+#ifdef __C40
+	  FnName(((SaveState *)C40CAddress(TQStore[i].ss))->InitialFn, threadname);
+#else
+	  FnName(((SaveState *)TQStore[i].ss)->InitialFn, threadname);
+#endif
+	  if (verbose)
+	    {
+	      printf( " %s: %s\n",
+		     taskname, threadname);
+#if 0 /* fixed C fp vararg bug? */
+	      printf("\t\twakeup @@ %#08lxuS, wakeup in %8lx uS (%d secs)\n",
+		     TQStore[i].wakeup,
+		     TQStore[i].wakeup - TQCaptureTime,
+		     ((float)(TQStore[i].wakeup - TQCaptureTime))/OneSec);
+#else
+	      printf("\t\twakeup @@ %#08lxuS, ",
+		     TQStore[i].wakeup);
+	      printf("wakeup in %8lx uS (%ld secs)\n",
+		     TQStore[i].wakeup - TQCaptureTime,
+		     (word)(TQStore[i].wakeup - TQCaptureTime) / OneSec);
+#endif
+	      printf("\t\trun time %8dS, CPU time consumed %ldS\n",
+		     time(NULL) - (time_t)TQStore[i].timestart,
+		     (TQStore[i].cputotal) / OneSec);
+	      
+	      printf("\t\tss %8lx, physpri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+		     TQStore[i].ss, TQStore[i].pri,
+		     TQStore[i].pc, TQStore[i].mt,
+		     TQStore[i].sp);
+	    }
+	  else
+	    {
+	      printf( " %s: %s: wakeup in %ld secs\n",
+		     taskname, threadname,
+		     (word)(TQStore[i].wakeup - TQCaptureTime) / OneSec);
+	    }
+	}
+      
+
+/*}}}*/
+/*{{{  Run Qs */
+
+      printf("Run Queues:\n");
+      
+      if (verbose)
+	printf("Number of runnable threads = %ld\n", RQSize);
+      
+      for (i=0; i < RQSize; i++)
+	{
+	  TaskName((word *)(RQStore[i].mt),taskname);
+	  
+	  if (!all)
+	    {
+	      if (strncmp( taskname, "ProcMan.0", 9 ) == 0 ||
+		  strncmp( taskname, "System", 6 )    == 0  )
+		continue;
+	    }			
+#ifdef __C40
+	  FnName(((SaveState *)C40CAddress(RQStore[i].ss))->InitialFn, threadname);
+#else
+	  FnName(((SaveState *)RQStore[i].ss)->InitialFn, threadname);
+#endif
+	  status = StatusText(RQStore[i].status);
+	  
+	  if (verbose)
+	    {
+	      printf( " %s: %s: %s\n", taskname, threadname, status);
+	      
+	      printf("\t\trun time %8dS, CPU time consumed %ldS\n",
+		     time(NULL) - (time_t)RQStore[i].timestart,
+		     RQStore[i].cputotal / OneSec);
+	      
+	      printf("\t\tss %8lx, physpri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+		     RQStore[i].ss, RQStore[i].pri,
+		     RQStore[i].pc, RQStore[i].mt,
+		     RQStore[i].sp);
+	    } else
+	      printf( " %s: %s: %s\n", taskname, threadname, status);
+	}
+      
+
+/*}}}*/
+#ifdef NEW_SYSTEM
+/*{{{  Resume Qs */
+
+      printf("Resume Queues:\n");
+      
+      if (verbose)
+	printf("Number of resumable threads = %ld, HighestAvailPri = %ld\n",
+	       ResumeQSize, HighestAvailPri );
+      
+      for (i=0; i < ResumeQSize; i++)
+	{
+	  TaskName((word *)(ResumeQStore[i].mt),taskname);
+	  
+	  if (!all)
+	    {
+	      if (strncmp( taskname, "ProcMan.0", 9 ) == 0 ||
+		  strncmp( taskname, "System", 6 )    == 0  )
+		continue;
+	    }			
+#ifdef __C40
+	  FnName(((SaveState *)C40CAddress(ResumeQStore[i].ss))->InitialFn, threadname);
+#else
+	  FnName(((SaveState *)ResumeQStore[i].ss)->InitialFn, threadname);
+#endif
+	  status = StatusText(ResumeQStore[i].status);
+	  
+	  if (verbose)
+	    {
+	      printf( " %s: %s: %s\n", taskname, threadname, status);
+	      
+	      printf("\t\trun time %8dS, CPU time consumed %ldS\n",
+		     time(NULL) - (time_t)ResumeQStore[i].timestart,
+		     ResumeQStore[i].cputotal / OneSec);
+	      
+	      printf("\t\tss %8lx, physpri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+		     ResumeQStore[i].ss, ResumeQStore[i].pri,
+		     ResumeQStore[i].pc, ResumeQStore[i].mt,
+		     ResumeQStore[i].sp);
+	    } else
+	      printf( " %s: %s: %s\n", taskname, threadname, status);
+	}
+      
+
+/*}}}*/
+#endif
+/*{{{  Known Threads */
+
+      printf("All threads:\n");
+      
+      if (verbose)
+	{
+	  printf("Total number of threads: %ld\n", KTQSize);
+	}
+      
+      /* print known thread Q contents */
+      
+      for (i=0; i < KTQSize; i++)
+	{
+	  TaskName((word *)(KTQStore[i].mt),taskname);
+	  
+	  if (!all)
+	    {
+	      if (strncmp( taskname, "ProcMan.0", 9 ) == 0 ||
+		  strncmp( taskname, "System", 6 )    == 0  )
+		continue;
+	    }			
+#ifdef __C40
+	  FnName(((SaveState *)C40CAddress(KTQStore[i].ss))->InitialFn, threadname);
+#else
+	  FnName(((SaveState *)KTQStore[i].ss)->InitialFn, threadname);
+#endif
+	  status = StatusText(KTQStore[i].status);
+	  
+	  printf( " %s: %s: %s\n", taskname, threadname, status);
+	  
+	  if (verbose)
+	    {
+	      printf("\t\trun time %8dS, CPU time consumed %ldS\n",
+		     time(NULL) - (time_t)KTQStore[i].timestart,
+		     KTQStore[i].cputotal / OneSec);
+	      
+	      printf("\t\tss %8lx, physpri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+		     KTQStore[i].ss, KTQStore[i].pri,
+		     KTQStore[i].pc, KTQStore[i].mt,
+		     KTQStore[i].sp);
+	    }
+	}
+      
+
+/*}}}*/
+
+      Signal( &capture );
+    }
+  while (repeat);
+}
+
+/*}}}*/
+/*{{{  VerboseDumpQs() */
+
+void
+VerboseDumpQs( word range )
+{
+#ifdef NEW_SYSTEM
+  VerboseDumpTQ();
+
+  VerboseDumpKTQ();
+  
+  IntsOff();
+  	VerboseDumpRQ( range );
+  	VerboseDumpResumeQ( range );
+  IntsOn();
+#else
+  ClockIntsOff();
+  	VerboseDumpTQ();
+  ClockIntsOn();
+  
+  ClockIntsOff();
+  	VerboseDumpKTQ();
+  ClockIntsOn();
+  
+  IntsOff();
+  	VerboseDumpRQ( range );
+  IntsOn();
+#endif
+}
+
+/*}}}*/
+/*{{{  NormalDumpQs() */
+
+void
+NormalDumpQs( word range )
+{
+#ifdef NEW_SYSTEM
+  NormalDumpTQ();
+  
+  NormalDumpKTQ();
+  
+  IntsOff();
+    NormalDumpRQ( range );
+    NormalDumpResumeQ( range );
+  IntsOn();
+#else
+  ClockIntsOff();
+  	NormalDumpTQ();
+  ClockIntsOn();
+  
+  ClockIntsOff();
+  	NormalDumpKTQ();
+  ClockIntsOn();
+  
+  IntsOff();
+  	NormalDumpRQ( range );
+  IntsOn();
+#endif
+}
+
+/*}}}*/
+/*{{{  DumpThread() */
+
+void
+DumpThread(void)
+{
+  word	range = GetPhysPriRange();
+
+  
+  if (verbose)
+    {
+      forever
+	{
+	  VerboseDumpQs( range );
+	  
+	  Signal( &display );
+	  
+	  Wait( &capture );
+	  
+	  Delay( rate );
+	}
+    }
+  else
+    {
+      forever
+	{
+	  NormalDumpQs( range );
+	  
+	  Signal( &display );
+	  
+	  Wait( &capture );
+	  
+	  Delay( rate );
+	}
+    }
+}
+
+/*}}}*/
+/*{{{  main () */
+
+int
+main (int argc, char **argv)
+{
+#ifdef NEW_SYSTEM
+  GetExecInfo( &sExecInfo );
+#endif
+  
+  InitSemaphore(&display,0);
+  InitSemaphore(&capture,0);
+  
+  while (*(++argv) != NULL)
+    {
+      if (strcmp(*argv, "-r") == 0)
+	repeat = TRUE;
+      
+      if (strcmp(*argv, "-l") == 0)
+	verbose = TRUE;
+      
+      if (strcmp(*argv, "-s") == 0)	/* XXX - ought to be a '-a' option to enable full listing */
+	all = FALSE;
+      
+      if (strncmp(*argv, "-h", 2) == 0)
+	{
+	  fprintf(stderr,"usage: threadps [-r] [-l] [-s] [-h]\n" );
+	  fprintf(stderr,"       -r: repeat forever\n" );
+	  fprintf(stderr,"       -l: long listing\n" );
+	  fprintf(stderr,"       -s: ignore boring processes\n" );
+	  fprintf(stderr,"       -h: display help message\n" );
+	  exit(0);		    
+	}		
+    }
+
+  Fork( 2000, DumpThread, 0 );
+  
+  ShowQs();
+
+  return 0;
+  
+} /* main */
+
+/*}}}*/
+
+/*}}}*/
+
+/* end of threadps.c */
+@
+
+
+1.11
+log
+@Updated to work with new RT kernel + no longer uses FP
+@
+text
+@d23 1
+a23 1
+/* RcsId: $Id$ */
+d127 4
+d136 3
+d268 2
+d318 4
+d486 86
+d858 1
+a858 1
+      Wait(&display);
+d862 2
+d894 1
+a894 1
+	      printf("%s: %s\n",
+d919 1
+a919 1
+	      printf("%s: %s: wakeup in %ld secs\n",
+d925 4
+d953 1
+a953 1
+	      printf("%s: %s: %s\n", taskname, threadname, status);
+d964 45
+a1008 1
+	      printf("%s: %s: %s\n", taskname, threadname, status);
+d1011 5
+d1042 1
+a1042 1
+	  printf("%s: %s: %s\n", taskname, threadname, status);
+d1057 4
+a1060 1
+      Signal(&capture);
+d1071 10
+d1092 1
+d1101 10
+d1122 1
+@
+
+
+1.10
+log
+@merged with ARM version
+@
+text
+@d1 2
+d8 1
+a8 1
+--             Copyright (C) 1992, Perihelion Software Ltd.             --
+d11 1
+a11 1
+-- threadps.c								--
+d14 1
+d23 4
+a26 1
+/* RcsId: $Id: threadps.c,v 1.9 1992/12/04 19:02:42 nickc Exp paul $ */
+d28 5
+a32 1
+#include "../../kernel/kernel.h" 
+d50 1
+a50 12
+
+/*---------------------------------------------------------------------------*/
+
+void ShowQs(void);
+void DumpThread(void);
+void DumpQs(void);
+void DumpTQ(void);
+void DumpRQ(void);
+void DumpKTQ(void);
+bool TaskName(word *mt, char *name);
+bool FnName(VoidFnPtr fn, char *name);
+char *StatusText(word st);
+d52 2
+a53 1
+/*---------------------------------------------------------------------------*/
+a54 12
+word rate = OneSec; /* capture rate */
+Semaphore capture;
+Semaphore display;
+word	repeat         = FALSE;
+word	verbose        = FALSE;
+word	all            = TRUE;
+word	TQCaptureTime  = 0;
+word	TQCaptureTime2 = 0;
+word	TQSize         = 0;
+word	RQSize         = 0;
+word	KTQSize        = 0;
+
+d58 2
+a59 1
+typedef struct ObjNode {
+d73 2
+a74 1
+} ObjNode ;
+d77 31
+a107 11
+typedef struct ThreadInfo {
+	word	ss;
+	word	pc;
+	word	mt;
+	word	sp;
+	word	wakeup;
+	word	status;
+	word	pri;
+	word	cputotal;
+	word	timestart;
+} ThreadInfo;
+d109 2
+d112 3
+a114 3
+ThreadInfo TQStore[100];
+ThreadInfo RQStore[1000];
+ThreadInfo KTQStore[1000];
+d116 2
+a117 1
+#define FnNameMax	32	/* max length of fn name allowed */
+d119 17
+d137 1
+a137 1
+/*---------------------------------------------------------------------------*/
+d139 2
+d142 2
+a143 1
+int main (int argc, char **argv)
+d145 1
+a145 2
+	InitSemaphore(&display,0);
+	InitSemaphore(&capture,0);
+d147 37
+a183 16
+	while (*(++argv) != NULL) {
+		if (strcmp(*argv, "-r") == 0)
+			repeat = TRUE;
+		if (strcmp(*argv, "-l") == 0)
+			verbose = TRUE;
+		if (strcmp(*argv, "-s") == 0)	/* XXX - ought to be a '-a' option to enable full listing */
+			all = FALSE;
+		if (strncmp(*argv, "-h", 2) == 0)
+		  {
+		    fprintf(stderr,"usage: threadps [-r] [-l] [-s] [-h]\n" );
+		    fprintf(stderr,"       -r: repeat forever\n" );
+		    fprintf(stderr,"       -l: long listing\n" );
+		    fprintf(stderr,"       -s: ignore boring processes\n" );
+		    fprintf(stderr,"       -h: display help message\n" );
+		    exit(0);		    
+		  }		
+d185 4
+d190 1
+a190 2
+	Fork(2000, DumpThread, 0);
+	ShowQs();
+d193 3
+d197 37
+a233 1
+/*---------------------------------------------------------------------------*/
+d235 2
+d238 1
+a238 1
+void DumpQs(void)
+d240 6
+a245 3
+	ClockIntsOff();
+		DumpTQ();
+	ClockIntsOn();
+d247 2
+a248 1
+	System((WordFnPtr)DumpKTQ);
+d250 2
+a251 2
+	AvoidEvents((WordFnPtr)DumpRQ, 0, 0, 0);
+}
+d253 2
+a254 1
+void DumpThread(void)
+d256 54
+a309 6
+	forever {
+		DumpQs();
+		Signal(&display);
+		Wait(&capture);
+		Delay(rate);
+	}
+d312 2
+a313 2
+
+/*---------------------------------------------------------------------------*/
+d315 2
+a316 1
+void DumpTQ(void)
+d318 4
+a321 2
+	int i;
+	SaveState *s = TimerQHead();
+a322 1
+	TQCaptureTime = _cputime() * 10000;
+d324 25
+a348 5
+	for (i=0; s != NULL; i++, s = P_TimerNext(s)) {
+#ifdef __C40
+		TQStore[i].ss = C40WordAddress(s);
+		TQStore[i].pc = s->CPUcontext.PC;
+		TQStore[i].sp = s->CPUcontext.R_USP;
+d350 3
+a352 3
+		TQStore[i].ss = (word)s;
+		TQStore[i].pc = s->CPUcontext.R_PC;
+		TQStore[i].sp = s->CPUcontext.R_USER_SP;
+d354 1
+a354 7
+		TQStore[i].mt = s->CPUcontext.R_MT;
+		TQStore[i].wakeup = s->endtime;
+		TQStore[i].pri = s->priority;
+		TQStore[i].status = s->status;
+		TQStore[i].cputotal = s->CPUTimeTotal;
+		TQStore[i].timestart = s->InitialTime;
+	}
+d356 5
+a360 1
+	TQSize = i;
+d363 2
+d366 2
+a367 1
+void DumpRQ(void)
+d369 24
+a392 8
+	int i=0;
+	int j;
+	SaveState *s;
+
+	for (j = 0; j <= GetPhysPriRange(); j++) {
+		s = ReadyQBase(j)->head;
+	
+		while (s != NULL) {
+d394 22
+a415 17
+			RQStore[i].ss = C40WordAddress(s);
+			RQStore[i].pc = s->CPUcontext.PC;
+			RQStore[i].sp = s->CPUcontext.R_USP;
+#else
+			RQStore[i].ss = (word)s;
+			RQStore[i].pc = s->CPUcontext.R_PC;
+			RQStore[i].sp = s->CPUcontext.R_USER_SP;
+#endif
+			RQStore[i].mt = s->CPUcontext.R_MT;
+			RQStore[i].pri = j;
+			RQStore[i].status = s->status;
+			RQStore[i].cputotal = s->CPUTimeTotal;
+			RQStore[i].timestart = s->InitialTime;
+
+			i++;
+			s = P_RunqNext(s);
+		}
+d417 3
+a419 2
+
+	RQSize = i;
+d422 2
+d425 2
+a426 2
+/* Dump all known threads and their status from known thread Q */
+void DumpKTQ(void)
+d428 32
+a459 2
+	SaveState *s = GetExecRoot()->KnownThreads;
+	int i;
+d461 2
+a462 5
+	for ( i=0; s != NULL; i++, s = s->nextknown) {
+#ifdef __C40
+		KTQStore[i].ss = C40WordAddress(s);
+		KTQStore[i].pc = s->CPUcontext.R_LR;
+		KTQStore[i].sp = s->CPUcontext.R_USP;
+d464 6
+a469 17
+		KTQStore[i].ss = (word)s;
+# ifdef __ARM
+		KTQStore[i].pc = s->CPUcontext.R_USER_LR;
+		KTQStore[i].sp = s->CPUcontext.R_USER_SP;
+# else
+		KTQStore[i].sp = s->CPUcontext.R_SP;
+		KTQStore[i].pc = s->CPUcontext.R_LR;
+# endif
+#endif
+		KTQStore[i].mt = s->CPUcontext.R_MT;
+		KTQStore[i].pri = s->priority;
+		KTQStore[i].status = s->status;
+		KTQStore[i].cputotal = s->CPUTimeTotal;
+		KTQStore[i].timestart = s->InitialTime;
+	}
+
+	KTQSize = i;
+d472 12
+d485 1
+a485 38
+/*---------------------------------------------------------------------------*/
+
+
+void ShowQs()
+{
+	int	i;
+	uword	wakeup;
+	char	*status;
+	char	taskname[NameMax];
+	char	threadname[FnNameMax];
+
+	do {
+		Wait(&display);
+		
+		wakeup = 0; /* I do not know the real top of Q wakeup time ! */
+
+		printf("Timer Queue:\n");
+		if (verbose) {
+			printf("Number of sleeping threads: %ld\n",TQSize);
+			printf("Timer value at capture time: %#8lx\n", TQCaptureTime);
+		}
+
+		for(i=0; i < TQSize; i++) {
+			TaskName((word *)(TQStore[i].mt), taskname);
+
+			if (!all)
+			  {
+			    /*
+			     * @@@@@@ Should also knock out signal handler processes
+\			     * but this is difficult without any names.
+			     */
+			    
+			    if (strncmp( taskname, "ProcMan.0", 9 ) == 0 ||
+				strncmp( taskname, "System", 6 )    == 0  )
+			      continue;
+			  }			
+#ifdef __C40
+			FnName(((SaveState *)C40CAddress(TQStore[i].ss))->InitialFn, threadname);
+d487 1
+a487 1
+			FnName(((SaveState *)TQStore[i].ss)->InitialFn, threadname);
+d489 5
+a493 46
+			if (verbose) {
+				printf("%s: %s\n",
+					taskname, threadname);
+#if 0 /* fixed C fp vararg bug? */
+				printf("\t\twakeup @@ %#08lxuS, wakeup in %8lx uS (%f secs)\n",
+					TQStore[i].wakeup,
+					TQStore[i].wakeup - TQCaptureTime,
+					((float)(TQStore[i].wakeup - TQCaptureTime))/OneSec);
+#else
+				printf("\t\twakeup @@ %#08lxuS, ",
+					TQStore[i].wakeup);
+				printf("wakeup in %8lx uS (%f secs)\n",
+					TQStore[i].wakeup - TQCaptureTime,
+					(float)((double)(word)(TQStore[i].wakeup - TQCaptureTime) / (double)OneSec));
+#endif
+				printf("\t\trun time %8dS, CPU time consumed %fS\n",
+					time(NULL) - (time_t)TQStore[i].timestart,
+					(float)((double)(TQStore[i].cputotal) / (double)OneSec));
+
+				printf("\t\tss %8lx, physpri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+					TQStore[i].ss, TQStore[i].pri,
+					TQStore[i].pc, TQStore[i].mt,
+					TQStore[i].sp);
+			} else {
+				printf("%s: %s: wakeup in %f secs\n",
+					taskname, threadname,
+					(float)((double)(word)(TQStore[i].wakeup - TQCaptureTime) / (double)OneSec));
+			}
+		}
+
+
+		printf("\nRun Queues:\n");
+		if (verbose)
+			printf("Number of runnable threads = %ld\n", RQSize);
+
+		for(i=0; i < RQSize; i++) {
+			TaskName((word *)(RQStore[i].mt),taskname);
+			
+			if (!all)
+			  {
+			    if (strncmp( taskname, "ProcMan.0", 9 ) == 0 ||
+				strncmp( taskname, "System", 6 )    == 0  )
+			      continue;
+			  }			
+#ifdef __C40
+			FnName(((SaveState *)C40CAddress(RQStore[i].ss))->InitialFn, threadname);
+d495 2
+a496 1
+			FnName(((SaveState *)RQStore[i].ss)->InitialFn, threadname);
+d498 3
+a500 36
+			if (RQStore[i].status == THREAD_TIMEDWAIT)
+				status = StatusText(THREAD_RUNNABLE);
+			else
+				status = StatusText(RQStore[i].status);
+
+			if (verbose) {
+				printf("%s: %s: %s\n", taskname, threadname, status);
+
+				printf("\t\trun time %8dS, CPU time consumed %fS\n",
+					time(NULL) - (time_t)RQStore[i].timestart,
+					(float)((double)(RQStore[i].cputotal) / (double)OneSec));
+
+				printf("\t\tss %8lx, physpri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+					RQStore[i].ss, RQStore[i].pri,
+					RQStore[i].pc, RQStore[i].mt,
+					RQStore[i].sp);
+			} else
+				printf("%s: %s: %s\n", taskname, threadname, status);
+		}
+
+
+		printf("\nAll threads:\n");
+		if (verbose) {
+			printf("Total number of threads: %ld\n", KTQSize);
+		}
+
+		/* print known thread Q contents */
+		for(i=0; i < KTQSize; i++) {
+			TaskName((word *)(KTQStore[i].mt),taskname);
+			
+			if (!all)
+			  {
+			    if (strncmp( taskname, "ProcMan.0", 9 ) == 0 ||
+				strncmp( taskname, "System", 6 )    == 0  )
+			      continue;
+			  }			
+d502 6
+a507 1
+			FnName(((SaveState *)C40CAddress(KTQStore[i].ss))->InitialFn, threadname);
+d509 3
+a511 1
+			FnName(((SaveState *)KTQStore[i].ss)->InitialFn, threadname);
+d513 23
+a535 1
+			status = StatusText(KTQStore[i].status);
+a536 5
+			printf("%s: %s: %s\n", taskname, threadname, status);
+			if (verbose) {
+				printf("\t\trun time %8dS, CPU time consumed %fS\n",
+					time(NULL) - (time_t)KTQStore[i].timestart,
+					(float)((double)(KTQStore[i].cputotal) / (double)OneSec));
+d538 26
+a563 6
+				printf("\t\tss %8lx, physpri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+					KTQStore[i].ss, KTQStore[i].pri,
+					KTQStore[i].pc, KTQStore[i].mt,
+					KTQStore[i].sp);
+			}
+		}
+d565 1
+a565 2
+		Signal(&capture);
+	} while (repeat);
+d568 2
+a569 2
+
+/*---------------------------------------------------------------------------*/
+d572 5
+a576 2
+/* and pad it to Namemax chars */
+bool TaskName(word *mt, char *name)
+d578 15
+a592 7
+	word *km;
+	int i;
+	ObjNode *objnode;
+	Task *tp;
+	char *tn;
+	Pool *syspool, *freepool;
+
+d594 1
+a594 1
+	mt = (word *)C40CAddress((word)mt);
+d596 46
+a641 7
+	syspool = &(GetRoot()->SysPool);
+	freepool = GetRoot()->FreePool;
+
+	if (InPool((void *)mt,syspool)) {
+		strcpy(name, "System");
+		strncat(name, "                ", 16-6);
+		return false;
+d643 10
+a652 3
+	if(InPool((void *)mt,freepool)) {
+		strcpy(name, "ModTab is Free  ");
+		return false;
+d654 6
+d661 27
+a687 3
+	if (*mt != (word) mt) { /* check its a module table pointer */
+		strcpy(name, "Invalid ModTab  ");
+		return false;
+d689 7
+d697 1
+a697 2
+#ifdef __SMT /* Split module table  version */
+	km = (word *) *(mt + 2); /* kernel module */
+d699 8
+a706 1
+	tp = (Task *) *(km); /* data entry 0 points at task struct */
+d708 3
+a710 1
+	km = (word *) *(mt + 1); /* kernel module */
+d712 4
+a715 1
+	tp = (Task *) *(km + 48); /* entry 48 points at task struct */
+d718 24
+a741 2
+	/* get first element of taskentry */
+	objnode = (ObjNode *) tp->TaskEntry;
+d743 12
+a754 1
+	tn = objnode->Name;
+d756 66
+a821 10
+	for (i =0 ; i < NameMax; i++) {
+		if (tn[i] == '\0') {
+			strcpy(name, tn);
+			strncat(name, "                ", 16-i);
+			return true;
+		}
+		if (!isprint(tn[i])) {
+			strcpy(name, "Corrupt name    ");
+			return false;
+		}
+d823 83
+a905 3
+
+	strcpy(name, "Invalid name");
+	return false;
+d908 2
+d911 2
+a912 1
+bool FnName(VoidFnPtr fn, char *name)
+d914 11
+a924 2
+
+  return sprintf( name, "%*.*s", -(FnNameMax - 1), FnNameMax - 1, procname( fn ) );  
+d927 2
+d930 2
+a931 4
+struct threadstatus {
+	int	code;
+	char	*description;
+} threadstatus[] =
+d933 12
+a944 30
+	{THREAD_STARTUP,	"new thread about to startup  "},
+	{THREAD_SLICED,		"runnable, was sliced         "},
+	{THREAD_RUNNABLE,	"runnable, rescheduled        "},
+	{THREAD_RUNNING,	"current CPU thread           "},
+	{THREAD_KILLED,		"thread has been Stop()'ed    "},
+	{THREAD_BOGUS,		"illegal state of thread      "},
+				/* THREAD_SLICED status in normal dispatch */
+	{THREAD_SAVED,	 	"user SaveCPUState()          "},
+	{THREAD_SLEEP,		"on timer Q                   "},
+	{THREAD_TIMEDWAIT, 	"blocked on timer & semaphore "},
+	{THREAD_SEMAPHORE,	"blocked on semaphore         "},
+	{THREAD_MSGREAD	,	"blocked reading msg          "},
+	{THREAD_MSGWRITE,	"blocked writing internal msg "},
+	{THREAD_MULTIWAIT,	"blocked during MultiWait()   "},
+	{THREAD_LINKRX,		"blocked reading link msg     "},
+	{THREAD_LINKTX,		"blocked writing link msg     "},
+	{THREAD_LINKWRITEQ,	"blocked on link msg write Q  "},
+	{THREAD_LINKWAIT,	"guardian waiting on dumb link"},
+	{THREAD_LINKEND,	"blocked waiting to use link  "},
+				/* TaskKill/JumpLink */
+	{THREAD_LINKXOFF,	"waiting for XON on link      "},
+	{THREAD_LINKTHRU1,	"single buffer thru-routed msg"},
+	{THREAD_LINKTHRU2,	"double buffer thru-routed msg"},
+#ifdef __C40
+	{THREAD_DMAREQ,		"waiting for a DMA engine     "}, /* unused */
+#else
+	{0,			"Unused"},
+#endif
+	{THREAD_MSGWRITE2,	"blocked writing internal msg "}
+};
+d946 2
+d949 2
+a950 1
+char *StatusText(word i)
+d952 1
+a952 3
+	/* should be sequential, but check */
+	if(threadstatus[i].code != i)
+		return "illegal status value";
+d954 27
+a980 1
+	return threadstatus[i].description;
+d983 44
+d1028 1
+@
+
+
+1.9
+log
+@added more command line optins
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.8 1992/12/04 18:36:15 nickc Exp nickc $ */
+d175 2
+d178 3
+a180 1
+		TQStore[i].ss = s;
+a181 1
+		TQStore[i].pc = s->CPUcontext.PC;
+a182 1
+		TQStore[i].sp = s->CPUcontext.R_USP;
+d206 2
+d209 3
+a211 1
+			RQStore[i].ss = s;
+a212 1
+			RQStore[i].pc = s->CPUcontext.PC;
+a213 1
+			RQStore[i].sp = s->CPUcontext.R_USP;
+d237 2
+d240 8
+a247 1
+		KTQStore[i].ss = s;
+a248 1
+		KTQStore[i].pc = s->CPUcontext.R_LR;
+a249 1
+		KTQStore[i].sp = s->CPUcontext.R_USP;
+d512 1
+d514 3
+@
+
+
+1.8
+log
+@fixed to use procname()
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.7 1992/11/18 14:45:32 paul Exp nickc $ */
+d58 4
+a61 3
+word	repeat = FALSE;
+word	verbose = FALSE;
+word	TQCaptureTime = 0;
+d63 3
+a65 3
+word	TQSize = 0;
+word	RQSize = 0;
+word	KTQSize = 0;
+d120 11
+d273 12
+d303 1
+a303 1
+					((float)((float)TQStore[i].wakeup - (float)TQCaptureTime)) / ((float)OneSec));
+d307 1
+a307 1
+					((float)TQStore[i].cputotal) / OneSec);
+d316 1
+a316 1
+					((float)(TQStore[i].wakeup - TQCaptureTime))/OneSec);
+d327 7
+d349 1
+a349 1
+					((float)RQStore[i].cputotal) / OneSec);
+d368 7
+d386 1
+a386 1
+					((float)KTQStore[i].cputotal) / OneSec);
+@
+
+
+1.7
+log
+@updated for C40CAddress parameter type change
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.6 1992/09/22 16:09:17 paul Exp $ */
+d242 1
+a242 1
+	int	i, j;
+a429 42
+	char	*fnp;
+	int	i;
+#ifndef __C40
+	fncast	conv;
+	conv.vfn = fn;
+
+	fnp = conv.cp;
+#else
+	fnp = (char *)_FuncToDataConvert(fn);
+#endif
+
+	if (fnp == NULL) {
+		strcpy(name, "Warning: Unknown Fn name       ");
+		return false;
+	}
+
+	fnp -= 4;	/* point to alledged fn headers back pointer */
+
+	/* verify fn headers back pointer */
+	if (*(word *)fnp & 0xffffff00 != 0xff000000) {
+		strcpy(name, "Warning: Unknown Fn name       ");
+		return false;
+	}
+
+	fnp -= *(word *)fnp & 0x000000ff;
+
+	for (i = 0 ; i < FnNameMax-6; i++) {
+		if (fnp[i] == '\0') {
+			if (i == 0) {
+				strcpy(name, "Warning: Invalid Fn name       ");
+				return false;
+			}
+			strcpy(name, fnp);
+			strcat(name, "()");
+			strncat(name, "                               ", 31-(i+2));
+			return true;
+		}
+		if (!isprint(fnp[i])) {
+			strcpy(name, "Warning: Invalid Fn name       ");
+			return false;
+		}
+	}
+d431 1
+a431 3
+	strncpy(name, fnp, FnNameMax-6);
+	strcpy(&name[FnNameMax-6], "...()");
+	return true;
+@
+
+
+1.6
+log
+@fixed for new name for GetExecRoot()
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.5 1992/08/21 16:31:44 paul Exp paul $ */
+d376 1
+a376 1
+	mt = (word *)C40CAddress(mt);
+@
+
+
+1.5
+log
+@minor tidies to output
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.4 1992/08/11 10:30:36 paul Exp paul $ */
+d215 1
+a215 1
+	SaveState *s = ExecRoot()->KnownThreads;
+@
+
+
+1.4
+log
+@added timing information
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.3 1992/07/13 11:11:15 paul Exp $ */
+d281 1
+a281 1
+				printf("\t\trun time %8dS, CPU time consumed %8lduS (%fS)\n",
+d283 3
+a285 3
+					TQStore[i].cputotal, ((float)TQStore[i].cputotal) / OneSec);
+					
+				printf("\t\tss %8lx, pri %1lx, mt %8lx, usp %8lx\n",
+d287 2
+a288 1
+					TQStore[i].mt, TQStore[i].sp);
+d316 1
+a316 1
+				printf("\t\trun time %8dS, CPU time consumed %8lduS (%fS)\n",
+d318 1
+a318 1
+					RQStore[i].cputotal, ((float)RQStore[i].cputotal) / OneSec);
+d320 1
+a320 1
+				printf("\t\tss %8lx, pri %1lx, pc %8lx, mt %8lx, usp %8lx\n",
+d346 1
+a346 1
+				printf("\t\trun time %8dS, CPU time consumed %8lduS (%fS)\n",
+d348 1
+a348 1
+					KTQStore[i].cputotal, ((float)KTQStore[i].cputotal) / OneSec);
+d350 1
+a350 1
+				printf("\t\tss %8lx, pri %1lx, mt %8lx, usp %8lx\n",
+d352 2
+a353 1
+					KTQStore[i].mt, KTQStore[i].sp);
+@
+
+
+1.3
+log
+@fixed for correct cpu time
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.2 1992/07/10 08:30:29 paul Exp $ */
+d39 1
+d94 2
+d172 2
+d200 2
+d229 2
+d273 1
+a273 1
+					((double)(TQStore[i].wakeup - TQCaptureTime))/OneSec);
+d279 1
+a279 1
+					((double)(TQStore[i].wakeup - TQCaptureTime))/OneSec);
+d281 4
+d291 1
+a291 1
+					((double)(TQStore[i].wakeup - TQCaptureTime))/OneSec);
+d314 5
+d344 5
+a348 1
+			if (verbose)
+d352 1
+@
+
+
+1.2
+log
+@tidied up output
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id: threadps.c,v 1.1 1992/07/01 12:32:19 paul Exp $ */
+d155 2
+a156 3
+	TQCaptureTime = Timer();
+	TQCaptureTime2 = _cputime() * 10000;
+	
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d20 1
+a20 1
+/* RcsId: $Id$ */
+d194 1
+a194 1
+			RQStore[i].pri = s->priority;
+d234 1
+a234 1
+	int	i;
+d245 5
+a249 5
+		printf("TQSize = %ld\n",TQSize);
+
+		if (verbose)
+			printf("TimerQ: Capture uS time %8lx, _cputime %8lx\n",
+				TQCaptureTime, TQCaptureTime2);
+d261 2
+a262 2
+#if 0 /* C fp vararg bug */
+				printf("\t\twakeup @@ %8lx uS, wakeup in %8lx uS (%f secs)\n",
+d267 1
+a267 1
+				printf("\t\twakeup @@ %8lx uS, ",
+d284 3
+a286 1
+		printf("\nRunQs: Runable = %ld\n",RQSize);
+d311 4
+a314 1
+		printf("\nNumber of threads: %ld\n", KTQSize);
+d358 1
+a358 1
+		strcpy(name,"System");
+d363 1
+a363 1
+		strcpy(name,"ModTab is Free");
+d368 1
+a368 1
+		strcpy(name,"Invalid ModTab");
+d394 1
+a394 1
+			strcpy(name, "Corrupt name");
+d462 1
+a462 1
+	{THREAD_RUNNABLE,	"runnable, resheduled         "},
+@

@@ -1,0 +1,1402 @@
+head	1.26;
+access;
+symbols
+	Helios_1_3_1:1.26
+	Helios_C40_1_3_Official_Release:1.25
+	Alenia_release:1.25
+	Helios1_3:1.22
+	C40_Field_Test_2:1.22
+	C40_Field_Test_R1:1.15
+	Helios13_beta:1.15
+	Helios1_2_2:1.14
+	Helios1_2_2Beta:1.14
+	Helios1_2_1:1.14
+	Helios1_2:1.8
+	V1_2Beta0:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.26
+date	93.07.09.13.36.38;	author nickc;	state Exp;
+branches;
+next	1.25;
+
+1.25
+date	92.12.07.15.18.32;	author bart;	state Exp;
+branches;
+next	1.24;
+
+1.24
+date	92.12.04.16.06.40;	author nickc;	state Exp;
+branches;
+next	1.23;
+
+1.23
+date	92.11.20.18.12.12;	author nick;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	92.09.04.11.30.05;	author bart;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	92.09.04.11.25.43;	author nickc;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	92.09.04.10.40.09;	author nickc;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	92.09.04.09.55.44;	author nickc;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	92.07.29.20.08.28;	author paul;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.07.27.16.58.52;	author paul;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.07.23.11.14.55;	author paul;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.04.21.10.50.35;	author paul;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	91.03.27.11.42.26;	author nick;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	91.03.25.15.58.57;	author nick;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	91.03.25.14.57.10;	author nick;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	91.03.25.14.29.57;	author nick;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	91.02.19.11.47.02;	author paul;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.02.07.16.49.22;	author nick;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	90.11.02.16.33.37;	author paul;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	90.11.01.15.27.40;	author nick;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.10.24.00.57.12;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.09.25.18.31.35;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.09.18.12.34.16;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.12.10.42.36;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.05.12.54.08;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.12.08.10;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@Task heap management
+@
+
+
+1.26
+log
+@fixed conflicts with C++
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S   N U C L E U S                      --
+--                     ---------------------------                      --
+--                                                                      --
+--            Copyright (C) 1987,1990, Perihelion Software Ltd.         --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- syslib/memory.c							--
+--                                                                      --
+--	System Library, the common program interface to the operating   --
+--	system.								--
+--                                                                      --
+--	Author:  NHG 16/8/87						--
+--		 NHG 03/8/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId:	 %W%	%G%	Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: memory.c,v 1.25 1992/12/07 15:18:32 bart Exp nickc $ */
+
+#define _in_memory
+
+#include "sys.h"
+#include <root.h>
+
+/* Heap Management...						*/
+
+#ifdef	SYSDEB
+#define CHECKMEM	1		/* 0 = off, !=0 = on, 2 = checkheap on free */
+#define CHECKTAG	0xaabbccdd
+#else
+#define CHECKMEM	0		/* no SYSDEB no CHECKMEM */
+#endif
+
+typedef struct Memb {
+	word		Size;		
+	struct Memb	*Next;		/* link in freeq or CHECKTAG */
+					/* followed by memory	*/
+} Memb;
+
+
+typedef struct HeapBlock {
+	Node		Node;		/* in heap list		*/
+	word		Size;		/* actual size of Mem	*/
+	word		Free;		/* number of bytes free */
+	Memb		*FreeQ;		/* list of free blocks	*/
+					/* followed by memory	*/
+} HeapBlock;
+
+typedef struct TryMallocArg {
+	word		size;
+	Memb		*result;
+} TryMallocArg;
+
+PRIVATE Semaphore	HeapLock;
+
+PRIVATE List		Heap;		/* list of HeapBlocks	*/
+
+PRIVATE bool		HeapInitialised;
+
+PRIVATE char		*ThisTask;
+PRIVATE char 		*Caller;
+
+#if CHECKMEM
+static void CheckHeap(HeapBlock *heap);
+static void settags(Memb *m);
+static void checktags(char *proc,Memb *m);
+#endif
+
+static HeapBlock *NewHeap(HeapBlock *heap, word size)
+{
+	HeapBlock *heap1 = heap;
+	
+	/* trim heap and size to 16 byte boundaries */
+	
+	heap = (HeapBlock *)(((word)heap + 15) &~15);
+	size -= 16;	
+	size = (((word)heap1+size) & ~15) - (word)heap;
+	size -= sizeof(HeapBlock);	
+
+	heap->Free = heap->Size = size;
+
+	heap->FreeQ = (Memb *)(heap+1);	
+	
+	heap->FreeQ->Size = size+1;
+	heap->FreeQ->Next = NULL;
+
+#if CHECKMEM
+	settags(heap->FreeQ);
+#endif
+	AddTail(&Heap,&heap->Node);
+	
+	return heap;
+}
+
+static bool TryMalloc(HeapBlock *heap, TryMallocArg *tma)
+{
+	Memb *prev;
+	Memb *m;
+	word size = tma->size;
+	
+	for( prev = NULL, m = heap->FreeQ ; m != NULL ; prev = m, m = m->Next )
+	{
+		word bsize = m->Size & ~1;
+		if( bsize >= size )
+		{
+			word diff = bsize-size;
+			Memb *next;
+
+			/* if the sizes are close, allocate whole block */
+			if( diff <= 4*sizeof(Memb))
+			{
+				if( prev == NULL ) heap->FreeQ = m->Next;
+				else prev->Next = m->Next;
+				heap->Free -= bsize;
+				m->Size = bsize;
+				break;
+			}
+			
+			/* otherwise carve this block up	*/
+			next = (Memb *)((byte *)m + size);
+
+			next->Size = diff+1;
+			next->Next = m->Next;
+			
+#if CHECKMEM
+			settags(next);
+#endif
+			if( prev == NULL ) heap->FreeQ = next;
+			else prev->Next = next;
+				
+			m->Size = size;
+			heap->Free -= size;
+	
+			break;
+		}
+	}
+
+#if CHECKMEM
+	if( m != NULL ) settags(m);
+#endif
+	tma->result = m;
+	
+	return (m!=NULL);
+}
+
+static bool TryFree(HeapBlock *heap, Memb *mem)
+{
+	Memb *next, *prev;
+
+	/* see whether the block belongs in this heap */
+	
+	if(	(char *)mem < (char *)(heap+1) ||
+		(char *)mem > (char *)(heap+1)+heap->Size ) return FALSE;
+		
+
+#ifdef SYSDEB
+	SysDebug(memory)("TryFree: %x size %d",mem,mem->Size);
+#if (CHECKMEM==2)
+	CheckHeap(heap);
+#endif
+#endif
+
+	if( (mem->Size & 1) != 0 )
+	{
+#if CHECKMEM
+		IOdebug("%s/%s: Double free attempt on %x %x",ThisTask,Caller,mem,mem->Size);
+#endif
+		return TRUE;	/* block already free */
+	}
+	
+	heap->Free += mem->Size;
+	prev = NULL;
+
+#if CHECKMEM
+	checktags("TryFree",mem);
+#endif
+
+	for(next = heap->FreeQ; ; prev = next,next = next->Next)
+	{
+		if( next == NULL || next >= mem ) /* we have found where it goes	*/
+		{
+			word inlist = false;			
+
+			if( next == mem ) 
+			{
+#if CHECKMEM
+				IOdebug("%s/%s: Double free attempt on %x %x",ThisTask,Caller,mem,mem->Size);
+#endif		
+				return TRUE; /* freeing a free block */
+			}
+
+			if( prev == NULL )
+			{
+				/* new heap head			*/
+				mem->Next = heap->FreeQ;
+				heap->FreeQ = mem;
+				mem->Size += 1;
+				inlist = true;
+			}
+			/* check this in not an already free block	*/
+			elif( (word)prev + (prev->Size&~1) > (word)mem ) 
+			{
+#if CHECKMEM
+				IOdebug("%s/%s: Double free attempt on %x %x",ThisTask,Caller,mem,mem->Size);
+#endif
+				return TRUE;
+			}
+			elif( (word)prev + (prev->Size&~1) == (word)mem )
+			{
+				/* coalesce with prev			*/
+				prev->Size += mem->Size;
+				inlist = true;
+				mem = prev;
+#if CHECKMEM
+				settags(mem);
+#endif
+			}
+			if( next == NULL )
+			{
+				/* it goes at the end			*/
+				if( inlist ) break;
+				prev->Next = mem;
+				mem->Next = NULL;
+				mem->Size += 1;		/* set free bit */
+				break;
+			}
+			elif( (word)mem + mem->Size == (word)next )
+			{
+				/* we can coalesce with next		*/
+				mem->Size = (mem->Size&~1) + next->Size;
+#if CHECKMEM
+				settags(mem);
+#endif
+				if( inlist ) mem->Next = next->Next;
+				else 
+				{	/* replace next in list		*/
+					prev->Next = mem;
+					mem->Next = next->Next;
+					break;
+				}
+			}
+			if( !inlist )
+			{
+				mem->Next = next;
+				prev->Next = mem;
+				mem->Size += 1;
+#if CHECKMEM
+				settags(mem);
+#endif
+			}
+			break;
+		}
+	}
+
+	return TRUE;
+}
+
+static word TryFreeMem(HeapBlock *heap)
+{
+	/* see if we have emptied this heap,if so return it	*/
+	/* to system.						*/
+
+	if( heap->Free == heap->Size )
+	{
+		Remove(&heap->Node);
+		FreeMem(heap);
+	}
+	return 0;
+}
+
+static word HeapSize(HeapBlock *heap) { return heap->Size; }
+
+static word HeapFree(HeapBlock *heap) { return heap->Free; }
+
+static word HeapMax(HeapBlock *heap, word *max) 
+{
+	Memb *m;
+	
+	for( m = heap->FreeQ; m != NULL ; m = m->Next )
+	{
+		if( m->Size > *max ) *max = m->Size-1;
+	}
+	return 0;
+}
+
+static void InitHeap(void)
+{
+	word hsize = ProgramWord_(MyTask->Program,Heapsize);
+	TryMallocArg tma;
+	HeapBlock *heap = (HeapBlock *)MyTask->HeapBase;
+
+	InitSemaphore(&HeapLock,1);
+	InitList(&Heap);
+	heap = NewHeap(heap,hsize);
+	
+	ThisTask = (char *)(MyTask->TaskEntry)+8;
+
+	Caller = "<unknown>";
+#if CHECKMEM
+	/* allocate a small block so we never try to return this heap	*/
+	/* to system							*/
+	tma.size = sizeof(Memb)+2*sizeof(word);
+#else
+	tma.size = sizeof(Memb);
+#endif
+	TryMalloc(heap,&tma);
+
+	HeapInitialised = true;
+}
+
+#ifdef SYSDEB
+
+static void HeapInfo(HeapBlock *heap)
+{
+	Memb *m = (Memb *)(heap+1);
+	Memb *f = heap->FreeQ;
+	
+	IOdebug("%s/%s: Heap %x Size %d Free %d FreeQ %x",
+			ThisTask,Caller,heap,heap->Size,heap->Free,heap->FreeQ);
+	
+	while( m < (Memb *)((char *)(heap+1) + heap->Size) )
+	{
+		if( m == f )
+		{
+			IOdebug("Free  : %x %d",m,m->Size);
+			f = f->Next;
+		}
+		else {
+			IOdebug("Alloc : %x %d",m,m->Size);
+		}
+		m = (Memb *)((char *)m + m->Size);
+	}
+#if CHECKMEM
+	CheckHeap(heap);
+#endif
+}
+
+static void MemInfo(void)
+{
+	word free, total, max = 0;
+
+	MyTask->Flags ^= Task_Flags_meminfo;
+	
+	Wait(&HeapLock);
+	
+	free = WalkList(&Heap,HeapFree);
+	total = WalkList(&Heap,HeapSize);
+	WalkList(&Heap,HeapMax,&max);
+	
+	IOdebug("Memory Size %d Free %d Max %d",total,free,max);
+	
+	WalkList(&Heap,(WordFnPtr)HeapInfo);
+	
+	Signal(&HeapLock);
+}
+
+#if CHECKMEM
+
+static void CheckHeap(HeapBlock *heap)
+{
+	Memb *m = (Memb *)(heap+1);
+	Memb *f = heap->FreeQ;
+	
+	while( m < (Memb *)((word)(heap+1) + heap->Size) )
+	{
+		word size = m->Size&~1;
+		word freebit = m->Size & 1;
+		
+		if( size < 0 || size > heap->Size )
+		{
+			IOdebug("%s/%s: CheckHeap %x: Size error on %x %x",ThisTask,Caller,heap,m,m->Size);
+			return;
+		}
+		if( freebit )
+		{
+			if( m != f ) 
+			{
+				IOdebug("%s/%s: CheckHeap %x: free block not in FreeQ",ThisTask,Caller,heap,m,m->Size);
+			}
+			else f = f->Next;
+		}
+		else
+		{
+			if( m == f )
+			{
+				IOdebug("%s/%s: CheckHeap %x: free bit clear on block in FreeQ %x %x",ThisTask,Caller,heap,m,m->Size);
+				f = f->Next;
+			}
+		}
+		while( f < m )
+		{
+			IOdebug("%s/%s: CheckHeap %x: missed block in FreeQ",ThisTask,Caller,heap,f,f->Size);
+			f = f->Next;
+		}
+		checktags("CheckHeap",m);
+		m = (Memb *)((char *)m + size);
+	}
+}
+
+PRIVATE void CheckMem(void)
+{
+	WalkList(&Heap,(WordFnPtr)CheckHeap);
+}
+
+static void settags(Memb *m)
+{
+	word size = (m->Size&~1);
+	word wsize = size/4;
+	word *wm = (word *)m;
+	wm[wsize-1] = (word)m;
+	wm[wsize-2] = (word)m;
+	if( (m->Size & 1) == 0 ) m->Next = (Memb *)CHECKTAG;
+}
+
+static void checktags(char *proc,Memb *m)
+{
+	word msize = m->Size < 0 ? -m->Size : m->Size;
+	word size = (msize&~1);
+	word wsize = size/4;
+	word *wm = (word *)m;
+
+	if( (msize & 1) == 0 && (word)m->Next != CHECKTAG)
+	{
+		char mcn[NameMax+1];
+
+		MachineName(mcn);
+
+		IOdebug("%s/%s/%s/%s: CHECKTAG not set on %x sz %x nxt %x (%a)",mcn, ThisTask,Caller,proc,m,m->Size,m->Next, m+1);
+	}
+	
+	if( wm[wsize-1] != (word)m || wm[wsize-2] != (word)m )
+	{
+		char mcn[NameMax+1];
+
+		MachineName(mcn);
+
+		IOdebug("%s/%s/%s/%s: end tags not set on %x sz %x (%a)", mcn,ThisTask,Caller,proc,m,m->Size, m+1);
+	}
+}
+#endif /* CHECKMEM */
+
+#endif /* SYSDEB */
+
+/*--------------------------------------------------------
+-- Malloc						--
+--							--	
+-- Allocate memory from the task's pool.		--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC void *
+Malloc( WORD size )
+{
+	Memb *m;
+	word hsize;
+
+#ifdef SYSDEB
+	SysDebug(memory)("Malloc(%d) from %s",size, procname(returnlink_(size)));
+	if( MyTask->Flags & Task_Flags_meminfo ) MemInfo();
+#endif
+#if 0
+	if( size == 0 )
+	{
+#ifdef SYSDEB
+		SysDebug(memory)("Malloc(0) returning NULL");
+#endif	
+		return NULL;
+	}
+#endif
+
+	if( !HeapInitialised ) InitHeap();
+	Wait(&HeapLock);
+
+#if CHECKMEM
+	Caller = procname(returnlink_(size));
+#endif	
+	if( size < 0 )
+	{
+		switch( size )
+		{
+		case -1:	/* return total no. of free bytes in heap */
+			hsize = WalkList(&Heap,HeapFree);
+			break;
+
+		case -2:	/* return size of largest free block in heap */
+			hsize = 0;
+			WalkList(&Heap,HeapMax,&hsize);
+			break;
+
+		case -3:	/* return total size of heap		*/
+			hsize = WalkList(&Heap,HeapSize);
+			break;
+		
+		case -4:	/* return % of heap free		*/
+			hsize = WalkList(&Heap,HeapSize);
+			hsize = WalkList(&Heap,HeapFree)*100/hsize;
+			break;
+
+		case -5:	/* return amount of free mem in system	*/
+			hsize = GetRoot()->FreePool->Size;
+			break;
+
+#ifndef __TRAN
+		case -6:	/* return largest free block in system	*/
+		{
+			word d;
+
+			hsize = StatMem(&d,&d,&d,&d) - sizeof(Memb);
+			break;
+		}
+#endif
+
+		case -7:	/* return total size of mem in system	*/
+			hsize = GetRoot()->FreePool->Max;
+			break;
+
+		case -8:	/* return % of system memory free	*/
+		{
+			RootStruct *root = GetRoot();
+
+			hsize = root->FreePool->Size * 100 / root->FreePool->Max;
+			break;
+		}
+
+		default:	/* illegal argument			*/
+			hsize = 0;
+			break;
+		}
+#if CHECKMEM
+		Caller = "<unknown>";
+#endif
+		Signal(&HeapLock);
+		return (void *)hsize;
+	}
+
+	/* allow for Memb and round size up to whole no. of Membs	*/
+#if CHECKMEM
+	size += sizeof(word)*2;	/* allocate 2 words extra	*/
+#endif
+	size = (size + 2*sizeof(Memb) - 1) & ~(sizeof(Memb)-1);
+
+	/* BLV - catch malloc(0x7fffffff) which turns into a -ve size	*/
+	if (size < 0)
+		{ m = NULL; goto failed; }
+	
+	hsize = ProgramWord_(MyTask->Program,Heapsize);
+	
+	/* Check whether block is more than half a heap block, if so	*/
+	/* allocate it explicitly from system if we are allowed to	*/
+	/* Otherwise fall through to allocate it from heap.		*/
+	if( size > hsize/2 && (MyTask->Flags&Task_Flags_fixmem) == 0)
+	{
+		m = (Memb *)AllocMem(size,&MyTask->MemPool);
+		if( m == NULL ) goto failed;
+#if CHECKMEM
+		m->Size = size;
+		settags(m);
+#endif
+		m->Size = -size;		/* flag as special	*/
+	}
+	else forever
+	{
+		HeapBlock *heap;
+		TryMallocArg tma;
+		
+		tma.size = size;
+
+		SearchList(&Heap,TryMalloc,&tma);
+
+		m = tma.result;
+				
+		if( m != NULL )
+		{
+#if CHECKMEM
+			if( m->Size < size ) 
+			{
+				IOdebug("%s/%s: size error %d %x %d",ThisTask,Caller,size,m,m->Size);
+			}
+#endif
+			break;
+		}
+
+		/* If fixmem is set, we may not expand heap	*/
+		if( MyTask->Flags&Task_Flags_fixmem ) goto failed;
+		
+		/* allocation failed, get a new heap block from */
+		/* system and add it to the heap.		*/
+		
+		heap = (HeapBlock *)AllocMem(hsize,&MyTask->MemPool);
+		if( heap == NULL ) goto failed;
+		heap = NewHeap(heap,hsize);
+	}
+#ifdef SYSDEB
+	SysDebug(memory)("Malloc allocated %P[%x]",&m->Next,m->Size);
+#endif
+#if CHECKMEM
+	checktags("Malloc",m);
+#endif
+failed:
+	WalkList(&Heap,TryFreeMem);
+#if CHECKMEM
+	Caller = "<unknown>";
+#endif
+#ifdef SYSDEB
+	if( m == NULL )
+	{
+		word f = MyTask->Flags;
+		MyTask->Flags = Task_Flags_error;
+		_SysDebug("Malloc(%d) from %s failed",size,procname(returnlink_(size)));
+		MyTask->Flags = f;
+	}
+#endif
+
+	Signal(&HeapLock);
+	return m==NULL?NULL:(void *)(m+1);	
+}
+
+/*--------------------------------------------------------
+-- Free							--
+--							--
+-- Release a memory block back to the task pool		--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC word Free(void *memarg)
+{
+	Memb *mem = ((Memb *)memarg)-1;
+	word r = Err_Null;
+
+	/* dont complain if a null pointer is freed */
+	if( memarg == NULL ) return r;
+
+#ifdef SYSDEB
+	/* check this memory really belongs to us... */
+	if( !InPool(memarg,&MyTask->MemPool)) 
+	{
+		SysDebug(error)("Attempt to free un-owned memory: %x from %s",memarg,procname(returnlink_(memarg)));
+		return EC_Error|SS_SysLib|EG_Invalid|EO_Memory;
+	}
+#endif		
+	/* if the size field is negative, it was allocated specially	*/
+	/* so return it to the system.					*/
+	if( mem->Size < 0 ) 
+	{
+#ifdef SYSDEB
+		SysDebug(memory)("FreeMem %P size %x",mem,mem->Size);
+#endif
+#if CHECKMEM
+	checktags("Free",mem);
+#endif
+		FreeMem((void *)mem);
+		return Err_Null;
+	}
+
+	Wait(&HeapLock);
+
+#if CHECKMEM
+	Caller = procname(returnlink_(memarg));
+#endif	
+	if( !SearchList(&Heap,TryFree,mem) ) 
+		r = EC_Error|SS_SysLib|EG_Invalid|EO_Memory;
+
+	/* now see if we can return any free blocks to the Kernel */
+	WalkList(&Heap,TryFreeMem);
+
+#if CHECKMEM
+	Caller = "<unknown>";
+#endif
+
+	Signal(&HeapLock);
+
+	return r;
+}
+
+void FreeStop(void *memarg)
+{
+	Memb *mem = ((Memb *)memarg)-1;
+
+	/* dont complain if a null pointer is freed */
+	if( memarg == NULL ) StopProcess();
+
+#ifdef SYSDEB
+	/* check this memory really belongs to us... */
+	if( !InPool(memarg,&MyTask->MemPool)) 
+	{
+		SysDebug(error)("Attempt to free un-owned memory: %x",memarg);
+		StopProcess();
+	}
+#endif		
+#if CHECKMEM
+	Caller = procname(returnlink_(memarg));
+
+	checktags("FreeStop (stack overflow?)",mem);
+#endif
+
+	/* if the size field is negative, it was allocated specially	*/
+	/* so return it to the system.					*/
+	if( mem->Size < 0 ) 
+	{
+#ifdef SYSDEB
+		SysDebug(memory)("FreeMem %P size %x",mem,mem->Size);
+#endif
+		FreeMemStop((void *)mem);
+	}
+
+	Wait(&HeapLock);
+
+	SearchList(&Heap,TryFree,mem);
+
+#if CHECKMEM
+	Caller = "<unknown>";
+#endif
+	SignalStop(&HeapLock);
+}
+
+extern word MemSize(void *memarg)
+{
+	Memb *mem = ((Memb *)memarg)-1;
+	if( mem->Size < 0 ) return -mem->Size;
+	return mem->Size;
+}
+
+@
+
+
+1.25
+log
+@Added a trap for certain silly Malloc() calls, e.g. Malloc(0x7fffffff) where
+the size overflows after adding the overhead.
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.24 1992/12/04 16:06:40 nickc Exp bart $ */
+d590 1
+a590 1
+		heap = AllocMem(hsize,&MyTask->MemPool);
+@
+
+
+1.24
+log
+@removed procname functions (now in Util library)
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.23 1992/11/20 18:12:12 nick Exp nickc $ */
+d543 4
+@
+
+
+1.23
+log
+@Heap size extracted using MPtr macros to account for C40 global code.
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.21 1992/09/04 11:25:43 nickc Exp bart $ */
+a67 52
+#endif
+
+#ifdef __C40
+static char procnamebuf[256];
+
+PRIVATE char *procname(VoidFnPtr fn)
+{
+	if (fn == NULL) {
+		/* find the name of the function that called our parent */
+		int x = _backtrace(procnamebuf, NULL);
+
+		if (x == NULL)
+			return "Unknown Function";
+
+		if (_backtrace(procnamebuf, x) == NULL)
+			return "Unknown Function";
+
+		return procnamebuf;
+	} else {
+		/* find the name of the function that is passed as arg */
+		char *x = _FuncToDataConvert(fn);
+
+
+		if (x == NULL)
+			return "Unknown Function";
+
+		x -= *(x - 4) + 4;
+
+		return x;
+	}
+}
+#else
+PRIVATE char *procname(VoidFnPtr fn)
+{
+#ifdef __ARM
+	word *x = (word *)(((int)fn)&~0xfc000003); /* remove status bits */
+#else
+	word *x = (word *)(((int)fn)&~3);
+#endif
+	while( (*x & T_Mask) != T_Valid ) x--;
+
+	switch( *x )
+	{
+	case T_Proc:
+		return ((Proc *)x)->Name;
+	case T_Module:
+	case T_Program:
+		return ((Module *)x)->Name;
+	}
+
+	return("<Unknown type>");
+}
+@
+
+
+1.22
+log
+@Fixed NickC's fixes
+@
+text
+@d341 1
+a341 1
+	word hsize = MyTask->Program->Heapsize;
+d595 1
+a595 1
+	hsize = MyTask->Program->Heapsize;
+@
+
+
+1.21
+log
+@made procname() be PRIVATE for TRANNY aswell
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.20 1992/09/04 10:40:09 nickc Exp nickc $ */
+d100 1
+a100 1
+PRIVATE char *procname(void *fn)
+@
+
+
+1.20
+log
+@fixed more compile time warnings
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.19 1992/09/04 09:55:44 nickc Exp nickc $ */
+d100 1
+a100 1
+static char *procname(void *fn)
+@
+
+
+1.19
+log
+@fixed compile time warnings
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.18 1992/07/29 20:08:28 paul Exp nickc $ */
+d73 1
+a73 1
+static char *procname(VoidFnPtr fn)
+d453 1
+a453 1
+static void CheckMem(void)
+@
+
+
+1.18
+log
+@better procname function
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.17 1992/07/27 16:58:52 paul Exp $ */
+d77 1
+a77 1
+		word x = _backtrace(procnamebuf, NULL);
+d504 2
+a505 2
+PUBLIC void *Malloc(size)
+WORD size;
+@
+
+
+1.17
+log
+@fixed procname for C40 and cleaned up debugging
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.16 1992/07/23 11:14:55 paul Exp $ */
+d78 6
+a83 1
+		_backtrace(procnamebuf, x);
+@
+
+
+1.16
+log
+@better error msg
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.15 1992/04/21 10:50:35 paul Exp $ */
+d71 3
+a73 1
+static char *procname(void *fn)
+d75 6
+a80 19
+# if 0
+	/* As the caller cannot accurately determine our callers address */
+	/* it could be in R_LR,  FP[1], or somewhere on a new stack chunk */
+	/* just ignore this debug possibility! */
+	word *x = (word *)C40CAddress(fn);
+
+	/* See module.h for Proc stucture */
+	while( (*x & ~0xff) != 0xff000000 && (*x & T_Mask) != T_Valid ) x--;
+
+	if ((*x & T_Mask) == T_Valid ) {
+		switch( *x ) {
+			case T_Proc:
+				return ((Proc *)x)->Name;
+			case T_Module:
+			case T_Program:
+				return ((Module *)x)->Name;
+			default:
+				break;
+		}
+d82 10
+a91 1
+		return ((char *)x - (*x & 0xff));
+a92 2
+# endif
+	return("<Unknown type>");
+d472 5
+a476 1
+		IOdebug("%s/%s/%s: CHECKTAG not set on %x %x %x",ThisTask,Caller,proc,m,m->Size,m->Next);
+d481 5
+a485 1
+		IOdebug("%s/%s/%s: end tags not set on %x %x",ThisTask,Caller,proc,m,m->Size);
+d735 2
+a751 3
+#if CHECKMEM
+	Caller = procname(returnlink_(memarg));
+#endif	
+@
+
+
+1.15
+log
+@fix for procname for C40 - non added
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.14 1991/03/27 11:42:26 nick Exp $ */
+d731 1
+a731 1
+	checktags("FreeStop",mem);
+@
+
+
+1.14
+log
+@Malloc(0) -> NULL removed again because X cannot handle it!!!
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.13 1991/03/25 15:58:57 nick Exp nick $ */
+a64 1
+
+a67 1
+
+d70 29
+d107 1
+a107 1
+	
+d119 1
+a152 1
+
+a183 1
+
+d513 2
+a514 1
+#endif	
+a515 1
+
+d635 1
+a635 1
+#endif	
+d653 1
+d709 1
+@
+
+
+1.13
+log
+@Malloc(0) -> NULL reinstated following bug fix to filesystem
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.12 1991/03/25 14:57:10 nick Exp nick $ */
+d479 1
+a479 1
+
+d487 1
+a487 1
+	
+@
+
+
+1.12
+log
+@Malloc(0) -> NULL disabled since file server cannot handle this!!!
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.11 1991/03/25 14:29:57 nick Exp nick $ */
+a479 1
+#if 0 /* file server cannot handle this!!!!! */
+a486 1
+#endif
+@
+
+
+1.11
+log
+@Malloc tests for zero size and returns NULL
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.10 91/02/19 11:47:02 paul Exp $ */
+d480 1
+d488 1
+@
+
+
+1.10
+log
+@new Malloc(-n) features added to give back the real system memory stats
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.9 91/02/07 16:49:22 nick Exp $ */
+d479 9
+@
+
+
+1.9
+log
+@Improvements to debugging messages
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.8 90/11/02 16:33:37 paul Exp $ */
+d24 1
+d490 1
+a490 1
+		case -1:	/* return total no. of free bytes	*/
+d494 1
+a494 1
+		case -2:	/* return size of largest free block	*/
+d507 27
+a533 1
+			
+@
+
+
+1.8
+log
+@Fixed the procname function to work with the ARM. Made assignments to
+char *Caller conditional on CHECKMEM.
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.7 90/11/01 15:27:40 nick Exp $ */
+d582 9
+d614 1
+a614 1
+		SysDebug(error)("Attempt to free un-owned memory: %x",memarg);
+@
+
+
+1.7
+log
+@debug messages improved
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.5 90/09/25 18:31:35 paul Exp $ */
+d73 2
+a74 2
+#ifdef __HELIOSARM /* temporary until compiler sorted out */
+	return "UnknownProc";
+d77 1
+a77 1
+	
+d88 2
+a89 1
+#endif
+d322 1
+d324 1
+a326 1
+#if CHECKMEM
+d475 1
+a475 1
+	SysDebug(memory)("Malloc(%d) from %s",size,procname(returnlink_(size)));
+d482 3
+a484 2
+	Caller = procname((void *)((&size)[-2]));
+	
+d511 1
+d513 1
+d579 1
+d581 1
+d625 3
+a627 2
+	Caller = procname((void *)(((int *)&memarg)[-2]));
+	
+d633 2
+a634 1
+	
+d636 1
+a636 1
+
+d673 3
+a675 2
+	Caller = procname((void *)(((int *)&memarg)[-2]));
+	
+d678 1
+d680 1
+@
+
+
+1.6
+log
+@no change
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.5 90/09/25 18:31:35 paul Exp Locker: paul $ */
+d123 1
+a126 1
+
+d147 1
+a147 1
+
+d473 1
+a473 1
+	SysDebug(memory)("Malloc(%d)",size);
+@
+
+
+1.5
+log
+@arm changes
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.2 90/09/05 12:54:08 nick Exp Locker: nick $ */
+d21 2
+a122 1
+
+d126 1
+d147 1
+a147 1
+			
+@
+
+
+1.4
+log
+@type of MemSize changed
+@
+text
+@d19 1
+a19 1
+/* $Id: memory.c,v 1.3 90/09/12 10:42:36 nick Exp Locker: nick $ */
+d71 3
+d86 1
+d676 1
+@
+
+
+1.3
+log
+@MemSize function added to return size of a memory block
+@
+text
+@d19 1
+a19 1
+/* $Id$ */
+d666 1
+a666 1
+extern int MemSize(void *memarg)
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d666 6
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 1
+a19 5
+/* $Id$
+ *
+ * $Log$
+ *
+ */
+@

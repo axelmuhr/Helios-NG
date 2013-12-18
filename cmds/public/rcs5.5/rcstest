@@ -1,0 +1,312 @@
+#!/bin/sh
+
+# Test RCS's functions.
+
+# Test RCS by creating files a.* and a.c,v (or RCS/a.c,v).
+# If all goes well, output nothing, and remove the temporary files.
+# Otherwise, send a message to standard output.
+# Exit status is 0 if OK, 1 if an RCS bug is found, and 2 if scaffolding fails.
+# With the -v option, output more debugging info.
+
+# If diff outputs `No differences encountered' when comparing identical files,
+# then rcstest may also output these noise lines; ignore them.
+
+# The current directory must be readable, writable, and searchable,
+# and similarly for ./RCS if it exists.
+# The RCS commands are searched for in the PATH as usual.
+
+#	$Id: rcstest,v 5.3 90/09/20 02:38:57 eggert Exp $
+
+
+#    Copyright 1990 by Paul Eggert
+#    Distributed under license by the Free Software Foundation, Inc.
+#
+# This file is part of RCS.
+#
+# RCS is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 1, or (at your option)
+# any later version.
+#
+# RCS is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with RCS; see the file COPYING.  If not, write to
+# the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
+#
+# Report problems and direct all questions to:
+#
+#     rcs-bugs@cs.purdue.edu
+
+case $1 in
+-v) q=; set -x;;
+'') q=-q;;
+*) echo >&2 "$0: usage: $0 [-v]"; exit 2
+esac
+
+if test -d RCS
+then R=RCS/
+else R=
+fi
+
+rm -f a.* ${R}a.c,v &&
+echo 1.1 >a.11 &&
+echo 1.1.1.1 >a.1111 &&
+echo 1.2 >a.12 &&
+rm -f a.c ${R}a.c,v || { echo "#initialization failed"; exit 1; }
+
+rcs -i -L -ta.11 $q a.c &&
+<${R}a.c,v || { echo "#rcs -i -L failed"; exit 1; }
+
+rlog a.c >/dev/null || { echo "#rlog failed on empty RCS file"; exit 1; }
+rm -f ${R}a.c,v || exit 2
+
+cp a.11 a.c &&
+ci -ta.11 -mm $q a.c &&
+<${R}a.c,v &&
+rcs -L $q a.c || { echo "#ci+rcs -L failed"; exit 1; }
+test ! -f a.c || { echo "#ci did not remove working file"; exit 1; }
+for l in '' '-l'
+do
+	co $l $q a.c &&
+	test -f a.c || { echo '#co' $l did not create working file; exit 1; }
+	diff -c a.11 a.c || { echo '#ci' followed by co $l is not a no-op; exit 1; }
+done
+
+cp a.12 a.c &&
+ci -mm $q a.c &&
+co $q a.c &&
+diff -c a.12 a.c || { echo "#ci+co failed"; exit 1; }
+
+co -r1.1 $q a.c &&
+diff -c a.11 a.c || { echo "#can't retrieve first revision"; exit 1; }
+
+rm -f a.c &&
+cp a.1111 a.c &&
+ci -r1.1.1 -mm $q a.c &&
+co -r1.1.1.1 $q a.c &&
+diff -c a.1111 a.c || { echo "#branches failed"; exit 1; }
+
+co -l $q a.c &&
+ci -f -mm $q a.c &&
+co -r1.3 $q a.c &&
+diff -c a.12 a.c || { echo "#(co -l; ci -f) failed"; exit 1; }
+
+co -l $q a.c &&
+echo 1.4 >a.c &&
+ci -l -mm $q a.c &&
+echo error >a.c &&
+ci -mm $q a.c || { echo "#ci -l failed"; exit 1; }
+
+co -l $q a.c &&
+echo 1.5 >a.c &&
+ci -u -mm $q a.c &&
+<a.c || { echo "#ci -u didn't create a working file"; exit 1; }
+rm -f a.c &&
+echo error >a.c || exit 2
+ci -mm $q a.c 2>/dev/null && { echo "#ci -u didn't unlock the file"; exit 1; }
+
+rm -f a.c &&
+rcs -l $q a.c &&
+co -u $q a.c || { echo "#rcs -l + co -u failed"; exit 1; }
+rm -f a.c &&
+echo error >a.c || exit 2
+ci -mm $q a.c 2>/dev/null && { echo "#co -u didn't unlock the file"; exit 1; }
+
+rm -f a.c &&
+cp a.11 a.c &&
+co -f $q a.c || { echo "#co -f failed"; exit 1; }
+diff -c a.11 a.c >/dev/null && { echo "#co -f had no effect"; exit 1; }
+
+co -p1.1 $q a.c >a.t &&
+diff -c a.11 a.t || { echo "#co -p failed"; exit 1; }
+
+for n in n N
+do
+	rm -f a.c &&
+	co -l $q a.c &&
+	echo $n >a.$n &&
+	cp a.$n a.c &&
+	ci -${n}n -mm $q a.c &&
+	co -rn $q a.c &&
+	diff -c a.$n a.c || { echo "#ci -$n failed"; exit 1; }
+done
+
+me=${LOGNAME-${USER-`who am i | sed 's/ .*//; s/.*!//'`}} || exit 2
+date=`date -u 2>/dev/null || TZ=GMT date` || exit 2
+set $date
+case $2 in
+Jan) m=01;; Feb) m=02;; Mar) m=03;; Apr) m=04;; May) m=05;; Jun) m=06;;
+Jul) m=07;; Aug) m=08;; Sep) m=09;; Oct) m=10;; Nov) m=11;; Dec) m=12;;
+*) echo >&2 "$0: $2: unknown month name"; exit 2
+esac
+case $3 in
+?) d=0$3;;
+*) d=$3
+esac
+D=$6/$m/$d
+T=$4
+: ${PWD=`pwd`} &&
+co -l $q a.c &&
+sed 's/@/$/g' <<EOF >a.kv &&
+@Author: w @
+@Date: $D $T @
+@Header: $PWD/${R}a.c,v 2.1 $D $T w s @
+@Id: a.c,v 2.1 $D $T w s @
+@Locker:  @
+@Log: a.c,v @
+ * Revision 2.1  $D  $T  w
+ * m
+ *
+@RCSfile: a.c,v @
+@Revision: 2.1 @
+@Source: $PWD/${R}a.c,v @
+@State: s @
+EOF
+sed 's/:.*\$/$/' a.kv >a.k &&
+sed 's/w s \$$/w s '"$me"' $/; s/[$]Locker: /&'"$me/" a.kv >a.kvl &&
+sed '/^\$/!d; s/\$$/: old $/' a.k >a.o &&
+sed 's/\$[^ ]*: //; s/ \$//' a.kv >a.v &&
+cp a.o a.c &&
+ci -d"$date" -ss -ww -u2.1 -mm $q a.c &&
+diff -c a.kv a.c || { echo "#keyword expansion failed"; exit 1; }
+co -p -ko $q a.c >a.oo &&
+diff -c a.o a.oo || { echo "#co -p -ko failed"; exit 1; }
+cp a.kv a.o || exit 2
+rcs -o2.1 $q a.c &&
+rcs -l $q a.c &&
+ci -k -u $q a.c &&
+diff -c a.kv a.c || { echo "#ci -k failed"; exit 1; }
+sed '/^[^$]/d' a.kv >a.i &&
+ident a.c >a.i1 &&
+sed '1d; s/^[	 ]*//' a.i1 >a.i2 &&
+diff -c a.i a.i2 || { echo "#ident failed"; exit 1; }
+
+rcs -i $q a.c 2>/dev/null && { echo "#rcs -i permitted existing file"; exit 1; }
+
+co -l $q a.c &&
+echo 2.2 >a.c &&
+ci -mm $q a.c &&
+echo 1.1.1.2 >a.c &&
+rcs -l1.1.1 $q a.c &&
+ci -r1.1.1.2 -mm $q a.c &&
+rcs -b1.1.1 $q a.c &&
+test " `co -p $q a.c`" = ' 1.1.1.2' || { echo "#rcs -b1.1.1 failed"; exit 1; }
+rcs -b $q a.c &&
+test " `co -p $q a.c`" = ' 2.2' || { echo "#rcs -b failed"; exit 1; }
+
+echo 2.3 >a.c || exit 2
+rcs -U $q a.c || { echo "#rcs -U failed"; exit 1; }
+ci -mm $q a.c || { echo "#rcs -U didn't unset strict locking"; exit 1; }
+rcs -L $q a.c || { echo "#rcs -L failed"; exit 1; }
+echo error >a.c || exit 2
+ci -mm $q a.c 2>/dev/null && { echo "#ci retest failed"; exit 1; }
+
+rm -f a.c &&
+rcs -nN:1.1 $q a.c &&
+co -rN $q a.c &&
+diff -c a.11 a.c || { echo "#rcs -n failed"; exit 1; }
+
+rcs -NN:2.1 $q a.c &&
+co -rN $q a.c &&
+diff -c a.kv a.c || { echo "#rcs -N failed"; exit 1; }
+
+co -l $q a.c &&
+rcs -c':::' $q a.c &&
+echo '$''Log$' >a.c &&
+ci -u -mm $q a.c &&
+test " `sed '$!d' a.c`" = ' :::' || { echo "#rcs -c failed"; exit 1; }
+
+rcs -o2.2- $q a.c &&
+co $q a.c &&
+diff -c a.kv a.c || { echo "#rcs -o failed"; exit 1; }
+
+rcsdiff -r1.1 -r2.1 $q a.c >a.0
+case $? in 1) ;; *) echo "#rcsdiff bad status"; exit 1; esac
+diff a.11 a.kv >a.1
+diff a.0 a.1 || { echo "#rcsdiff failed"; exit 1; }
+
+rcs -l2.1 $q a.c || { echo "#rcs -l2.1 failed"; exit 1; }
+for i in k kv kvl o v
+do
+	rm -f a.c &&
+	cp a.$i a.c &&
+	rcsdiff -k$i -c $q a.c || { echo "#rcsdiff -k$i failed"; exit 1; }
+done
+co -p1.1 -ko $q a.c >a.t &&
+diff -c a.11 a.t || { echo "#co -p1.1 -ko failed"; exit 1; }
+rcs -u2.1 $q a.c || { echo "#rcs -u2.1 failed"; exit 1; }
+
+rm -f a.c &&
+co -l $q a.c &&
+cat >a.c <<'EOF' &&
+2.2
+a
+b
+c
+d
+EOF
+ci -l -mm $q a.c &&
+co -p2.2 $q a.c | sed 's/2.2/2.3/; s/b/b1/' >a.c &&
+ci -l -mm $q a.c &&
+co -p2.2 $q a.c | sed 's/2.2/new/; s/d/d1/' >a.c || exit 2
+rcsmerge -r2.2 -r2.3 $q a.c
+case $? in
+1) ;;
+*) echo "#rcsmerge bad status"; exit 1
+esac
+diff -c - a.c <<'EOF' || { echo "#rcsmerge failed"; exit 1; }
+<<<<<<< a.c
+new
+=======
+2.3
+>>>>>>> 2.3
+a
+b1
+c
+d1
+EOF
+
+nl='
+'
+if
+	co -p $q a.c | tr "$nl" "/" >a.c &&
+	ci -mm $q a.c
+then
+	co -p $q a.c | tr "/" "$nl" >a.c &&
+	rcsdiff -c -r2.3 $q a.c || { echo "#trailing newline test failed"; exit 1; }
+else
+	echo "#warning: Traditional diff is used, so RCS is limited to text files."
+	echo 'Keep rlog test happy.' >a.c && ci -mm $q a.c || exit
+fi
+
+rlog -r2.1 a.c >a.t &&
+grep '^checked in with -k' a.t >/dev/null &&
+sed '/^checked in with -k/d' a.t >a.u &&
+diff -c - a.u <<EOF || { echo "#rlog failed"; exit 1; }
+
+RCS file: ${R}a.c,v
+Working file: a.c
+head: 2.4
+branch:
+locks: strict
+access list:
+symbolic names:
+	N: 2.1
+	n: 1.8
+comment leader: ":::"
+keyword substitution: kv
+total revisions: 14;	selected revisions: 1
+description:
+1.1
+----------------------------
+revision 2.1
+date: $D $T;  author: w;  state: s;  lines: +13 -1
+=============================================================================
+EOF
+
+
+exec rm -f a.* ${R}a.c,v

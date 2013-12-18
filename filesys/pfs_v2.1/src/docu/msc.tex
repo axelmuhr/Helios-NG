@@ -1,0 +1,1241 @@
+\chapter{MSC device driver}\label{chap:msc}
+
+This chapter gives you a short introduction to the SCSI bus, the internal
+details of the MSC device driver and explains how to add new device
+descriptions in the \SI\ file.
+
+\section{The SCSI bus}\index{SCSI!bus}
+The SCSI (Small Computer System Interface) as defined in the ANSI X3.131-1986
+standard is a widely used interface between host computers and peripheral
+devices, such as disc drives, tape streamers and printers. It supports data
+rates up to 5 megabytes per second and provides some device independence for
+host computers.
+
+The Interface protocol differs between two types of participants: initiators
+(devices capable of initiating an operation) and targets (devices capable of
+responding to a request to perform an operation). Up to 8 devices of
+different type may be connected to a single bus system, as the architecture
+of SCSI includes a priority-based distributed arbitration scheme.
+
+The Parsytec MSC board uses the single-ended version of the SCSI bus, thereby
+allowing maximum cable lengths of 6.0 meters. The onboard WD 33C93A SCSI
+controller satisfies the ANSI X3T9.2 specifications, with the exception of
+device disconnection\slash reconnection.
+
+\section{Internal details}
+
+This section gives a deeper view into the MSC device driver. It examines the
+inner structure of the driver, describes the usage of SCSI commands and
+explains how the Helios requests are performed.
+
+\subsection{Device driver internals}
+A Helios device is a piece of software which contains code to access a
+specific hardware device. It is loaded dynamically by the program which uses
+it, typically a server, which then uses the hardware through a defined
+interface and provides a GSP interface for it.
+
+This MSC device driver is written to support the Parsytec File System in
+connection with the MSC Mass Storage Controller board. It is highly optimised
+for throughput and flexibility on the SCSI interface.
+
+\subsection{Process structure}\index{processstructure@process structure}
+The {\tt OpenDevice()} call loads the driver and calls its Open function.
+The process structure after successful completion is shown in figure
+\ref{pic:process1}.
+\input{process1}
+
+The driver forks a SCSI bus control process, which is responsible for
+interaction with the controller hardware. This process runs at high priority
+to reduce reaction times. Communication to this process uses hardware
+channels to allow the use of the occam-style Alternate construct.
+Opening a SCSI device generates a new device control process, which knows
+about commands and sequences and handles single Helios requests. The
+{\tt DevOperate()} function puts all forthcoming requests from the file system
+into request queues, from which the device control process extracts them as 
+they are handled individually. For random access devices, the device control
+process uses a special algorithm to optimize head movement and to reduce seek
+delays. Figure \ref{pic:process2} shows the process structure after openening
+two SCSI devices.
+\input{process2}\index{processstructure@process structure}
+
+\subsection{Supported Helios requests}
+
+Due to the demands of the Parsytec File System, the driver supports 8
+different device requests. Originally, these requests refer to partitions,
+but they are mapped onto physical drives within the device driver. Valid
+requests are:
+
+\begin{itemize}
+
+  \item {\tt FG\_Open}\index{open@{\tt FG\_Open}} \\
+        Open a SCSI device for further use. This request is implemented by
+        executing a sequence of SCSI commands called the initialisation
+        sequence, which has to be defined in \SI. If none of the commands
+        fails and all necessary drive parameters have been evaluated, the
+        device control process is forked off. Opening an already opened device
+        will only succeed if the device is a fixed disc device, otherwise
+        the request is deemed erroneous.
+
+  \item {\tt FG\_Close}\index{close@{\tt FG\_Close}} \\
+        Release an opened device and terminate its device control process. If
+        the device has been opened more than once, the device control process
+        stays alive until all users have closed the device.
+
+  \item {\tt FG\_Read}\index{read@{\tt FG\_Read}} \\
+        Read some data from the SCSI device. This request is directly mapped
+        onto the Read SCSI command.
+
+  \item {\tt FG\_Write}\index{write@{\tt FG\_Write}} \\
+        Write some data to the SCSI device. Like Read, this request maps onto
+        the Write SCSI command.
+
+  \item {\tt FG\_GetSize}\index{getsize@{\tt FG\_GetSize}} \\
+        Report the block size and the number of blocks for a partition. Using
+        the information from the initialisation sequence, this request can be
+        fulfilled without interaction with the SCSI device.
+
+  \item {\tt FG\_Format}\index{format@{\tt FG\_Format}} \\
+        Format a medium and prepare it for further usage. This request is
+        implemented in several phases: First, the format sequence is executed,
+        then the driver issues the Format SCSI command. After completion, the
+        whole medium is verified and defective blocks are reassigned. For tape
+        drives, the Format request may be used to erase a tape.
+
+  \item {\tt FG\_WriteMark}\index{writemark@{\tt FG\_WriteMark}} \\
+        Write filemarks to a tape using the Write Filemarks SCSI command.
+
+  \item {\tt FG\_Seek}\index{seek@{\tt FG\_Seek}} \\
+        Position a tape at the specified position. This request performs the
+        Rewind SCSI command if both the position and size values of the
+        request are zero. Otherwise, a Space SCSI command will be issued using
+        the lowest 2 bits of the position value as the command code. The size
+        value (positive or negative) specifies the range of medium movement.
+
+\end{itemize}
+
+\subsection{Error handling}
+If a SCSI command returns a CHECK CONDITION status, the device driver issues
+a Request Sense command and evaluates an error code from the replied sense
+data. The class of this error code is interpreted in the following way:
+
+\begin{itemize}
+
+  \item {\tt EC\_Recover}\index{recover@{\tt EC\_Recover}} \\
+        The driver retries the command up to five times before reporting the
+        error code. For Read or Write SCSI commands, {\tt EC\_Recover} codes
+        are suppressed to allow retries upon corrected ECC errors.
+
+  \item {\tt EC\_Warn}\index{warn@{\tt EC\_Warn}} \\
+        If a Read or Write SCSI command on a disc device returns an
+        {\tt EC\_Warn} code, the driver tries to detect the number of the
+        block which caused the problem. If possible, the defective block will
+        be reassigned. In case of success, the driver returns a `Recoverable,
+        broken Medium' error code.
+
+  \item {\tt EC\_Error}\index{error@{\tt EC\_Error}},
+        {\tt EC\_Fatal}\index{fatal@{\tt EC\_Fatal}} \\
+        Error codes belonging to these classes cause the driver to abort the
+        request immediately.
+
+\end{itemize}
+
+\section{Adding new SCSI devices} \label{sec:si}
+
+This section gives a guideline to add new devices to the \SIS\ file. It
+explains the principles of driver operation and presents tools for device
+inspection and verification of a modified \SI\ file. Imagine you have got
+your brand new DICKENS\index{DICKENS} Pickwick\index{Pickwick}-1836 drive and
+you plan to use it with the Parsytec File System.
+\begin{enumerate}
+
+  \item You have to find out how the drive acts on the SCSI bus and how the 
+        different commands work.
+
+  \item You should add a new entry to your \SIS\ file to reflect the new
+        drive.
+
+  \item You should check whether the new drive can work together properly with 
+        the other drives on the SCSI bus.
+
+\end{enumerate}
+
+\subsection{Required documents}
+For testing the new drive, you should have the Reference Manual or User's
+Manual at hand (the manual which defines the SCSI command subset supported by
+the drive).
+
+\subsection{Testing single SCSI commands}\label{sec:testdrv}
+To explore the behaviour of a new SCSI drive, you might want to issue single
+SCSI commands and have a look at the drive's respose. This can be achieved
+using the {\tt testdrv}\index{testdrv@{\tt testdrv}} utility, which lets you
+define the low-level parameters and data values for a SCSI request and shows
+the returned data.
+
+\begin{note}
+  In most cases it's not necessary to test each SCSI command that's defined
+  for a new drive. Usually you first create the new device description and try
+  to run the {\tt testinfo} utility. Only if that fails, go step by step
+  through the requests using the {\tt testdrv} utility.
+\end{note}
+
+It's presumed that you have connected the new device to the
+SCSI bus, have adjusted an unequivocal SCSI address\index{SCSI!address} via
+jumpers\index{jumper} or dip switches\index{dipswitch@dip switch} and have
+installed\slash removed the SCSI terminators\index{SCSI!terminator}.
+
+\begin{caution}
+  The {\tt testdrv} utility does {\bf not} preserve any data previously
+  contained in the tested drives. Prove that you have a complete set of backups
+  for all tested drives.
+\end{caution}
+
+Start {\tt testdrv} on your MSC board via
+
+\medskip
+\fbox{\tt \% remote MSC testdrv <DiscDeviceName>}
+\medskip
+
+The screen changes to
+
+\input{screen1}
+
+and you have the choice wether to construct a request by editing the different
+fields, to perform the request or to leave the program. Let's send the first
+request to a new SCSI device.  Type `{\tt 1}' to be asked for the
+
+{\tt New Target ID :}
+
+Type in the SCSI address of your new device. Change the values of Target LUN,
+Sector size, Read and Timeout, and your screen is expected to look like
+
+\input{screen2}
+
+To be sure to work with the correct drive and not to destroy any useful data,
+it's recommended to perform the Inquiry SCSI command first. On this account we
+consult the ``Guide to the famous Pickwick drive'', and on page 69 we find the
+entry shown in figure \ref{pic:pwguide1}.
+\input{pwguide1}\index{commanddescriptorblock@Command Descriptor Block}
+\index{cdb@{\it cdb}}
+
+That's all the information we need to give the correct values to CDB size, CDB
+and size:
+
+\begin{itemize}
+
+  \item CDB size \\
+        INQUIRY is a group 0 command, thus it's command descriptor block size 
+        is 6.
+
+  \item CDB \\
+        \begin{itemize}
+
+          \item The first byte of the CDB contains the opeartion code, which 
+                is 12H in our example.
+
+          \item The three most significant bits of the second byte have to 
+                contain the LUN (which is zero here).
+
+          \item The remaining bits of byte \#01 are reserved and must be set 
+                to zero, as well as the bytes \#02 and \#03.
+
+          \item The allocation length has to be fixed in byte \#04. Since we 
+                want to make the drive to transfer the complete response to 
+                the INQUIRY command, its maximum length has to be entered here
+                (the Pickwick drive answers with 51 (33H) bytes).
+
+          \item The first two bits of the last byte are not checked by the 
+                drive (marked as X's in the CDB), so we can leave their values
+                at 0. The next four bits are reserved and therefore expected
+                to be 0. The last two bits are set to zero, too, because we
+                don't want to perform several linked requests but only a
+                single one.
+
+        \end{itemize}
+
+  \item Size \\
+        The expected data is of length 33H, so {\tt testdrv} must reserve this 
+        51 bytes for the response.
+
+\end{itemize}
+
+\begin{note}
+  There are some useful keys when editing the CDB resp. the Data field:
+
+  \begin{tabular}{ll}
+    $\uparrow$,    Ctrl-P & Move cursor to previous line                 \\
+    $\downarrow$,  Ctrl-N & Move cursor to next line                     \\
+    $\leftarrow$,  Ctrl-B & Move cursor to previous byte\slash character \\
+    $\rightarrow$, Ctrl-F & Move cursor to next byte\slash character     \\
+    PgUp                  & Move cursor to previous page                 \\
+    PgDn                  & Move cursor to next page                     \\
+    Tab                   & Change to byte/ASCII area                    \\
+    R                     & Reset all bytes  (set to 0x00)               \\
+    S                     & Set all bytes    (set to 0xFF)               \\
+    P                     & Preset all bytes (set to 0x00 \ldots 0xFF)   \\
+  \end{tabular}
+
+\end{note}
+
+If your screen equals to
+
+\input{screen3}
+
+perform the request by pressing `{\tt r}'.
+If everything was done in the right way, the value of status is {\tt 0x0} and
+the Data field contains {\tt 01 80 01 00 \ldots} . Press `{\tt a}' to have a
+look at the complete data block.
+
+\input{data}
+
+If the status is {\tt 0x1} (which means CHECK CONDITION), you have to perform
+the REQUEST SENSE command to get information about the error that has occured.
+That command is described in our handbook, too (see figure
+\ref{pic:pwguide2}).
+
+\input{pwguide2}
+
+The CDB is followed by a description of the Extended Sense Byte Definitions
+(including the Sense Key Value Definitions), which has a max. length of 26
+(1AH) bytes. So we transform our screen to
+
+\input{screen4}
+
+and perform the request. Interpreting the received data byte by byte will
+help us to find the error.
+
+\subsection{Creating the \SI\ configuration file}\index{scsiinfo@\SI}
+
+The device driver needs some technical information about the connected SCSI
+devices. This information is provided in the file \HESI. Run {\tt gsi} with
+the shipped file \HESIS, and {\tt gsi} will print a list of the supported
+drives. \SIS\ is ASCII text and can be edited to add new device descriptions.
+It is recommended to copy the file {\tt pattern.src} to {\tt <NewDevice>.src},
+to change that copy afterwards like described in itself and in this manual,
+and to append the new device description afterwards to \SI.
+
+\subsubsection{General structure}
+The \SIS\ file contains a sequence of entries consisting a keyword, a name and
+a description. The currently supported keyword is
+{\it device}\index{device@{\it device}}. The name is used to identify the
+entry within the file and has no further meaning. The description is enclosed
+in braces (`\verb|{|' and `\verb|}|'\index{$\lbrace \rbrace$}) and
+consists of a sequence of keyword\slash value pairs. The character
+`{\tt \#}'\index{\#} introduces a comment which extends to the end of the
+line.
+
+Each keyword expects a value of a certain type. This may either be a name, a
+number, a description or a list. Names are either character sequences
+enclosed in double quotes\index{''} or consist of a leading alphabetic
+character followed by alphanumerics or underscores\index{\_}. Numbers are
+sequences of numerals according to the standard C syntax\index{0}\index{0@0x},
+optionally preceded by a minus sign\index{-}. Lists are sequences of numbers
+in the range from 0 to 255, enclosed in braces.
+
+See appendix \ref{app:si_syntax} for a formal description of the \SI\ file.
+The next paragraphs will give you a top-down introduction.
+
+\subsubsection{Toplevel}
+
+A \SI\ file is a list of device descriptions and consequently has the
+following form:
+
+\begin{listing}
+  \begin{verbatim}
+device "Dickens Pickwick Series 18"  # This is the 1st device description,
+{                                    # so you have to refer to it with
+  :                                  # "type 0x0n" from the devinfo file
+  :                                  # The gsi command which compiles
+  :                                  # scsiinfo.src to scsiinfo will
+  :                                  # report the string after the device
+  :                                  # keyword when translating this
+  :                                  # device description block. The
+  :                                  # string has no other meaning.
+}
+
+:                                    # more devices...
+:
+
+device "Dickens Tupman Device"       # This is the last device description
+{                                    # block within scsiinfo.
+  :
+}
+  \end{verbatim}
+\end{listing}
+\index{Tupman}
+
+\subsubsection{Device level}
+Let's have a look at a typcial device description block:
+
+\index{device@{\it device}}
+\index{type@{\it type}}
+\index{random@{\it random}}
+\index{structured@{\it structured}}
+\index{sequential@{\it sequential}}
+\index{raw@{\it raw}}
+\index{ident@{\it ident}}
+\index{command@{\it command}}
+
+\begin{listing}
+  \begin{verbatim}
+device "Dickens Pickwick Series 18"
+{
+  type        random # The device type specifies the set of mandatory
+                     # commands for device operation. Other possible
+                     # values are "structured" (wich means the same like
+                     # "random" and points out a disc device), "raw" and
+                     # "sequential" (wich both hint a tape device).
+
+  ident       "DICKENS Pickwick-1836" # The specified name is expected as
+                     # the reply to the Inquiry SCSI command and is used
+                     # to verify the correct application of a description
+                     # onto a device.
+
+  command            # A SCSI command description as described below. A
+  {                  # device-type dependent set of commands has to be
+    :                # defined.
+  }
+
+  :
+
+  command            # End of the command description list.
+  {
+    :
+  }
+
+  error              # An error condition which can be extracted from the
+  {                  # reply to the Request Sense SCSI command. Conditions
+    :                # which are not defined result in an unspecified
+    :                # error.
+  }
+
+  :
+
+  error              # End of the error description list.
+  {
+    :
+  }
+
+  request            # Both the Helios FG_Open and FG_Close requests are
+  {                  # processed with a SCSI command sequence (which may
+    :                # be empty). For the Helios FG_Format request, it is
+    :                # also possible to define an initialisation sequence
+    :                # to prepare the device for the Format command.
+  }
+
+  :
+
+  request            # End of the request description list.
+  {
+   :
+  }
+
+}                    # End of the device description block.
+  \end{verbatim}
+\end{listing}
+
+\index{error@{\it error}}
+\index{request@{\it request}}
+
+\subsubsection{Command/error/request level}
+
+\paragraph{Commands}
+A command description block is of the following form:
+
+\index{command@{\it command}}
+\index{name@{\it name}}
+\index{read@{\it read}}
+\index{no@{\it no}}
+\index{blockmove@{\it blockmove}}
+\index{yes@{\it yes}}
+\index{cdbsize@{\it cdbsize}}
+
+\begin{listing}
+  \begin{verbatim}
+command
+{
+  name       Mode_Select # The command name is used to identify the
+                         # standard SCSI commands, which are mandatory for
+                         # a device. Command names are also referred in
+                         # sequence definitions. Command names are not
+                         # case-sensitive, and underscores are treated as
+                         # spaces.
+
+  read       no          # The direction of data flow is necessary for
+                         # correct driver operation.
+
+  blockmove  yes         # The device driver can use a fast blockmove
+                         # operation to speed up data transfer. This
+                         # operation is only possible if the device
+                         # performs sector transfers under all
+                         # circumstances.
+
+  cdbsize     6          # The size of the Command Descriptor Block in
+                         # bytes. Default values are calculated for groups
+                         # 0, 1, 2 and 6, other commands need this value.
+
+  cdb                    # The Command Descriptor Block defines the SCSI
+  {                      # command to be executed. For the Request Sense,
+    :                    # Inquiry, Mode Sense, Read, Write, Verify, Write
+    :                    # Filemark and Space SCSI commands position and
+    :                    # size parameters are inserted at runtime. For
+    :                    # all other commands, the CDB should contain the
+    :                    # complete description including sizes.
+  }
+
+  datasize    0x10       # Only the Read, Write, Verify and Space SCSI
+                         # commands use calculated data sizes. For all
+                         # other commands, the transfer size in bytes
+                         # should be supplied.
+
+  data                   # Some SCSI commands, e g Mode Select, need
+  {                      # user-supplied parameters. Up to datasize bytes
+    :                    # may be provided here.
+  }
+
+}
+  \end{verbatim}
+\end{listing}
+\index{cdb@{\it cdb}}
+\index{datasize@{\it datasize}}
+\index{data@{\it data}}
+
+\subparagraph{Mandatory SCSI commands}
+The device driver supports disc (random access) and tape (sequential access)
+drives. Due to their different characteristics, both types use different SCSI
+commands and different parameters. The following list names those SCSI
+commands which have to be defined for either drive type.
+
+\begin{itemize}
+
+   \item Common commands \\
+         These commands have to be defined for both device types:
+
+         \begin{description}
+
+           \item[Test Unit Ready]\index{testunitready@Test Unit Ready} checks
+                whether a logical unit is ready for media access. It takes no
+                parameter and has no reply.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command                               
+{                                     
+  name  Test_Unit_Ready         
+  read  yes                     
+  cdb   { 0x00 0x00             
+          0x00 0x00             
+          0x00 <VendorUnique> } 
+        }                       
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Request Sense]\index{requestsense@Request Sense}
+                requests that the target shall send sense data to the
+                initiator, thus providing additional information in case of
+                errors. Both extended and nonextended sense data format is
+                supported. The expected {\tt <DataSize>} should be supplied in
+                \SI. Sense data is checked for known error conditions as
+                defined in \SI\ (see below).
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name      Request_Sense
+  read      yes
+  cdb       { 0x03       0x00
+              0x00       0x00
+              <DataSize> <VendorUnique> }
+  datasize  <DataSize>
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Inquiry]\index{Inquiry}
+                requests that information regarding the target parameters and
+                identity is sent to the initiator. The expected
+                {\tt <DataSize>} should be supplied in \SI. Inquiry data is
+                used to check the device identity against the ident value of
+                the \SI\ device entry. Further information regarding the
+                device type and medium removability is also extracted.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name      Inquiry
+  read      yes
+  cdb       { 0x12       0x00
+              0x00       0x00
+              <DataSize> <VendorUnique> }
+  datasize  <DataSize>
+}
+                   \end{verbatim}
+                 \end{listing}
+         \end{description}
+
+   \item Commands for direct-access device types \\
+         Disc devices are always used in blocked mode. Therefore, a transfer 
+         size value refers to a specific number of blocks. The following 
+         commands are mandatory for disc devices:
+
+         \begin{description}
+
+           \item[Format Unit]\index{formatunit@Format Unit}
+                ensures that the medium is formatted so that all data blocks
+                are accessible. This does {\bf not} require a physical
+                formatting, and there is no guarantee that the medium will be
+                altered. The CDB is taken as is from \SI, any format mode and
+                interleave parameters have to be named in the CDB definition
+                there. Any defect lists should be supplied as data to the
+                Helios request. The command has no reply.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Format
+  read        no
+  cdb         { 0x04              <Mode>
+                <VendorUnique>    <Interleave(MSB)>
+                <Interleave(LSB)> <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+
+           \item[Reassign Blocks]\index{reassignblocks@Reassign Blocks}
+                requests the target to reassign defective blocks to unused
+                spare blocks reserved for this purpose. The required defect
+                list is generated by the device driver.
+
+                 \begin{listing}
+                   \begin{verbatim}
+
+command
+{
+  name        Reassign_Blocks
+  read        no
+  cdb         { 0x07 0x00
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Read]\index{Read!random} requests the target to transfer user
+                data from the medium to the initiator. Both logical block 
+                address and transfer size are calculated from the Helios request
+                and inserted into the CDB.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+ name        Read
+ read        yes
+ cdb         { 0x08 0x00
+               0x00 0x00
+               0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Write]\index{Write!random}
+                requests the target to transfer user data from the initiator
+                to the medium. Both logical block address and transfer size
+                are calculated from the Helios request and inserted into the
+                CDB.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Write
+  read        no
+  cdb         { 0x0A 0x00
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+
+           \item[Mode Sense]\index{Mode Sense!random}
+                provides a means for the target to report medium, unit or
+                device parameters to the initiator. The expected
+                {\tt <DataSize>} should be supplied in \SI. Mode data is used
+                to check medium write protection. If a block descriptor is
+                available, it will be used to get information about the number
+                and the size of logical blocks on the medium.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name      Mode_Sense
+  read      yes
+  cdb       { 0x1A       0x00
+              0x00       0x00
+              <DataSize> <VendorUnique> }
+  datasize  <DataSize>
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Read Capacity]\index{readcapacity@Read Capacity}
+                causes the target to send information about the medium
+                capacity to the initiator. Capacity data is used to determine
+                the disc size, therefore the PMI bit of the CDB has to be
+                cleared (set to zero).
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name      Read_Capacity
+  read      yes
+  cdb       { 0x25 0x00
+              0x00 0x00
+              0x00 0x00
+              0x00 0x00
+              0x00 <VendorUnique> }
+  datasize  0x08
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Verify]\index{Verify}
+                command requests the target to verify data written on the
+                medium. This shall be a medium verification (no data will be
+                transferred for this command), and the BytChk bit of the CDB
+                has to be cleared (set to zero).
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Verify
+  read        no
+  cdb         { 0x2F 0x00
+                0x00 0x00
+                0x00 0x00
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+         \end{description}
+
+   \item Commands for sequential-access device types \\
+         Tape devices may be used in blocked or nonblocked mode. The operating 
+         mode has to be set up before the first medium access command is 
+         issued, usually during the initialisation sequence. Transfer sizes 
+         and position values in variable length mode will be in bytes. Now, 
+         here are the commands which are needed for tape devices:
+
+         \begin{description}
+
+           \item[Rewind]\index{Rewind}
+                requests that the target rewind the logical unit to the
+                beginning-of-medium or load-point. Depending on the
+                {\tt <Immediate>} bit, the status is returned as soon as the
+                operation is initiated or after the operation is completed. It
+                is recommended to clear this bit (set to zero).
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Rewind
+  read        yes
+  cdb         { 0x01 <Immediate>
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Read]\index{Read!sequential} requests the target to transfer user data from the
+                medium to the initiator. The transfer length is calculated
+                from the Helios request and inserted into the CDB. The
+                {\tt <Fixed>} bit has to be set according to the selected
+                mode. In variable block mode, the transfer size should meet
+                the block size found on the medium.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Read
+  read        yes
+  cdb         { 0x08 <Fixed>
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Write]\index{Write!sequential}
+                command requests the target to transfer user data from the
+                initiator to the medium. The transfer length is calculated
+                from the Helios request and inserted into the CDB. The
+                {\tt <Fixed>} bit has to be set according to the selected
+                mode.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Write
+  read        no
+  cdb         { 0x0A <Fixed>
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Write Filemarks]\index{writefilemarks@Write Filemarks}
+                causes a specified number of filemarks to be written to the
+                medium.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Write_Filemarks
+  read        no
+  cdb         { 0x10 0x00
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Space]\index{Space}
+                provides a variety of positioning functions determined by
+                {\tt <Code>} and the count value, which is adapted to meet the
+                block size if fixed mode is used.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name        Space
+  read        yes
+  cdb         { 0x11 <Code>
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+                   \end{verbatim}
+                 \end{listing}
+
+           \item[Mode Sense]\index{Mode Sense!sequential}
+                provides a means for the target to report medium, unit or
+                device parameters to the initiator. The expected
+                {\tt <DataSize>} should be supplied in \SI. Mode data is used
+                to check medium write protection. If a block descriptor is
+                available, it will be used to get information about the number
+                and the size of logical blocks on the medium. A logical block
+                size of zero marks variable length mode and is interpreted as
+                a block length of one.
+
+                 \begin{listing}
+                   \begin{verbatim}
+command
+{
+  name      Mode_Sense
+  read      yes
+  cdb       { 0x1A       0x00
+              0x00       0x00
+              <DataSize> <VendorUnique> }
+  datasize  <DataSize>
+}
+                   \end{verbatim}
+                 \end{listing}
+
+         \end{description}
+
+\end{itemize}
+
+\subparagraph{Other SCSI commands}
+Those commands described above are essential for driver operation, and the
+presence of their definitions is checked by the {\tt gsi} compiler. Various
+other commands may be defined in the \SI\ file, they can be used for device
+initialisation or to prepare formatting. Some examples are the following
+commands:
+
+\begin{itemize}
+
+  \item Commands for direct-access device types
+        
+        \begin{description}
+
+          \item[Mode Select]\index{Mode Select!random}
+               provides a means for the initiator to specify medium, unit or
+               device parameters. Its parameter list has to be declared in
+               \SI.
+
+               \begin{listing}
+                  \begin{verbatim}
+command
+{
+  name      Mode_Select
+  read      no
+  cdb       { 0x15                  0x00
+              0x00                  0x00
+              <ParameterListLength> <VendorUnique> }
+  datasize  <ParameterListLength>
+  data      { 0x00
+              <MediumType>
+              0x00
+              <BlockDescriptorLength>
+              <BlockDescriptor(s)>
+              <VendorUnique> }
+}
+                 \end{verbatim}
+                \end{listing}
+
+          \item[Start/Stop Unit]\index{startunit@Start Unit}
+                                \index{stopunit@Stop Unit}
+               causes the target to enable or disable the unit for further
+               operation. A Winchester disc drive might spin down if a Stop
+               Unit command is issued, hereby reducing its power consumption.
+               The Start Unit command is typically part of the initialisation
+               sequence to ensure correct drive operation.
+
+               \begin{listing}
+                  \begin{verbatim}
+command
+{
+  name  Start_Unit
+  read  no
+  cdb   { 0x1B 0x00
+          0x00 0x00
+          0x01 <VendorUnique> }
+}
+
+command
+{
+  name  Stop_Unit
+  read  no
+  cdb   { 0x1B 0x00
+          0x00 0x00
+          0x00 <VendorUnique> }
+}
+                 \end{verbatim}
+                \end{listing}
+
+        \end{description}
+
+  \item Commands for sequential-access device types
+
+        \begin{description}
+
+          \item[Mode Select]\index{Mode Select!sequential}
+               provides a means for the initiator to specify medium, unit or
+               device parameters. Its parameter list has to be declared in
+               \SI.
+
+               \begin{listing}
+                  \begin{verbatim}
+command
+{
+  name      Mode_Select
+  read      no
+  cdb       { 0x15                  0x00
+              0x00                  0x00
+              <ParameterListLength> <VendorUnique> }
+  datasize  <ParameterListLength>
+  data      { 0x00
+              0x00
+              <Mode>
+              <BlockDescriptorLength>
+              <BlockDescriptor(s)>
+              <VendorUnique> }
+}
+                 \end{verbatim}
+                \end{listing}
+
+          \item[Erase]\index{Erase}
+               requests part or all of the medium to be erased, which means
+               that the medium shall appear as gap or unwritten. This command
+               might be used as a replacement to the Format command to put a
+               medium into a known state.
+
+               \begin{listing}
+                 \begin{verbatim}
+command
+{
+  name  Format          # Do not use Erase!
+  read  no
+  cdb   { 0x19 <Long>
+          0x00 0x00
+          0x00 <VendorUnique> }
+}
+                 \end{verbatim}
+                \end{listing}
+
+          \item[Load/Unload]\index{Load}\index{Unload}
+               causes the target to enable or disable the unit for further
+               operation. A tape drive e g might eject the medium if a Unload
+               command is issued, hereby reducing its power consumption. This
+               SCSI command is mostly defined twice in \SI\ to load the medium
+               within the initialisation sequence and to unload it after
+               usage. It may also be used to request the re-tension function
+               on peripheral devices that support this function.
+
+               \begin{listing}
+                 \begin{verbatim}
+command
+{
+  name        Load
+  read        no
+  cdb         { 0x1B                 0x00
+                0x00                 0x00
+                (<ReTension> | 0x01) <VendorUnique> }
+}
+
+command
+{
+  name        Unload
+  read        no
+  cdb         { 0x1B        0x00
+                0x00        0x00
+                <ReTension> <VendorUnique> }
+}
+                  \end{verbatim}
+                 \end{listing}
+
+        \end{description}
+
+  \item Commands for removable medium device types \\
+        {\bf Prevent/Allow Medium Removal}
+           \index{preventmediumremoval@Prevent Medium Removal}
+           \index{allowmediumremoval@Allow Medium Removal}
+        requests that the target should enable or disable the removal of the
+        medium from the unit. Usually, this SCSI command is defined twice in
+        \SI\ to distinguish between allowing and preventing medium removal.
+
+        \begin{listing}
+          \begin{verbatim}
+command
+{
+  name        Prevent_Medium_Removal
+  read        yes
+  cdb         { 0x1E 0x00
+                0x00 0x00
+                0x01 <VendorUnique> }
+}
+
+command
+{
+  name        Allow_Medium_Removal
+  read        yes
+  cdb         { 0x1E 0x00
+                0x00 0x00
+                0x00 <VendorUnique> }
+}
+          \end{verbatim}
+        \end{listing}
+
+\end{itemize}
+
+\paragraph{Errors}
+After a Request Sense SCSI command, the reply will be scanned for known
+errors, which are defined with the following error description block:
+
+\index{error@{\it error}}
+\index{code@{\it code}}
+\index{condition@{\it condition}}
+
+\begin{listing}
+  \begin{verbatim}
+error
+{
+  code        0x47110815  # This value is returned as the Helios error
+                          # code if all of the following conditions are
+                          # met.
+
+  condition               # A condition description block, see below. Any
+  {                       # number of these may appear.
+    :
+  }
+
+  :
+
+  condition
+  {
+    :
+  }
+
+}
+  \end{verbatim}
+\end{listing}
+
+\subparagraph{Conditions}
+Conditions are evaluated in order of appearance. If all conditions for an
+error code are fulfilled, the associated error code will be returned.
+
+\index{condition@{\it condition}}
+\index{offset@{\it offset}}
+\index{mask@{\it mask}}
+\index{value@{\it value}}
+
+\begin{listing}
+  \begin{verbatim}
+condition
+{
+  offset  0x08  # Byte offset into the Request Sense reply data.
+  mask    0xFF  # Bit mask to apply to the addressed byte.
+  value   0x15  # Value to be expected after masking out unused bits.
+                # If this value is found, the condition is satisfied.
+}
+  \end{verbatim}
+\end{listing}
+
+\paragraph{Requests}
+These keywords are used to specify a SCSI command sequence:
+
+\index{request@{\it request}}
+\index{fncode@{\it fncode}}
+\index{item@{\it item}}
+
+\begin{listing}
+  \begin{verbatim}
+request
+{
+  fncode 0x06060842  # Helios function code, for which the sequence shall
+                     # be submitted.
+
+  item  Mode_Select  # One of the earlier defined commands, which shall be
+                     # executed.
+}
+  \end{verbatim}
+\end{listing}
+
+\subsubsection{Compiling}
+If this source file finally meets your environment, compile it to binary form
+with:
+
+\medskip
+\fbox{\tt \% gsi scsiinfo.src /helios/etc/scsiinfo}\index{gsi@{\tt gsi}}
+\medskip
+
+\subsection{Testing \SI/\DI\ entries}\label{sec:testinfo}
+After recompiling both the \SI\ file and the \DI\ file, you should ensure that
+the driver will work correctly with the new configuration. Another test
+utility named {\tt testinfo}\index{testinfo@{\tt testinfo}} allows you to
+simulate Helios requests as if they were comming from the file server.
+{\tt testdrv} doesn't support multivolume\slash multipartition \DI s. Only
+volumes that consist of one partition will be tested correctly.
+
+\begin{caution}
+  The {\tt testinfo} utility does {\bf not} preserve any data previously
+  contained in the tested drives. Prove that you have a complete set of backups
+  for all tested drives.
+\end{caution}
+
+Starting {\tt testinfo} is as follows:
+
+\medskip
+\fbox{\tt \% remote MSC testinfo msc21}
+\medskip
+
+\input{screen5}
+
+The program starts and displays the list of volumes as defined in \DI\
+(imagine that each volume occupies a complete drive). Now you may select a
+command by pressing one of the keys enclosed in brackets. When a volume has
+been opened successfully, the program creates a new window for that volume,
+using the volume name for the window name. After opening e g the Tandberg tape
+streamer, the main window will look as follows:
+
+\input{screen6}
+
+In this example, the {\tt FG\_Open} request was completed successfully within
+36 ms. The Load result gives further information about the drive's state and
+type: The drive is of type raw and uses removable media. The medium which has
+been loaded is not write-protected, but no access check has been made. In the
+volume list the tandberg drive is marked open with the asterisk. Furthermore,
+{\tt (Q)uit} is disabled until all volumes are closed. There are two types of
+volume windows, for disc drives and for tape drives, reflecting the different
+command sets for each drive type. For the Tandberg streamer, a tape window is
+opened and a menu offers several requests to execute and a test to perform.
+We choose to perform the test and are asked for the {\tt File Size} and the
+{\tt Files per Loop}. After typing in `{\tt 20}' and `{\tt 8}', we make the
+tape to rewind first, and the test begins. After a few minutes, we stop the
+test by pressing a key, the tape is rewound a short summary is printed to the
+screen.
+
+\input{screen7}
+
+There are some more items in the menu to choose from, here is a short
+description:
+
+\begin{itemize}
+
+  \item [`{\tt G}'] Perform a GetSize request. {\tt testinfo} reports the number
+                  of blocks ans the block size.
+
+  \item [`{\tt W}'] Perform a Write request. You have to enter the number of
+                  units (whereas each unit contains \DI 's
+                  {\it addressing} bytes) and the comparison seed. A sequence
+                  of random number (initialized with the comparison seed) will
+                  be written do tape. The time needed, the number of bytes
+                  actally written and the Helios error code is reported. In
+                  case of failure a Request Sense will be executed and its
+                  result will appear, too.
+
+  \item [`{\tt R}'] Perform a Read request. You have to enter the number of
+                  units and the comparison seed, too. Based on that seed, the
+                  same sequence of random numbers is generated again and is
+                  expected to match the sequence written to tape before.
+                  {\tt testinfo} reports time, bytes, error code and sense
+                  data (if required).
+
+  \item [`{\tt S}'] Perform a Seek request. You have to choose wether to look
+                  for blocks, for file marks, or for sequential file marks.
+                  The number of blocks/marks to skip has to be entered.
+
+  \item [`{\tt E}'] Perform a Format request.
+
+  \item [`{\tt F}'] Perform a Write Filemark request. Please enter the number
+                  of file marks to write.
+
+  \item [`{\tt T}'] Conduct a test like described above.
+
+  \item [`{\tt C}'] Perform a Close request and close the window.
+
+\end{itemize}
+
+To finish this mini-session, press `{\tt c}', which causes {\tt testinfo} to
+close the {\tt tandberg} window and to return to the main menu.
+
+A test session with a random access drives is quite similar, an example could
+be as follows:
+
+\input{screen8}
+
+In addition to the tape menu the disc menu offers some different kind of
+tests. After entering the number of requests and the size of each request, you
+have the choice between 5 tests:
+
+\begin{itemize}
+
+  \item [`{\tt S}'] Repeat the last test.
+
+  \item [`{\tt C}'] Read/write some blocks that are in series on disc. Wait
+                    for the completion of each request.
+
+  \item [`{\tt T}'] Like `{\tt C}' , but its waited for the undevided
+                    completion of the requests.
+
+  \item [`{\tt R}'] Read/write some blocks placed in different disc areas.
+
+  \item [`{\tt O}'] Like, `{\tt R}', but wait for undevided completion.
+
+\end{itemize}

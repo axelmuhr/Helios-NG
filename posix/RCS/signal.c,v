@@ -1,0 +1,2394 @@
+head	1.24;
+access;
+symbols
+	Helios_1_3_1:1.22
+	Helios_C40_1_3_Official_Release:1.18
+	Alenia_release:1.18
+	Helios1_3:1.16
+	C40_Field_Test_2:1.16
+	C40_Field_Test_R1:1.14
+	Helios13_beta:1.14
+	Helios1_2_2:1.10
+	Helios1_2_2Beta:1.10
+	Helios1_2_1:1.8
+	Helios1_2:1.7
+	V1_2Beta0:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.24
+date	94.03.15.11.53.19;	author nickc;	state Exp;
+branches;
+next	1.23;
+
+1.23
+date	94.03.10.17.17.21;	author nickc;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	93.09.28.17.18.22;	author paul;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	93.09.16.15.18.41;	author richardp;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	93.07.12.10.25.27;	author nickc;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	93.06.16.11.20.45;	author bart;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	92.12.10.11.28.28;	author nickc;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.12.02.12.54.54;	author nickc;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.09.11.17.48.59;	author paul;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.08.20.09.39.55;	author paul;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.06.17.10.08.39;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.06.15.10.56.57;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.06.11.12.35.44;	author bart;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.04.16.00.31.09;	author paul;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	91.08.05.12.14.13;	author nick;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.06.19.16.27.30;	author nick;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.02.14.15.20.18;	author paul;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	90.11.22.11.10.50;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.11.16.17.15.19;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.11.15.17.43.18;	author nick;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.10.11.13.36.02;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.10.02.15.56.44;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.25.19.27.17;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.05.13.29.35;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@signal handling
+@
+
+
+1.24
+log
+@suppress IOdebug if error received by signal port is 0
+@
+text
+@/*{{{  Header */
+
+/*------------------------------------------------------------------------
+--                                                                      --
+--                     P O S I X    L I B R A R Y			--
+--                     --------------------------                       --
+--                                                                      --
+--             Copyright (C) 1988 - 1994, Perihelion Software Ltd.      --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- signal.c								--
+--                                                                      --
+--	Signal handling routines					--
+--                                                                      --
+--	Author:  NHG 8/5/88						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* $Id: signal.c,v 1.23 1994/03/10 17:17:21 nickc Exp nickc $ */
+
+/*}}}*/
+/*{{{  Includes */
+
+#include <helios.h>	/* standard header */
+
+#define __in_signal 1	/* flag that we are in this module */
+
+#include <posix.h>
+
+#include "pposix.h"
+
+#include <signal.h>
+#include <codes.h>
+#include <ioevents.h>
+#include <nonansi.h>	/* for _cputime() */
+
+#ifndef __TRAN
+#include <process.h>
+#endif
+
+/*}}}*/
+/*{{{  Macros and Constants */
+
+/*
+** BLV - in a multi-priority system handling signals correctly is quite
+** difficult, and various calls to SetPriority() are needed. I do not
+** want these calls in a transputer system.
+*/
+#ifdef __TRAN
+#define SetPriority(a)
+#endif
+
+#define _Trace(a,b,c)
+
+#define S(x) (1U<<x)
+
+/* The following signals may be delivered asyncronously by default */
+#define DFL_ASYNC	(S(SIGABRT)|S(SIGHUP)|\
+			S(SIGINT)|S(SIGKILL)|S(SIGQUIT)|S(SIGTERM)|S(SIGSIB))
+
+/* The following signals are ignored by default			  */
+#define DFL_IGNORE	(S(SIGCHLD))
+
+/* The following signals will be passed on to the children	  */
+#define DFL_PROPAGATE	(S(SIGINT)|S(SIGKILL)|S(SIGTERM)|S(SIGHUP)|S(SIGABRT))
+
+/* The following signals may not be blocked, cought or ignored		  */
+#define DFL_ILLEGAL (S(SIGKILL)|S(SIGSTOP))
+
+#ifdef __TRAN
+#define DFL_UNSUPPORTED (S(SIGSEGV)|S(SIGFPE)|S(SIGILL))
+#else
+#if defined(__ARM) || defined(__C40)
+	/* @@@@@@ may change for C40 */
+#define DFL_UNSUPPORTED 0
+#else
+#error Unknown processor type
+#endif
+#endif
+
+/* This macro checks that the given signal is within the range and not	*/
+/* one of the unsupported set.						*/
+#define VALIDSIGNAL(sig) \
+		((sig >= 0) && (sig < sizeof(sigset_t)*8) && \
+		(((1<<sig) & DFL_UNSUPPORTED)==0))
+
+/* This macro checks that the signal is not one  of the set that we may */
+/* not mask, ignore or catch.						*/
+#define CATCHABLE(sig) (((1<<sig) & DFL_ILLEGAL)==0)
+
+#define CHECKSIGS()	if(mask.pending) raise_sync()
+
+#define MyName	((char *)(MyTask->TaskEntry)+8)
+
+/*}}}*/
+/*{{{  Local Variables */
+
+STATIC struct sigmask	mask;	  /* current set of signal masks	*/
+STATIC struct sigmask	savemask; /* set saved after vfork		*/
+
+STATIC struct sigaction sigactions[sizeof(sigset_t)*8];
+
+static bool		Async;		/* are we in sync or async mode? */
+
+static Semaphore	siglock;
+STATIC Port		PausePort;
+static Port		SignalPort;
+static Port		EventPort;
+
+static int		sigstacksize;
+
+static int		SysTimeout;
+static int		AlarmSet;
+static int		AlarmTime;
+
+static int		sigchild;
+
+/*}}}*/
+/*{{{  Forward References */
+
+static int dokill(int pcb, int sig);
+static int inner_raise(int sig, bool async, bool propagate);
+static void _raise_pending_sigs(bool async, bool locked);
+static void _raise(int sig);
+static void raise_sync(void);
+static void propagate_signals(void);
+
+/*}}}*/
+/*{{{  Code */
+
+/*{{{  init_signal() */
+
+#ifdef __TRAN
+static
+#endif
+void init_signal(sigset_t sigmask, sigset_t ignore)
+{
+	word i;
+_Trace(0xcccc1111,MyTask,0);
+	InitSemaphore(&siglock,1);
+	mask.pending = 0;
+	mask.mask = sigmask;
+	mask.async = DFL_ASYNC;
+	mask.ignore = ignore|DFL_IGNORE;
+	mask.propagate = 0;
+	
+	Async = FALSE;
+	
+	sigstacksize = 0;
+	
+	for( i = 0 ; i < sizeof(sigset_t)*8 ; i++ ) 
+	{
+	       if( (1L << i) & mask.ignore )
+		     sigactions[i].sa_handler = SIG_IGN;
+		else sigactions[i].sa_handler = SIG_DFL;
+		sigactions[i].sa_flags = 0;
+		sigactions[i].sa_mask = 0;
+	}
+}
+
+/*}}}*/
+/*{{{  _posix_exception_handler() */
+
+/* _posix_exception_handler is called from a language-runtime-	*/
+/* system created process with at least 2k of stack. This will	*/
+/* not return.							*/
+/* BLV - 15.6.93, major changes, see the comment at the start	*/
+/* of tcsetpgrp() for details.					*/
+extern void _posix_exception_handler(void)
+{
+	word	e;
+	MCB	mcb;
+	IOEvent	event;
+	Port	ports[2];
+	
+	SignalPort	= NewPort();
+	EventPort	= NewPort();
+	
+	/* Assure that signal handler can process all new EnableEvents ports */
+	/* sent via tcsetpgrp() (called by the shell) quickly enough. */
+	/* Whenever we force a signal to be raised, we drop back down to */
+	/* Standard priority to stop the Exit() code looping at a higher */
+	/* priority than the code that is waiting to abort */
+	SetPriority(HighServerPri);
+
+	mcb.Data = (byte *)&event;
+	
+	SetSignalPort(SignalPort);
+
+	AlarmTime  = -1;
+	
+	for(;;)
+	{
+		unsigned long	time = _cputime();
+		word		index;
+		
+		mcb.Timeout	= AlarmTime;
+		ports[0]	= SignalPort;
+		ports[1]	= EventPort;
+
+		index		= MultiWait(&mcb, 2, ports);
+		if( index == EK_Timeout ) 
+		{
+		raisealarm:
+
+			SysTimeout	= 0;
+			AlarmTime	= -1;
+			e		= EK_Timeout;
+
+			SetPriority(StandardPri);
+			inner_raise(SIGALRM,TRUE,FALSE);
+			SetPriority(HighServerPri);
+
+#if 1
+			/* This continue appears to have been missing since	*/
+			/* 15.11.1990, between the 1.1A and 1.2 releases. The	*/
+			/* result was that the signal port was reallocated	*/
+			/* after every timeout. Unfortunately there may have	*/
+			/* been a reason for this reallocation...		*/
+			continue;
+#else
+			index = 0;	/* this gives the old behaviour	*/
+#endif
+		}
+		elif (index < 0)
+			e = index;
+		else
+			e = mcb.MsgHdr.FnRc;
+		
+		/* adjust the wait period by the length of time we were away */
+		if( e < 0 && AlarmTime != -1 ) 
+		{
+			AlarmTime -= 10000*(int)(((unsigned)_cputime() - time));
+			if( AlarmTime <= 0 ) goto raisealarm;
+		}
+
+		/* ctrl-C events go to the Event port in slot 1		*/
+		if( index == 1 && mcb.MsgHdr.DataSize == Keyboard_EventSize)
+		{
+#if 0
+			IOdebug("%s: ^C", MyName);
+#endif
+			_Trace(0xCCCC0001,MyTask,0);
+			SetPriority(StandardPri);
+			inner_raise(SIGINT,TRUE,TRUE);
+			SetPriority(HighServerPri);
+			continue;
+		}
+			/* tcsetpgrp() can send a message to indicate that a	*/
+			/* new event port should be enabled.			*/
+		elif (index == 1 && e == 789)
+		{
+			int	 fd;
+			fdentry	*f;
+			Stream	*s;
+			Port	 port;
+
+			/* The file descriptor has just been checked. I hope it is	*/
+			/* still ok...							*/
+			fd	= *((int *)mcb.Data);
+			f	= checkfd(fd);
+			s	= f->pstream->stream;
+
+			port	= EnableEvents(s, Event_Break);
+
+			/* If successful, use the new port. Otherwise stick	*/
+			/* with the current one.				*/
+			if (port != NullPort)
+			{
+				FreePort(EventPort);
+				EventPort	= port;
+			}
+
+			/* Now send back a reply to tcsetpgrp()			*/
+			InitMCB(&mcb, 0, mcb.MsgHdr.Reply, NullPort,
+				(port == NullPort) ? Result2(s) : Err_Null);
+			PutMsg(&mcb);
+			continue;
+		}
+			/* No other messages should ever arrive at the event	*/
+			/* port. However if the route to the window server is	*/
+			/* broken for any reason, for example a crashed		*/
+			/* processor, then the port trail may be invalidated.	*/
+			/* There is no easy way of recovering, but the event	*/
+			/* port must be re-allocated anyway to prevent spinning	*/
+			/* on a duff message port. Strictly speaking a		*/
+			/* semaphore is needed to avoid clashing with any calls	*/
+			/* to tcsetpgrp(). This semaphore could also be used	*/
+			/* to prevent multiple calls to tcsetpgrp() upsetting	*/
+			/* things. Unfortunately there could still be race	*/
+			/* conditions.						*/
+		elif (index == 1)
+		{
+#ifdef SYSDEB
+			if (e != 0 && e != 0xc10e0005 /* Err_Abort */)
+			  IOdebug("%s: Unexpected error %x received on event port", MyName, e);
+#endif
+			FreePort(EventPort);
+			EventPort	= NewPort();
+			continue;
+		}
+			/* All other errors or messages must be for the current	*/
+			/* signal port. Signals must be raised. Anything else	*/
+			/* causes the reallocation of the signal port, for	*/
+			/* similar reasons to the reallocation of the event	*/
+			/* port.						*/
+		elif( (e & (ErrBit|EG_Mask|EE_Signal)) == 
+		 (ErrBit|EG_Exception|EE_Signal) )
+		 {
+			SetPriority(StandardPri);
+			inner_raise((int)(e & 0x1f),TRUE,TRUE);
+			SetPriority(HighServerPri);
+		 }
+		else
+		{
+			if (e < 0) {
+				/* An error from MultiWait() contains the */
+				/* index of the port to which the error */
+				/* corresponds or'd into its low order bits. */
+				if (e & 1) {
+					FreePort(EventPort);
+					EventPort	= NewPort();
+				} else {
+					FreePort(SignalPort);
+					SignalPort	= NewPort();
+					SetSignalPort(SignalPort);
+				}
+			}
+#ifdef SYSDEB
+			elif (e != 456 && e != 0)	/* 456 == kosha alarm() setup */
+			  IOdebug("%s: unexpected error %x received on signal port", MyName, e);
+#endif
+			continue;
+		}
+
+	}
+}
+
+/*}}}*/
+/*{{{  kill() */
+
+static int inner_kill(int pid, int sig, bool internal);
+
+extern int kill(int pid, int sig)
+{
+	int ret;
+	CHECKSIGS();
+	ret = inner_kill(pid,sig,FALSE);
+	CHECKSIGS();
+	return ret;
+}
+
+/*}}}*/
+/*{{{  inner_kill() */
+
+static int inner_kill(int pid, int sig, bool internal)
+{
+	int e = 0;
+
+	_Trace(0xCCCC0002,MyTask,sig|(pid<<16)|(internal<<7));
+
+	if( (sig < 0) || (sig >= sizeof(sigset_t)*8) )	{ errno = EINVAL; e = -1; goto done; }
+
+	/* if pid == 0 send signal to my process group		*/
+	/* if pid < 0 signal process group |pid|		*/
+	/* if pid > 0 signal process pid			*/
+
+	if( pid == 0 ) pid = -childvec[sigchild].pgrp;  
+	
+	if ( !internal && pid == childvec[0].pid ) inner_raise(sig,FALSE,FALSE);
+	elif( pid < 0 )
+	{
+		int i;
+		pid_t pgrp = -pid;
+		for( i = 1; i < childvecsize ; i++ ) 
+		{
+			PCB *pcb = childvec+i;
+			if( 	pcb->pid != 0		&& 
+				pcb->status == MinInt	&&
+				pcb->pgrp == pgrp
+			  )
+			  dokill(i,sig);
+		}
+		if( !internal && pgrp == childvec[0].pgrp ) inner_raise(sig,FALSE,FALSE);
+	}
+	else
+	{
+		int pcb = 0;
+		int i;
+		for( i = 1 ; i < childvecsize ; i++ )
+			if( childvec[i].pid == pid ) {pcb = i; break; }
+			
+		if( pcb == 0 )
+		{ errno = ESRCH; e = -1; goto done; }
+
+		e = dokill(pcb,sig);
+	}
+done:
+	_Trace(0xCCCC0012,MyTask,sig|(pid<<16)|(internal<<7));
+	
+	return e;
+}
+
+/*}}}*/
+/*{{{  dokill() */
+
+static int dokill(int pcb, int sig)
+{
+	Stream *s;
+	word e;
+_Trace(0xCCCC0003,MyTask,sig|(childvec[pcb].pid<<16));
+
+	if( sig == 0 ) 
+	{
+		errno = ESRCH;
+		return childvec[pcb].status == MinInt ? 0 : -1 ;
+	}
+
+	s = CopyStream(childvec[pcb].stream);
+
+	if( s == NULL )
+	{ errno = ESRCH; return -1; }
+
+	if( (e = SendSignal( s, sig )) < 0 )
+	{
+		errno = posix_error(Result2(s)); 
+		Close(s);
+		return -1;
+	}
+	
+	Close(s);
+
+	_Trace(0xCCCC0013,MyTask,sig|(childvec[pcb].pid<<16));
+
+	return 0;
+}
+
+/*}}}*/
+/*{{{  sigemptyset() */
+
+extern int sigemptyset(sigset_t *set)
+{
+	*set = 0;
+	return 0;	
+}
+
+/*}}}*/
+/*{{{  sigfillset() */
+
+extern int sigfillset(sigset_t *set)
+{
+	*set = 0xFFFFFFFF;
+	return 0;
+}
+
+/*}}}*/
+/*{{{  sigaddset() */
+
+extern int sigaddset(sigset_t *set, int sig)
+{
+	if( !VALIDSIGNAL(sig) )	{ errno = EINVAL; return -1; }
+	*set |= 1L << sig;
+	return 0;
+}
+
+/*}}}*/
+/*{{{  sigdelset() */
+
+extern int sigdelset(sigset_t *set, int sig)
+{
+	if( !VALIDSIGNAL(sig) )	{ errno = EINVAL; return -1; }
+	*set &= ~(1L << sig);
+	return 0;
+}
+
+/*}}}*/
+/*{{{  sigismember() */
+
+extern int sigismember(sigset_t *set, int sig)
+{
+	if( !VALIDSIGNAL(sig) )	{ errno = EINVAL; return -1; }
+	return (*set & (1L << sig)) != 0 ;
+}
+
+/*}}}*/
+/*{{{  sigaction() */
+
+extern int sigaction(int sig, struct sigaction *act, struct sigaction *oact)
+{
+	if( !VALIDSIGNAL(sig) ) { errno = EINVAL; return -1; }
+
+	Wait(&siglock);
+
+	if( oact != NULL ) *oact = sigactions[sig];
+	
+	if( act != NULL ) 
+	{
+		sigset_t sigbit = (1L << sig);
+
+		if( !CATCHABLE(sig) )
+		{ errno = EINVAL; Signal(&siglock); return -1; }
+
+		sigactions[sig] = *act;
+		
+		/* If we are setting the default action, and the	*/
+		/* default is to ignore signals, or if we are setting	*/
+		/* the action to SIG_IGN, set the ignore mask bit and 	*/
+		/* clear any pending signal. Otherwise clear the ignore	*/
+		/* mask bit.						*/
+		if( ((sigbit & DFL_IGNORE) && act->sa_handler == SIG_DFL) ||
+			act->sa_handler == SIG_IGN ) 
+		{
+			mask.ignore |= sigbit;
+			mask.pending &= ~sigbit;
+		}
+		else mask.ignore &= ~sigbit;
+		
+		/* If async flag is set, allow async delivery	*/
+		/* else if setting to default && asynchronous	*/
+		/* is default behaviour set async bit,		*/
+		/* else clear the bit.				*/
+		if( sigactions[sig].sa_flags & SA_ASYNC ) mask.async |= sigbit;
+		else if( act->sa_handler == SIG_DFL && 
+			 (sigbit & DFL_ASYNC) ) mask.async |= sigbit;
+		else mask.async &= ~sigbit;
+	}
+
+	_raise_pending_sigs(FALSE,TRUE);
+	
+	Signal(&siglock);
+	
+	return 0;
+}
+
+/*}}}*/
+/*{{{  sigprocmask() */
+
+extern int sigprocmask( int how, sigset_t *set, sigset_t *oset)
+{
+	Wait(&siglock);	
+
+	if( oset != NULL ) *oset = mask.mask;
+	
+	if( set == NULL ) goto done;
+
+	switch( how )
+	{
+	case SIG_BLOCK:
+		mask.mask |= *set;
+		break;
+	case SIG_UNBLOCK:
+		mask.mask &= ~(*set);
+		break;
+	case SIG_SETMASK:
+		mask.mask = *set;
+		break;
+	default:
+		errno = EINVAL;
+		Signal(&siglock);	/* PAB fix */
+		return -1;
+	}
+	
+	/* ensure that the unblockable set is still unblocked	*/
+	mask.mask &= ~DFL_ILLEGAL;
+
+done:
+	_raise_pending_sigs(FALSE,TRUE);
+
+	Signal(&siglock);	
+			
+	return 0;
+}
+
+/*}}}*/
+/*{{{  sigpending() */
+
+extern int sigpending(sigset_t *set)
+{
+	Wait(&siglock);	
+	*set = mask.pending & mask.mask;
+	Signal(&siglock);	
+	CHECKSIGS();
+	return 0;
+}
+
+/*}}}*/
+/*{{{  sigsuspend() */
+
+extern int sigsuspend(sigset_t *set)
+{
+	sigset_t old;
+	
+	Wait(&siglock);	
+	
+	old = mask.mask;
+	
+	mask.mask = *set;
+	
+	Signal(&siglock);	
+	
+	pause();
+	
+	Wait(&siglock);	
+	
+	mask.mask = old;
+	
+	Signal(&siglock);	
+	
+	return -1;
+}
+
+/*}}}*/
+/*{{{  signal() */
+
+extern void (*signal (int sig, void (*func)(int)))(int)
+{
+	struct sigaction New,old;
+	
+	New.sa_handler = func;
+	New.sa_mask = 0;
+	New.sa_flags = SA_SETSIG;
+	
+	if( sigaction(sig,&New,&old) == -1 ) return SIG_ERR;
+	
+	return old.sa_handler;
+}
+
+/*}}}*/
+/*{{{  setsigstacksize() */
+
+extern int setsigstacksize(int stacksize)
+{
+	int old;
+	Wait(&siglock);
+	old = sigstacksize;
+	sigstacksize = stacksize & ~3;
+	Signal(&siglock);
+	CHECKSIGS();
+	return old;
+}
+
+/*}}}*/
+/*{{{  raise() */
+
+extern int raise(int sig)
+{
+	return inner_raise(sig,FALSE,FALSE);
+}
+
+/*}}}*/
+/*{{{  raise_sync() */
+
+static void raise_sync(void)
+{
+	int olderrno = errno;
+	int oldoserr = oserr;
+
+	if (~mask.mask & mask.pending) {
+		Wait(&siglock);
+		if (~mask.mask & mask.pending)
+			_raise_pending_sigs(FALSE,TRUE);
+		Signal(&siglock);
+	}
+
+	errno = olderrno;
+	oserr = oldoserr;
+}
+
+/*}}}*/
+/*{{{  inner_raise() */
+
+static int inner_raise(int sig, bool async,bool propagate)
+{
+	sigset_t sigbit;
+	struct sigmask *m = &mask;
+	
+	if( sig < 0 || sig >= sizeof(sigset_t)*8) return -1;
+
+	sigbit = 1L << sig;
+
+	Wait(&siglock);
+_Trace(0xCCCC0004,MyTask,sig|(async<<8)|(propagate<<16)|(sigchild<<24));
+
+	/* If we are in a vfork(), do not deliver the signal, but simply*/
+	/* set it pending for the parent. This means that signals will	*/
+	/* not be delivered, or can be generated, between vfork and exec*/
+	/* This does not seem a great problem given the other		*/
+	/* restrictions imposed during this period.			*/
+	
+	if( sigchild != 0 ) m = &savemask;
+
+	/* Unless the signal is to be ignored, set it pending. If this	*/
+	/* signal was generated in a way which we want to propagate it	*/
+	/* to any children, and it is propagatable(?), set the bit in	*/
+	/* the propagate mask.						*/
+
+	unless( m->ignore & sigbit ) m->pending |= sigbit;	
+	
+	if( propagate && (sigbit & DFL_PROPAGATE) ) m->propagate |= sigbit;
+
+	/* If this is an alarm signal, abort any pause/sleep calls.	*/
+	
+	if( sig == SIGALRM )
+	{
+		SysTimeout = 0;
+		if( PausePort != NullPort ) AbortPort(PausePort,123);
+	}
+
+	_raise_pending_sigs(async,TRUE);
+	
+ 	_Trace(0xCCCC0014,MyTask,sig|(async<<8)|(propagate<<16)|(sigchild<<24));
+	
+	Signal(&siglock);
+
+	return 0;
+}
+
+/*}}}*/
+/*{{{  propogate_signals() */
+
+static void propagate_signals(void)
+{
+	if ( sigchild != 0 ) return;
+	
+	/* If we are not in a vfork()/exec() sequence, and the	*/
+	/* propagate bit is set, kill any children in the same	*/
+	/* process group.					*/
+	
+	while( mask.propagate != 0 ) 
+	{
+		sigset_t sigbit = mask.propagate;
+		int sig = -1;
+		sigbit &= -sigbit;
+		mask.propagate &= ~sigbit;
+		while( sigbit ) sig++,sigbit>>=1;
+		
+		inner_kill(-childvec[0].pgrp,sig,TRUE);
+	}
+}
+
+/*}}}*/
+/*{{{  _raise_pending_sigs() */
+
+/* _raise_pending_sigs gets control of the signal system and simply	*/
+/* loops until all pending, unmasked signals are raised.		*/
+static void _raise_pending_sigs(bool async, bool locked)
+{
+	sigset_t todo;
+	bool oldAsync;
+
+	unless( locked ) Wait(&siglock);
+
+	/* If we are in a vfork/exec sequence, do not raise any */
+	/* signals.						*/
+	
+	if( sigchild != 0 ) goto done;
+	
+	propagate_signals();
+	
+	/* Set Async TRUE here if we have been called from 	*/
+	/* _posix_exception_handler, OR from an asynchronous	*/
+	/* signal handler. This ensures that we do not think we	*/
+	/* are in synchronous mode when in async mode.		*/
+
+	oldAsync = Async;
+	Async = async = async || oldAsync;
+
+	/* pending is a mask of all pending signals which we	*/
+	/* raised or want to raise. If it is non zero at the	*/
+	/* end of the loop, we must abort all IO operations	*/
+
+	if( Async && (~mask.mask & mask.pending) ) 
+	{
+_Trace(0xCCCC000b,MyTask,0);
+		/* abort any I/O operations */
+		abortfdv();
+		
+		/* abort any sleep or pause calls */
+		if( PausePort != NullPort ) AbortPort(PausePort,123);
+		AbortPort(WaitPort,123);
+	}
+
+	while( (todo = (~mask.mask & mask.pending & (async?mask.async:-1))) != 0 )
+	{
+		int sig;
+		for( sig = 0; (todo & (1L << sig)) == 0; sig++);
+		_raise(sig);
+	}
+	
+	Async = oldAsync;
+
+done:	
+_Trace(0xCCCC001b,MyTask,0);
+	unless( locked ) Signal(&siglock);
+}
+
+/*}}}*/
+/*{{{  _raise() */
+
+/* _raise causes the given signal routine to be executed.	*/
+static void _raise(int sig)
+{
+	int setsig;
+	void (*func)(int);	
+	sigset_t sigbit;
+	sigset_t oldmask;
+#if defined(__TRAN) || defined(__C40)
+	int stacksize = sigstacksize;
+	Carrier c;
+#endif
+
+_Trace(0xCCCC0006,MyTask,sig);
+
+	if( sig == SIGKILL ) _sigexit(sig);
+	
+	sigbit = 1L << sig;
+	
+	if( (mask.mask & sigbit) != 0 ) return;
+
+	setsig = (sigactions[sig].sa_flags & SA_SETSIG) != 0;
+	
+	func = sigactions[sig].sa_handler;
+
+#ifdef NOT_BSD_SIGNAL_BEHAVIOUR
+	if( setsig ) 
+	{
+		sigactions[sig].sa_flags = 0;
+		sigactions[sig].sa_handler = SIG_DFL;
+	}
+#endif	
+	oldmask = mask.mask;
+	
+	mask.mask = oldmask | sigactions[sig].sa_mask | sigbit;
+	
+	mask.pending &= ~sigbit;		/* this signal no longer pending */
+
+	/* call the action procedure with the signal lock off so that	*/
+	/* new signals may arrive.					*/
+
+	Signal( &siglock );
+
+#if defined(__TRAN) || defined(__C40)
+	if( (stacksize == 0) ||
+	    ((c.Addr = CtoM_(Malloc(stacksize))) == NULL)) func(sig);
+	else
+	{
+		c.Size = stacksize;
+		Accelerate(&c,func,sizeof(sig),sig);
+		Free(MtoC_(c.Addr));
+	}
+#else
+	func(sig);	/* @@@@@@ must re-introduce Accelerate */
+			/* or compat. fn, so that we can swap stacks with ease */
+#endif
+	Wait( &siglock );
+_Trace(0xCCCC000a,MyTask,sig);
+	
+	/* we finish by restoring the mask.mask to the original value */
+	mask.mask = oldmask;
+_Trace(0xCCCC0016,MyTask,sig);
+}
+
+/*}}}*/
+/*{{{  setuptimeout() */
+
+/* We are about to call a function which allows a timeout,see whether	*/
+/* an alarm call has been made. If so, cancel the alarm and use the	*/
+/* timeout on the call to advance time.					*/
+#ifdef __TRAN
+static
+#endif
+int setuptimeout()
+{
+	if( SysTimeout == 0 ) return -1;
+
+	SysTimeout = alarm(0);
+
+	return (int)(SysTimeout*OneSec);
+}
+
+/*}}}*/
+/*{{{  resettimeout() */
+
+/* After a timed call has returned, this will either reset the alarm	*/
+/* to the residue of the time remaining, or will raise SIGALRM if the	*/
+/* alotted period has expired.						*/
+#ifdef __TRAN
+static
+#endif
+void resettimeout(void)
+{
+	int rest;
+	int now;
+	
+	if( SysTimeout == 0 ) return;
+	
+	now = GetDate();
+	rest = AlarmSet+SysTimeout-now;
+
+	if( rest > 0 ) alarm(rest);
+	else 
+	{
+		raise(SIGALRM);
+		errno = EINTR;
+	}
+}
+
+/*}}}*/
+/*{{{  alarm() */
+
+extern unsigned int alarm(unsigned int sec)
+{
+	int left;
+#ifdef SYSDEB
+	word res;
+#endif
+	
+	CHECKSIGS();
+	
+	if( SysTimeout == 0 ) left = 0;
+	elif((left = GetDate()-AlarmSet) == 0) left = SysTimeout;
+	else left = SysTimeout - left;
+
+	AlarmTime = sec == 0 ? -1 : (int)(sec * OneSec);
+	AlarmSet = GetDate();
+	SysTimeout = sec;
+
+#ifdef SYSDEB
+	res = AbortPort(SignalPort,456);
+	
+	if (res != Err_Null)
+	  IOdebug( "alarm: AbortPort failed, return code = %x", res );
+#else
+	AbortPort(SignalPort,456);
+#endif
+	
+	return left;
+}
+
+/*}}}*/
+/*{{{  pause() */
+
+extern int pause(void)
+{
+	MCB m;
+
+	CHECKSIGS();
+	if( PausePort == NullPort ) PausePort = NewPort();
+	
+	InitMCB(&m,0,PausePort,NullPort,0);
+
+	m.Timeout = -1;
+	
+	forever
+	{
+		word e = GetMsg(&m);
+		if( e == 123 ) break;
+		if( e == EK_Timeout ) continue;
+		FreePort(PausePort);
+		m.MsgHdr.Dest = PausePort = NewPort();
+	}
+
+	errno=EINTR; 
+	CHECKSIGS();
+	return -1;
+}
+
+/*}}}*/
+/*{{{  sleep() */
+
+extern unsigned int sleep(unsigned int seconds)
+{
+	time_t starttime, timeslept;
+	struct sigaction *sleepact = NULL;
+	struct sigaction *alarmact = NULL;
+
+	int oldalarm, sleeptime;
+
+	
+	CHECKSIGS();
+
+	oldalarm = alarm(0);
+
+	/* if there is no current alarm, or the one that is present is	*/
+	/* longer than we are sleeping for, ensure that the alarm signal*/
+	/* we will cause is ignored.					*/
+	
+	if( oldalarm == 0 || oldalarm > seconds )
+	{
+		sleepact = (struct sigaction *)Malloc(sizeof(struct sigaction));
+		alarmact = (struct sigaction *)Malloc(sizeof(struct sigaction));
+
+		sleepact->sa_handler = SIG_IGN;
+		sleepact->sa_mask = 0;
+		sleepact->sa_flags = SA_SETSIG;
+	
+		sigaction(SIGALRM,sleepact,alarmact);
+		
+		sleeptime = seconds;
+	}
+	else sleeptime = oldalarm;
+				
+	alarm(sleeptime);
+
+	starttime = time(NULL);
+
+	pause();
+
+	/* pause will return either as a result of the alarm signal or	*/
+	/* because some other signal occurred. In both cases, we must	*/
+	/* return.							*/
+	
+	timeslept = time(NULL)-starttime;
+
+	/* if we saved an alarm call, restore its signal action here	*/
+	
+	if( alarmact != NULL )
+	{
+		sigaction(SIGALRM,alarmact,NULL);
+
+		Free(sleepact);
+		Free(alarmact);
+	}
+		
+	if( timeslept < oldalarm ) { alarm(oldalarm-timeslept); return 0; }
+	else alarm(0);
+	
+	if( timeslept < seconds ) return seconds-timeslept;
+	else return 0;
+}
+
+/*}}}*/
+/*{{{  _ignore_signal_handler() */
+
+extern void _ignore_signal_handler(int sig)
+{
+    sig = sig;          /* reference it */
+    return;
+}
+
+/*}}}*/
+/*{{{  _default_signal_handler() */
+
+extern void _default_signal_handler(int sig)
+{
+    _sigexit(0x80|sig);
+}
+
+/*}}}*/
+/*{{{  _error_signal_marker() */
+
+extern void _error_signal_marker(int sig)
+/* This function should NEVER be called - its value is used as a marker     */
+/* return from signal (SIG_ERR).   If someone manages to pass this          */
+/* value back to signal and thence get it invoked we make it behave as      */
+/* if signal got SIG_DFL:                                                   */
+{
+    _default_signal_handler(sig);
+}
+
+/*}}}*/
+/*{{{  savesigmasks() */
+
+void savesigmasks(void)
+{
+	Wait( &siglock );
+	sigchild = inchild;
+	savemask = mask;
+	mask.pending = 0;
+_Trace(0xCCCC0007,MyTask,sigchild);
+	Signal( &siglock );
+}
+
+/*}}}*/
+/*{{{  restoresigmasks() */
+
+void restoresigmasks(void)
+{
+	Wait( &siglock );
+_Trace(0xCCCC0008,MyTask,sigchild);
+	sigchild = 0;
+	mask = savemask;
+	Signal( &siglock );	
+}
+
+/*}}}*/
+/*{{{  tcgetpgrp() */
+
+extern pid_t tcgetpgrp(int fd)
+{
+	fd = fd;
+	CHECKSIGS();
+	return childvec[sigchild].pgrp;
+}
+
+/*}}}*/
+/*{{{  tcsetpgrp() */
+
+/*
+** BLV 15.6.93. The previous behaviour of tcsetpgrp() was unreliable. It
+** installed a new event port, then sent a message to the posix exception
+** handler which made the new event port the main signal port. Unfortunately
+** the previous event port should be free by the server, causing the
+** exception handler to receive an error and allocate a new signal port.
+** Result: a race condition. There was a bug in the I/O Server which meant
+** that the port was not actually freed and the race condition did not arise,
+** but this has been fixed. The tty server was freeing the port, possibly
+** explaining some of the funny ctrl-C behaviour when using it.
+**
+** The new scheme is as follows: tcsetpgrp() sends a message to the current
+** event port containing the file descriptor, and it is the posix exception
+** handler that is responsible for enabling the event. The event port is
+** no longer the same as the signal handler port. Instead the posix exception
+** handler makes use of MultiWait() to receive either events from the
+** window server, signals from various sources, or messages from tcsetpgrp().
+** It is important that tcsetpgrp() does not return until the event has
+** been enabled, therefore it waits for a reply message back from the posix
+** exception handler.
+*/
+extern int tcsetpgrp(int fd, int pid)
+{
+	fdentry	*f;
+	MCB	 mcb;
+	word	 e;
+	Port	 tempport;
+	
+_Trace(0xCCCC0009,MyTask,fd|(pid<<16));	
+	CHECKSIGS();
+
+	if( (f = checkfd(fd)) == NULL ) return -1;
+
+	unless( f->pstream->stream->Flags & Flags_Interactive )
+	{
+		errno = ENOTTY;
+		return -1;
+	}
+
+	/* Note that AbortPort() may not be good enough. The exception handler	*/
+	/* may still be processing some previous message, in which case calling	*/
+	/* AbortPort() would have no effect. PutMsg() blocks until successful.	*/
+
+	tempport		= NewPort();
+	InitMCB(&mcb, 0, EventPort, tempport, 789);
+	mcb.Data		= (BYTE *) &fd;
+	mcb.MsgHdr.DataSize	= sizeof(int);
+
+	e = PutMsg(&mcb);
+	if (e < 0)
+	{
+#ifdef SYSDEB
+		IOdebug("tcsetpgrp: failed to abort event port");
+#endif
+		FreePort(tempport);
+		errno = EPERM;
+		return(-1);
+	}
+	mcb.MsgHdr.Dest	= tempport;
+	mcb.Timeout	= 20 * OneSec;
+	e = GetMsg(&mcb);
+	FreePort(tempport);
+	if (e < 0)
+	{
+#ifdef SYSDEB
+		IOdebug("setpgrp: received error %x back from exception handler", e);
+#endif
+		errno = posix_error(e);
+		return(-1);
+	}
+	return(0);
+}
+
+/*}}}*/
+
+/*}}}*/
+		
+/* end of signal.c */
+
+
+@
+
+
+1.23
+log
+@added folding and suppressed IOdebug about Aborts received on Event port
+@
+text
+@d18 1
+a18 1
+/* $Id: signal.c,v 1.22 1993/09/28 17:18:22 paul Exp $ */
+d329 2
+a330 2
+			elif ( e != 456)	/* 456 == kosha alarm() setup */
+				IOdebug("%s: unexpected error %x received on signal port", MyName, e);
+@
+
+
+1.22
+log
+@fixed up recovery from MultiWait error messages in the signal handler.
+@
+text
+@d1 2
+d8 1
+a8 1
+--             Copyright (C) 1988 - 1992, Perihelion Software Ltd.      --
+d18 1
+a18 2
+/* SccsId:	 %W%	%G% Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: signal.c,v 1.21 1993/09/16 15:18:41 richardp Exp richardp $ */
+d20 2
+d40 3
+d90 7
+d117 2
+d127 2
+a128 1
+#define CHECKSIGS()	if(mask.pending) raise_sync()
+d130 1
+a130 1
+#define MyName	((char *)(MyTask->TaskEntry)+8)
+d160 2
+d294 2
+a295 1
+			IOdebug("%s: Unexpected error %x received on event port", MyName, e);
+a314 3
+#ifdef SYSDEB
+			IOdebug("%s: unexpected error %x received on signal port", MyName, e);
+#endif
+d328 4
+d338 3
+d352 3
+d403 3
+d437 2
+d446 3
+d455 3
+d465 3
+d475 3
+d484 3
+d534 3
+d573 3
+d585 3
+d611 3
+d627 3
+d641 3
+d649 3
+d668 3
+d717 3
+d740 3
+d796 3
+d862 3
+d880 3
+d907 3
+d939 3
+d967 3
+d1031 3
+d1040 3
+d1048 3
+d1060 3
+d1073 3
+d1085 3
+d1095 3
+d1170 4
+@
+
+
+1.21
+log
+@Bart's fix to re-create Signal port if multiwait fails because the
+signalport was invalid
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.20 1993/07/12 10:25:27 nickc Exp richardp $ */
+d299 12
+a310 5
+			if (e < 0)
+			{
+				FreePort(SignalPort);
+				SignalPort	= NewPort();
+				SetSignalPort(SignalPort);
+@
+
+
+1.20
+log
+@fixed warning messages from new compiler
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.19 1993/06/16 11:20:45 bart Exp nickc $ */
+d206 2
+@
+
+
+1.19
+log
+@Major redesign of the posix exception handler and the tcsetpgrp() routine
+in an attempt to eliminate race conditions. The code is still not 100%,
+but it appears to be a fair bit better.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.18 1992/12/10 11:28:28 nickc Exp $ */
+a103 6
+extern int inchild;
+extern int childvecsize;
+extern PCB *childvec;
+extern Port WaitPort;
+extern int number_of_exit_functions;
+extern void (*_exitvector[])(void);
+a104 2
+extern void abortfdv(void);
+
+a108 1
+extern void _sigexit(int sig);
+d549 1
+a549 1
+	struct sigaction new,old;
+d551 3
+a553 3
+	new.sa_handler = func;
+	new.sa_mask = 0;
+	new.sa_flags = SA_SETSIG;
+d555 1
+a555 1
+	if( sigaction(sig,&new,&old) == -1 ) return SIG_ERR;
+d886 2
+a887 2
+		sleepact = Malloc(sizeof(struct sigaction));
+		alarmact = Malloc(sizeof(struct sigaction));
+@
+
+
+1.18
+log
+@added code to catch AbortPort failing in alarm() if SYSDEB is set
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.17 1992/12/02 12:54:54 nickc Exp nickc $ */
+d37 9
+d94 1
+d123 2
+d157 2
+a160 1
+	Port	port = NewPort();
+d164 5
+a168 2
+
+#ifndef __TRAN
+d175 1
+a175 1
+#endif
+d178 1
+a178 1
+	SetSignalPort(port);
+a179 1
+	SignalPort = port;	
+d184 6
+a189 9
+	       unsigned long time = _cputime();
+
+	       
+		mcb.Timeout = AlarmTime;
+		mcb.MsgHdr.Dest = port;
+		mcb.MsgHdr.Reply = NullPort;
+
+	       
+		e = GetMsg(&mcb);
+d191 2
+a192 1
+		if( e == EK_Timeout ) 
+d196 4
+a199 5
+			SysTimeout = 0;
+			AlarmTime = -1;
+#ifdef __TRAN
+		       inner_raise(SIGALRM,TRUE,FALSE);
+#else
+d201 1
+a201 1
+				inner_raise(SIGALRM,TRUE,FALSE);
+d203 10
+d215 2
+d221 1
+a221 2
+		      AlarmTime -= 10000*(int)(((unsigned)_cputime() - time));
+		      
+d225 2
+a226 1
+		if( e >= 0 && mcb.MsgHdr.DataSize == Keyboard_EventSize)
+d229 1
+a229 1
+		 IOdebug("%s: ^C",((char *)(MyTask->TaskEntry)+8));
+d231 1
+a231 7
+		  
+		  _Trace(0xCCCC0001,MyTask,0);
+		  
+		      /* A ^C from our controlling terminal */
+#ifdef __TRAN
+		       inner_raise(SIGINT,TRUE,TRUE);
+#else
+d233 1
+a233 1
+				inner_raise(SIGINT,TRUE,TRUE);
+d235 49
+d285 2
+d289 6
+a294 2
+			      
+		if( (e & (ErrBit|EG_Mask|EE_Signal)) != 
+d296 6
+d303 4
+a306 4
+		      /* Anything else which is not a signal message  */
+			/* causes us to reset the signal port. It is	*/
+			/* also possible for the port to be changed here*/
+			if( e == 789 && mcb.MsgHdr.Reply != NullPort )
+d308 3
+a310 2
+			     FreePort(port);
+				port = mcb.MsgHdr.Reply & ~Port_Flags_Tx;
+a311 11
+#if 1
+			/* re-arrange so tcsetpgrp can immediately send */
+			/* another message to new signal port and  */
+			/* SetSignalPort interaction with IOC will not */
+			/* slow us down. */
+			SignalPort = port;
+			SetSignalPort(port);
+#else
+			SetSignalPort(port);
+			SignalPort = port;
+#endif
+a314 7
+#ifdef __TRAN
+	       inner_raise((int)(e & 0x1f),TRUE,TRUE);
+#else
+		SetPriority(StandardPri);
+			inner_raise((int)(e & 0x1f),TRUE,TRUE);
+		SetPriority(HighServerPri);
+#endif
+d983 21
+d1006 5
+a1010 4
+	Port port;
+	fdentry *f;
+	Stream *s;
+	MCB mcb;
+d1013 1
+a1013 1
+	
+d1016 1
+a1016 3
+	s = f->pstream->stream;
+	
+	unless( s->Flags & Flags_Interactive )
+d1021 12
+a1032 4
+	
+	port = EnableEvents(s, Event_Break);
+	
+	if( port == NullPort )
+a1033 5
+		errno = posix_error(Result2(s));
+		return -1;
+	}
+
+	InitMCB(&mcb,0,SignalPort,port,789);
+d1035 11
+d1047 5
+a1051 5
+		word e = PutMsg(&mcb);
+
+		if (e < 0)
+			IOdebug("%s tcsetpgrp failed to send new signal port error %x",
+				(char *)(MyTask->TaskEntry) + 8, e);
+d1053 1
+a1053 5
+#else
+	PutMsg(&mcb);
+#endif	
+	
+	return 0;
+d1055 2
+d1058 1
+a1058 1
+/* end of signal.c */
+@
+
+
+1.17
+log
+@fixed to work with new Carrier structure
+@
+text
+@d6 1
+a6 1
+--             Copyright (C) 1988, Perihelion Software Ltd.             --
+d17 1
+a17 1
+/* $Id: signal.c,v 1.16 1992/09/11 17:48:59 paul Exp nickc $ */
+d113 4
+a116 1
+static void init_signal(sigset_t sigmask, sigset_t ignore)
+d138 1
+a138 1
+	}	
+d164 2
+a165 2
+	SignalPort = port;
+	AlarmTime = -1;
+d170 2
+d176 1
+d182 1
+d198 1
+d724 4
+a727 1
+static int setuptimeout()
+d739 4
+a742 1
+static void resettimeout(void)
+d763 4
+d768 1
+a768 1
+
+d776 3
+d780 3
+d784 1
+d822 1
+d830 1
+d859 1
+d867 1
+a867 1
+	
+@
+
+
+1.16
+log
+@fixed a few places where siglock could be left locked in error conditions
+made C40 Accelerate same as tranny (signal stack)
+fixed priority problems by lowering priority when coming out of posix
+exception handler (had to be higher so it doesn't corrupt the signal
+port when called very fasffrequently. Removed some dbg.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.15 1992/08/20 09:39:55 paul Exp $ */
+d694 1
+a694 1
+	    ((c.Addr = Malloc(stacksize)) == NULL)) func(sig);
+d699 1
+a699 1
+		Free(c.Addr);
+@
+
+
+1.15
+log
+@raise priority of signal handler to ensure that it can process new signal
+ports sent via tcsetpgrps quickly enough.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.14 1992/06/17 10:08:39 nickc Exp $ */
+d71 1
+a71 1
+/* This macro checks that the signal is not one  of the set that we may	*/
+d88 1
+a88 1
+static int 		SysTimeout;
+d108 1
+a108 1
+static void raise_sync(int arg1);
+d111 1
+a111 1
+#define CHECKSIGS()	if(mask.pending) raise_sync(0)
+d130 1
+a130 1
+		if( (1L << i) & mask.ignore )
+d144 3
+a146 3
+	Port 	port = NewPort();
+	word 	e;
+	MCB 	mcb;
+d150 1
+a150 1
+	/* assure that signal handler can process all new EnableEvents ports */
+d152 3
+d166 1
+a166 1
+		unsigned long time = _cputime();
+d178 7
+a184 1
+			inner_raise(SIGALRM,TRUE,FALSE);
+d190 1
+a190 1
+			AlarmTime -= 10000*(int)(((unsigned)_cputime() - time));
+d196 3
+a198 1
+		  /* IOdebug("%s: ^C",((char *)(MyTask->TaskEntry)+8));	 */
+d202 8
+a209 2
+			/* A ^C from our controlling terminal */
+			inner_raise(SIGINT,TRUE,TRUE);
+d212 1
+a212 1
+				
+d216 1
+a216 1
+			/* Anything else which is not a signal message	*/
+d221 1
+a221 1
+				FreePort(port);
+d238 7
+a244 1
+		inner_raise((int)(e & 0x1f),TRUE,TRUE);
+d271 1
+a271 1
+	if( pid == 0 ) pid = -childvec[sigchild].pgrp;	
+d439 1
+d515 1
+a515 1
+static void raise_sync(int arg1)
+d519 8
+a526 3
+_Trace(0xCCCC000C,MyTask,((word *)&arg1)[-2]);
+_Trace(0xCCCC002C,errno,oserr);
+	if (~mask.mask & mask.pending) _raise_pending_sigs(FALSE,FALSE);
+a528 1
+_Trace(0xCCCC001C,MyTask,((word *)&arg1)[-2]);	
+a535 3
+#if 0
+IOdebug("%s: inner_raise(%d,%d,%d)",((char *)(MyTask->TaskEntry)+8),sig,async,propagate);
+#endif
+d570 1
+a570 1
+	_Trace(0xCCCC0014,MyTask,sig|(async<<8)|(propagate<<16)|(sigchild<<24));
+a578 1
+	
+d657 1
+a657 1
+#if !defined __ARM && !defined __C40
+a658 2
+#endif
+#ifdef __TRAN
+a661 3
+#if 0
+IOdebug("%s: raise %d",((char *)(MyTask->TaskEntry)+8),sig);
+#endif
+d692 1
+a692 4
+#if defined(__ARM) || defined(__C40)
+	func(sig);	/* @@@@@@ must re-introduce Accelerate */
+			/* or compat. fn, so that we can swap stacks with ease */
+#else
+d701 3
+@
+
+
+1.14
+log
+@minor cosmetic changes
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.13 1992/06/15 10:56:57 nickc Exp nickc $ */
+d33 4
+d138 1
+d148 6
+a153 1
+	
+d207 8
+d217 1
+d900 1
+a900 1
+	
+d902 9
+d912 1
+@
+
+
+1.13
+log
+@minor cosmetic changes
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.12 1992/06/11 12:35:44 bart Exp nickc $ */
+d177 4
+a180 2
+/*IOdebug("%s: ^C",((char *)(MyTask->TaskEntry)+8));	*/
+_Trace(0xCCCC0001,MyTask,0);
+d221 1
+a221 1
+_Trace(0xCCCC0002,MyTask,sig|(pid<<16)|(internal<<7));
+d231 1
+a231 1
+	if( !internal && pid == childvec[0].pid ) inner_raise(sig,FALSE,FALSE);
+d242 2
+a243 1
+			  ) dokill(i,sig);
+d260 2
+a261 1
+_Trace(0xCCCC0012,MyTask,sig|(pid<<16)|(internal<<7));
+d270 1
+d282 2
+a283 2
+	if( (e = SendSignal(s,sig)) < 0 )
+	{ 
+d288 4
+a292 2
+	Close(s);
+_Trace(0xCCCC0013,MyTask,sig|(childvec[pcb].pid<<16));	
+d526 2
+a527 1
+_Trace(0xCCCC0014,MyTask,sig|(async<<8)|(propagate<<16)|(sigchild<<24));
+d567 1
+a567 1
+
+d592 1
+a592 1
+	
+a599 1
+
+@
+
+
+1.12
+log
+@SIGSIB is no longer ignored, and can be delivered asynchronously.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.11 1992/04/16 00:31:09 paul Exp bart $ */
+d31 1
+d35 1
+a35 1
+#define S(x) (1<<x)
+d111 1
+a111 2
+	int i;
+	char *sigvec;
+d126 1
+a126 1
+		if( (1<<i) & mask.ignore )
+d153 1
+a153 1
+		unsigned time = _cputime();
+d157 1
+a157 1
+	
+d200 1
+a200 1
+		inner_raise(e&0x1f,TRUE,TRUE);
+d305 1
+a305 1
+	*set |= 1<<sig;
+d312 1
+a312 1
+	*set &= ~(1<<sig);
+d319 1
+a319 1
+	return (*set & (1<<sig)) != 0 ;
+d332 1
+a332 1
+		sigset_t sigbit = (1<<sig);
+d487 1
+a487 1
+	sigbit = 1<<sig;
+a551 1
+	int pending;
+d588 1
+a588 1
+		for( sig = 0; (todo & (1<<sig)) == 0; sig++);
+d607 1
+d609 1
+d621 1
+a621 1
+	sigbit = 1<<sig;
+d674 1
+a674 1
+	
+d677 1
+a677 1
+	return SysTimeout*OneSec;
+d710 1
+a710 1
+	AlarmTime = sec==0?-1:sec*OneSec;
+d713 3
+a715 1
+	AbortPort(SignalPort,456);		
+d753 1
+@
+
+
+1.11
+log
+@fixed for C40
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.10 1991/08/05 12:14:13 nick Exp paul $ */
+d38 1
+a38 1
+			S(SIGINT)|S(SIGKILL)|S(SIGQUIT)|S(SIGTERM))
+d41 1
+a41 1
+#define DFL_IGNORE	(S(SIGCHLD)|S(SIGSIB))
+@
+
+
+1.10
+log
+@Type of sigbit in propagate_signals was int, not sigset_t. This caused an
+infinite loop when passing on SIGKILL since a signed >> was being done, not
+an unsigned one.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.9 1991/06/19 16:27:30 nick Exp $ */
+d52 2
+a53 1
+#ifdef __ARM
+a159 3
+#if 0
+	IOdebug("Posix_exception_handler e = %x e&1f %x, mcb.datasize %d",e,e&0x1f,mcb.MsgHdr.DataSize);
+#endif
+d646 1
+a646 1
+#ifdef __HELIOSARM
+@
+
+
+1.9
+log
+@Several bugs raised by Telmat fixed.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.8 91/02/14 15:20:18 paul Exp $ */
+d481 1
+a481 1
+	int sigbit;
+d538 1
+a538 1
+		int sigbit = mask.propagate & -mask.propagate;
+d540 1
+@
+
+
+1.8
+log
+@added a little debugging and fixed sizeof ^c event to correct manifest
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.7 90/11/22 11:10:50 paul Exp $ */
+d46 23
+a221 3
+	
+	if( sig < 0 || sig >= sizeof(sigset_t)*8)
+	{ errno = EINVAL; e = -1; goto done; }
+d223 2
+d306 1
+a306 2
+	if( sig < 0 || sig >= sizeof(sigset_t)*8)
+	{ errno = EINVAL; return -1; }
+d313 1
+a313 2
+	if( sig < 0 || sig >= sizeof(sigset_t)*8)
+	{ errno = EINVAL; return -1; }
+d320 1
+a320 2
+	if( sig < 0 || sig >= sizeof(sigset_t)*8)
+	{ errno = EINVAL; return -1; }
+d326 1
+a326 2
+	if( sig < 0 || sig >= sizeof(sigset_t)*8)
+	{ errno = EINVAL; return -1; }
+d335 4
+d341 7
+a347 9
+		/* If the default action is to ignore the signal then	*/
+		/* set the action to SIG_IGN. This will cause the bit	*/
+		/* in the ignore mask to be set.			*/
+		if( (sigbit & DFL_IGNORE) && act->sa_handler == SIG_DFL )
+			sigactions[sig].sa_handler = SIG_IGN;
+			
+		/* If action is ignore, set bit in ignore mask,	*/
+		/* else clear it. Also clear any pending signal.*/
+		if( sigactions[sig].sa_handler == SIG_IGN ) 
+d394 3
+d409 1
+a409 1
+	*set = mask.pending;
+d708 1
+@
+
+
+1.7
+log
+@no change
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.6 90/11/16 17:15:19 paul Exp Locker: paul $ */
+a126 1
+
+d133 1
+a133 1
+		
+d136 3
+d154 1
+a154 1
+		if( e >= 0 && mcb.MsgHdr.DataSize == 20 )
+d461 3
+a463 1
+/*IOdebug("%s: inner_raise(%d,%d,%d)",((char *)(MyTask->TaskEntry)+8),sig,async,propagate);*/
+d495 1
+a495 1
+		
+d590 4
+a593 1
+/*IOdebug("%s: raise %d",((char *)(MyTask->TaskEntry)+8),sig);*/
+@
+
+
+1.6
+log
+@added extern int inchild ref
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.5 90/11/15 17:43:18 nick Exp Locker: paul $ */
+@
+
+
+1.5
+log
+@large number of changes to improve signal behaviour. tcsetpgrp() now
+sets up task as ^C handler for a stream, signals are now propagated
+to children, process groups are implemented, signal masks are saved
+across vfork/exec sequences, signals are not allowed during vforks.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.4 90/10/11 13:36:02 nick Exp $ */
+d65 1
+@
+
+
+1.4
+log
+@if a signal is set to SIG_DFL and the default behaviour is asynchronous
+delivery, the bit is set is sig_async.
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.3 90/10/02 15:56:44 nick Exp Locker: nick $ */
+d30 1
+d32 2
+d41 4
+a44 1
+#define DFL_IGNORE	S(SIGCHLD)|S(SIGSIB)
+d46 2
+a47 4
+STATIC sigset_t		sig_pending;	/* set of pending signals */
+STATIC sigset_t		sig_mask;	/* set of masked signals  */
+STATIC sigset_t		sig_ignore;	/* signals to be ignored  */
+static sigset_t		sig_async;	/* signals which may be delivered asyncronously */
+d63 2
+d74 1
+a74 1
+static int inner_raise(int sig, bool async);
+d78 2
+a79 1
+static void raise_sync(void);
+d81 1
+a81 1
+#define CHECKSIGS()	if(sig_pending) raise_sync()
+d83 1
+a83 1
+static void init_signal(sigset_t mask, sigset_t ignore)
+d87 7
+a94 6
+	InitSemaphore(&siglock,1);
+	sig_pending = 0;
+	sig_mask = mask;
+	sig_async = DFL_ASYNC;
+	sig_ignore = ignore|DFL_IGNORE;
+
+d101 1
+a101 1
+		if( (1<<i) & sig_ignore )
+d117 3
+d126 1
+a126 2
+	mcb.MsgHdr.Dest = port;
+	
+d131 3
+a133 1
+
+d141 1
+a141 1
+			inner_raise(SIGALRM,TRUE);
+d150 10
+a159 1
+		
+d161 14
+a174 1
+		 (ErrBit|EG_Exception|EE_Signal) ) continue;
+d176 1
+a176 1
+		inner_raise(e&0x1f,TRUE);
+d180 2
+d184 9
+a192 1
+	int i,pcb = 0;
+d194 2
+a195 2
+	
+	CHECKSIGS();
+d199 9
+a207 2
+	
+	if( pid <= 0 )
+d209 3
+a211 1
+		for( i = 1 ; i < childvecsize ; i++ )
+d213 5
+a217 2
+			pcb = i; 
+			dokill(pcb,sig);
+d219 1
+a219 1
+		if( pid == 0 ) raise(sig);
+d223 2
+d234 1
+a234 1
+	CHECKSIGS();
+d241 2
+a242 1
+
+d248 3
+a250 3
+	
+	s = NewStream(childvec[pcb].stream->Name,&childvec[pcb].stream->Access,O_WriteOnly);
+	
+d253 2
+a254 2
+	
+	if( SendSignal(s,sig) < 0 )
+d262 1
+d275 1
+a275 1
+	*set = 0x7fff;
+d316 3
+a318 3
+		/* Default action for SIGCHLD is to ignore it	*/
+		/* default action for all others is terminate	*/
+		
+d322 2
+a323 2
+		/* if action is ignore, set bit in ignore mask,	*/
+		/* else clear it. Also clear any pending signal	*/
+d326 2
+a327 2
+			sig_ignore |= sigbit;
+			sig_pending &= ~sigbit;
+d329 1
+a329 1
+		else sig_ignore &= ~sigbit;
+d331 1
+a331 1
+		/* if async flag is set, allow async delivery	*/
+d335 1
+a335 1
+		if( sigactions[sig].sa_flags & SA_ASYNC ) sig_async |= sigbit;
+d337 2
+a338 2
+			 (sigbit & DFL_ASYNC) ) sig_async |= sigbit;
+		else sig_async &= ~sigbit;
+d352 1
+a352 1
+	if( oset != NULL ) *oset = sig_mask;
+d359 1
+a359 1
+		sig_mask |= *set;
+d362 1
+a362 1
+		sig_mask &= ~(*set);
+d365 1
+a365 1
+		sig_mask = *set;
+d383 1
+a383 1
+	*set = sig_pending;
+d395 1
+a395 1
+	old = sig_mask;
+d397 1
+a397 1
+	sig_mask = *set;
+d405 1
+a405 1
+	sig_mask = old;
+d432 1
+d438 1
+a438 1
+	inner_raise(sig,FALSE);
+d441 1
+a441 1
+static void raise_sync(void)
+d444 4
+a447 2
+
+	if (~sig_mask & sig_pending) _raise_pending_sigs(FALSE,FALSE);
+d449 2
+d453 1
+a453 1
+static int inner_raise(int sig, bool async)
+d456 3
+a458 1
+
+d462 18
+d481 1
+a481 1
+	Wait(&siglock);
+d483 2
+d490 1
+a490 3
+	
+	unless( sig_ignore & sigbit ) sig_pending |= sigbit;
+	
+d493 1
+d499 20
+d529 7
+a546 11
+	
+	pending = ~sig_mask & sig_pending;
+
+	while( (todo = (~sig_mask & sig_pending & (async?sig_async:-1))) != 0 )
+	{
+		int sig;
+		for( sig = 0; (todo & (1<<sig)) == 0; sig++);
+		_raise(sig);
+		pending |= ~sig_mask & sig_pending;
+	}
+	
+d548 1
+a548 1
+	if( Async && pending != 0 ) 
+d550 1
+d559 8
+d568 3
+a570 1
+	
+d585 2
+d592 1
+a592 1
+	if( (sig_mask & sigbit) != 0 ) return;
+d605 1
+a605 1
+	oldmask = sig_mask;
+d607 1
+a607 1
+	sig_mask = oldmask | sigactions[sig].sa_mask | sigbit;
+d609 1
+a609 1
+	sig_pending &= ~sigbit;		/* this signal no longer pending */
+d630 1
+d632 3
+a634 2
+	/* we finish by restoring the sig_mask to the original value */
+	sig_mask = oldmask;
+d787 38
+d826 20
+@
+
+
+1.3
+log
+@bug in kill fixed
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.2 90/09/25 19:27:17 paul Exp $ */
+d272 2
+d276 2
+@
+
+
+1.2
+log
+@arm changes
+@
+text
+@d17 1
+a17 1
+/* $Id: signal.c,v 1.1 90/09/05 13:29:35 nick Exp $ */
+d159 4
+a162 5
+			if( childvec[i].pid == pid ) 
+			{
+				pcb = i; 
+				dokill(pcb,sig);
+			}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+/* $Id$ */
+d466 1
+d468 1
+d498 4
+d510 1
+a510 1
+
+@

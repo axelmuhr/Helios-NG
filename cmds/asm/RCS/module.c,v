@@ -1,0 +1,1256 @@
+head	1.7;
+access;
+symbols
+	Helios1_3:1.6
+	Helios13_beta:1.5
+	Helios1_2_2:1.5
+	Helios1_2_2Beta:1.5
+	Helios1_2_1:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.7
+date	94.08.09.16.43.25;	author al;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.09.25.10.41.21;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.06.07.07.30.14;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	91.03.28.15.14.11;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.28.13.20.22;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.11.18.34.27;	author jon;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.24.16.35.23;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Ported to MS-DOS under WATCOM
+@
+text
+@/************************************************************************/
+/*                                                                      */
+/* File: module.c                                                       */
+/*                                                                      */
+/* Changes:                                                             */
+/*      NHG  07-July-87  : Created                                      */
+/*                                                                      */
+/* Description:                                                         */
+/*      module manipualtion routines                                    */
+/*                                                                      */
+/*                                                                      */
+/* Copyright (c) 1987, Perihelion Software Ltd. All Rights Reserved.    */
+/************************************************************************/
+/* $Id: module.c,v 1.6 1992/09/25 10:41:21 paul Exp $ */
+
+#include "asm.h"
+
+#ifdef __STDC__
+#include <stdlib.h>
+#endif
+
+#define trace 	if (traceflags & db_modules) _trace
+
+#define modtabinc 128 /*64*/
+
+PUBLIC VMRef 	module0;
+PUBLIC VMRef 	curmod;
+PUBLIC VMRef 	firstmodule;
+PUBLIC VMRef 	tailmodule;
+
+PRIVATE word 	maxmodules    = 0;
+PRIVATE word 	linkedmodules = 0;
+PRIVATE word 	highmodule    = 0;
+PRIVATE VMRef *	modtab        = NULL;
+PRIVATE word 	modtabend     = 0;
+
+#ifdef __DOS386
+
+void linkmodule( VMRef v );
+void dorefs( VMRef mod );
+static void extendmodtab( void );
+
+#else /* !__DOS386 */
+
+void linkmodule( ellipsis );
+void addref( ellipsis );
+void dorefs( ellipsis );
+static void extendmodtab( ellipsis );
+
+#endif /* __DOS386 */
+
+#ifdef NEW_REF
+
+VMRef		ref_start;
+VMRef		ref_end;
+
+#else
+
+typedef struct FwdRef
+  {
+    struct FwdRef * 	next;
+    VMRef		sym;
+  }
+FwdRef;
+
+FwdRef *	fwdrefs = NULL;
+FwdRef *	fwdfree = NULL;
+
+#endif
+
+PUBLIC void
+initmodules()
+{
+  asm_Module *	m0;
+	
+
+  firstmodule = NullVMRef;
+	
+  tailmodule = curmod = module0 = VMNew( sizeof (asm_Module) );
+
+  m0 = VMAddr( asm_Module, module0 );
+  
+  m0->next   = NullVMRef;
+  m0->refs   = NullVMRef;
+  m0->id     = 0;
+  m0->linked = TRUE;
+  m0->start  = codeptr();
+	
+#ifdef NEW_REF
+  ref_end   = module0;		/* fake addr */
+  ref_start = ref_end;
+#endif
+
+  VMlock( curmod );	/* current module page is always locked */
+
+  return;
+}
+
+/****************************************************************/
+/* Procedure: setmodules                                        */
+/* Description:                                                 */
+/*      assign table slots to the modules                       */
+/*                                                              */
+/****************************************************************/
+
+PUBLIC void
+setmodules()
+{
+  VMRef 	v;
+  asm_Module *	m;
+  int 		lastm = 1;
+  int 		i;
+  int 		maxmodule = 0;
+
+  
+  trace( "Setmodules" );
+
+  VMunlock( curmod );
+  
+  /* first assign all known modules */
+  
+  v = module0;
+  
+  while ( !NullRef( v ) )
+    {
+      m = VMAddr( asm_Module, v );
+      
+      if ( m->id != -1 )
+	{
+	  while ( m->id >= modtabend )
+	    extendmodtab();
+	  
+	  if ( !NullRef( modtab[ m->id ] ) )
+	    error( "Multiple definition of module %d", m->id );
+	  
+	  modtab[ m->id ] = v;
+
+	  trace( "Pre-defined module %x[%x] at %d", v, m, m->id );
+
+	  if ( m->id > maxmodule )
+	    maxmodule = m->id;
+	}
+      
+      v = m->next;
+      
+      linkedmodules++;
+    }
+  
+  /* now assign the unknowns */
+  
+  v = module0;
+  
+  while ( !NullRef( v ) )
+    {
+      m = VMAddr( asm_Module, v );
+      
+      if ( m->id == -1 ) 
+	{
+	  while ( !NullRef( modtab[ lastm ] ) ) 
+	    {
+	      lastm++;
+	      
+	      if ( lastm >= modtabend )
+		extendmodtab();
+	    }
+	  
+	  modtab[ lastm ] = v;
+	  
+	  m->id = lastm;
+	  
+	  VMDirty( v );
+
+	  trace( "Assign module %x[%x] to %d", v, m, lastm );
+
+	  if ( m->id > maxmodule )
+	    maxmodule = m->id;
+	}
+      
+      v = m->next;
+    }
+  
+  highmodule = maxmodule;
+  
+  /* now we re-build the module list with firstmodule first, but all 	*/
+  /* the others in numerical order.				  	*/
+  
+  curmod = module0;
+  
+  if ( !NullRef( firstmodule ) )
+    {
+      VMDirty( curmod );
+      
+      m = VMAddr( asm_Module, curmod );
+      
+      curmod = m->next = firstmodule;
+      
+      for ( i = 1; i <= maxmodule ; i++ )
+	if ( !NullRef( modtab[ i ] ) && 
+	   !VMSame( modtab[ i ], firstmodule ) ) 
+	  {
+	    VMDirty( curmod );
+	    
+	    m = VMAddr( asm_Module, curmod );
+
+	    trace( "Added module %x[%x] %d to list", curmod, m, m->id );
+
+	    curmod = m->next = modtab[ i ];
+	  }
+    }
+  
+  /* null at the end of the list */
+  
+  m = VMAddr( asm_Module, curmod );
+  
+  trace( "Last module = %x %d", curmod, m->id );
+  
+  m->next = NullVMRef;
+  
+  VMDirty( curmod );
+
+  return;
+}
+
+/****************************************************************/
+/* refsymbol                                        		*/
+/*								*/
+/* The given symbol has been referenced, if it is a global	*/
+/* symbol, ensure that its defining module is in the module	*/
+/* list. This only makes a difference for library modules.	*/
+/*                                                              */
+/****************************************************************/
+
+void
+refsymbol_def( v )
+  VMRef v;
+{
+  Symbol *	s = VMAddr( Symbol, v );
+
+  
+  /* if this is a label definition, and it has been referenced,	*/
+  /* then add it to the link.					*/
+
+  if ( s->global && s->referenced )
+    linkmodule( v );
+}
+
+void
+refsymbol_nondef( v )
+  VMRef v;
+{
+  Symbol *	s = VMAddr( Symbol, v );
+
+  
+  /* if this is a label definition, and it has been referenced,	*/
+  /* then add it to the link.					*/
+
+  /* This is a reference to a symbol. If we already know	*/
+  /* the current module is to be linked, just cause the	*/
+  /* refrenced module to be linked too. Otherwise if it is*/
+  /* unbound, or for a different module, add it to the 	*/
+  /* forward reference list.				*/
+
+  if ( s->type != s_unbound && VMAddr( asm_Module, curmod )->linked )
+    {
+      linkmodule( v );
+    }
+  else if ( s->type == s_unbound || !VMSame( curmod, s->module ) )
+    {
+#ifdef NEW_REF
+      if (VMSame( s->fwd_ref, NullVMRef ))
+	{
+	  s->fwd_ref = ref_start;
+	  ref_start  = v;
+
+	  VMDirty( v );
+	}
+#else
+      FwdRef *	fwd;
+      
+      
+      for( fwd = fwdrefs; fwd != NULL; fwd = fwd->next ) 
+	if ( VMSame( fwd->sym, v ) )
+	  return;
+      
+      fwd = fwdfree;
+      
+      if ( fwd == NULL )
+	fwd = (FwdRef *)alloc( sizeof (FwdRef) );
+      else
+	fwdfree = fwd->next;
+      
+      fwd->next = fwdrefs;
+      fwd->sym = v;
+      fwdrefs = fwd;
+#endif
+    }
+
+  return;
+}
+
+/* linkmodule is called when we have decided that the module referenced	*/
+/* by the symbol is to be added to the link. If the symbol is as-yet	*/
+/* unbound the referenced flag is set to cause it to be linked when	*/
+/* defined. If the module is already linked nothing else need be done.	*/
+/* Otherwise the module is marked as linked and added to the link list.	*/
+
+void
+linkmodule( v )
+  VMRef 	v;
+{
+  Symbol *	s = VMAddr( Symbol, v );
+  asm_Module *	m;
+
+
+  s->referenced = 1;
+
+  VMDirty( v );
+
+  if ( s->type == s_unbound )
+    {
+      return;	/* return if not yet bound */
+    }
+  
+  m = VMAddr( asm_Module, s->module );
+  
+  if ( m->linked )
+    {
+      return;		/* return if module already linked */
+    }  
+
+  trace( "link module %x symbol %s", s->module, s->name );
+
+  m->linked = TRUE;
+  m = VMAddr( asm_Module, tailmodule );
+
+  VMDirty( tailmodule );
+
+  tailmodule = m->next = s->module;
+
+  VMDirty( s->module );	
+
+  dorefs( s->module );
+
+  return;
+}
+
+/* Called when a new module is created. If the input file is not a	*/
+/* library the module is linked. The VM page containing the current	*/
+/* module is always kept locked.					*/
+
+VMRef
+startmodule( mod )
+  WORD mod;
+{
+  VMRef 	v = VMNew( sizeof (asm_Module) );
+  asm_Module *	m = VMAddr( asm_Module, v );
+  extern int 	filemod;
+  int 		i;
+
+
+  trace( "startmodule %x", v );
+  
+  VMlock( v );
+  
+  m->next   = NullVMRef;
+  m->start  = codeptr();
+  m->refs   = NullVMRef;        
+  m->id     = mod;
+  m->linked = FALSE;
+  m->file   = curfile;
+  
+  for ( i = 0; i < LOCAL_HASHSIZE ; i++ )
+    {
+      m->symtab[ i ].head    = NullVMRef;
+      m->symtab[ i ].entries = 0;
+    }
+  
+  /* if this is a library module, we do not link it by default but	*/
+  /* only if it is referenced.						*/
+  
+  if ( !inlib )
+    {
+      asm_Module *	tm = VMAddr( asm_Module, tailmodule );
+      
+      tailmodule = tm->next = v;
+      m->linked  = TRUE;
+      
+      if ( NullRef( firstmodule ) )
+	firstmodule = v;
+    }
+  
+  VMunlock( curmod );
+  
+  curmod = v;
+  
+  maxmodules++;
+  
+  trace( "new module %x %d in %s", curmod, filemod, infile );
+  
+  /* leave new curmod locked */
+
+  return v;
+}
+
+/* Endmodule is called at the end of each module. The forward reference	*/
+/* list is scanned and any unbound refs, or refs to unlinked modules 	*/
+/* kept. If the current module is to be linked, linkmodule is called on	*/
+/* each of these. Otherwise these are placed in Virtual Memory for later*/
+/* use.									*/
+
+void
+endmodule()
+{
+  VMRef 	v = NullVMRef;
+  VMRef *	p;
+  Symbol *	s;
+  asm_Module *	m;
+#ifdef NEW_REF
+  VMRef		fwd;
+  VMRef		prev;  
+#else
+  FwdRef *	fwd;
+  FwdRef *	prev;
+  FwdRef *	next;
+#endif
+  int 		nrefs = 0;	
+  int 		i;
+  bool 		linked = VMAddr( asm_Module, curmod )->linked;
+
+  
+  trace( "endmodule %x", curmod );
+  
+  /* first scan fwdrefs & throw out all local & refs to linked modules */
+
+#ifdef NEW_REF
+  prev = NullVMRef;
+
+  for (fwd = ref_start; !VMSame( fwd, ref_end );)
+    {
+      s = VMAddr( Symbol, fwd );
+
+      if ((s->type == s_unbound) ||
+	 (s->global && !VMSame( curmod, s->module ) && !VMAddr( asm_Module, s->module )->linked) )
+	{
+	  nrefs++;
+
+	  prev = fwd;
+
+	  fwd = s->fwd_ref;
+	}
+      else
+	{
+	  /* remove from forward reference list */
+
+	  if (VMSame( prev, NullVMRef ))
+	    ref_start = s->fwd_ref;
+	  else
+	    {
+	      Symbol *	p = VMAddr( Symbol, prev );
+
+	      
+	      p->fwd_ref = s->fwd_ref;
+	    }
+
+	  fwd = s->fwd_ref;
+	  
+	  s->fwd_ref = NullVMRef;
+
+	  VMDirty( fwd );
+	}
+    }
+#else
+  for ( fwd = fwdrefs,prev = NULL; fwd != NULL; )
+    {
+      s = VMAddr( Symbol, fwd->sym );
+      
+      if ((s->type == s_unbound) ||
+	 (s->global && !VMSame( curmod, s->module ) && !VMAddr( asm_Module, s->module )->linked) )
+	{
+	  nrefs++;
+	  
+	  prev = fwd;
+	  fwd  = fwd->next;
+	}
+      else
+	{
+	  next = fwd->next;
+
+	  if ( prev == NULL )
+	    fwdrefs = next;
+	  else
+	    prev->next = next;
+	  
+	  fwd->next = fwdfree;
+	  fwdfree   = fwd;
+	  fwd       = next;
+	}
+    }
+#endif /* NEW_REF */
+  
+  /* the fwdrefs list now only contains unbound refs or refs to		*/
+  /* currently un-linked modules. nrefs is the number of these.		*/
+  /* If we know that this module is to be linked, just mark all		*/
+  /* symbols as referenced, otherwise make a list of these refs		*/
+  /* in virtual memory for use when the module is linked.		*/
+  
+  trace( "unbound refs %d %slinked", nrefs, linked ? "" : "un" );
+
+  if ( nrefs != 0 ) 
+    {
+      if ( !linked )
+	{
+	  v = VMNew( sizeof (VMRef) * (nrefs + 1) );
+	  
+	  VMDirty( v );
+
+#ifdef NEW_REF
+	  for (fwd = ref_start, i = 0; i < nrefs; i++)
+	    {
+	      p = VMAddr( VMRef, v );
+	      
+	      p[ i ] = fwd;
+
+	      s = VMAddr( Symbol, fwd );
+
+	      fwd = s->fwd_ref;
+	      
+	      s->fwd_ref = NullVMRef;
+
+	      VMDirty( fwd );
+	    }
+
+	  p = VMAddr( VMRef, v );
+#else	  
+	  p = VMAddr( VMRef, v );
+
+	  for ( i = 0; fwdrefs != NULL; i++ )
+	    {
+	      fwd = fwdrefs;
+	  
+	      
+	      p[ i ] = fwd->sym;
+	  
+	      fwdrefs   = fwd->next;
+	      fwd->next = fwdfree;
+	      fwdfree   = fwd;
+	    }
+#endif /* NEW_REF */
+	  
+	  p[ nrefs ] = NullVMRef;
+	}
+      else
+	{
+#ifdef NEW_REF
+	  for (fwd = ref_start; !VMSame( fwd, ref_end );)
+	    {
+	      linkmodule( fwd );
+	      
+	      s = VMAddr( Symbol, fwd );
+
+	      fwd = s->fwd_ref;
+
+	      s->fwd_ref = NullVMRef;
+
+	      VMDirty( fwd );
+	    }
+#else
+	  for ( i = 0; fwdrefs != NULL; i++ )
+	    {
+	      fwd = fwdrefs;
+	  
+	      linkmodule( fwd->sym );
+	  
+	      fwdrefs   = fwd->next;
+	      fwd->next = fwdfree;
+	      fwdfree   = fwd;
+	    }
+#endif
+	}
+
+#ifdef NEW_REF
+      ref_start = ref_end;
+#endif
+    }
+
+  m = VMAddr( asm_Module, curmod );
+  
+  m->refs = v;
+  
+  VMDirty( curmod );
+  
+  trace( "endmodule %x done", curmod );
+
+  return;
+}
+
+/* dorefs is called when a module is to be linked. It applies	*/
+/* linkmodule to each entry in the pending ref list.		*/
+
+void
+dorefs( mod )
+  VMRef 	mod;
+{
+  asm_Module *	m = VMAddr( asm_Module, mod );
+  VMRef 	r = m->refs;
+  VMRef *	p;
+  int 		i;
+
+  
+  if ( NullRef( r ) )
+    return;
+
+  trace( "scanning refs for %x", mod );
+
+  VMlock( r );
+  
+  p = VMAddr( VMRef, r );
+  
+  for (i = 0; !NullRef( p[ i ] ); i++ ) 
+    {
+      linkmodule( p[ i ] );
+   }
+  
+  VMunlock( r );
+
+  trace ( "refs scanned" );
+  
+  return;
+}
+
+
+static void
+extendmodtab()
+{
+  int 		i;
+  VMRef *	newtab;
+
+  
+  newtab = (VMRef *)malloc( (modtabinc + modtabend) * sizeof (VMRef) );
+  
+  if ( newtab == NULL )
+    error( "Cannot get space for module table" );
+  
+  trace( "Extending modtab from %x[%d] to %x[%d]", modtab, modtabend, newtab, modtabend + modtabinc );
+  
+  for( i = modtabend ; i < modtabend + modtabinc ; i++ ) newtab[ i ] = NullVMRef;
+  for( i = 0 ;         i < modtabend ;             i++ ) newtab[ i ] = modtab[ i ];
+
+  if (modtab != NULL)
+    free( modtab );
+  
+  modtab     = newtab;
+  modtabend += modtabinc;
+
+  return;
+}
+
+void
+modstats()
+{
+  report( "Link Statistics: Total Modules  %8ld Linked Modules %8ld", maxmodules, linkedmodules - 1 );	
+  report( "                 Highest Module %8ld", highmodule );
+
+  return;
+}
+
+/*  -- End of module.c -- */
+
+@
+
+
+1.6
+log
+@Cleaned up all the different flags used into a standard coherent set. The
+asm now builds for all targets correctly again
+@
+text
+@d14 1
+a14 1
+/* $Id: module.c,v 1.5 1991/06/07 07:30:14 nickc Exp $ */
+d37 8
+d48 1
+d50 2
+a69 3
+
+
+static void extendmodtab( ellipsis );
+@
+
+
+1.5
+log
+@new improved version (50% speed increase)
+@
+text
+@d14 1
+a14 1
+/* $Id: module.c,v 1.4 1991/03/28 15:14:11 nick Exp $ */
+d18 1
+a18 1
+#ifdef NORCROFT
+@
+
+
+1.4
+log
+@module file field initialized.
+@
+text
+@d14 1
+a14 1
+/* $Id: module.c,v 1.3 90/09/28 13:20:22 nick Exp $ */
+d22 1
+a22 3
+/*#define trace if(traceflags&db_modules)_trace*/
+#define trace if(traceflags&db_modules)_trace
+#define	TRACE	1
+d24 1
+a24 1
+#define modtabinc 64
+d26 4
+a29 4
+PUBLIC VMRef module0;
+PUBLIC VMRef curmod;
+PUBLIC VMRef firstmodule;
+PUBLIC VMRef tailmodule;
+d31 5
+a35 5
+PRIVATE word maxmodules = 0;
+PRIVATE word linkedmodules = 0;
+PRIVATE word highmodule = 0;
+PRIVATE VMRef *modtab;
+PRIVATE word modtabend = 0;
+d37 3
+a39 3
+void linkmodule(ellipsis);
+void addref(ellipsis);
+void dorefs(ellipsis);
+d41 1
+a41 4
+typedef struct FwdRef {
+	struct FwdRef	*next;
+	VMRef		sym;
+} FwdRef;
+d43 2
+a44 2
+FwdRef *fwdrefs = NULL;
+FwdRef *fwdfree = NULL;
+d46 1
+a46 1
+static void extendmodtab(ellipsis);
+d48 17
+a64 1
+PUBLIC void initmodules()
+d66 1
+a66 1
+	Module *m0;
+d68 2
+a69 1
+	firstmodule = NullVMRef;
+d71 9
+a79 7
+	tailmodule = curmod = module0 = VMNew(sizeof(Module));
+	m0 = VMAddr(Module,module0);
+	m0->next = NullVMRef;
+	m0->refs = NullVMRef;
+	m0->id = 0;
+	m0->linked = TRUE;
+	m0->start = codeptr();
+d81 8
+a88 1
+	VMlock(curmod);	/* current module page is always locked */
+d98 2
+a99 1
+PUBLIC void setmodules()
+d101 5
+a105 5
+	VMRef v;
+        Module *m;
+        int lastm = 1;
+        int i;
+        int maxmodule = 0;
+d107 2
+a108 6
+#if TRACE
+        trace("Setmodules");
+#else
+	if(traceflags&db_modules);
+#endif
+	VMunlock(curmod);
+d110 19
+a128 1
+        /* first assign all known modules */
+d130 1
+a130 20
+        v = module0;
+        while( !NullRef(v) )
+        {
+        	m = VMAddr(Module,v);
+                if( m->id != -1 )
+                {
+                        while( m->id >= modtabend ) extendmodtab();
+                        if( !NullRef(modtab[m->id]) )
+                                error("Multiple definition of module %d",m->id);
+                        modtab[m->id] = v;
+#if TRACE
+                        trace("Pre-defined module %x[%x] at %d",v,m,m->id);
+#else
+	if(traceflags&db_modules);
+#endif
+			if( m->id > maxmodule ) maxmodule = m->id;
+                }
+                v = m->next;
+                linkedmodules++;
+        }
+d132 32
+a163 25
+	
+        /* now assign the unknowns */
+        v = module0;
+        while( !NullRef(v) )
+        {
+        	m = VMAddr(Module,v);
+                if( m->id == -1 ) 
+                {
+                        while( !NullRef(modtab[lastm]) ) 
+                        {
+                        	lastm++;
+	                        if( lastm >= modtabend ) extendmodtab();
+	                }
+                        modtab[lastm] = v;
+                        m->id = lastm;
+                        VMDirty(v);
+#if TRACE
+                        trace("Assign module %x[%x] to %d",v,m,lastm);
+#else
+	if(traceflags&db_modules);
+#endif
+                        if( m->id > maxmodule ) maxmodule = m->id;
+                }
+                v = m->next;
+        }
+d165 1
+a165 4
+	highmodule = maxmodule;
+        
+	/* now we re-build the module list with firstmodule first, but all */
+	/* the others in numerical order.				  */
+d167 2
+a168 21
+	curmod = module0;
+	
+	if( !NullRef(firstmodule) )
+	{
+		VMDirty(curmod);
+		m = VMAddr(Module,curmod);
+		curmod = m->next = firstmodule;
+					
+		for( i = 1; i <= maxmodule ; i++ )
+			if( !NullRef(modtab[i]) && 
+				!VMSame(modtab[i],firstmodule) ) 
+			{
+				VMDirty(curmod);
+				m = VMAddr(Module,curmod);
+#if TRACE
+				trace("Added module %x[%x] %d to list",curmod,m,m->id);
+#else
+	if(traceflags&db_modules);
+#endif
+				curmod = m->next = modtab[i];
+			}
+d170 44
+a213 10
+	
+	/* null at the end of the list */
+	m = VMAddr(Module,curmod);
+#if TRACE
+	trace("Last module = %x %d",curmod,m->id);
+#else
+	if(traceflags&db_modules);
+#endif
+	m->next = NullVMRef;
+	VMDirty(curmod);
+d225 3
+a227 3
+void refsymbol(v,def)
+VMRef v;
+WORD def;
+d229 34
+a262 5
+	if( preasm ) return;
+	
+	/* if this is a label definition, and it has been referenced,	*/
+	/* then add it to the link.					*/
+	if( def )
+d264 4
+a267 8
+		Symbol *s = VMAddr(Symbol,v);
+#if 000
+		trace("def %s %sbound %s %sreferenced",s->name,
+						s->type==s_unbound?"un":"",
+						s->global?"global":"local",
+						s->referenced?"":"un");
+#endif
+		if( s->global && s->referenced ) linkmodule(v);
+d269 18
+a286 13
+	else
+	{
+		/* This is a reference to a symbol. If we already know	*/
+		/* the current module is to be linked, just cause the	*/
+		/* refrenced module to be linked too. Otherwise if it is*/
+		/* unbound, or for a different module, add it to the 	*/
+		/* forward reference list.				*/
+		Symbol *s = VMAddr(Symbol,v);
+#if 000
+		trace("ref %s %sbound %s %sternal",s->name,
+						s->type==s_unbound?"un":"",
+						s->global?"global":"local",
+						VMSame(curmod,s->module)?"in":"ex");
+d288 3
+a290 15
+		if( s->type != s_unbound && VMAddr(Module,curmod)->linked ) linkmodule(v);
+		else if( s->type == s_unbound || !VMSame(curmod,s->module) )
+		{
+			FwdRef *fwd;
+			for( fwd = fwdrefs; fwd != NULL; fwd=fwd->next ) 
+				if( VMSame(fwd->sym,v) ) return;
+				
+			fwd = fwdfree;
+			if( fwd == NULL ) fwd = (FwdRef *)alloc(sizeof(FwdRef));
+			else fwdfree = fwd->next;
+			fwd->next = fwdrefs;
+			fwd->sym = v;
+			fwdrefs = fwd;
+		}
+	}
+d298 4
+a301 2
+void linkmodule(v)
+VMRef v;
+d303 2
+a304 2
+	Symbol *s = VMAddr(Symbol,v);
+	Module *m;
+a305 2
+	s->referenced++;
+	VMDirty(v);
+d307 30
+a336 17
+	if( s->type == s_unbound ) return;	/* return if not yet bound */
+	
+	m = VMAddr(Module,s->module);
+	
+	if ( m->linked ) return;		/* return if module already linked */
+	
+#if TRACE
+	trace("link module %x symbol %s",s->module,s->name);
+#else
+	if(traceflags&db_modules);
+#endif	
+	m->linked = TRUE;
+	m = VMAddr(Module,tailmodule);
+	VMDirty(tailmodule);
+	tailmodule = m->next = s->module;
+	VMDirty(s->module);	
+	dorefs(s->module);
+d342 4
+a345 2
+VMRef startmodule(mod)
+WORD mod;
+d347 4
+a350 32
+        VMRef v = VMNew(sizeof(Module));
+	Module *m = VMAddr(Module,v);
+	extern int filemod;
+        int i;
+#if TRACE
+	trace("startmodule %x",v);
+#else
+	if(traceflags&db_modules);
+#endif
+	VMlock(v);
+		
+	m->next = NullVMRef;
+        m->start = codeptr();
+	m->refs = NullVMRef;        
+        m->id = mod;
+        m->linked = FALSE;
+        m->file = curfile;
+        for( i = 0; i < HASHSIZE ; i++ ) m->symtab[i].head = NullVMRef,
+        				 m->symtab[i].entries = 0;
+	
+	/* if this is a library module, we do not link it by default but*/
+	/* only if it is referenced.					*/
+	if( !inlib )
+	{
+		Module *tm = VMAddr(Module,tailmodule);
+		tailmodule = tm->next = v;
+       		m->linked = TRUE;
+	       	if( NullRef(firstmodule) ) firstmodule = v;
+	}
+	
+       	VMunlock(curmod);
+        curmod = v;
+d352 43
+a394 7
+	maxmodules++;
+#if TRACE
+	trace("new module %x %d in %s",curmod,filemod,infile);	
+#else
+	if(traceflags&db_modules);
+#endif   
+	/* leave new curmod locked */
+d403 2
+a404 1
+void endmodule()
+d406 7
+a412 12
+	VMRef v = NullVMRef;
+	VMRef *p;
+	Symbol *s;
+	Module *m;
+	FwdRef *fwd;
+	FwdRef *prev;
+	FwdRef *next;
+	int nrefs = 0;	
+	int i;
+	bool linked = VMAddr(Module,curmod)->linked;
+#if TRACE
+	trace("endmodule %x",curmod);
+d414 22
+a435 4
+	if(traceflags&db_modules);
+#endif	
+	/* first scan fwdrefs & throw out all local & refs to linked modules */
+	for( fwd=fwdrefs,prev=NULL; fwd!=NULL; )
+d437 5
+a441 12
+		s = VMAddr(Symbol,fwd->sym);
+		if((s->type==s_unbound) ||
+		   (s->global && !VMSame(curmod,s->module) && !VMAddr(Module,s->module)->linked) )
+		{ nrefs++; prev = fwd; fwd=fwd->next; }
+		else {
+			next = fwd->next;
+			if( prev == NULL ) fwdrefs = next;
+			else prev->next = next;
+			fwd->next = fwdfree;
+			fwdfree = fwd;
+			fwd = next;
+		}
+d443 21
+a463 8
+	
+	/* the fwdrefs list now only contains unbound refs or refs to	*/
+	/* currently un-linked modules.	nrefs is the number of these.	*/
+	/* If we know that this module is to be linked, just mark all	*/
+	/* symbols as referenced, otherwise make a list of these refs	*/
+	/* in virtual memory for use when the module is linked.		*/
+#if TRACE
+	trace("unbound refs %d %slinked",nrefs,linked?"":"un");
+d465 6
+a470 3
+	if(traceflags&db_modules);
+#endif
+	if( nrefs != 0 ) 
+d472 4
+a475 24
+		if( !linked )
+		{
+			v = VMNew(sizeof(VMRef)*(nrefs+1));
+			VMDirty(v);
+		}
+		
+		for( i=0; fwdrefs!=NULL; i++ )
+		{
+			fwd = fwdrefs;
+			if( linked ) linkmodule(fwd->sym);
+			else
+			{
+				p = VMAddr(VMRef,v);
+				p[i] = fwd->sym;
+			}
+			fwdrefs = fwd->next;
+			fwd->next = fwdfree;
+			fwdfree = fwd;
+		}
+		if( !linked ) 
+		{
+			p = VMAddr(VMRef,v);
+			p[nrefs] = NullVMRef;
+		}
+d477 82
+a558 6
+	
+	m = VMAddr(Module,curmod);
+	m->refs = v;
+	VMDirty(curmod);
+#if TRACE
+	trace("endmodule %x done",curmod);
+d560 10
+a569 1
+	if(traceflags&db_modules);
+d571 16
+d591 4
+a594 2
+void dorefs(mod)
+VMRef mod;
+d596 25
+a620 18
+	Module *m = VMAddr(Module,mod);
+	VMRef r = m->refs;
+	VMRef *p;
+	int i;
+	
+	if( NullRef(r) ) return;
+#if TRACE
+	trace("scanning refs for %x",mod);
+#else
+	if(traceflags&db_modules);
+#endif
+	VMlock(r);
+	p = VMAddr(VMRef,r);
+	for(i=0; !NullRef(p[i]); i++ ) 
+	{
+		linkmodule(p[i]);
+	}
+	VMunlock(r);
+d624 2
+a625 1
+static void extendmodtab()
+d627 2
+a628 14
+	int i;
+	VMRef *newtab;
+	
+	newtab = (VMRef *)malloc((modtabinc+modtabend)*sizeof(VMRef));
+	
+	if( newtab == NULL ) error("Cannot get space for module table");
+#if TRACE
+	trace("Extending modtab from %x[%d] to %x[%d]",
+			modtab,modtabend,newtab,modtabend+modtabinc);
+#else
+	if(traceflags&db_modules);
+#endif
+        for( i = 0 ; i < modtabend+modtabinc ; i++ ) newtab[i] = NullVMRef;
+        for( i = 0 ; i < modtabend ; i++ ) newtab[i] = modtab[i];
+d630 18
+a647 4
+	free(modtab);
+	
+	modtab = newtab;
+	modtabend += modtabinc;
+d650 2
+a651 1
+void modstats()
+d653 4
+a656 2
+report("Link Statistics: Total Modules  %8ld Linked Modules %8ld",maxmodules,linkedmodules-1);	
+report("                 Highest Module %8ld",highmodule);
+d660 1
+@
+
+
+1.3
+log
+@tidied
+@
+text
+@d14 1
+a14 1
+/* $Id$ */
+d294 1
+@
+
+
+1.2
+log
+@mod <asm.h> "asm.h"
+@
+text
+@d14 1
+a14 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/asm/RCS/module.c,v 1.1 90/08/24 16:35:23 james Exp Locker: jon $";
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d14 1
+a14 1
+static char *rcsid = "$Header$";
+d16 1
+a16 1
+#include <asm.h>
+@

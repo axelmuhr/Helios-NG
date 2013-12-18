@@ -1,0 +1,4463 @@
+%YOU CAN ADD THE EXTRA SECTIONS CONTAINED IN THE FILES ackno.tex, autolib.tex, 
+%contents.tex, copyright.tex, execerrors.tex, priority.tex,
+%romconfig.tex and romdisk.tex BY ADDING THE COMMAND \input{filename} WITHOUT 
+%THE .tex SUFFIX, AT ANY POINT IN THIS FILE. I HAVE ALREADY ADDED ackno, 
+%contents and copyright. YOU CAN SUPPRESS ANY PART OF THE FILE BY USING A 
+%PERCENT SIGN. THE EXAMPLES OF CODE DISPLAYED IN THIS FILE ARE PRINTED IN A 
+%REDUCED SIZE BECAUSE OTHERWISE THEY DO NOT FIT ON THE PAGE. YOU COULD
+%REARRANGE THESE FRAGMENTS OF TEXT TO MAKE THEM NARROWER ON THE PRINTED PAGE.
+
+
+\documentstyle[12pt,ps,twoside,bezier,epic,a4]{article}
+\input{docinfo.tex}
+\docinfotitle{Helios V1.X Internal Documentation}
+\docinfosubject{Helios Executive Specification and Porting Guide}
+\docinfoauthor{Paul Beskeen}
+\docinfoproject{TIP}
+\docinfoauthinit{PB}
+\docinfoyear{91}
+\docinfomonth{11}
+\docinfoday{5}
+\docinfodocno{003}
+\docinforev{1}
+\docinfokeywords{helios executive kernel}
+\docinfooperator{}
+\docinfocomments{}
+
+\markright{\thesubject}
+
+\raggedbottom
+\pagestyle{myheadings}
+
+\begin{document}
+
+\begin{titlepage}
+
+\begin{center}
+\Huge
+\thetitle
+\vspace{1in}
+
+{\bf\thesubject}
+\vspace{1in}
+
+\LARGE
+\theauthor
+
+Perihelion Software Ltd.
+
+\theday-\themonth-\theyear
+
+\normalsize
+\vspace{2in}
+PSL-\theproject-\theauthinit-\theyear-\thedocno.\theversion\\
+\end{center}
+
+\end{titlepage}
+
+\pagestyle{plain}
+\pagenumbering{roman}
+\input{copyright}
+%\input{contents}%I used this file to include the appendices in the table 
+                 %of contents. You probably won't need it.
+\tableofcontents 
+\vfill
+
+\newpage
+\section{Abstract}
+This document describes how to port Helios to another proessor architecture.
+It describes the tools required, the subsystems that will need
+altering and defines the specification of an executive capable of
+supporting the Helios Kernel.
+\newpage
+
+\pagenumbering{arabic}
+
+\section{Introduction}
+
+This document describes the parts of Helios V1.X that may have to be
+revised when porting Helios to new processor architectures. It should be
+noted that Helios is in a constant state of development and this document
+may well lag behind the current implementation in some details.
+
+Helios was designed from the outset to be a portable operating system, and 
+although initially implemented for the Transputer is not specific to it.
+The vast bulk of Helios is written in ANSI C and only a
+moderate amount of assembler is required to port it to another chip.
+The main areas that will require recoding in assembler, are parts of the
+Executive (includes the scheduler), some library access and definition macros,
+a small number of library functions (such as setjmp)
+and optionally some parts of the kernel for optimisation purposes.
+In addition to this, if some form of inter-processor communication mechanism is
+available, this will need to be installed in the message passing mechanism.
+If not required it can be simply left out.
+
+Most of the effort in porting Helios to a new processor is in
+developing an ANSI C compiler code generator for the target processor.
+Hopefully this already exists and you will only have to recode the compilers
+object formatter to comply with the Helios object code format (GHOF).
+
+Perihelion can provide a full porting service, consultation, processor
+specific code generators, assemblers and processor specific linker adaptions.
+Alternatively, you can elect to buy the source code and perform some or all
+parts of the port independently.
+
+This document refers to Helios version 1.X and assumes a general technical
+understanding of the Helios operating system.
+
+\section{Requirements}
+
+\subsection{Processor}
+
+\begin{itemize}
+
+\item 32 bit processor or wider.
+
+\item Linear address space.
+
+\item PC relative addressing capability.
+
+\end{itemize}
+
+\subsection{Hardware}
+
+A timer capable of interrupting the processor with around a
+millisecond granularity.
+Optionally some form of interprocessor communication (transputer link adapters,
+shared memory, fast parallel interfaces, etc).
+
+\subsection{Software}
+
+To port Helios to a new target processor, you will require an ANSI C compiler
+capable of producing:
+
+\begin{itemize}
+
+\item  Fully PC relative code.
+
+\item Helios module table code (for static initialisation, external function
+linkage and static variable access).
+
+\item A Restricted form of the module table code for loadable drivers and
+library construction.
+
+\item Helios portable object code. [see `Generic Helios Object Format (GHOF)']
+
+\end{itemize}
+
+You will also need an assembler for the target processor that produces
+Helios object code output. Perihelion can provide a generic assembler
+that reduces the time required to construct a Helios assembler.
+
+\section{Basic porting}
+
+To port Helios, you will need some form of host processor to cross compile
+the Helios subsystems on and also to use as a base for the I/O server program.
+This program is used to provide basic system services such as disc and console
+I/O to the fledgling version of Helios. Porting of X-Windows, the Helios
+fileing system and multiprocessor parts of Helios should wait until the basic
+uniprocessor port has been completed.
+
+The following cross compilation utilities will need to be ported to the
+host system:
+\begin{enumerate}
+\item An ANSI C cross compiler.
+
+\item A cross assembler.
+
+\item The Helios macro preprocessor: {\bf ampp}.
+
+\item The Helios system image builder: {\bf sysbuild}.
+
+\item The Helios linker: {\bf ld}.
+
+\item The object file dumper: {\bf objdump}.
+\end{enumerate}
+
+In addition to these programs you will need to port the IO Server. Although
+this is a complex program, it very portable and is already available on a
+number of different systems. If you wish to use a PC clone or a Unix box,
+you will find that a version already exists.
+You will then need to add some form of comms driver for whatever medium you
+choose to communicate with the target processor over. This could be a
+transputer link adapter, fast parallel interface, ethernet, or a custom
+built interface. For a good combination of simplicity
+and moderate speed a transputer link adapter (IMS C012) is recommended.
+
+Perihelion technical note 14 describes how to port the IO Server, you may
+also find notes 1, 10 and 11 relevant.
+
+On the target processor side you will just need to supply a simple boot
+EPROM. This runs at processor reset, waits for the Helios system image
+to be sent over the comms medium, and then loads and executes it.
+
+Once the above programs are available on the host processor, you can start on
+the basic port. There are three basic parts of Helios to port:
+\begin{enumerate}
+\item The executive - provides scheduler and processor dependent services.
+
+\item Alterations to some library functions - notably vfork() and setjmp().
+
+\item Library construction and startup code - assembler `glue' for shared
+libraries and program initialisation code.
+\end{enumerate}
+
+\section{ANSI C compiler requirements}
+
+\subsection{PC relative code}
+
+All code produced must be capable of being loaded at any address without
+requiring any relocation. This is simpler than it may seem due to all external
+linkages being performed via the Helios module table (See Appendix A for
+a description of the module table).
+
+\subsection{Generic Helios Object Format}
+
+The Helios object file format is fully specified in the document `Generic
+Helios Object Format (GHOF)'.
+
+\begin{quote}
+\it
+Please note that the following discussion is only relavent to the
+original module table structure. It has yet to be updated to describe the
+newer `split module table' structure that has been used for new Helios
+ports (ARM and 'C40).
+\rm
+\end{quote}
+
+Briefly described, the format
+consists of a series of module definitions each of which describe the
+executable version of a separately compiled source file.
+These modules contain a series of directives that enable you to define the
+module table slot for this module, the size of the static data area required,
+its executable code, its initialisation code and a range of patches that
+define its linkage with other modules.
+
+If you know the slot that the module must use, as in the case of a shared
+library, then you pass this to the MODULE directive, if it doesn't matter
+(the usual case) then
+you can leave that descision to the linker and simply pass -1 as the
+parameter.
+\begin{sloppypar}
+Each module must include a module header at its begining, just after the
+MODULE directive, this is constructed
+from the standard directives and has the following format:
+\end{sloppypar}
+
+\scriptsize
+\begin{verbatim}
+/* Code module header */
+
+typedef struct Module {
+	word		Type;		/* module type = T_Module	*/
+	word		Size;		/* size of module in bytes	*/
+	char		Name[32];	/* module name			*/
+	word		Id;		/* module table index		*/
+	word		Version;	/* version number of this module*/
+	word		MaxData;	/* highest data offset 		*/
+	RPTR		Init;		/* root of init chain		*/
+} Module;
+\end{verbatim}
+\normalsize
+
+The following is an assembler source file with embedded linker directives
+(shown in Caps) that implements the above structure.
+\scriptsize
+\begin{verbatim}
+      .MODULE  -1
+.ModStart:
+    word    T.Module                    ; type
+    word    .ModEnd-.ModStart           ; size of code
+    .asciz  "ModName.c"                 ; xputer asm uses blkb 31 name byte 0
+    .space  32 - _strsize ModName.c - 1 ; to achieve same effect
+    .PATCH_WORD [MODNUM]                ; patched with linker generated module slot
+    word    1001                        ; version
+    .PATCH_WORD [DATASYMB [.MaxData]]   ; patched with offset of symbol in static data
+    .INIT                               ; start of initialisation chain
+
+    ...
+
+    ; module code mixed with data definitions and patches
+
+    ...
+
+    .DATA [0 MaxData]                   ; dummy data as last item in static data area
+.ModEnd:
+\end{verbatim}
+\normalsize
+
+The final `.DATA 0 MaxData' is used as a place marker to reference the
+highest offset (hence size) in the static data area of this module. It is
+used in the module header.
+
+In the case of module that contains the program startup code, the module
+definition is extended to:
+
+\scriptsize
+\begin{verbatim}
+/* Program structure */
+
+typedef struct Program {
+	Module		Module;		/* start of module		*/
+	WORD		Stacksize;	/* size of initial stack	*/
+	WORD		Heapsize;	/* size of program heap		*/
+	RPTR		Main;		/* offset of main entry point	*/
+} Program;
+\end{verbatim}
+\normalsize
+
+This module type is usually implemented as a standard language runtime
+startup module ({\bf cstart.o, sstart.o}), 
+as all programs are linked with this it does not have to be generated
+by a compiler.
+The `Main' element can be implemented by a LABELREF patch to a .WORD
+directive.
+One point to bear in mind when porting Helios, is
+that in the transputer version the size passed to DATA directives is
+defined in terms of words, whereas all other processor versions of
+Helios are in terms of bytes.
+
+\subsection{External/static variable access}
+
+The code produced by the compiler must indirect via the Helios module table
+when accessing any static/global/external variables. Also when the code has
+to access any external functions (or even forward referenced functions if this
+makes life easier) it should again indirect via the module table.
+
+The Helios object format produced by the compiler has a number
+of directives that automate this indirection process. They allow you to
+combine processor instructions and external variable/fn names, so that
+the end result is an instruction that loads the offset of that variable/fn
+in the module table into a register.
+As this type of directive can be highly processor specific, it will probably
+require coding into the linker as a new patch directive. Any existing
+processor patch can be used however, so if one fits your requirements,
+use it! For examples of existing
+patches and all the other linker directives available read the
+`Generic Helios Object Format (GHOF)' document.
+
+In most compiler implementations the code produced relies on a register
+being dedicated to point at a task's module table (although it can be passed
+as a invisible variable to each fn, or some other such scheme).
+Therefore, to generate pointers to static/external variables,
+you should use the following mechanism.
+\begin{enumerate}
+\item Combine the module table pointer and the target module's module table slot
+offset and load the pointer to the target modules static data area.
+
+\item Combine the static data offset of the variable with this pointer
+to produce the pointer to variable in the static data.
+\end{enumerate}
+
+The first step is simplified by using a directive that supplies the
+module table offset of the module that exports the given variable
+({\bf DATAMODULE}). You then
+generate a series of instructions that will add the contents of
+the module table pointer register and this offset, loading a pointer from
+the module table to the static data area containing the variable.
+Step two is accomplished by adding the result of step one with the result of a
+directive ({\bf DATASYMB}) that returns the offset of the variable
+within the modules static data area.
+
+The results of the directives mentioned above can be integrated into your
+code by means of a processor specific linker patch. Such a patch would
+take an instruction template and combine the result of the directive into its
+immediate data field thus:
+
+\scriptsize
+\begin{verbatim}
+mcpatch [ [ld a,#0] [DATAMODULE _foovar] ]      ;#0 is patched with datamodule offset
+code [
+      add a,mt                                  ; combine module table and offset
+      ld  a,(a)                                 ; get pointer to static data area
+     ]
+mcpatch [ [add a,#0] [DATASYMB _foovar] ]       ;#0 is patched with datasymb offset
+\end{verbatim}
+\normalsize
+In the above example `mt' is the dedicated module table pointer register,
+DATAMODULE is the directive that returns the module table offset of
+the module containing \_foovar, and DATASYMB is the directive that returns
+the static data area offset for \_foovar. The absolute pointer to the
+location of \_foovar being left in register `a'.
+
+You should spend time optimising code fragments of this type for your
+processor as they will be executed frequently. For instance, in the ARM
+port the above examples first three instructions were combined into one:
+
+\scriptsize
+\begin{verbatim}
+mcpatch [ [ld a, (mt,#0)] [DATAMODULE _foovar] ]
+\end{verbatim}
+\normalsize
+
+By convention the labels used to define items in the static data area are
+prefixed by `\_ ', and the actual data to initialise this with, or the
+actual code of the fn that is called are prefixed by `.'. For example
+the label `\_foofn' refers to the offset within the static data area of
+the function pointer to `foofn', whereas the label `.foofun' refers to the
+actual code of the function.
+
+\subsection{External function calls}
+
+When generating code for external function calls you have the choice of
+either generating a similar fragment of code to the one above for each
+invocation (but in addition, jumping through the resulting pointer),
+or creating a `stub' function. The stub function contains
+an identical piece of code to the one just described, but is branched to by all
+invocations of that call in the module. In effect becoming a local jacket
+fn to the true external function. As each module has its own name space for
+labels, the labels of the stubs are identical to the labels used by the
+external functions (i.e. are prefixed by `.').
+
+The first solution is more efficient, but generates more code than the
+second. The second solution is easier to add to existing compilers as
+you just generate calls to the `.' name and if the function is
+subsequently found to be
+defined in the source file, you remove its name from the list of stubs
+to be generated at the end of the module. This solution also
+makes shared library construction easier as you just disable the generation
+of stubs when the {\bf -Zl/-Zr}  options is used (see below).
+
+When generating addresses of functions, you should use the value held in the
+static data section, rather than the address of the stub function.
+
+\subsection{Module static data initialisation code}
+
+Before a program is executed each module that makes up the program must
+process its static data area to its required starting state.
+This initialisation includes the loading of the externally callable function
+pointers and initialisations of static variables.
+
+To implement this, each module should contain a series of chained init routines.
+This chain is constructed via the INIT directive. This patches the
+code with an RPTR to the next INIT directive in the code, unless it is
+the last, in which case it inserts 0. The head of this chain being stored in
+the module table header.
+
+The init code pointed to by this chain is called
+after the static data area, heap and stack have been allocated and the module
+table initialised. All modules are initialised twice, first all of a
+program's modules init routines are called with an argument of zero.
+After this a second pass
+occurs calling all of the init routines with an argument of one.
+This second pass is used to initialise static data that depends on static data
+stored in some other modules static data area
+(such as a C external function pointer).
+
+To simplify the generation of the initialisation code Perihelion has
+developed a derivative of the Norcroft C compiler front end, this automatically
+produces initialisation code as a series of JOP's (generic machine opcodes).
+
+\subsection{Standard \#defines}
+
+You should automatically {\bf \#define} at least three preprocessor
+symbols by default, one that {\bf \#define}s {\bf \_\_HELIOS}, one that
+describes the target processor i.e. {\bf \#define \_\_ARM} and
+a combination of these two e.g. {\bf \_\_HELIOSARM}
+(note that these symbols are prefixed by two underscores).
+
+Two other symbols should be defined, depending on your implementation of
+Helios. {\bf \_\_BIGENDIAN} if your target CPU is bigendian, and {\bf \_\_SMT}
+if you have implemented a split module table structure.
+
+This makes creating portable code easier and allows us
+distribute and maintain just one copy of the C header files. e.g. we can
+automatically set the size of `jmp\_buf' in setjmp.h.
+
+\section{Helios C compiler support for shared library construction}
+
+To aid the automatic generation of Helios shared (resident) libraries,
+the Helios C compiler implements a {\bf -zl} option. This basically
+disables various object code directives and code fragments usually
+generated by the compiler. It allows libraries to be built from more
+than one source file and to retain a reverse-compatible calling
+interface with older versions of the library.
+
+To create Helios shared libraries with this option requires strict use
+of static specifiers by the library programmer when
+defining private, imported and exported functions and data.
+
+\begin{itemize}
+\item Private (static) functions and data are strictly for local use
+within the library. These are prefixed with the C keyword "static" in the
+source code.
+
+\item Imported (extern) functions are provided by other libraries. Their
+prototypes are defined in header files and are prefixed with the C keyword
+"extern".
+
+\item Exported (public) functions are exported by this library. These
+are functions which are not prefixed. The empty macro {\bf PUBLIC} is
+defined in {\bf helios.h} to improve code readability.
+
+\end{itemize}
+
+Each library has an associated AMPP processed description file that
+contains a list of the public functions to export and a list of the
+external functions referenced (stubs). The listed public functions are
+used to generate the required DATA/CODETABLE and GLOBAL directives. The
+list of external functions is used to generate a seies of calling stubs.
+
+As new functions are simply added to the end of this list of exported
+functions, new versions of resident libraries will still be
+reverse-compatible with programs linked to previous versions of the
+libraries. 
+
+When the description file is run throug AMPP, it generates 2 files: a
+header object file and a {\bf ResRef} file.
+
+The header object file contains the library module header, the
+DATA/CODETABLE and GLOBAL directives for the exported functions, and the
+required stubs. This is linked to the compiler-generated objects for the
+library and to a trailer file which creates a single module shared library.
+
+A {\bf ResRef} file is also generated, to describe the positions of the
+exported functions in the moduletable so that normal programs can be
+linked to the shared library.
+
+The {\bf -zl} option largely replaces the original {\bf -zr} resident library
+option but the {\bf -zr} option is retained for building
+device drivers and the Helios Kernel.
+
+To implement the {\bf -zl} option, the compiler must disable the
+generation of several object code directives and code fragments. The
+following must be disabled:
+
+\begin{itemize}
+\item Module headers and trailers (including MODULE directive and {\bf
+.MaxData/ .ModEnd labels).
+
+\item Calling stubs normally generated to call external functions.
+
+\item GLOBAL and DATA/CODETABLE directives normally generated for public
+functions and data.
+
+\item Initialisation code for exported data.
+\end{itemize}
+
+The compiler should still generate static data and exported function
+initialisation code. When generating initialisation code for exported
+functions, be aware that their position and order within the module data
+area is not fixed by the compiler, so calculated offsets within the
+module data area should not be used.
+
+Static (private) data should still generate DATA directives. Calculated
+offsets are acceptable for static data if the initial data item is
+referenced through the module table, and if subsequent offsets only
+reference this module's static area. 
+
+All extern functions should be referenced through LABELREFS rather than
+through the module table, because their stubs will be generated when the
+description file is processed by AMPP.
+
+To implement the {\bf -zr} option, the compiler must disable more
+object code directives and code fragments. In addition to the {\bf -zl}
+restrictions, the following must also be disabled:
+
+\begin{enumerate}
+\item All static data initialisation code.
+\item All DATA, COMMON, CODETABLE or GLOBAL directives.
+\end{enumerate}
+
+\subsection{Runtime support functions}
+
+Some compilers such as the Norcroft C compiler require runtime support
+functions to be linked with any code produced by them. These functions
+include code to perform stack and division testing, copy routines to
+use in initialisations of arrays, etc. These routines are usually implemented
+in assembler and included in the Kernel library. Installing these functions
+in the kernel is required as the kernel code is never linked to other
+libraries (it has no module table of its own) and yet conversely, all programs
+are linked with the kernel library.
+The Norcroft C compiler requires the following functions (all prefixed by two
+underscores):
+
+\begin{itemize}
+\item {\bf \_\_multiply}: a1 = a2 *a1
+
+\item {\bf \_\_divtest}: compares a1 with zero. If true, raises an arithmetic 
+exception, else returns.
+
+\item {\bf \_\_divide}:	signed divide of a2 by a1, returns quotient in a1
+remainder in a2. Quotient is truncated (rounded towards zero). Sign of 
+remainder = sign of dividend.
+
+\item {\bf \_\_udivide}: unsigned as above.
+
+\item {\bf \_\_remainder}: signed remainder of a2 divided by a1 returned in a1.
+
+\item {\bf \_\_uremainder}: unsigned remainder of a2 divided by a1 returned in a1.
+
+\item {\bf \_\_stack\_overflow}: Called when sp is smaller than stack limit 
+(sl register).
+
+\item {\bf \_\_stack\_overflow\_1}: As above, but different!?
+
+\item {\bf \_\_main}: Library entry point (calls \_main). (Shouldn't be used 
+in Helios versions.)
+
+\item {\bf \_\_codeseg}: Label at start of code segment.
+
+\item {\bf \_\_dataseg}: Label at start of data segment.
+
+\item {\bf \_\_mcount}: Optional, used for profiling info.
+\end{itemize}
+
+Note: a1 and a2 refer to the first and second function arguments respectively.
+
+\subsection{Source level debugger support}
+
+Optionally the C compiler can also provide Helios debugger output files and
+inline debug support. This will enable you to use the Helios source level
+debugger. [see `Perihelion Tech. Report No 16, A Compiler Writers guide to the
+Helios Source Level Debugger']
+
+Briefly, this support consists of generating function calls between each
+C statement and at the start and end of each function call. These calls are to
+the Debug library and allow a programs execution to be monitored and
+controlled. The compiler must also generate a debug file that lists all of the
+symbols in the code, their location and type.
+
+\section{Assembler requirements}
+
+The assembler should provide support for:
+
+\begin{enumerate}
+
+\item Arbitary length labels, that can start with
+non alphanumeric chars such as `.' and `\_'.
+
+\item Assembler directives for word, short, byte and string definition.
+
+\item Optional implementation of the `blkb' directive, this generates a
+fixed sized zero padded character string. Format: blkb size "text".
+
+\item The ability to enter linker directives such as {\bf DATA}, {\bf MODULE},
+{\bf GLOBAL}, and patches such as {\bf MODTAB}, {\bf DATASYMB} and
+{\bf DATAMODULE}.
+(see the GHOF document for the full list to support).
+
+\item You should avoid using any of the ampp meta characters as part of the
+assemblers syntax: [, ], \$. The `--' comment character can be changed
+with an option to {\bf ampp}.
+
+You do not have to add any macro functions to your assembler as the
+Helios macro pre-processor ({\bf ampp} can provide these facilities.
+
+Perihelion can supply a generic assembler that is easy to adapt to new
+instruction sets. This assembler has the advantages that it already
+outputs GHOF object code and supports the standard Helios linker directives.
+To add new instructions sets to the assembler, you will need to write a
+YACC grammer and a simple second pass.
+\end{enumerate}
+
+\section{Helios boot EPROM specification}
+
+This section defines the bootstrap program required to load and execute
+the Helios nucleus. The bootstrap program is assumed to reside in EPROM
+on the target machine, and is executed on processor reset.
+
+The simplest bootstrap works by waiting forever on the link
+(or whatever IPC hardware you have chosen)
+for the system image to be sent to it.
+Once this occurs it loads it at a predefined location in memory,
+and jumps to the kernel entry point.
+
+More sophisticated bootstraps can be written that use a simple protocol
+to allow random read, writes and execution within target processors memory.
+This is useful for postmortem debugging.
+
+The format of the system image is as follows:
+\vfill
+\newpage
+
+\scriptsize
+\begin{table}[t]
+\begin{tabular}{ll}
+word 0. & Size of total system image in bytes (size includes this\\
+        & word).\\
+word 1. & Rptr to kernel.\\
+word 2. & Rptr to syslib.\\
+word 3. & Rptr to servlib.\\
+word 4. & Rptr to util lib.\\
+word 5. & Rptr to procman.\\
+word 6. & Rptr to loader.\\
+sizeof(modhdr). & Kernel module header.\\
+sizeof(kernel code). & Kernel entry point \& kernel code.\\
+sizeof(modhdr). & Next resident module's module header.\\
+sizeof(mod's code). & Next resident module's code.\\
+. & \\
+. & \\
+. & \\
+sizeof(proghdr). & Processor Managers program header.\\
+sizeof(procman code). & Procmans code.\\
+. & \\
+. & \\
+. & \\
+\end{tabular}
+\end{table}
+\normalsize
+
+Note that the downloaded system image that is stored should include the
+size at its start.
+
+The table of Rptrs (self relative pointers) to the modules included in the
+system image is followed by a series of resident libraries, which in turn
+are followed by a number of resident programs.
+
+After the image has been loaded the entry point of the kernel can be
+computed by:
+\scriptsize
+\begin{verbatim}
+Kentry\_point = \&(word 1) + *(word 1) + sizeof(modhdr)
+\end{verbatim}
+
+
+{\it Sizeof(modhdr) = 56, Sizeof(proghdr) = 68 (from module.h).}
+\vspace{0.25cm}
+\normalsize
+
+To start the Helios system, simply jump to the computed entry point
+(Kentry\_point).
+
+\section{Rewriting the executive}
+
+The Executive is the process and device control subsystem used by the Kernel.
+On the Transputer the Executive is implemented by the processor and the 
+Executive entry functions translate to one or two in-line instructions.
+To port Helios to a given processor, the executive will have to be rewritten
+in assembler, or a mixture of assembler and C code.
+
+\subsection{Kernel process model}
+
+The model of processes adopted by the current implementation of the
+Kernel differs from that of many other
+operating systems in that no central table of processes is kept.
+Instead, when a process is to be suspended, an Id structure is created
+and used where other operating systems would use a process or task control
+block.
+Within the Id structure is a pointer to an Executive-defined structure
+called a SaveState where the process' execution state is saved.
+The assumption is that this structure is allocated on the process' stack
+when it is to be suspended.
+
+\subsection{Priority levels}
+
+The Kernel assumes that the Executive supports at least two process priority
+levels.
+High priority is reserved only for Kernel processes, and must not be timesliced.
+These processes either run to completion or until they are blocked by
+communication I/O, blocked by semaphores or they choose to
+yield to another process.
+Processors which distinguish Supervisor and User modes should equate Supervisor
+mode with high priority and user mode with low priority.
+No user processes run at high priority. The Executive
+shares the processor between the lower priority user processes on 
+a timeslice basis. The implementation of which
+can be transparent to the Kernel. When writing your own executive, you
+may implement multiple levels of low priority processes.
+
+Both priority levels run with interrupts enabled, the Kernel never
+needs to disable interrupts.
+If you are implementing multiple process levels, you may of course use
+any sheduling algorithm you see fit. A simple and hence low overhead
+algorithm is as follows:
+Each process priority has its own queue of runable processes. Only when
+a queue is empty do you move on to the next lowest priority levels queue.
+If a higher priority process becomes runnable, then it is dispatched at
+the next timeslice. Within priority levels, the processes are sliced on a
+round robin basis.
+With this
+simple algorithm care should be taken with programs that poll their input,
+this type of program should only be allowed at the lowest priority level.
+
+\subsection{Timers}
+
+The Kernel expects the Executive to provide a timer mechanism by which processes
+may be made to wait until a given time.
+All times are expressed in microseconds, but the actual tick rate may be as 
+coarse as one millisecond.
+
+The Executive should also use the same timer to drive the time slice mechanism.
+A timeslice between 10 and 33 milliseconds should be acceptable.
+
+\subsection{Interrupts}
+
+In addition to timer interrupts there may be other interrupt sources.
+The Executive must ensure that no interrupts occur at sensitive points.
+The work performed in an interrupt routine must be minimal, and control should
+be transfered to a real process as soon as possible. This should be achieved
+by use of the interrupt resilient HardenedSignal() \& HardenedWait() semaphore
+operations. The implementation of standard Signal() \& Wait() semaphores
+relies on the fact that
+high priority processes run until completion, essentially creating a monitor
+in which Signal and Wait calls execute. Therefore standard semaphores should
+never be used within event handlers.
+
+\subsection{Executive entry points}
+
+The examples used in this section are either from the example C implementation
+of the Executive, or the 680X0 implementation. Source listings of both
+Executives are included in the appendices.
+
+The example C code serves as a template for the functions to be implemented
+in your version of the Executive, for performance reasons you may
+wish to implement some or all of this in assembler.
+
+The Kernel uses only these entry points into the Executive, and has very limited
+knowledge of the organisation of the structures and operations below them.
+As long as you preserve this interface only minimal changes should have to
+be made to other parts of the Kernel.
+
+\subsubsection{The executive interface}
+
+{\bf low-level Executive Functions:}
+\vspace{0.25cm}
+
+\begin{itemize}
+\item {\bf void ExecInit(void)}                    
+
+Initialise executive structures.
+
+\item {\bf word System(WordFnPtr func, ... )}      
+
+Temporarily run a thread at high priority.
+
+\item {\bf SaveState *TimerQHead(void)}
+
+Return head element in timer queue.
+
+\item {\bf TimerQAddr()}
+
+return address of head pointer of timer queue.
+{\bf EvictTimerQ()} in {\bf kill1.c} relies on the head of the
+{\bf SaveState} structure being the next pointer.
+
+\item {\bf void RunqPtrs(SaveState **p, word pri)} 
+
+Return head and tail of thread queue.
+
+\item {\bf void Suspend(SaveState **p)}
+
+Suspend current thread, updating {\bf p} to point at saved state.
+
+\item {\bf void Dispatch(SaveState *p)}
+Suspend current thread saving the processor state in {\bf p}.
+
+\item {\bf void Resume(SaveState *p)}  
+
+Resume a previously suspended thread.
+
+\item {\bf void Yield(void)}
+
+Let other high priority threads run.
+
+\item {\bf word Timer(void)}  
+
+Return timers current value.
+
+\item {\bf void Sleep(word time)}  
+
+Make current thread sleep and run next available one.
+
+\item {\bf word *CreateProcess(word *stack, VoidFnPtr entry, VoidFnPtr \newline
+exit, word *descript, word argsize)} 
+
+Create new thread.
+
+\item {\bf void EnterProcess(word *stack, word pri)}
+
+Start new thread running.
+
+\item {\bf void Stop(void)}
+
+Suspend thread permanently.
+
+\item {\bf word \SetPhysPri(word priority)}
+
+Change current thread priority level.
+
+\item {\bf word GetPhysPri(void)}
+
+Returns current thread priority level.
+
+\item {\bf word GetPhysPriRange(void)}
+
+Returns lowest available priority level.
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Optional executive interprocessor communications functions:}
+\vspace{0.25cm}
+
+\begin{itemize}
+
+\item {\bf void LinkTx (word size, struct LinkInfo *link, void *buf)}
+
+Send data down a link.
+
+\item {\bf void LinkRx (word size, struct LinkInfo *link, void *buf)} 
+
+Receive data from a link.
+
+\item {\bf SaveState *AbortLinkTx (struct LinkInfo *link)}
+
+Abort inward link communication.
+
+\item {\bf SaveState *AbortLinkRx (struct LinkInfo *link)}
+
+Abort outward link communication.
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Kernel Support Functions:} 
+\vspace{0.25cm}
+
+(Some of these functions can be coded as macros for efficiency.)
+\vspace{0.25cm}
+
+\begin{itemize}
+
+\item {\bf void CallWithModTab(word arg0, word arg1, VoidFnPtr fn, word *modtab)}
+
+Call function passing an alien module table.
+
+\item {\bf word *\_GetModTab(void)}
+
+Return pointer to the current module table.
+
+\item {\bf word *StoreSize(byte *base)}
+
+Return pointer to first {\bf un}usable byte of RAM contiguous from base.
+
+\item {\bf void MoveBlock (void *src, void *dst, word size)}
+
+Move byte aligned block of data. 
+
+\item {\bf void MoveWordBlock (void *src, void *dst, word size)} 
+
+(Optional function) Move word (32 bit) aligned block of data.
+
+\item {\bf void SetBlock (void *block,word value,word size)} 
+
+Set byte aligned block of data to value.
+
+\item {\bf void ZeroBlock(void *block, word size)} 
+
+Zero byte aligned block of data.
+
+\item {\bf void ResetLink(void)} 
+
+Reset the inter-processor communications hardware.
+
+\item {\bf void ResetCPU(void)} 
+
+Reset the CPU and restart the boot process.
+
+\item {\bf word \_cputime(void)} 
+
+Return no. of elapsed centiseconds (units of 10 milliseconds) since the system
+was booted.
+
+\item {\bf word _ldtimer(word pri)} 
+
+Return the timer value for {\bf pri} priority. Can be implemented as a copy of
+{\bf \_cputime()} as this is only used as a random number seed generator.
+\begin{quote}
+\it
+@@@ This needs checking pri 1 = microsecond timer, pri 2 = 64 microsecond units?
+\rm
+\end{quote}
+
+\item {\bf void InitEventHandler(WordFnPtr roothandler)} 
+
+Initialise the interrupt system to call `roothandler' when an interrupt occurs.
+
+\item {\bf word SaveCPUState(SaveState *savestate)} 
+
+Saves copy of current CPU state.
+
+\item {\bf word RestoreCPUState(SaveState *savestate)} 
+
+\begin{quote}
+\it
+@@@ {\bf GetSysbase(), GetNucBase()} - add defn.
+\rm
+\end{quote}
+
+Restores copy of current CPU state.
+
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Debugging Support Functions:}
+\vspace{0.25cm}
+
+\begin{itemize}
+\item {\bf void WriteStr(char *message)} 
+
+Output a message to the IO server.
+
+\item {\bf void WriteHex8(int num)} 
+
+Output a hex number to the IO server.
+
+\item {\bf void WriteChar(char c)} 
+
+Output a character by polling the link.
+
+\item {\bf void WriteIODHeader(int len)} 
+
+Output pseudo IODebug message header.
+
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Macros:}
+\vspace{0.25cm}
+
+The kernel expects certain elements in the save
+state structure to exist, such as a threads 
+wakeup time, these are read and set by the
+kernel via the `P\_' and `Set\_P' macros. 
+\vspace{0.25cm}
+
+\begin{itemize}
+
+\item {\bf void P\_InstPtr(SaveState *p)} 
+
+Supplies return address in saved state.
+
+\item {\bf void P\_RunqNext(SaveState *p)} 
+
+Returns next element in thread queue.
+
+\item {\bf void P\_TimerNext(SaveState *p)} 
+
+Returns next element in timer queue.
+
+\item {\bf void P\_EndTime(SaveState *p)} 
+
+Returns threads wakeup time.
+
+\item {\bf void Set\_P\_InstPtr (SaveState *p, VoidFnPtr)} 
+
+Set return address.
+
+\item {\bf void Set\_P\_RunqNext (SaveState *p, SaveState *v)} 
+
+Set next element in thread queue.
+
+\item {\bf void Set\_P\_TimerNext (SaveState *p, SaveState *v)} 
+
+Set next element in timer queue.
+
+\item {\bf void Set\_P\_EndTime (SaveState *p, word v)} 
+
+Alter wakeup timer for thread.
+
+\item {\bf void NullStateP (SaveState *p)} 
+
+Is save state {\bf NULL}.
+
+\item {\bf word GetRoot(void)}
+
+Returns address of the kernel root structure (root.h).
+
+\item {\bf word GetConfig(void)} 
+
+Returns address of the kernel config structure (config.h).
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Kernel/Executive constant definitions:}
+\vspace{0.25cm}
+\begin{itemize}
+
+\item {\bf word SysBase} 
+
+Defined in root.h, holds the address of the start of the system image.
+
+\item {\bf word IVec vecname} 
+
+Defines the load slot in the system image of the various Helios 
+subsystems (config.h).
+\end{itemize}
+
+
+
+
+\subsection{Executive entry functions in detail}
+\subsubsection{low-level executive functions}
+
+\begin{enumerate}
+
+\item {\bf InitExec}
+
+This function intialises the Executive, clearing the thread queues,
+starting the timer, etc.
+
+\scriptsize
+\begin{verbatim}
+void InitExec(void);
+\end{verbatim}
+\normalsize
+
+\item {\bf System}
+
+This is called by Kernel functions to effect a temporary
+transition to high priority.
+This function takes as arguments a pointer to a function and up to three
+arguments to be passed to it.
+The original priority of the calling thread is saved and the function
+argument called at high priority, when it returns the old priority is
+restored and the thread continues at this priority.
+Before the call to System returns, all pending high priority threads
+must have completed.
+
+\scriptsize
+\begin{verbatim}
+word System(WordFnPtr func, ... )
+{
+   va_list  ap;
+   word a, b, c;
+   word res;
+   word oldpri;
+
+   oldpri = SetPhysPri(0);   /* go hi-pri */
+
+   va_start(ap, func);
+   a = va_arg(ap,word); b =  va_arg(ap,word); c = va_arg(ap,word);
+   va_end(ap);
+
+   res = func(a, b, c);
+
+   if (oldpri != 0)
+       Yield();                  /* allow new hipriority processes a look in */
+
+   SetPhysPri(oldpri);      /* return to original priority */
+
+   return res;
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf Suspend}
+
+This is called by kernel functions already running at high priority
+to suspend the current thread.
+This is called with the address of a location into which a pointer to the
+thread's SaveState structure will be saved.
+The thread will only return from Suspend when it has been resumed.
+
+\scriptsize
+\begin{verbatim}
+void Suspend(SaveState **pp)
+{
+   SaveState s;
+
+   s.next = NULL;
+   s.pri = 0;
+
+   *pp = &s;
+
+
+   Dispatch(&s);
+
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf Dispatch}
+
+{\bf Dispatch()} saves the current thread into the area supplied
+and runs another thread.
+The caller will already have linked the save state area onto
+some queue for later reference.
+
+Dispatch is called in system mode, possibly with interrupts
+already turned off. The decision to suspend the current process in
+favour of another has already been made.
+
+If SaveState is NULL, {\bf Dispatch} will not save the threads state.
+
+\scriptsize
+\begin{verbatim}
+void Dispatch(SaveState *s)
+{
+        ExecRoot        *xroot = ExecRoot();
+        ThreadQ         *q = xroot->Queues;
+        int             i;
+
+        /* Have to protect ourselves from a timeslice or any */
+        /* interrupt that may result in the thread being added to */
+        /* the run queues at this point */
+        IntsOff();
+
+        if( s != NULL )        {
+                /* if SaveCPUState is actually returning as a result of */
+                /* being rescheduled, then let it continue */
+                if (SaveCPUState(s) == SaveCPUState_RESTORE)
+                        return;
+
+                /* Otherwise we have a valid CPU context in the save state. */
+                /* The pointer to which has already been saved by the caller */
+                /* for future resheduling (link comms, semaphores, etc). */
+        }
+
+        forever {
+                /* walk down the queues running the first available thread */
+                for( i = HIGHPRI; i < PRIORITYLEVELS; i++ ) {
+                        if( q[i].head ) {
+                                /* resume head process of q[i]        */
+
+                                /* remove save state from ready queue */
+                                s = q[i].head;
+                                if ((q[i].head = s->next) == NULL)
+                                        /* fix tail if last state on queue */
+                                        q[i].tail = &q[i].head;
+
+                                /* setup root struct info for new process */
+                                xroot->CurrentPri = i;
+        
+                                /* restart the suspended process. */
+                                RestoreCPUState(s);
+                        }
+                }
+
+#ifdef __C40
+                /* Interrupts are enabled and the processor now idles */
+                /* until an interrupt occurs */
+                /* As we are being run at HIGHPRI, we do not have to worry */
+                /* about being sliced */
+                IdleUntilInterrupt();
+                IntsOff();
+#else
+                /* If the processor doesn't have a way of detecting */
+                /* when an interrupt has occured, then another */
+                /* strategy would be to shedule an idlethread. */
+                /* The time slicer will have to check if the thread it is */
+                /* changing from is at REALIDLEPRI and if so store its save */
+                /* state in execroot->idlethread */
+
+                /* idlethread must never allow itself to become blocked. */
+                /* i.e. It mustn't use semaphores or communications! */
+
+                /* set priority to lower than any other possible priority */
+                xroot->CurrentPri = REALIDLEPRI;
+                RestoreCPUState(xroot->idlethread);
+#endif
+        }
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf Resume}
+
+Add a thread to the scheduling list, enabling the scheduler
+to execute the thread again.
+This function is passed a pointer to the SaveState of a suspended thread.
+Resume is only called at high priority.
+
+Resume must be made interrupt resilient
+as it is called from within interrupt handlers that use the HardenedSignal()
+kernel function.
+
+\scriptsize
+\begin{verbatim}
+void Resume(SaveState *p)
+{
+   word pri = p->pri;
+   ProcessQ *q;
+
+   IntsOff();
+   q = &Execroot()->Queues[0];
+   q[pri].tail = q[pri].tail->next = p;
+   IntsOn();
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf Yield}
+
+Yield is called by threads to move themselves to the end of their
+priority levels run queue. The dispatcher running any other available
+threads at the same priority or higher.
+
+It's main purpose is to prevent any lengthy operations adversely affecting
+the interrupt response time.
+
+\scriptsize
+\begin{verbatim}
+void Yield(void)
+{
+   word pri = GetPriority();
+   ProcessQ *q = &Execroot()->Queues[pri];   /* this priority levels process q */
+   SaveState s;
+
+   IntsOff();
+   if( q[pri].head != NULL )       /* as long as there are threads */
+   {                               /* assumes current proc not held in queue */
+      s.next = NULL;               /* init curr. proc. SaveState */
+      s.pri = pri;
+      q[pri].tail = q[pri].tail->next = &s;  /* add it to queue */
+      IntsOn();
+
+      /* *BUG* *TBD* in a non hipri call, thread could getr sliced here! */
+      Dispatch(&s);    /* over to the Scheduler */
+      return;
+   }
+   IntsOn();   
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf Timer}
+
+Returns the current value of the timer (in units of a microsecond).
+
+\scriptsize
+\begin{verbatim}
+word Timer(void)
+{
+   return Execroot()->Timer;
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf Sleep}
+
+Suspend execution for the given number of microseconds.
+This takes a single argument, the delay before the thread is to resume.
+This function is only called at high priority.
+\begin{quote}
+\it
+@@@ Should sleep be callable at other priority levels - currently a
+thread that has slept will run for at least 1 slice when it wakes up
+}
+\scriptsize
+\begin{verbatim}
+void Sleep(word endtime)
+{
+   SaveState s;
+   ExecRoot *xroot = Execroot();
+   
+
+   endtime += xroot->Timer    /* find wakeup time */
+
+   s.pri = xroot->Pri;
+
+   /* See whether queue is empty or this time is before */
+   /* current wakeup time. In either case go at head of q. */
+
+   /* Remember clock interrupt routine acesses these data structures */
+   /* So turn interrupts off at the right(!!)  places */
+   IntsOff();
+   if( xroot->TimerQ == NULL || After(xroot->Wakeup,endtime) )
+   {
+      s.next = xroot->TimerQ;
+      xroot->Wakeup = endtime;
+      xroot->TimerQ = &s;   
+   }
+   else
+   {
+   /* otherwise search queue for correct place   */
+      SaveState *prev = xroot->TimerQ;
+      SaveState *next = prev->next;
+   
+      while( next != NULL && After(endtime,next->endtime) )
+      {
+         prev = next;
+         next = prev->next;
+      }
+      s.next = next;            /* insert into Q */
+      prev->next = &s;
+   }
+   IntsOn();
+   Dispatch(&s);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf CreateProcess}
+
+Initialise a new thread. The new thread when activated by EnterProcess
+will call the `entry' address as if it was a fn, any return from this fn
+will cause the `exit' fn to be called. The result of CreateProcess
+is a pointer to the start of the argument area. These arguments are then
+filled in by the caller (so must be contiguous). The argsize argument is the
+size of the arguments passed in terms of bytes (current implementations
+always use word multiples). Descript points to a two word
+array, descript[0] is the module table pointer, descript[1] is the stack base.
+The descript[ ] array is only valid for the duration of the call.
+
+\scriptsize
+\begin{verbatim}
+           Hi
+------------------------ <- top of stack passed to CreateProcess
+|        arg n         | -1    /?\
+------------------------        |
+| args to be           | -2     |
+------------------------        |
+| filled in            |    `argsize'
+------------------------        |
+| by caller            |        |
+------------------------        |
+|        arg 1         | -n    \?/
+------------------------ <- start of args  (ret by CreateProcess & arg to
+| saved argsize        |    EnterProcess). 
+------------------------ <- used to work out what args to move from stack to
+|       SaveState      |    arg regs and what to set the sp to by EnterProcess.
+|                      |
+| sp = arg5/stacktop   | <- set at first stacked arg or stack top.
+| sl = descript[1] + ? | <- Optionally set up a stack limit reg to base of 
+|                      |    stack + safety value.
+| mt = descript[0]     | <- module table pointer.
+| v1 = descript[1]     | <- variable reg that will be saved by callee and restored on exit
+| lr = exit            | <- fn called to terminate process (or place on stack).
+| pc = entry           | <- process entry function.
+|                      |
+------------------------
+           Lo
+\end{verbatim}
+\normalsize
+\begin{center}
+Figure {\bf 1} Possible stack configuration used by {\bf CreateProcess}:
+\end{center}
+\vspace{0.25cm}
+
+\begin{sloppypar}
+In current implementations `argsize' is always a multiple of 4 bytes (a word).
+The `v1' register is a compiler variable register that the callee should save
+and restore when it returns. The value in this register is then used by some
+assembler to free up the stack on process exit.
+\end{sloppypar}
+\scriptsize
+\begin{verbatim}
+word *CreateProcess(word *stack, VoidFnPtr entry, VoidFnPtr exit, 
+			word *descript, word argsize)
+{
+	SaveState *InitState;
+
+	/* build entry procedure stack frame */
+	stack -= argsize/sizeof(word);  /* save space for args */
+	stack[-1] = argsize/sizeof(word); /* remember number of args */
+
+	/* setup saved state */
+	InitState->pc = (word)EntryFn;
+	InitState = (SaveState *)((char *)&stack[-1] - sizeof(SaveState));
+#ifdef MAYBE
+	InitState->modtab = (word)descript[0];	/* only if mod tab passed on stack */
+	InitState->exitfn = (word)exit;		/* if processor uses stack for calls 8/
+#else
+        /* register based systems */
+	InitState->lr = (word)ExitFn;
+	InitState->dp = (word)descript[0];
+#endif
+	InitState->next = NULL;
+
+	return(stack);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf EnterProcess}
+
+Start up a thread created by CreateProcess.
+The first argument is the result of CreateProcess, the second is the priority
+at which this thread is to be run.
+
+\scriptsize
+\begin{verbatim}
+void EnterProcess(word *stack, word pri)
+{
+   word argsize = stack[-1];
+   SaveState *ss;
+   word *aregs;
+
+   /* fixup stack frame for Scheduler */
+   ss = (SaveState *)((char *)&stack[-1] - sizeof(SaveState));
+
+   aregs = (word *)&ss->a0; /* first argreg held in save state */
+   for (i = 0; i < argsize && i < NUMARGREGS)
+	aregs[i] = *stack++; /* move stacked args to arg regs */
+
+   /* may also have to place modtab and exit function address on stack */
+#ifdef MAYBE
+   *(--stack) = ss->modtab;
+   *(--stack) = ss->exitfn;
+#endif
+  
+   ss->sp = stack;
+
+   ss->next = NULL;
+   ss->pri = pri;
+
+   Resume(s);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf Stop}
+
+Halt the current thread permanently.
+The current thread is halted permanently, it cannot be resumed or ever
+restarted.
+
+\scriptsize
+\begin{verbatim}
+void Stop(void)
+{
+   SaveState *dummy;
+   Suspend(&dummy);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf SetPhysPri}
+
+This function changes the current process priority level to the one passed
+as an argument, even high priority (0) can be entered via this function.
+The old priority level is returned.
+
+\scriptsize
+\begin{verbatim}
+word SetPhysPri(word priority)
+{
+  word old = ExecRoot()->CurrentPri;
+
+  ExecRoot()->CurrentPri = priority;
+
+  return(old);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf GetPhysPri}
+
+GetPhsPri returns the current thread priority level.
+
+\scriptsize
+\begin{verbatim}
+word GetPhysPri(void)
+{
+  return(ExecRoot()->CurrentPri);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf GetPhysPriRange}
+
+Returns highest value priority level available. For instance, in a eight
+level system (including level 0) it will return a value of 7. This is the
+lowest priority that can be selected to run a thread at.
+Range is always a power of 2 - 1.
+
+\scriptsize
+\begin{verbatim}
+word GetPhysPriRange(void)
+{
+   return ExecRoot()->PriRange;
+}
+\end{verbatim}
+\normalsize
+
+\end{enumerate}
+
+\subsubsection{Kernel support functions}
+
+\begin{enumerate}
+
+\item {\bf CallWithModTab}
+
+Call a function using a different module table. This routine is used by
+the kernel to call down a programs INIT chain, initialising the
+module table static data areas.
+This takes two arguments, a procdure pointer, and a module table pointer.
+The function is called with the two arguments, and its module table set
+to the supplied one.
+When the function returns, the original module table is restored.
+
+\scriptsize
+\begin{verbatim}
+void CallWithModTab(word arg0, word arg1, VoidFnPtr fn, word *modtab)
+{
+   word *oldmodtab;
+
+   oldmodtab = Exchangemodtab(modtab);  /* implemented in assembler */
+   fn(arg0, arg1);
+   modtab = Exchangemodtab(oldmodtab);
+
+}
+
+Assembler implementation of ExchangeModTab() function.
+
+ ASMPROC ._ExchangeModTab
+        xor dp,a1               ; a1 holds modtab on entry
+        xor a1,dp               ; dp reg is dedicated module table pointer
+        xor dp,a1               ; a1 now holds old modtab
+        ret                     ; a1 being return val in C calling seq.
+\end{verbatim}
+\normalsize
+
+\item {\bf \_GetModtab}
+
+Returns the current module table pointer.
+\scriptsize
+\begin{verbatim}
+ ASMPROC ._GetModTab
+        mov a1,dp               ; return the contents of the module table pointer 
+                                  register
+        ret                     ; a1 being return val in C calling seq.
+\end{verbatim}
+\normalsize
+
+\item {\bf StoreSize}
+\begin{sloppypar}
+The base of RAM memory is assumed to be known by the kernel as this is defined
+by the call {\bf GetSysBase()} (In ROM based systems the value returned by the
+GetRoot() macro is the equivalent to the start of the RAM area).
+The base address passed to this function is the memory area directly after the
+nucleus and the root/config structures (See Appendix B).
+The function returns a pointer to the first non-usable byte of memory.
+This memory is assumed to appear as a contigous linear block from the
+base address given.
+\end{sloppypar}
+\scriptsize
+\begin{verbatim}
+byte *StoreSize(byte *base)
+{
+    /* won't cope with incompletely decoded (mirrored) memory */
+    while((*base=0xAA) == *base++) ;/*null stat*/
+
+    return(--base);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf MoveBlock/SetBlock/ZeroBlock}
+
+For efficiency, block operations should be implemented in the native
+assembler of the target machine.
+\scriptsize
+\begin{verbatim}
+/* move a block of data z bytes long, from byte address s to d */
+void MoveBlock(void *dst, void *src, word size)
+{
+    while(size--)
+        *dst++ = *src++;
+}
+
+/* set a block of data s bytes long, at byte address b, to multiples of word v */
+#define SetBlock(b,v,s)      \
+   *(word *)(b) = v;         \
+   MoveBlock(b,(word *)(b)+1,(s)-4)
+
+/* set a block of data s bytes long, at byte address b, to zero */
+#define ZeroBlock(b,s) SetBlock(b,0,s)
+\end{verbatim}
+\normalsize
+
+\item {\bf MoveWordBlock}
+
+Optional function, mainly used to optimise message passing efficiency.
+\scriptsize
+\begin{verbatim}
+/* move a block of data of `size' number of words, from word address src to 
+dst */
+void MoveWordBlock(word *dst, word *src, word size)
+{
+while(size--)
+    *dst++ = *src++;
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf ResetLink}
+
+Reset the link communications hardware.
+In the case of multiple links, all the links should be reset.
+
+\scriptsize
+\begin{verbatim}
+void ResetLink(void);
+
+ASMPROC .ResetLink
+    bset    #1,LinkControlReg
+    bclr    #1,LinkControlReg
+    ret
+\end{verbatim}
+\normalsize
+
+\item {\bf ResetCPU}
+
+Reset the CPU back to its powerup state - usually executing the boot EPROM.
+
+\scriptsize
+\begin{verbatim}
+void ResetCPU(void);
+
+ASMPROC .ResetCPU
+    reset
+    bra 0
+\end{verbatim}
+\normalsize
+
+\item {\bf \_cputime}
+
+Return the number of elapsed centiseconds (units of 10 milliseconds)
+since the system was booted.
+
+\scriptsize
+\begin{verbatim}
+              1 second
+=           100 centiseconds
+=          1000 milliseconds
+=     1,000,000 microseconds
+= 1,000,000,000 nanoseconds
+
+word _cputime(void)
+{
+    ExecRootStruct *root = ExecRoot();    /* get at executives own root structure */
+
+    return (root->ticks / 10);        /* convert to centiseconds */
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf ldtimer}
+
+Return the timer value for `pri' priority. Can be
+implemented as a copy of \_cputime as this is only used as a random number
+seed generator.
+\scriptsize
+\begin{verbatim}
+word ldtimer(word pri)
+{
+    return (ExecRoot()->ticks);
+}
+\end{verbatim}
+\normalsize
+
+\item {\bf InitEventHandler}
+
+This call initialises the event system so that the root event handler function
+is executed whenever an interrupt occurs.
+If your system supports some form of interrupting device reporting
+mechanism, you should pass the number produced to the root event handler,
+otherwise -1 should be passed. Vectored interrupts can also be handled
+in this fashion, being translated into a priority number depending on the
+vector. This number is used by the root event
+handler to call the event handlers that were registered with that number
+(priority). Otherwise (-1) all event handlers will be called until one of
+them returns TRUE, or they have all been called. When the root event handler
+returns, you should return from the CPU's interrupt handling mode if it
+provides one.
+
+If multiple priority level interrupts or no interrupt mode
+are provided you should disable interrupts for the duration of the root
+handler call, or make the kernel event routines interrupt resilient.
+
+A small system stack should be provided for the duration of the root
+handler call, 256-512 bytes should be sufficient.
+\scriptsize
+\begin{verbatim}
+void InitEventHandler(RootStruct *root, WordFnPtr roothandler);
+
+ ASMPROC .InitEventHandler
+    call .ExecRoot               ; returns execroot ptr in a1
+    mov  a2,a1[RootHandler]      ; save root event handler address
+    lea  intrpthand,a1           ; get address of interrupt handler
+    mov  a1,#interruptvector     ; install pointer to intr. handler
+    ret
+
+ ASMPROC intrpthand
+    call .ExecRoot               ; returns execroot ptr in a1
+    mov  a1[RootHandler],a2      ; get root event handler address
+    mov  #-1,a1                  ; unknown interrupt source
+    call a2                      ; jump to root event handler
+    rte                          ; return from interrupt mode
+\end{verbatim}
+\normalsize
+
+\item {\bf SaveCPUState}
+
+{\bf SaveCPUState()} saves the current CPU state into the structure it is
+passed. It returns a value of 0 when exiting directly from this function.
+If the function is `returned from' as result of {\bf RestoreCPUState()}
+function call, then 1 is returned. This is achieved by placed a
+1 into the return register ready for a {\bf RestoreCPUState()}. The fact that
+the save state was as a result of a {\bf SaveCPUState()}, rather than a time
+slice should be noted. This will be used by {\bf RestoreCPUState()} to
+determine wether to return normally, or via a return from interrupt (RTI)
+type instruction.
+
+The header file {\bf $<$cpustate.h$>$}
+should hold the definition of the {\bf SaveState} structure for your processor.
+
+\scriptsize
+\begin{verbatim}
+word SaveCPUState(SaveState *savestate);
+
+ ASMPROC .SaveCPUState
+        ; dont alter the stack
+        ; in stack based call systems, set ss.pc to stacked address
+        push lr
+    call .ExecRoot               ; returns execroot ptr in a1
+        pop lr
+	mov #0,a0[ss.sliced]
+        mov a1,a0[ss.a1] 
+        mov a2,a0[ss.a2] 
+        ...
+
+        mov lr,[ss.pc] 
+        mov #1,[ss.a0]               ; return value in saved state
+        mov #0,a0                    ; return value in C call seq.
+        ret
+\end{verbatim}
+\normalsize
+\vfill
+\newpage
+
+\item {\bf RestoreCPUState}
+
+This function restores the CPU state as defined by its argument, causing
+1 to be returned by the equivalent {\bf SaveCPUState()} call. As this function
+should never alter any of the saved registers, the previous {\bf SaveCPUState()}
+call should have seeded the register C expects the return value in with a
+1.
+
+\scriptsize
+\begin{verbatim}
+word RestoreCPUState(SaveState *savestate);
+
+ ASMPROC .RestoreCPUState
+        push lr
+    call .ExecRoot               ; returns execroot ptr in a1
+        pop lr
+        mov a0[ss.a1], a1
+        mov a0[ss.a2],a2
+        ...
+
+        mov a0[ss.pc],lr
+        mov a0[ss.a0],a0             ; return value in C call seq.
+        ret
+\end{verbatim}
+\normalsize
+\end{enumerate}
+
+\subsection{Executive debugging support functions}
+
+These functions are optional, but may help to get your implementation up and
+running more quickly.
+
+\subsubsection{WriteStr}
+
+This function enables you to send debugging messages down the link to
+the IO server before any link guardian has been started.
+Once the link guardian is in place, you should refrain from using
+this non interrupt driven code as it may get interleaved with bona fide
+Helios messages causing corruption.
+\scriptsize
+\begin{verbatim}
+void WriteStr(char *text)
+{
+    WriteIODHeader(strlen(text));    /* output dummy IOdebug Header */
+    while(*text)
+        WriteChar(*text++);    /* output text down the link */
+}
+\end{verbatim}
+\normalsize
+
+\subsubsection{WriteHex8}
+
+Same use as above, but simply displays a 32 bit hex number.
+\scriptsize
+\begin{verbatim}
+void WriteHex8(word num)
+{
+    int a, i;
+
+    WriteIODHeader(8);
+    for (i=7; i >= 0 ; i--)
+    {
+        a = ((num >> i * 4 ) & 0xf);
+        WriteChar(`0' + (a > 9 ? a + 7 : a));
+    }
+}
+\end{verbatim}
+\normalsize
+
+\subsubsection{WriteChar}
+
+Simple character output to link. This low-level routine polls the link to
+output characters. It can only be used while the interrupt handler and
+link guardian have not yet come alive.
+\scriptsize
+\begin{verbatim}
+
+void WriteChar(char c)
+{
+    while ( !LinkReadyForTx() )
+        ;               /* busy wait polling */
+    TxByte(c)               /* send a byte down link */
+}
+\end{verbatim}
+\normalsize
+
+\subsubsection{WriteIODHeader}
+
+Write out dummy IOdebug() style header, with a data size set to `len'. This
+function is used to create a pseudo IOdebug message, whose contents will be
+displayed on the host IO servers console.
+\scriptsize
+\begin{verbatim}
+
+WriteIODHeader(int len)
+{
+/* *TBD* */
+dummy header with 0 control vec and `len' data size to port 0 (dummy IODebug)
+}
+\end{verbatim}
+\normalsize
+
+\subsection{Inter-processor message passing}
+{\bf *TBD*}
+
+{\bf !!!Update on how to handle multiple links!!!}
+\vspace{0.25cm}
+
+The current Kernel implementation supports message passing between processors
+via Inmos links. 
+Any other processor which supports a similar mechanism should be able to use
+this code if the Executive provides the appropriate routines (LinkTx, LinkRx,
+AbortLinkTx, AbortLinkRx).
+The kernel code which supports this is surrounded by LINKIO flags in the current
+implementation.
+
+Communication based on a shared medium (via a backplane or a network for 
+example), should treat it as a single link, and use the spare locations in 
+the surrogate port table entry to store the identity of the 
+destination processor.
+
+The LinkTx/Rx fns set up interrupt routines to transfer the required number
+of bytes via the link adapter and then enter the dispatcher so that other
+threads can run whilst the link transfer is taking place.
+
+The AbortLinkTx/Rx fns abort the link transfer and return the SaveState
+of the thread that initiated the transfer.
+
+These functions will only be called at high priority.
+
+The following is a pseudo code description of LinkTx(), AbortLinkTx() and
+the Tx interrupt handler. The Rx side of things should be simple to infer
+from these (assumes hardware similar to the Inmos C012 link adapter).
+
+\scriptsize
+\begin{verbatim}
+/* ExecRoot data accessable from link fns and interrupt handler */
+
+void *TxDatap;
+word TxSize;
+
+void *RxDatap;
+word RxSize;
+
+SaveState TxSaveState;
+SaveState RxSaveState;
+
+
+/* send data to link */
+void LinkTx(word size, struct LinkInfo *link, void *buf)
+{
+    while ( LinkReadyForTx() )    /* optimised case for small transfers */
+    {                /* such as the protocol byte, while   */
+                    /* other end doesn't block us.        */
+
+        TxByte(*buf++)        /* send a byte down link */
+        if (--size == 0)
+            return;
+    }
+
+    TxDatap = buf;            /* setup interrupt handler data */
+    TxSize = size;
+
+    /* setup saved state to return to after transfer */
+    TxSaveState = SaveMyState(ReturnPoint);
+
+    EnableTxInterrupts();        /* let the link transfer begin... */
+
+    Dispatch();            /* enter dispatcher */
+
+ReturnPoint:                /* point to return to after */
+                    /* link transfer has completed */
+}
+
+
+/* abort link data transfer */
+SaveState *AbortLinkTx(struct LinkInfo link);
+{
+    DisableTxInterrupts();        /* stop any transfers */
+    if (TxCount == 0)
+        return(NullStateP);    /* transfer already completed */
+    return(&TxSaveState);        /* return ptr to save state */
+}
+
+
+/* pseudo code interrupt handler */
+TxInterruptHandler()
+{
+    while ( LinkReadyForTx() )        /* while link is ready */
+    {
+        TxByte(*TxDatap++)        /* send a byte down link */
+
+        if (--TxSize == 0)
+        {
+            DisableTxInterrupts();    /* end of transfer */
+
+            Resume(&TxSaveState);    /* place TxSaveState back */
+                        /* into scheduling queue */
+
+            /* If your scheduler's queue operations are not       */
+            /* guarded against interrupts, you should set a flag  */
+            /* for the scheduler to examine and Resume the        */
+            /* TxSaveState, rather than calling Resume() directly */
+        }
+    }
+
+    ReturnFromInterrupt();        /* RTE */
+}
+\end{verbatim}
+\normalsize
+
+\subsection{Possible extensions and future directions}
+{\bf *TBD*}
+
+Split Module Table, Memory management, multiple priority levels, idle thread Q,
+intermediate Qs.
+
+\section{Library construction}
+
+In addition to allowing the classic method of linking each individual program
+with a library's object code, Helios also provides support for shareable
+resident libraries. This enables all programs on a given processor to
+share the same library code, but with each invocation having its own copy of
+the library's static data so that the library is reentrant.
+
+Shareable libraries are bound with other programs via an exported definition
+of their static data area, this records the offsets at which to find pointers
+to the functions provided.
+These exported definitions are called ResRefs and have a file
+extension of .def.
+
+To construct a library from multiple source modules you will need to use the
+compilers `-r' option. This restricts the generation of linker directives that
+are normally used to define each modules static data area. They are instead
+produced by a special `glue' file so that each library only uses one
+module table slot, rather than one for every
+source module that it is constructed from.
+It also allows you to control the definition of
+the libraries external interface, keeping future versions compatible with
+code written for old versions of the library. This is achieved by only
+adding new functions at the end of the static data area, leaving the
+offsets of the original functions unaffected.
+To simplify this construction process a set of ampp macros are available
+(library.m), that generate the glue required to link all of the modules into
+a single library module and also generate the ResRef files needed to bind
+user programs to the library.
+
+
+{\bf Example library startup file using library.m macros:}
+\vspace{0.25cm}
+
+\scriptsize
+\begin{verbatim}
+--------------------------------------------------------------------------
+--                                                                      --
+-- utilstart.a                                --
+--                                                                      --
+--    Definition and Declaration file for Utility Library        --
+--                                                                      --
+--    Author:  NHG 06/06/88                        --
+--                                                                      --
+--------------------------------------------------------------------------
+--            Cut down version used for EXAMPLE PURPOSES ONLY           --
+--------------------------------------------------------------------------
+
+include basic.m
+include library.m           -- must include these macro definitions
+
+Resident                    -- we are constructing a resident library
+[
+    name    Util        -- name to go into module header
+    slot    4           -- slot number for this resident library
+    version    1000        -- version number for header
+
+    static              -- starts static data area definition/declaration
+    [
+        extern    func        NewProcess      -- fn pointer defns.
+        extern    func        RunProcess
+        extern    func        ZapProcess
+        -- below 2 fn's now in kernel for ARM version
+        _if _not _defp 'helios.arm
+        [
+            extern    func    _cputime
+            extern    func    _ldtimer
+        ]
+        -- 2 fns below are not available under Helios/ARM
+        _if _not _defp 'helios.arm
+        [
+            extern    func    _operate
+            extern    func    Accelerate
+        ]
+        extern    func        setjmp
+        extern    func        longjmp
+
+        -- misc.c
+        extern    func        IOdebug
+        extern    func        IOputc
+        extern    func        Fork
+
+        -- string.c
+        extern    func        strlen
+        extern    func        strcpy
+        extern    func        strcat
+
+        -- ADD NEW FUNCTIONS HERE --
+
+        -- private statics
+        word            digits       -- one word of data
+
+        -- initialisation
+        initptr            digits       -- how to initialise it
+    ]
+
+        -- what libraries this one depends on
+    uses    Kernel                 
+    uses    SysLib
+
+        -- create stubs for any external function calls by hand
+        -- if you miss these out the linker will complain about
+        -- unknown symbols.
+    stubs
+    [
+        -- kernel functions called by this library
+        stub    Delay
+        stub    PutMsg
+        stub    _Trace
+        stub    InitProcess
+        stub    StartProcess
+
+        -- syslib functions called by this library
+        stub    Malloc
+        stub    Free
+        stub    FreeStop
+        stub    InitMCB
+    ]
+]
+
+-- End of utilstart.a
+\end{verbatim}
+\normalsize
+
+As you can see, these library glue files are largely processor independent,
+only the library.m, structs.m and module.m macros have to be re-written to
+port these files. Library.m is listed in Appendix C.
+
+These glue files are processed twice, once to generate the ResRef
+files, and once to produce the library's module header, static data
+declarations and initialisation code. The resulting definition (.def) files
+from the first run are used to bind user programs to the shared library.
+The startup assembler code produced by the second run is linked with the
+other library object files to produce the single module library executable.
+
+\subsection{The library macros}
+
+The library.m macros all depend on the define flag make.def. If this
+flag is defined by ampp, then library definition (ResRef) macros are output,
+otherwise library declaration (startup code) macros are defined.
+
+In the following descriptions, the initialisation parts of the static
+section macros and the Stub and LibData sections are only output if
+the make.def flag is not defined.
+\vfill
+\newpage
+
+\subsubsection{Macros that start a particular section:}
+\begin{itemize}
+
+\item {\bf Resident}
+
+Defines a resident module which contains the static, code,
+buses and Stubs subsections:
+
+\item {\bf static}
+
+Macros in this subsection define the static data area and how its
+contents should be initialised.
+
+\item {\bf code}
+
+contains any additional assembler code for initialisation chain.
+
+\item {\bf uses} {\it libname}
+
+names libraries this library depends on and forces them to be
+bound.
+
+\item {\bf Stub} 
+
+contains the stub macros.
+
+\item {\bf LibData} 
+
+holds constants and additional assembler functions.
+Constants are usually copied to static data area during initialisation.
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Macros at top of Resident section:}
+\vspace{0.25cm}
+
+\begin{itemize}
+\item {\bf Name} {\it name}
+
+The module name to be inserted into the module header.
+
+\item {\bf Version} {\it ver} 
+
+The module version to be inserted into the module header.
+
+\item {\bf Slot} {\it num} 
+
+The module slot this module will use, also placed into the
+module header.
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Static section macros:}
+\vspace{0.25cm}
+
+\begin{itemize}
+
+\item {\bf extern}
+
+exports the following definition in the ResRef file, otherwise
+item stays private to this module. It is used to prefix
+any of the following four types of macro.
+
+\item {\bf func} {\it fnname}
+
+defines space in the static data for a function pointer
+and initialises this to point to its (dot) .bname.
+
+\item {\bf word} {\it name}
+
+defines a word of static data.
+
+\item {\bf vec} {\it name size} 
+
+defines a static data array, sized in bytes.
+
+\item {\bf struct} {\it name} 
+
+defines space for this structure, actual struct size
+defined in a system include file.
+
+\item {\bf initword} {\it name value}
+
+`init's a word in static data to value.
+
+\item {\bf inittab} {\it name size} 
+
+copies table of data from its (dot) .name
+to its (underscore) \_name. size is the number of bytes to copy. 
+
+\item {\bf initptr} {\it name} 
+
+`init's {\it \_name} in static data to point
+to its .name. Usually used for explicit static data function pointers.
+
+\item {\bf initptrtab} {\it name items stride} 
+
+initialises table of pointers in static
+data area pointed to by {\it \_name}.
+Pointers start at its (dot) {\it .name} and then increment by
+stride bytes for the argument number of items.
+\end{itemize}
+\vspace{0.25cm}
+
+{\bf Stubs section macro:}
+\vspace{0.25cm}
+\begin{itemize}
+
+\item {\bf stub} 
+
+generates an fn stub for a function residing in another library
+(only used in Stubs section).
+\end{itemize}
+
+\section{Library functions requiring recoding}
+{\bf *TBD*}
+
+{\bf !!! Search for \#ifdef HELIOSARM and \#ifndef XPUTER in sources of C 
+and ASM !!!}
+
+\begin{itemize}
+\item Keeping single set of sources for multiple targets.
+\item Error handling div by zero, stack overflow etc.
+\item startup code - \_main - handcoded assembler
+\item C library - supply assembler versions of setjmp/longjmp.
+\item Posix - supply assembler versions on vfork and \_exit
+\item Util - supply NewProc/RunProc/ZapProc/Fork/\_ProcExit - Trace support \newline
+.spreg,linkreg,etc
+\item Move IOdebug and trace to kernel library
+\item Kernel - InitProc/StartProc/StopProc, setting up mt pointer, etc in taskinit
+\item Compatibility functions: bltbit (especially for X porting), accelerate,
+allocfast, freefast, etc.
+\end{itemize}
+
+\section{The Helios source code directory hierarchy}
+
+\begin {quote}
+This description is now hoplessly out of date.
+Read the makesystem document in /hsrc/oemdoc for more information
+The directories containing the source of Helios are listed below.
+In all cases directories
+contain a makefile indicating how the system is put together. Different
+processor versions have different extensions e.g. the Helios/ARM version has
+makefiles with an extension of .arm. Note
+that the makefile refers to the Unix system used at Perihelion Software
+and some pathnames will need to be changed to recompile everything under
+Helios. The makefiles use three tools:
+
+\begin{enumerate}
+\item {\bf nc} 
+
+The standard Helios C compiler (called cc under Helios)
+
+\item {\bf asm} 
+
+The standard Helios assembler/linker
+
+\item {\bf ampp} 
+
+The AMPP Helios product
+\end{enumerate}
+
+The various Helios subsystems are contained in the following directories:
+
+\begin{itemize}
+
+\item {\bf cmds}: 
+
+The source of all commands found in the bin directory. Large
+commands such as make or emacs have their own subdirectory;
+small commands are held in the subdirectory com. The C library directory
+clib is held under the cc directory.
+
+\item {\bf contrib}: 
+
+Some user contributed commands. Perihelion Software distribute
+these files for no financial gain, and they are unsupported.
+
+\item {\bf drivers}: 
+
+Loadable device driver support.
+
+\item {\bf fault}: 
+
+The fault library.
+
+\item {\bf filesys}:
+
+The Helios file system.
+
+
+\item {\bf fplib}: 
+
+Floating point support, including special versions of printf/scanf
+which support floating point. These are used instead of the normal
+printf/scanf which support only integers.
+
+\item {\bf kernel}: 
+
+The Helios system kernel. Within here is an include directory
+that holds the system ampp macros for library construction, system struct
+definitions, etc.
+
+\item {\bf net\_man}: 
+
+Network (multiprocessor) support. Subdirectories are:
+
+\begin{itemize}
+\item  {\bf batch}: The batch server called bs.
+\item  {\bf gen\_serv}: General support libraries used by net\_serv and tfm.
+\item  {\bf net-serv}: The network server called ns.
+\item  {\bf tfm}: The task force manager called tfm.
+\item  {\bf session}: The session manager called sm.
+\end{itemize}
+
+\item {\bf nucleus}: 
+
+The Helios system nucleus. This includes loadable servers such
+as pipe, null and fifo as well as the system and server libraries.
+
+\item {\bf parsup}: 
+
+Parallel support library.
+
+\item {\bf posix}: 
+
+POSIX compatibility library.
+
+\item {\bf util}: 
+
+The utility support library, containing string support and so on.
+
+\item {\bf window}: 
+
+The window manager library. This makes the nowindow window manager
+usable instead of the server window support and simple windowing system
+for a bitmapped display. The window manager supports the /window server
+(support now discontinued).
+
+\item {\bf xwin}: 
+
+The equivalent support for the /window server for the X-windows system.
+\end{itemize}
+
+\subsection{Building the Helios system image}
+
+To build the entire system, cd to the top level of the helios source
+directories and run the makeall makefile. This will ensure that the
+build of the entire Helios system is done in the correct sequence. The final
+result being the creation of a downloadable Helios system image. This is
+the file that the server boots into the target processor to run Helios.
+
+To erase all of the current object, executable, definition and temporary files
+execute a makeclean. If this is done before a makeall it will assure a
+consistent system build.
+
+Helios subsystems, such as the kernel or the emacs editor can be made
+individually by running the supplied makefile in their source directory.
+
+\section{Approaches to debugging}
+{\bf *TBD*}
+
+Trace vector,WriteStr/WriteX Statements,IOdebug,Postmortem Dumps.
+
+concurrent debugger - DebugCohabit,debug message port to be allocated,
+- redo debug protocol with this in mind.
+
+compiler test harness, polled links, fake sync byte, IO server message printout.
+
+\section{Roming Helios}
+{\bf *TBD*}
+
+\subsection{Server support}
+
+\begin{itemize}
+\item NO\_BOOTSTRAP, NO\_IMAGEBOOT, NO\_SYNC, NO\_RESET\_TARGET, \newline
+NO\_RESET\_COMMS, NO\_CONFIG, PROCESSOR = x (for number of \newline
+links etc).
+\item Alterations to the Kernel/Executive:
+SysBase, GetRoot(), GetConfig().
+\item Resident libraries included in nucleus CLib,posix,fplib,etc: update
+kernel.h IVec \#defs.
+\end{itemize}
+
+\section{Differences between generic and Transputer Helios}
+{\bf *TBD*}
+Byte DATA, rather than word - as ARM rel. notes
+
+\section{Obselete functions from Transputer Helios}
+
+No Accelerate,AccelerateCode,etc
+\section{Functions that have moved libraries}
+
+Some functions have been moved to kernel library - IOdebug, ldtimer, \_cputime
+
+\section{New functions}
+
+{\bf Event Handling, multiple priorities:}
+\begin{itemize}
+\item {\bf AvoidEvents}: run a function with interrupts turned off.
+
+\item {\bf HardenedWait/Signal()}
+
+\item {\bf SetPriority()}
+
+\item {\bf GetPriority()}
+
+\item {\bf GetPriorityRange()}
+
+\item {\bf TimedWait()}
+\end{itemize}
+\vfill
+\newpage
+
+
+\subsection*{ODDS and ENDS 1: Multiple Priorities}
+\input{priority.tex}
+
+
+\subsection*{ODDS and ENDS 2: ROM Config}
+\input{romconfig.tex}
+
+
+\subsection*{ODDS and ENDS 3: ROM Disk}
+\input{romdisk.tex}
+
+
+\subsection*{ODDS and ENDS 3: Exec Errors}
+\input{execerrs.tex}
+
+
+\subsection*{Appendix A: The Helios module table system}
+
+\begin{quote}
+\it
+@@@ Update for split module table!!!
+\rm
+\end{quote}
+
+The Helios module table system facilitates the use of shared resident
+libraries by separating a program's
+modules (separately compiled units) into separate static data and code
+portions. It also alleviates the need to relocate a progam as all its
+static data and any external function calls are accessed via an indirection
+through its own module table.
+Whenever a task wishes to call a library function or access its static
+data, it must go through the module table.
+A libraries code can be reused without danger as each program that it is
+linked with uses a different area of memory for its static data. This 
+separation is
+achieved by passing the programs module table pointer to each function
+that is called (it is usually held in a predefined register).
+\vspace{0.25cm}
+
+\scriptsize
+\begin{verbatim}
+                   ++++++++++++++++++++
+                   |        |         | Stack
+                   |       \|/        |
+                   |                  |
+                   ++++++++++++++++++++
+                   |       /|\        |
+                   |        |         | Heap
+                   |                  |
+                   ++++++++++++++++++++     
+        ---------> |                  | Module         -------------------
+       |           -------------------- Static      / | ................. | A
+       |           |                  | Data      /   | foo ............. | Module's
+       |  -------> |                  | Areas   /     |-------------------| Static
+       | |         --------------------       /       | ................. | Data
+       | |         |                  |     /         | widgettbl ....... | Area
+       | |  -----> |                  |   /           |-------------------|
+       | | |       -------------------- /             | ................. |
+       | | |       |                  |               | ................. |
+       | | |       |                  |               | intarray ........ |
+       | | |  ---> |                  |               |-------------------|
+       | | | |     -------------------- \             | fp .............. | 
+       | | | |     |                  |   \           +++++++++++++++++++++
+       | | | |  -> |                  |     \         | *(display)() ---> | Externally
+       | | | | |   ++++++++++++++++++++       \       |-------------------| Callable
+       | | | | |   |  n   <-----      | Module  \     | *(open)()    ---> | Functions
+       | | | | |   -------------------- Table     \   |-------------------|
+       | | | |  -- |  5   <-----      | Slots       \ | *(close)()   ---> |
+       | | | |     --------------------                -------------------
+       | | |  ---- |  4   <-----      | (...)
+       | | |       --------------------
+       | |  ------ |  3   <-----      | (ServLib)
+       | |         -------------------- 
+       |  -------- |  2   <-----      | (SysLib)
+       |           --------------------
+        ---------- |  1   <-----      | (Kernel)
+                   --------------------
+               --- |  0   <-----      |
+              |    ++++++++++++++++++++ 
+              |            /|\
+               -------------
+\end{verbatim}
+\normalsize
+
+\begin{center}
+Figure {\bf 2} A task's static data area layout
+\end{center}
+
+When a task is about to be executed, its module table slots are initialised
+to point at each modules static data area. Each modules initialisation code
+is then called with this pointer to process their data areas to their required
+starting state (such as a C initialised external variable),
+including insertion of pointers to its externally callable routines.
+
+Some slots in the module table are predefined to be used by particular
+libraries, for instance the kernel library always uses slot one. When
+a program is linked, any undefined modules (its own) use slot numbers
+immediately following the highest predefined slot used. The use of
+predefined slots for the resident libraries means they do not need
+to be relinked for each new
+application. Definition (ResRef) files that record the required
+static data offsets of the library's externally callable functions are
+used to bind (link) the libraries to the program modules instead.
+The predefined slots for Helios/Transputer are as follows (you are completely
+free to change the order in your implementation):
+\scriptsize
+\begin{table}[h]
+\begin{center}
+\begin{tabular}{llll}
+\\
+\bf Slot & \bf Module & \bf Slot & \bf Module\\
+\\
+1  & Kernel   &    13 & Reserved\\
+2  & SysLib   &   14 & GlobVec (for BCPL \& FORTRAN)\\
+3  & ServLib  &   15 & BCPL\\
+4  & Utility  &   16 & GEM VDI\\
+5  & FpLib    &   17 & GEM AES\\
+6  & Posix    &   18 & Profiler\\
+7  & Clib     &   19 & Debugger\\
+8  & FpClib   &   20 & OccamLib\\
+9  & XLib     &   21 & Meiko Fortran\\
+10 & Xtoolkit &   22 & InterNet\\
+11 & Xwidgets &   23 & Network Support\\
+12 & Reserved &   24 & Network Control\\
+\\
+\end{tabular}
+\end{center}
+\end{table}
+\normalsize                    
+\begin{center}
+Table {\bf 1} The module table
+\end{center}
+\vspace{0.25cm}
+See Chapter 14 of `The Helios Parrallel Operating System' manual for more details of
+the module table and task representation in memory.
+\vfill
+\newpage
+
+\subsection*{Appendix B: The generic Helios memory map}
+\scriptsize
+\begin{verbatim}
++---------------------------+ 0x0
+|                           |
+| I/O + Vectors + ROM       | Possible memory mapped I/O, exception vectors,
+|                           | ROM/EPROM area.
+|                           |
+~                           ~
+|                           |
++---------------------------+ Start of RAM
+|                           |
+| ExecRoot + Workspace      | Possible execroot structure and executive 
+|                           | workspace (or may be placed at the end of RAM).
+|                           |
++---------------------------+ SysBase constant points here
+|                           |
+| System Image              |
+|                           |
++---------------------------+ GetRoot() points to here
+| Kernel Root structure     |
++---------------------------+ GetConfig() points to here
+| Configuration info        |
++---------------------------+ StoreSize() is passed this as its base address
+|                           |
+| User Memory Pool          |
+|                           |
+~                           ~
+|                           |
+|                           |
++---------------------------+
+|                           |
+| 4k Trace vector           |
+|                           |
++---------------------------+ Value returned from StoreSize() points here
+                              (end of RAM)
+
+|                           |
+~                           ~
+|                           |
+| I/O + Vectors + ROM       | Possible memory mapped I/O, exception vectors,
+|                           | ROM/EPROM area.
+|                           |
+~                           ~
+|                           |
++---------------------------+ 0x3ffffff 
+\end{verbatim}
+\normalsize
+\vfill
+\newpage
+\small
+\subsection*{Appendix C: Library definition/declaration macros}
+\normalsize
+This file is usually held within the include subdirectory in the kernel
+source directory.
+
+\scriptsize
+\begin{verbatim}
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- library.m                                --
+--                                                                      --
+--    Resident library definition macros.                --
+--    Must be kept in step with module.m                --
+--                                                                      --
+--      Author: NHG 28-July-87                        --
+--      Update: PAB 23/6/89 Helios/ARM                                  --
+--                                                                      --
+--    SCCS Id: %%W%% %%G%%                        --
+--------------------------------------------------------------------------
+
+_report ['include library.m]
+_def 'library.m_flag 1
+
+include basic.m
+include module.m
+
+_test _defp 'helios.arm
+[
+    _report '[Making Helios/ARM version]
+    include munge.m
+    include arm.m
+]
+[
+    _report '[Making Std Helios version]
+]
+
+_defq 'Resident['resident.body]
+[
+    _test _defp 'make.def
+    [ _report '[Making library definition file] ]
+    [ _report '[Making library declaration file] ]
+
+    _defq 'res_name Unknown.Name
+
+    _test _defp 'helios.arm
+        [_defq 'res_slot undef]
+        [_defq 'res_slot Unknown.Slot]
+
+    _test _defp 'helios.arm
+        [_defq 'res_version 1]
+        [_defq 'res_version Unknown.Version]
+
+    _defq 'name['arg] [_def 'res_name arg]
+    _defq 'slot['arg] [_def 'res_slot arg]
+    _defq 'version['arg] [_def 'res_version arg]
+
+    resident.body
+
+    _undef 'name
+    _undef 'slot
+    _undef 'version
+]
+
+-- if make.def is defined, generate a file which can be assembled to
+-- a .def file.
+_if _defp 'make.def
+[
+    _defq 'uses['libname]
+    [
+        ref    [libname$.library]
+    ]
+
+    -- static just defines external labels
+    _defq 'static['initcode]
+    [
+        align
+        module    res_slot
+        global    [res_name$.library]
+res_name$.library:
+        -- create ResRef module to resident libarary
+        word    T.ResRef
+        --word    52
+        word    ResRef.sizeof
+        _test _defp 'helios.arm
+        [
+            .asciz "res_name"
+            .space 32 - _strsize res_name - 1
+        ]
+        [blkb    31,"res_name" byte 0]
+        _test _defp 'helios.arm
+            [.patch_word [modnum]]
+            [word    modnum]
+        word    res_version
+        word    0
+
+        _defq 'extern [ _def '_extern 1 ] -- make following item external
+        _defq 'func['name]          -- define function
+        [
+            _test _defp 'helios.arm
+                [data [_$name] 4]
+                [data _$name 1]
+            _if _defp '_extern [global [_$name] _undef '_extern]
+        ]
+        _defq 'word['name]        -- define word
+        [
+            _test _defp 'helios.arm
+                [data [_$name] 4]
+                [data _$name 1]
+            _if _defp '_extern [global [_$name] _undef '_extern]
+        ]
+        _defq 'struct['type 'name]    -- define structure
+        [
+            _test _defp 'helios.arm
+                [data [_$name] [_eval[_eval[type$.sizeof]]]]
+                [data _$name _div _eval[_eval[type$.sizeof]] 4]
+            _if _defp '_extern [global [_$name] _undef '_extern]
+        ]
+        _defq 'vec['sizexxx namexxx]        -- define vector of bytes
+        [
+            _test _defp 'helios.arm
+                [data [_$namexxx] sizexxx]
+                [data _$namexxx _div sizexxx 4]
+            _if _defp '_extern [global [_$namexxx] _undef '_extern]
+        ]
+        _defq 'redefine['name]        -- redefine external procedure
+        []
+        _defq 'initptr['name]        -- initialise a pointer to data in code
+        []
+        _defq 'inittab['name 'size]    -- copy a table from code to data space
+        []
+        _defq 'initword['name 'value]        -- initialise a word to a value
+        []
+        _defq 'initptrtab['name 'items 'stride]    -- init a table of ptrs to strings
+        []
+        _defq 'code['code_body]            -- general assembly code
+        []
+
+        initcode
+        _undef 'extern
+        _undef 'func
+        _undef 'word
+        _undef 'struct
+        _undef 'vec
+        _undef 'redefine
+        _undef 'initptr
+        _undef 'inittab
+        _undef 'initword
+        _undef 'initptrtab
+        _undef 'code
+    ]
+
+    -- no stubs
+    _defq 'stubs['body]
+    [ ]
+
+    -- no data
+    _defq 'LibData['body]
+    []
+]
+
+_if _not _defp 'make.def
+[
+
+    _defq 'uses['libname]
+    [
+        ref    [libname$.library]
+    ]
+
+    _defq 'static['initcode]
+    [
+            align
+            module  res_slot
+        global    [res_name$.library]
+res_name$.library:
+    .ModStart:
+        _test _defp 'helios.arm
+                [word    0x60f160f1]
+                [word    #60f160f1]
+        _test _defp 'helios.arm
+            [.patch_word [imagesize]]
+            [word    .ModEnd-.ModStart]
+        _test _defp 'helios.arm
+        [
+            .asciz "res_name"
+            .space 32 - _strsize res_name - 1
+        ]
+        [blkb    31,"res_name" byte 0]
+        _test _defp 'helios.arm
+            [.patch_word [modnum]]
+                [word    modnum]
+        word    res_version
+        _test _defp 'helios.arm
+            [.patch_word [datasymb .MaxData]]
+            [word    .MaxData]
+            init
+
+        _defq 'extern [ _def '_extern 1 ] -- make following item external
+        _defq 'func['name]          -- define function
+        [
+            _test _defp 'helios.arm
+                [data [_$name] 4]
+                [data _$name 1]
+            _if _defp '_extern
+            [
+                global [_$name]
+                _undef '_extern
+            ]
+            _test _defp 'helios.arm
+            [
+                -- r2 points to static data area
+                ldr ip,(pc,#4)
+                add ip,pc,ip
+                b _passaddr_$name
+            _addressof_$name:
+                .patch_word [labelref [.$name]]
+            _passaddr_$name:
+                .patch_armdt [datasymb [_$name]]
+                str ip,(r2,#0)
+            ]
+            [ldc .$name-2 ldpi ldl 0 stnl _$name]
+        ]
+        _defq 'word['name]        -- define word
+        [
+            _test _defp 'helios.arm
+                [data [_$name] 4]
+                [data _$name 1]
+            _if _defp '_extern [global [_$name] _undef '_extern]
+        ]
+        _defq 'struct['type 'name]    -- define structure
+        [
+            _test _defp 'helios.arm
+                [data [_$name] [_eval[_eval[type$.sizeof]]]]
+                [data _$name _div _eval[_eval[type$.sizeof]] 4]
+            _if _defp '_extern [global [_$name] _undef '_extern]
+        ]
+        _defq 'vec['sizexxx namexxx]        -- define vector of bytes
+        [
+            _test _defp 'helios.arm
+                [data [_$namexxx] sizexxx]
+                [data _$namexxx _div sizexxx 4]
+            _if _defp '_extern [global [_$namexxx] _undef '_extern]
+        ]
+        _defq 'redefine['name]        -- redefine external procedure
+        [
+            _test _defp 'helios.arm
+            [
+                _report['Error: 'redefine 'must 'not 'be 'used 'in 'Helios/ARM 'version]
+            ]
+            [
+                ldc .$name - 2 ldpi
+                ldl 2        -- what is here?
+                ldnl @_$name
+                stnl _$name
+            ]
+        ]
+        _defq 'initptr['name]        -- initialise a pointer to data in code
+        [
+            _test _defp 'helios.arm
+            [
+                -- r2 points to static data area
+                ldr ip,(pc,#4)
+                add ip,pc,ip
+                b _passDaddr_$name
+            _addressofD_$name:
+                .patch_word [labelref [.$name]]
+            _passDaddr_$name:
+                .patch_armdt [datasymb [_$name]]
+                str ip,(r2,#0)
+            ]
+            [
+                ldc .$name - 2 ldpi  -- why the -2? (pipeline?)
+                ldl 0 stnl _$name
+            ]
+        ]
+        _defq 'inittab['name 'size]    -- copy a table from code to data space
+        [
+            _test _defp 'helios.arm
+            [
+                -- !!! data must be word aligned and word multiple sized
+                -- get address of source into ip
+                -- r2 points to static data area
+                ldr ip,(pc,#4)
+                add ip,pc,ip
+                b _passTaddr_$name
+            _addressofT_$name:
+                .patch_word [labelref [.$name]]
+            _passTaddr_$name:
+
+                -- get address of target into r3
+                .patch_armdplsb [datasymb [_$name]]
+                add    r3,r2,#0 -- r2 points at our static area
+                .patch_armdprest
+                add    r3,r3,#0
+
+                -- hopefully addressability works out ok
+                -- else use ldr r1,#size -- code const in pool
+                mov    r1,#size
+
+            _inittab_loop_$name:
+                -- copy size .name to _name
+                ldr    r0,(ip),#4
+                str    r0,(r3),#4
+                subs    r1,r1,#4
+                bgt _inittab_loop_$name
+            ]
+            [
+                ldc .$name - 2 ldpi
+                ldl 0 ldnlp _$name
+                ldc size
+                move
+            ]
+        ]
+        _defq 'initword['name 'value]        -- initialise a word to a value
+        [
+            _test _defp 'helios.arm
+            [
+                ldr ip,#value        -- code const in pool
+                .patch_armdt [datasymb [_$name]]
+                str ip,(r2,#0)
+            ]
+            [
+                ldc value
+                ldl 0 stnl _$name
+            ]
+        ]
+        _defq 'initptrtab['name 'items 'stride]    -- init a table of ptrs to strings
+        [
+            _test _defp 'helios.arm
+            [
+                -- get address of source into ip
+                -- r2 points to static data area
+                ldr ip,(pc,#4)
+                add ip,pc,ip
+                b _passPaddr_$name
+            _addressofP_$name:
+                .patch_word [labelref [.$name]]
+            _passPaddr_$name:
+
+                -- get address of target into r3
+                .patch_armdplsb [datasymb [_$name]]
+                -- hopefully addressability works out ok
+                add    r3,r2,#0 -- r2 points at our static area
+                .patch_armdprest
+                add    r3,r3,#0
+
+                -- hopefully addressability works out ok
+                -- else use ldr r1,#items -- code const in pool
+                mov    r1,#items
+
+            _initptrtab_loop_$name:
+                -- put ptr to source in target
+                str    ip,(r3),#4    -- post inc to next
+                add    ip,ip,#stride     -- add stride to source
+                subs    r1,r1,#1
+                bgt _initptrtab_loop_$name
+            ]
+            [
+                ajw -1
+                ldc 0 stl 0
+                while[cne [ldl 0] [ldc items] ]
+                [
+                    ldl 0 ldc stride mul        -- offset of next item
+                    ldc .$name - 2 ldpi        -- base of string table
+                    bsub                -- address of item
+                    ldl 0                -- index in table
+                    ldl 1 ldnlp _$name        -- base of ptr table
+                    wsub                -- address of item
+                    stnl 0                -- store it
+                    ldl 0 adc 1 stl 0        -- inc index
+                ]
+                ajw 1
+            ]
+        ]
+        _defq 'code['code_body]            -- general assembly code
+        [
+            code_body
+        ]
+
+        align
+        init
+        _test _defp 'helios.arm
+        [
+            -- start of initialisation code
+            -- dp reg holds module table base pointer
+
+            .patch_armdt [modtaboff] -- equiv to [shift [2 modnum]]
+            ldr r2,(dp,#0)        -- r2 points to our static data
+
+            -- initialisation code gets expanded here
+            initcode
+
+            movs pc,lr    -- return from initialisation
+            .pool
+        ]
+        [
+            ajw -1
+            ldl 2 ldnl modnum stl 0
+            ldl 3
+            eqc 0
+            cj  ..INIT.0
+            initcode
+        ..INIT.0:
+            ajw 1
+            ret
+        ]
+
+        _undef 'extern
+        _undef 'func
+        _undef 'word
+        _undef 'struct
+        _undef 'vec
+        _undef 'redefine
+        _undef 'initptr
+        _undef 'inittab
+        _undef 'initword
+        _undef 'initptrtab
+        _undef 'code
+    ]
+
+-- This macro just allows stubs for particular procedures to
+-- be generated without any calling code.
+
+    _defq 'stubs['body]
+    [
+        _defq 'stub['name]
+        [
+            _def '_call_stub
+            [                -- stack a stub for this procedure
+                '_if '_not '_defp ['']name$.stubflag
+                [            -- only generate if not one already done
+                    .$name:
+                    _test _defp 'helios.arm
+                    [
+                        .patch_armdt [datamodule [_$name]]
+                        ldr ip,(dp,#0)
+                        .patch_armdt [datasymb [_$name]]
+                        ldr ip,(ip,#0)
+                        mov pc,ip
+                    ]
+                    [
+                        ldl 1
+                        ldnl 0
+                        ldnl @_$name
+                        ldnl _$name
+                        gcall
+                    ]
+                '_defq name$.stubflag 1    -- flag that a stub has been generated
+                ]
+            ]
+        ]
+    
+        body
+        _genstubs
+        _undef 'stub
+    ]
+
+    _defq '_genstubs
+    [
+        _if _defp '_call_stub        -- any to do ?
+        [
+            _call_stub        -- generate a stub
+            _undef '_call_stub    -- and pop it off stack
+            _genstubs        -- this is a recursive macro !!
+        ]
+    ]
+
+    -- static initialisation data, plus any code which may be added
+    -- in the form of procedures.
+    _defq 'LibData['body]
+    [
+        body
+    ]
+]
+
+-- End of library.m
+\end{verbatim}
+\normalsize
+\vfill
+\newpage
+
+\subsection*{Appendix D: *TO BE UPDATED*}
+
+{\bf Executive assembler routines used in the 680X0 port:}
+
+
+\vfill
+\newpage
+
+\subsection*{Appendix E: *TO BE UPDATED*}
+
+{\bf Structures and manifests used in the 680X0 port:}
+
+MCDEP.H:
+
+EXEC-I:
+\vfill
+\newpage
+
+\subsection*{Appendix F: *TO BE UPDATED*}
+
+{\bf The Generic Executive:}
+
+\scriptsize
+\begin{verbatim}
+/*------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1988, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- gexec.c                                --
+--                                                                      --
+--    Generic process scheduler for Helios. This version doesn't      --
+--    run on any processor!                                           --
+--                                    --
+--    This is intended to show, in general, what the executive must    --
+--    do. Normally it will be coded in assembler.            --
+--                                    --
+--    Do not take this code as gospel, only the external interface    --
+--    need be preserved.                        --
+--                                                                      --
+--    Author:  PAB 7/12/88 derived from work done by NHG and GSA    --
+--                                                                      --
+------------------------------------------------------------------------*/
+static char *SccsId = "%%W%% %%G%% Copyright (C) 1987, Perihelion Software Ltd.\n";
+
+
+#define __in_exec 1    /* flag that we are in this module */
+
+#include "kernel.h"
+
+#ifdef GENERIC
+/* ExecRoot should be accessable from asm - could be located at a fixed location
+   in system mem */
+ExecRoot    TheRoot;
+
+/* define a macro or a function to return the location of the ExecRoot struct */
+#define ExecRoot() (&TheRoot)
+#endif
+
+#ifdef TRANSPUTER
+#define ExecRoot() ((ExecRoot *)((MinInt)+0x70))
+#endif
+
+
+
+To be continued when its more up to date!
+
+
+/* internal Exec support functions */
+static void Dispatch(SaveState *s);
+static void ProcEntry(...);
+static void TimerInterrupt(void);
+static void CheckSwitch(ExecRoot *xroot);
+
+#ifdef TRANSPUTER
+static void TimerProcess(void);
+static void InterruptProcess(VoidFnPtr fn, void *arg);
+static void CallDispatch(word b, word c);
+#endif
+
+#ifdef GENERIC
+static void InitTimer(void);
+static void RestartTimer(void);
+#endif
+
+/*--------------------------------------------------------
+-- ExecInit                        --
+--                            --
+-- Initialise executive                    --
+--                            --
+--------------------------------------------------------*/
+
+void ExecInit(void)
+{
+    /* initialise the root structure */
+    ExecRoot *xroot = ExecRoot();        /* find addr of root */
+    xroot->Queues[HiPriority].head = NULL;
+    xroot->Queues[StdPriority].head = NULL;
+    xroot->TimerQ = NULL;    
+    xroot->Timer = 0;
+    xroot->Wakeup = 0;
+    xroot->TimeSlice = 0;
+    xroot->Pri = HiPriority;
+    xroot->HiPri = HiPriority;
+
+/* start up the time slicer */
+#ifdef GENERIC
+/* setup vectored interrupt, load timeslice value into timer and start it */
+    InitTimer();
+#endif
+#ifdef TRANSPUTER
+    InterruptProcess(TimerProcess,0);
+#endif
+
+}
+
+/*--------------------------------------------------------
+-- System                        --
+--                            --
+-- Called only from Kernel routines to move from    --
+-- user mode into system mode.                --
+-- Upto 3 arguments can be passed.            --
+-- System mode is implemented by giving the process    --
+-- maximum priority.                    --
+--                            --
+--------------------------------------------------------*/
+
+word System(WordFnPtr func, ... )
+{
+    ExecRoot *xroot = ExecRoot();        /* get addr of root */
+    word *args = ((word *)&func) + 1;    /* get addr of args */
+    word res;
+    word oldpri;
+
+    IntsOff();                /* interrupts disabled */
+
+    oldpri = xroot->Pri;            /* save old priority */
+    xroot->Pri = HiPriority;        /* set to Hi priority */
+
+#ifdef GENERIC
+    if (oldpri != HiPriority)
+        {
+        bitset    #SUPERMODE,status    /* enter supervisor mode */
+        }
+#endif
+
+    IntsOn();                /* interrupts enabled */
+
+    res = func(args[0],args[1],args[2]);    /* execute fn at Hi priority */
+
+    /* if any other Hi priority processes are waiting, let them go */
+    while( ExecRoot()->Queues[HiPriority].head != NULL )
+        Yield();
+
+    Intsoff();
+    xroot->Pri = oldpri;            /* restore original priority */
+
+#ifdef GENERIC
+    if (oldpri != HiPriority)
+        {
+        bitset    #USERMODE,status    /* reenter user mode */
+        }
+#endif
+
+    IntsOn();
+    return res;                /* return result from Fn */
+}
+
+
+/*--------------------------------------------------------
+-- Suspend                        --
+--                            --
+-- Suspend current process.                --
+-- Called only at Hi priority.                --
+--                            --
+--------------------------------------------------------*/
+
+void Suspend(SaveState **pp)
+{
+    SaveState s;            /* Save state here until we are resumed */
+
+    s.next = NULL;
+    s.pri = HiPriority;
+
+    *pp = &s;
+
+    IntsOff();            /* disable timeslicing */
+    Dispatch(&s);            /* dispatch next free process */
+    IntsOn();            /* enable timeslicing */
+}
+
+
+/*--------------------------------------------------------
+-- Stop                            --
+--                            --
+-- Permanently stop current process.            --
+-- Called only at Hi priority.                --
+--                            --
+--------------------------------------------------------*/
+
+void Stop(void)
+{
+    IntsOff();
+    Dispatch(NULL);        /* dont save state and dont ever return */
+}
+
+/*--------------------------------------------------------
+-- Yield                        --
+--                            --
+-- Yield the processor and let any other processes at    --
+-- Hi priority level run.                --
+-- Called only at HiPriority.                --
+--                            --
+--------------------------------------------------------*/
+
+void Yield(void)
+{
+    ExecRoot *xroot = ExecRoot();
+    ProcessQ *q = &xroot->Queues[0];
+    SaveState s;
+
+    if( q[HiPriority].head != NULL )
+    {
+        IntsOff();
+
+        s.next = NULL;
+#ifdef TRANSPUTER
+        s.pri = xroot->Pri;
+#else
+        s.pri = 0;
+#endif
+        /* place process on tail of hi priority queue */
+        q[HiPriority].tail = q[HiPriority].tail->next = &s;
+
+        Dispatch(&s);    /* run next available hi pri process */
+
+        /* will return to this point when all other HiPriority processes have run */
+        IntsOn();
+    }
+}
+
+/*--------------------------------------------------------
+-- Resume                        --
+--                            --
+-- Resume the given process, it will not run until we    --
+-- either Suspend or Yield.                --
+-- Called only at HiPriority.                --
+--                            --
+--------------------------------------------------------*/
+
+void Resume(SaveState *p)
+{
+    ExecRoot *xroot = ExecRoot();
+    word pri = p->pri;
+    ProcessQ *q = &xroot->Queues[0];
+
+#ifdef TRANSPUTER
+    word oldpri = ldpri_();
+#endif
+    
+    p->next = NULL;
+
+#ifdef TRANSPUTER
+    if( oldpri == StdPriority ) IntsOff();
+#else
+    IntsOff();
+#endif
+    if( q[pri].head == NULL )     /* add at tail of its priority queue */
+        q[pri].head = q[pri].tail = p;
+    else     q[pri].tail = q[pri].tail->next = p;
+
+    /* if resumed processes priority is higher than current then note
+       context switch is required at next timeslice */
+    if( pri < xroot->HiPri ) xroot->HiPri = pri;
+
+#ifdef TRANSPUTER
+    if( oldpri == StdPriority )
+        IntsOn();
+#else
+        IntsOn();
+#endif
+}
+
+/*--------------------------------------------------------
+-- Dispatch                        --
+--                            --
+-- Called in system mode, with interrupts off, to    --
+-- check the scheduling queues for a process to run.    --
+-- The decision to suspend the current process in    --
+-- favour of another has already been made.        --
+-- Called only at Hi priority with interrupts off.    --
+-- If SaveState is NULL, don't save state.        --
+--------------------------------------------------------*/
+
+static void Dispatch(SaveState *s)
+{
+    ExecRoot *xroot = ExecRoot();
+    ProcessQ *q = &xroot->Queues[0];
+    int i;
+    
+    /* In theory the sp is implicit in the value of s and the    */
+    /* pc saved by the call to Dispatch is available at a known     */
+    /* stack offset. For testing we save these explicitly.        */
+    /* code assumes stack should hold                */
+    /* <-[ locals | ret addr | descriptor | fn args ]        */
+    if( s != NULL )
+    {
+        /* index past descriptor to point at return addr */
+        s->sp = &((VoidFnPtr *)&s)[-2];        /* save sp */
+
+        /* save pc ( not strictly required as it is already on the stack) */
+        s->pc = *(s->sp);
+
+/* save registers in save state area, probably emulating the processors
+   saved state during exception processing */
+#ifdef GENERIC
+        movem    regs,[s->regsarea]
+        move    status,[s->statusreg]
+        etc.
+#endif
+    }
+
+    forever
+    {
+        for( i = HiPriority ; i < MaxQueues ; i++ )
+        {
+            if( q[i].head != NULL )
+            {
+                /* resume head process of q[i]    */
+                SaveState *p;
+    
+                /* setup root struct info for new process */
+                p = q[i].head;
+                q[i].head = p->next;
+                xroot->TimeSlice = 0;    /* allow full timeslice */
+                xroot->Pri = i;
+                xroot->HiPri = i;
+
+                *p->sp = p->pc;        /* place the address to resume to on its stack */
+
+/* assembler required here */
+/* you must restore the regs, etc from the saved state at this point */
+#ifdef GENERIC
+                /* its is assumed that restoring the old saved
+                   state will restore the correct interrupt mask */
+                movem    p->regsarea,regs
+                move    [p->statusreg],-(sp)
+                etc
+
+/* we return from the call to Dispatch in the    */
+/* suspended process.                */
+
+                move    [p->sp],-(sp)    /* restore sp */
+                rte            /* return to addr on stack */
+                            /* restoring m/c state */
+#endif
+
+#ifdef TRANSPUTER
+                gajw_(p->sp);        /* set stack pointer    */
+                ret_();            /* return        */
+#endif
+            }
+        }
+
+        /* if no processes are ready to run, loop until a    */
+        /* process is scheduled by an interrupt routine.    */
+        /* On other processors we could simply execute a wait    */
+        /* for interrupt instruction here, or let the processor */
+        /* sleep                        */
+
+        /* any process will be higher than this */
+        /* so another can get started via an interrupt */
+        xroot->HiPri = IdlePriority;
+        xroot->Pri = IdlePriority;
+
+        IntsOn();
+        while( xroot->HiPri == 2 )  ;    /* idle loop */
+        IntsOff();
+    }
+}
+
+/*--------------------------------------------------------
+-- Sleep                        --
+--                            --
+-- Suspend for the given time (in microseconds)        --
+-- Only called at high priority.            --
+--------------------------------------------------------*/
+
+void Sleep(word endtime)
+{
+    SaveState s;
+    ExecRoot *xroot = ExecRoot();
+
+    IntsOff();
+
+    s.endtime = xroot->Timer + endtime;    /* calc wakeup time for proc */
+
+    s.pri = HiPriority;
+
+    /* See whether queue is empty or this time is before    */
+    /* current wakeup time. In either case go at head of q.    */
+    if( xroot->TimerQ == NULL || s.endtime < xroot->Wakeup )
+    {
+        s.next = xroot->TimerQ;        /* add at head of Q */
+        xroot->TimerQ = &s;
+
+        xroot->Wakeup = s.endtime;    /* note (earlier) wakeup time */
+    }
+    else {
+        /* otherwise search queue for correct place    */
+        SaveState *prev = xroot->TimerQ;
+        SaveState *next = prev->next;
+
+        while( next != NULL && s.endtime > next->endtime )
+        {
+            prev = next;
+            next = prev->next;
+        }
+
+        s.next = next;        /* insert at correct pos */
+        prev->next = &s;
+    }
+    Dispatch(&s);            /* deschedule this process and run next */
+
+    IntsOn();            /* returns here when restarted */
+}
+
+
+/*--------------------------------------------------------
+-- Timer                        --
+--                            --
+-- Return current time (in microseconds)        --
+--                            --
+--------------------------------------------------------*/
+
+word Timer(void)
+{
+    ExecRoot *xroot = ExecRoot();
+    
+    return xroot->Timer;
+}
+
+
+/*--------------------------------------------------------
+-- Assumed Helios calling sequence:            --
+--                            --
+-- <- [ locals | return addr | descriptor | fn args ]    --
+--                            --
+-- Fn args always pushed in right to left order.    --
+-- i.e. leftmost argument is nearest descriptor.    --
+--------------------------------------------------------*/
+
+/*--------------------------------------------------------
+-- CreateProcess                    --
+--                            --
+-- Initialise a new process.                --
+-- Stack is initialised as if entry address was about    --
+-- to be called as a procedure.                --
+-- If process ever returns it should return to exit    --
+-- address.                        --
+-- Returns pointer to start of arguments.        --
+--------------------------------------------------------*/
+
+word *CreateProcess(word *stack, VoidFnPtr entry, VoidFnPtr exit, 
+            word *modtab, word argsize)
+{
+    /* build entry procedure stack frame */
+    stack -= argsize/4;        /* save space for args */
+    stack[-1] = (word)modtab;    /* probably in a reg on a real machine */
+    stack[-2] = (word)exit;
+#ifdef TRANSPUTER
+    stack[-6] = (word)entry;    /* as ret also expects abc on stack */
+#else
+    stack[-3] = (word)entry;    /* normal machines don't */
+#endif
+    return(stack);
+}
+
+/*--------------------------------------------------------
+-- EnterProcess                        --
+--                            --
+-- Start a new process.                    --
+-- Stack is what was returned from CreateProcess    --
+-- pri is priority to run process at            --
+--------------------------------------------------------*/
+
+void EnterProcess(word *stack, word pri)
+{
+    SaveState *s;
+
+/* allocate ProcEntry stack frame    */
+#ifdef TRANSPUTER
+    /* step over modtab/exit/null abc/entry/null abc */
+    stack -= 10;
+#else
+    /* step over modtab/exit/entry */
+    stack -= 4;
+#endif
+
+    /* stack now points at slot to be filled in with return address
+       by dispatcher. This return address is the ProcEntry fn
+       that is used to turn on interrupts and then jump to our
+       new process via a return pulling the entry address
+       off the stack */
+
+    /* Essentially we must create a stack frame identical to the one
+       constructed when the process is timesliced. This may involve
+       emulating the machines own stacked interrupt save state.    */
+
+    /* initial save state struct allocated on process stack */
+    s = (SaveState *)(stack - sizeof(SaveState)/4);
+
+    s->next = NULL;
+    s->pri = pri;
+    s->pc = ProcEntry;
+    s->sp = (VoidFnPtr *)stack;
+#ifdef GENERIC
+    /* set up rest of initial machine state for process */
+    s->statusreg = 0;
+    a->regsarea = initial state of machine;
+#endif
+    Resume(s);    /* place process into ready queue */
+}
+
+static void ProcEntry(...)
+{
+    /* we are entered as if we had just returned from Dispatch    */
+    /* enable interrupts and return to enter process        */
+
+    /* must enable interrupts here as dispatcher always called with
+       interrupts off */
+    IntsOn();
+    
+    return;        /* jump to start of process */
+}
+
+/*--------------------------------------------------------
+-- CallWithModTab                    --
+--                            --
+-- Call a function with the given module table.    --
+--                            --
+-- Other non-transputer machines will probably hold the --
+-- module table pointer in a register, just save this   --
+-- and load the new module table.            --
+--------------------------------------------------------*/
+
+void CallWithModTab(word arg0, word arg1, VoidFnPtr fn, word *modtab)
+{
+    (&arg0)[-1] = (word)modtab;    /* patch stack with new modtab.    */
+    /* the called fn will return directly to caller            */
+
+#ifdef TRANSPUTER
+    gcall_(fn);        /* jump through register        */
+#endif
+#ifdef GENERIC
+    move    5*4(sp),-(sp)    /* addr of fn to be called onto stack    */
+    rts            /* jump to it                */
+#endif
+}
+
+/*--------------------------------------------------------
+-- TimerQHead                        --
+-- RunQPtrs                        --
+--                            --
+-- Routines to get queue pointers            --
+--                            --
+--------------------------------------------------------*/
+
+SaveState *TimerQHead(void)
+{
+    ExecRoot *xroot = ExecRoot();
+    return xroot->TimerQ;
+}
+
+void RunqPtrs(SaveState **p)
+{
+    ExecRoot *xroot = ExecRoot();
+    p[0] = xroot->Queues[StdPriority].head;
+    p[1] = xroot->Queues[StdPriority].tail;
+}
+
+#ifdef GENERIC
+static void InitTimer(void)
+{
+    word control;
+
+    /* set interrupt vec to timer interrupt handler */
+    *((VoidFnPtr)TimerIvec) = (VoidFnPtr)TimerInterrupt;
+
+    RestartTimer();    /* start timer going */
+}
+
+static void RestartTimer(void)
+{
+    /* set time period to next timer tick */
+    *((word *)TimerCounter) = TimerSleep;
+
+    /* toggle bit to start timer going */
+    *((word *)TimerControl) |= StartTimer;    /* set bit */
+    *((word *)TimerControl) &= ~StartTimer;    /* unset bit */
+}
+#endif GENERIC
+
+#ifdef TRANSPUTER
+/*--------------------------------------------------------
+-- TimerProcess                        --
+--                            --
+-- Timer control                    --
+--                            --
+--------------------------------------------------------*/
+ 
+static void TimerProcess(void)
+{
+    forever
+    {
+        tin_(ldtimer_()+TimerSleep);    /* wait for timer interrupt */
+        TimerInterrupt();
+    }
+}
+#endif
+
+
+/*--------------------------------------------------------
+-- TimerInterrupt                    --
+--                            --
+-- Timer control                    --
+-- Called when hardware timer interrupts system        --
+--------------------------------------------------------*/
+static void TimerInterrupt(void)
+{
+    ExecRoot *xroot;
+
+#ifdef GENERIC
+    SaveState *s;            /* ptr to saved stack frame */
+
+    /* save the ENTIRE machine state on the stack at this point and make
+       *s point to this saved state.
+       some machines will have automatically saved their entire state on the
+       stack from the interrupt. This can be left there, executing
+       an RTE (return from interrupt) to restore the saved state
+       in the dispatcher. Note that EnterProcess will have to be
+       altered to emulate the saved state on the stack, if you
+       use this approach.
+       Alternatively, you can just save the relevent registers
+       in a your own save state constructed on the stack.
+
+       When a timesliced process is restarted, it must have
+       a way to enable interrupts. Either by making its pc
+       point to stub that enables them and then jumps to the
+       processes interrupt point, or by restoring this info
+       via a 68000 type `rte' instruction - atomically restoring
+       the previous machine state as it jumps back. */
+
+#endif
+    xroot = ExecRoot();        /* get at root struct */
+    xroot->Timer += TimerSleep;    /* increment root time */
+    xroot->TimeSlice++;        /* increment timeslice for current process */
+#ifdef GENERIC
+    ReloadTimer();            /* set timer going for next timer tick */
+#endif
+
+    /* put process that can now be woken up onto the ready queue */
+    while( xroot->TimerQ != NULL &&
+        xroot->Timer > xroot->Wakeup )
+    {
+        SaveState *s = xroot->TimerQ;
+        xroot->TimerQ = s->next;    /* remove from timer Q */
+
+        Resume(s);            /* place process on ready Q */
+
+        /* set new wakeup time */
+        if( xroot->TimerQ != NULL ) 
+            xroot->Wakeup = xroot->TimerQ->endtime;
+    }
+
+    CheckSwitch(s);    /* see if we should swap processes */
+
+/* if not swapped - return from interrupt */
+#ifdef GENERIC
+    rte
+#endif
+}
+
+static void CheckSwitch(SaveState *s)
+{
+    *xroot = ExecRoot();
+
+    /* We must switch processes if either a low priority process has
+       reached the end of its allocated timeslice, or a high priority
+       process is waiting to proceed. This routine is called at the
+       end of all interrupt routines. (Generic machines should have first
+       saved their state) */
+
+    IntsOff();
+
+        /* dont slice if HighPriority */
+    if( xroot->Pri > HiPriority &&
+        /* dont swap if no other processes to swap too */
+        xroot->Queues[StdPriority].head != NULL &&
+        /* swap if end of timeslice or if a higher priority process is ready */
+        (xroot->TimeSlice > TicksPerSlice || xroot->HiPri < xroot->Pri)
+      )
+    {
+
+#ifdef GENERIC
+        s->next = NULL;
+        s->pri = xroot->Pri;
+
+        xroot->Pri = HiPriority;    /* interrupts enter supervisor mode */
+
+        /* place timesliced process on tail of low priority queue */
+        xroot->Queues[StdPriority].tail = xroot->Queues[StdPriority].tail->next = s;
+
+        Dispatch(NULL);        /* dispatch next avail routine */
+        /* will never return to this point */
+#endif GENERIC
+
+#ifdef TRANSPUTER
+        /* the code here to suspend the current process is very    */
+        /* machine dependant                    */
+
+        word *sp = SavedSP();
+
+        sp = (word *)((word)sp & ~1);
+
+        if( sp != (word *)MinInt )
+        {
+            VoidFnPtr *pc = SavedPC();
+            word *regs = SavedRegs();
+            word *w = (word *)sp - 4;
+
+            /* save whole machine state    */
+            w[3] = regs[2];
+            w[2] = regs[1];
+            w[1] = regs[0];                
+            w[0] = (word)pc;
+
+            /* now zap the saved W and I registers to run     */
+            /* CallDispatch in the process.            */
+
+            Set_SavedSP(w);
+            Set_SavedPC(CallDispatch);
+        }
+#endif
+    }
+}
+
+#ifdef TRANSPUTER
+static void CallDispatch(word b, word c)
+{
+    ExecRoot *xroot = ExecRoot();
+    
+    /* We enter here when a process is to be timesliced, simply yield */
+    /* the processor in the normal way.                  */
+    
+    Yield();
+    
+    /* when we return from Yield we must restore the original machine */
+    /* state. We do this by loading C A B in that order and executing */
+    /* a rev, so that when we actually return we do so with the       */
+    /* registers restored correctly.                  */
+
+    _operate(0x00,b,(&b)[-1],c);
+}
+#endif
+
+#ifdef GENERIC
+void IntsOn(void)
+{
+    or #EnableInts,status        /* enable interrupts */
+}
+
+void IntsOff(void)
+{
+    and #DisableInts,status        /* disable interrupts */
+}
+#endif
+
+#ifdef LINKIO
+/*--------------------------------------------------------
+--                            --
+-- Link IO control                    --
+--                            --
+--------------------------------------------------------*/
+
+static void LinkTxProc(word size,struct LinkInfo *link,void *buf);
+
+void LinkTx(word size,struct LinkInfo *link,void *buf)
+{
+    SaveState s;
+    word *w;
+    word IntProcStack[MinProcessStack*2];
+
+    s.next = NULL;
+    s.pri = HiPriority;
+    
+    link->TxUser->state = &s;
+    
+    w = &IntProcStack[MinProcessStack*2];
+
+    w -= 5;
+    w[4] = (word)buf;
+    w[3] = (word)link;
+    w[2] = size;
+    w[-1] = (word)LinkTxProc;
+    
+    IntsOff();
+
+    runp_(w);
+        
+    Dispatch(&s);
+
+    /* we drop out of Dispatch when the transfer is     */
+    /* complete or has been    aborted                */
+
+    link->TxUser->state = NULL;
+
+    IntsOn();
+}
+
+static void LinkTxProc(word size,struct LinkInfo *link,void *buf)
+{
+    out_(size,link->TxChan,buf);
+    
+    Resume(link->TxUser->state);
+    
+    CheckSwitch(NULL);
+    
+    stopp_();
+}
+
+SaveState *AbortLinkTx(struct LinkInfo *link)
+{
+    word *w;
+    
+    w = (word *)resetch_(link->TxChan);
+
+    if( w == (word *)MinInt ) return NULL;
+    else return link->TxUser->state;
+}
+
+
+static void LinkRxProc(word size,struct LinkInfo *link,void *buf);
+
+void LinkRx(word size,struct LinkInfo *link,void *buf)
+{
+    SaveState s;
+    word *w;
+    word IntProcStack[MinProcessStack*2];
+    
+    
+    s.next = NULL;
+    s.pri = HiPriority;
+    
+    link->RxUser->state = &s;
+    
+    w = &IntProcStack[MinProcessStack*2];
+
+    w -= 5;
+    w[4] = (word)buf;
+    w[3] = (word)link;
+    w[2] = size;
+    w[-1] = (word)LinkRxProc;
+    
+
+    IntsOff();
+
+    runp_(w);
+        
+    Dispatch(&s);
+
+    /* we drop out of Dispatch when the transfer is     */
+    /* complete or has been    aborted                */
+    
+    link->RxUser->state = NULL;
+
+    IntsOn();
+}
+
+static void LinkRxProc(word size,struct LinkInfo *link,void *buf)
+{
+    in_(size,link->RxChan,buf);
+    
+    Resume(link->RxUser->state);
+
+    CheckSwitch(NULL);
+    
+    stopp_();
+}
+
+SaveState *AbortLinkRx(struct LinkInfo *link)
+{
+    word *w;
+    
+    w = (word *)resetch_(link->RxChan);
+
+    if( w == (word *)MinInt ) return NULL;
+    else return link->RxUser->state;
+}
+#endif LINKIO
+
+#ifdef TRANSPUTER
+static void InterruptProcess(VoidFnPtr fn, void *arg)
+{
+    word *stack, *wsp;
+    
+    stack = (word *)GetBuf(Worker_stacksize);
+    
+    if( stack == NULL ) return;
+    
+    wsp = &stack[Worker_stacksize/4 - 4];
+    wsp[2] = (word)arg;
+    wsp[-1] = (word)fn;
+    runp_(wsp);        /* run at high priority            */
+}
+#endif
+
+/* Kernel support functions */
+#ifdef GENERIC
+/* move a block of data z bytes long, from byte address to d */
+void MoveBlock(void *s, void *d, word z)
+{
+while(z--)
+    *d++ = *s++;
+}
+#endif GENERIC
+
+/* -- End of gexec.c */
+\end{verbatim}
+\normalsize
+\vfill
+\newpage
+
+\subsection*{Appendix G: *TO BE UPDATED*}
+
+{\bf Structures and manifests used in the Generic Executive:}
+
+\scriptsize
+\begin{verbatim}
+/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S   K E R N E L                        --
+--                     -------------------------                        --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- mcdep.h                                --
+--                                                                      --
+--    Processor dependant definitions for kernel.            --
+--                                    --
+--    The system's interface to the hardware is defined here. It    --
+--    is based on the Transputer hardware, but some simple        --
+--    software should be capable of emulating this.            --
+--    The calls defined here can be implemented either as macros,    --
+--    assembler procedures, or a mixture of both.            --
+--                                                                      --
+--    Author:  NHG 8/8/88                        --
+--      Updates: PAB 7/12/88                                            --
+------------------------------------------------------------------------*/
+/* SccsId: %%G%%  %%W%% Copyright (C) 1987, Perihelion Software Ltd.    */
+
+#ifndef __mcdep_h
+#define __mcdep_h
+
+#ifndef __helios_h
+#include <helios.h>
+#endif
+
+/* just two priority levels, high priority (run to completion) and
+   low (timesliced) priority - other timesliced levels could be added */
+#define MaxQueues    2
+
+#define HiPriority 0            /* highest priority */
+#define StdPriority 1            /* std (low) priority */
+#define IdlePriority StdPriority+1    /* lower than lowest priority */
+
+#ifdef TRANSPUTER
+
+#define LINKIO    1        /* processor has links            */
+
+#define PERFMON 1        /* enable performance monitor        */
+
+#include <asm.h>
+
+typedef struct SaveState {
+    struct SaveState    *next;        /* next process in list    */
+    word            endtime;    /* timeout or save mode    */
+    word            pri;        /* priority        */
+    VoidFnPtr        pc;        /* saved pc        */
+    VoidFnPtr        *sp;        /* saved sp        */
+} SaveState;
+
+typedef struct ProcessQ {
+    SaveState    *head;
+    SaveState    *tail;
+} ProcessQ;
+
+/* Root structure, this contains the main data structures.
+   Queue[0] contains the high priority queue, Queue[1..n] the low priority
+   queues. */
+typedef struct ExecRoot {
+    ProcessQ    Queues[MaxQueues];    /* process queues    */
+    SaveState    *TimerQ;        /* timer queue        */
+    word        Timer;            /* current timer value    */
+    word        Wakeup;            /* time for first process on q */
+    word        TimeSlice;        /* timeslice control    */
+    word        Pri;            /* current process priority */
+    word        HiPri;            /* highest pri process which could run */
+} ExecRoot;
+
+/* Scheduler control */
+
+#define System HiPri
+extern word HiPri(WordFnPtr func,...);
+
+typedef word SaveState;
+
+#define P_NullState    ((SaveState *)MinInt)
+#define NullStateP(p)    ((p) == (SaveState *)MinInt)
+
+#define P_InstPtr(p)    ((VoidFnPtr)  ((p)[-1]))
+#define P_RunqNext(p)    ((SaveState *)((p)[-2]))
+#define P_BufAddr(p)    ((byte *)     ((p)[-3]))
+#define P_TimerNext(p)    ((SaveState *)((p)[-4]))
+#define P_EndTime(p)    ((word)       ((p)[-5]))
+
+#define Set_P_InstPtr(p,v)    (((p)[-1])=(word)v)
+#define Set_P_RunqNext(p,v)    (((p)[-2])=(word)v)
+#define Set_P_BufAddr(p,v)    (((p)[-3])=(word)v)
+#define Set_P_TimerNext(p,v)    (((p)[-4])=(word)v)
+#define Set_P_EndTime(p,v)    (((p)[-5])=(word)v)
+
+#define    MinProcessStack        (32)
+
+#define TimerQHead()    (*((SaveState **)MinInt+10))
+
+#define RunqPtrs(x)    savel_(x);
+
+#define Suspend(p)                \
+    *(p) = (SaveState *)(ldlp_(0)|ldpri_());\
+    stopp_();
+
+#ifdef KDEBUG    
+#define Resume(p)                 \
+    if( (word)(p) >= 0 ) { _Trace(0x77771111,&(p)); for(;;); } \
+    else runp_(p);
+#else
+#define Resume(p) runp_(p);
+#endif
+
+#define Yield()                    \
+    runp_(ldlp_(0)|ldpri_());        \
+    stopp_();
+
+#define TimerSleep    1000            /* millisecond ticks    */
+
+#define Timer()  ldtimer_()
+
+#define Sleep(t) tin_(ldtimer_()+(t));
+
+#define CreateProcess(stack,entry,exit,modtab,args)        \
+    (((word *)(stack))[-(1+(args/4))] = (word)(modtab),    \
+     ((word *)(stack))[-(2+(args/4))] = (word)(exit),    \
+     ((word *)(stack))[-(3+(args/4))] = (word)(entry),    \
+     &((word *)(stack))[-(args/4)])        
+
+#define EnterProcess(wsp,pri) runp_(((word)(wsp)-8)|pri)
+
+#define Stop()    stopp_();
+
+/* External message passing    */
+
+#define LinkTx(size,link,buf) out_(size,link->TxChan,buf)
+
+#define LinkRx(size,link,buf) in_(size,link->RxChan,buf)
+
+#define AbortLinkTx(link) (SaveState *)resetch_(link->TxChan)
+
+#define AbortLinkRx(link) (SaveState *)resetch_(link->RxChan)
+
+
+/* Inter-domain access */
+
+void CallWithModTab(word arg0, word arg1, VoidFnPtr fn, word *modtab);
+
+
+/* Miscellaneous */
+#define After(x,y) (diff_(x,y) < 0)
+
+#define SetBlock(b,v,s)                \
+    *(word *)(b) = v;            \
+    move_(s-4,(word)(b)+4,b);
+
+#define ZeroBlock(b,s) SetBlock(b,0,s)
+
+#define MoveBlock(d,s,z) move_(z,d,s)
+
+#define GetModTab(arg0) (word *)((&arg0)[-1])
+
+#endif /* TRANSPUTER */
+
+#ifdef TESTER
+
+#define LINKIO    1        /* processor has links        */
+
+#define TimerSleep    1000            /* millisecond ticks    */
+
+#include <asm.h>
+
+typedef struct SaveState {
+    struct SaveState    *next;        /* next process in list    */
+    word            endtime;    /* timeout or save mode    */
+    word            pri;        /* priority        */
+    VoidFnPtr        pc;        /* saved pc        */
+    VoidFnPtr        *sp;        /* saved sp        */
+} SaveState;
+
+typedef struct ProcessQ {
+    SaveState    *head;
+    SaveState    *tail;
+} ProcessQ;
+
+/* Root structure, this contains the main data structures.
+   Queue[0] contains the high priority queue, Queue[1..n] the low priority
+   queues. */
+typedef struct ExecRoot {
+    ProcessQ    Queues[MaxQueues];    /* process queues    */
+    SaveState    *TimerQ;        /* timer queue        */
+    word        Timer;            /* current timer value    */
+    word        Wakeup;            /* time for first process on q */
+    word        TimeSlice;        /* timeslice control    */
+    word        Pri;            /* current process priority */
+    word        HiPri;            /* highest pri process which could run */
+} ExecRoot;
+
+#define P_NullState    ((SaveState *)MinInt)
+#define NullStateP(p)    ((p) == (SaveState *)MinInt)
+
+#define P_InstPtr(p)    ((p)->pc)
+#define P_RunqNext(p)    ((p)->next)
+#define P_TimerNext(p)    ((p)->next)
+#define P_EndTime(p)    ((p)->endtime)
+
+#define Set_P_InstPtr(p,v)    ((p)->pc=(v))
+#define Set_P_RunqNext(p,v)    ((p)->next=(v))
+#define Set_P_TimerNext(p,v)    ((p)->next=(v))
+#define Set_P_EndTime(p,v)    ((p)->endtime=(v))
+
+#define    MinProcessStack        (sizeof(SaveState)+3*16)
+
+void ExecInit(void);
+word System(WordFnPtr func, ... );
+SaveState *TimerQHead(void);
+void RunqPtrs(SaveState **p);
+void Suspend(SaveState **p);
+void Resume(SaveState *p);
+void Yield(void);
+word Timer(void);
+void Sleep(word time);
+void EnterProcess(word *stack, word pri, VoidFnPtr entry, VoidFnPtr exit, 
+            word *modtab, word arg1, word arg2);
+void Stop(void);
+
+void CallWithModTab(word arg0, word arg1, VoidFnPtr fn, word *modtab);
+
+/* further machine specific stuff    */
+
+#define SavedSP()    (((word **)MinInt)[11])
+#define SavedPC()    (((VoidFnPtr **)MinInt)[12])
+#define SavedRegs()    &(((word *)MinInt)[13])
+#define Set_SavedSP(v)    (((word *)MinInt)[11] = (word)(v)|1)
+#define Set_SavedPC(v)    (((word *)MinInt)[12] = (word)(v))
+
+#define IntsOff()    _setpri(0)
+#define IntsOn()    _setpri(1)
+
+/* Miscellaneous */
+/*#define After(x,y) (gt_(0,diff_(y,x)))*/
+/*#define After(x,y) ((x-y)>0)*/
+#define After(x,y) (diff_(x,y) < 0)
+
+#define SetBlock(b,v,s)                \
+    *(word *)(b) = v;            \
+    move_(s-4,(word)(b)+4,b);
+
+#define ZeroBlock(b,s) SetBlock(b,0,s)
+
+#define MoveBlock(d,s,z) move_(z,d,s)
+
+#define GetModTab(arg0) (word *)((&arg0)[-1])
+
+void LinkTx(word size,struct LinkInfo *link,void *buf);
+void LinkRx(word size,struct LinkInfo *link,void *buf);
+SaveState *AbortLinkTx(struct LinkInfo *link);
+SaveState *AbortLinkRx(struct LinkInfo *link);
+
+#endif /* TESTER */
+
+#ifdef GENERIC
+
+#define LINKIO    0        /* processor has NO links        */
+
+#define    TimerIVec    0x0??    /* address of timer interrupt vector      */
+#define    TimerCounter    0x0??    /* address of timer counter reg          */
+#define    TimerControl    0x0??    /* address of timer control reg          */
+#define    TimerSleep    ??    /* Timer interrupt increment (timer tick) */
+#define TicksPerSlice    10    /* Number of timer ticks per slice      */
+#define StartTimer    0x0??    /* Bit to toggle to get timer going      */
+
+typedef struct SaveState {
+    struct SaveState    *next;        /* next process in list    */
+    word            endtime;    /* timeout or save mode    */
+    word            pri;        /* priority        */
+    VoidFnPtr        pc;        /* saved pc        */
+    VoidFnPtr        *sp;        /* saved sp        */
+    word            statusreg;    /* saved m/c status    */
+    word            regsarea[??];    /* saved registers    */
+} SaveState;
+
+typedef struct ProcessQ {
+    SaveState    *head;        /* NULL if nothing in Q */
+    SaveState    *tail;
+} ProcessQ;
+
+/* Root structure, this contains the main data structures.
+   Queue[0] contains the high priority queue, Queue[1..n] the low priority
+   queues. */
+typedef struct ExecRoot {
+    ProcessQ    Queues[MaxQueues];    /* process queues    */
+    SaveState    *TimerQ;        /* timer queue        */
+    word        Timer;            /* current timer value    */
+    word        Wakeup;            /* time for first process on q */
+    word        TimeSlice;        /* timeslice control    */
+    word        Pri;            /* current process priority */
+    word        HiPri;            /* highest pri process which could run */
+} ExecRoot;
+
+/* macros for kernel access to save state */
+#define P_NullState    ((SaveState *)MinInt)        /* flag save state as bogus */
+#define NullStateP(p)    ((p) == (SaveState *)MinInt)    /* is save state bogus ? */
+
+#define P_InstPtr(p)    ((p)->pc)
+#define P_RunqNext(p)    ((p)->next)
+#define P_TimerNext(p)    ((p)->next)
+#define P_EndTime(p)    ((p)->endtime)
+
+/* macros for kernel updating of save states */
+#define Set_P_InstPtr(p,v)    ((p)->pc=(v))
+#define Set_P_RunqNext(p,v)    ((p)->next=(v))
+#define Set_P_TimerNext(p,v)    ((p)->next=(v))
+#define Set_P_EndTime(p,v)    ((p)->endtime=(v))
+
+#define    MinProcessStack        (sizeof(SaveState)+3*16)
+
+/* prototypes of entry functions for kernel access to executive */
+void ExecInit(void);
+word System(WordFnPtr func, ... );
+SaveState *TimerQHead(void);
+void RunqPtrs(SaveState **p);
+void Suspend(SaveState **p);
+void Resume(SaveState *p);
+void Yield(void);
+word Timer(void);
+void Sleep(word time);
+void EnterProcess(word *stack, word pri, VoidFnPtr entry, VoidFnPtr exit, 
+            word *modtab, word arg1, word arg2);
+void Stop(void);
+
+void CallWithModTab(word arg0, word arg1, VoidFnPtr fn, word *modtab);
+
+/* kernal support functions */
+#define SetBlock(b,v,s)                \
+    *(word *)(b) = v;            \
+    MoveBlock(b,(word *)(b)+4,(s)-4)
+
+#define ZeroBlock(b,s) SetBlock(b,0,s)
+
+#endif
+
+/* -- End of mcdep.h */
+\end{verbatim}
+\normalsize
+
+\end{document}

@@ -1,0 +1,343 @@
+head	1.3;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	Helios13_beta:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.3
+date	92.12.20.16.40.43;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.09.09.12.01.29;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.01.16.14.35.21;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@Pi example, fault-tolerant calculation of pi using a Monte-Carlo method
+@
+
+
+1.3
+log
+@removed DebugFlags
+@
+text
+@/**
+*** pi.c
+***	This program uses the farm library to estimate a value
+***	for pi by an integration.
+**/
+#include <stdio.h>
+#include <farmlib.h>
+#include "pi.h"
+
+static void pi_producer(void);
+static void pi_consumer(void);
+static void pi_worker(void);
+
+int main(int argc, char **argv)
+{
+  FmProducer	= &pi_producer;
+  FmConsumer	= &pi_consumer;
+  FmWorker	= &pi_worker;
+  FmInitialise();
+}
+
+static void pi_producer(void)
+{ int		number_intervals;
+  int		i;
+  Pi_Job	*job;
+
+  printf("Farm Library version of Pi with %d workers.\n",
+		FmNumberWorkers);
+  printf("Please specify the number of intervals per worker : ");
+  fflush(stdout);
+  scanf("%d", &number_intervals);
+
+  for (i = 0; i < FmNumberWorkers; i++)
+   { job		= FmGetJobBuffer(sizeof(Pi_Job));
+     job->WorkerNumber	= i;
+     job->NumberWorkers	= FmNumberWorkers;
+     job->Intervals	= number_intervals;
+     FmSendJob(i, TRUE, job);
+   }
+}
+
+static void pi_consumer(void)
+{ Pi_Reply	*reply;
+  int		 i;
+  double	 total = 0.0;
+
+  for (i = 0; i < FmNumberWorkers; i++)
+   { reply	 = FmGetReply(i);
+     total	+= reply->PartialArea;
+   }
+
+  printf("Pi is approximately %g.\n", total);
+}
+
+static void pi_worker(void)
+{ Pi_Job	*job;
+  Pi_Reply	*reply;
+  double	 sum;		/* Partial area for this range		*/
+  double	 width;		/* Width of one rectangle		*/
+  double	 tmp;		/* X coordinate of current rectangle	*/
+  int		 first;		/* Position of first rectangle		*/
+  int		 current;	/* Loop counter, current rectangle	*/
+  int		 last;		/* End of final rectangle		*/
+
+  job	= FmGetJob();
+  reply	= FmGetReplyBuffer(job, sizeof(Pi_Reply));
+
+  sum	= 0.0;
+  width	= 1.0 / (double) (job->NumberWorkers * job->Intervals);
+  first	= job->WorkerNumber * job->Intervals;
+  last	= first + job->Intervals;
+
+  for (current = first; current < last; current++)
+   { tmp = (0.5 + (double) current) * width;
+     sum = sum + width * (4.0 / (1.0 + tmp * tmp));
+   }
+
+  reply->PartialArea = sum;
+  FmSendReply(reply);
+}
+@
+
+
+1.2
+log
+@First release of farm library
+@
+text
+@a18 1
+/*FmDebugFlags = -1;*/
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 5
+a5 20
+/*------------------------------------------------------------------------
+--                                                                      --
+--      H E L I O S   P A R A L L E L   P R O G R A M M I N G		--
+--	-----------------------------------------------------		--
+--									--
+--	  F A R M   C O M P U T A T I O N   L I B R A R Y		--
+--	  -----------------------------------------------		--
+--									--
+--		Copyright (C) 1992, Perihelion Software Ltd.		--
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- Pi example, pi.c							--
+--	This module contains the main code for the Pi example.		--
+--                                                                      --
+--	Author:  BLV 3/1/92						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Id: root.h,v 1.17 1991/10/11 16:27:20 paul Exp $ */
+
+#include <helios.h>
+d7 1
+a7 3
+#include <stdlib.h>
+#include <string.h>
+#include "farmlib.h"
+d10 3
+a12 4
+/**
+*** How long the run should go on for.
+**/
+static	int Duration = -1;
+a13 11
+/**
+*** Routine main() merely sets the farm library configuration options and
+*** calls the library initialisation routine. This will distribute the farm
+*** over the network and call application-specific routines for initialisation,
+*** producing work packets, performing the work specified by these packets,
+*** and consuming the replies.
+***
+*** Typically when producing a new application using the farm library this
+*** routine would be copied and modified to use different application-
+*** specific routines and possibly some different options.
+**/
+d16 6
+a21 16
+#if 0
+  if (argc == 1)
+   { puts("Pi: running for a default 120 seconds (two minutes).");
+     Duration = 120;
+   }
+  else
+   { Duration = atoi(argv[1]);
+     if ((Duration <= 20) || (Duration > (30 * 60)))
+      { fprintf(stderr, "Pi: invalid duration %s.\n", argv[1]);
+        fputs("  : the duration should be between 20 and 1800 seconds.\n", stderr);
+        exit(EXIT_FAILURE);
+      }
+   }
+#else
+  argc = argc; argv = argv; Duration = 120;
+#endif
+d23 4
+a26 10
+	/* Farm library configuration options.				*/
+	/* 1) first, how many workers should there be. The options are	*/
+	/*    as follows:						*/
+	/*     a) flood the whole network, using every free processor	*/
+	/*     b) flood the current domain				*/
+	/*     c) fixed number of workers.				*/
+  /* FmFloodOption = Fm_Network;*/
+  FmFloodOption	= Fm_Domain;
+  /* FmFloodOption = Fm_Fixed;	*/
+  /* FmNumberWorkers = 8;	*/
+d28 5
+a32 18
+	/* 2) the routines which do the real work.			*/
+	/*    a) (*FmControlInitialise)() is responsible for application*/
+	/*       specific initialisation, such as connecting to an X	*/
+	/*       terminal or opening an output file.			*/
+	/*    b) (*FmProducer)() is responsible for generating work	*/
+	/*       packets.						*/
+	/*    c) (*FmConsumer)() receives the reply packets and takes	*/
+	/*       care of things like displaying the data on an X	*/
+	/*	 terminal.						*/
+	/*    d) (*FmWorker)() does the actual calculating.		*/
+	/*    e) (*FmWorkerExit)() may be used to get the workers to	*/
+	/*       perform some cleaning up when the farm exits. This is	*/
+	/*       rarely required.					*/
+  /* FmControlInitialise	= NULL; */
+  FmProducer		= &Pi_Producer;
+  FmConsumer		= &Pi_Consumer;
+  FmWorker		= &Pi_Worker;
+  /* FmWorkerExit		= NULL;	*/
+d34 7
+a40 63
+	/* 3) various ways of speeding up the computation.		*/
+	/*    a) FmFastStack can be used to run the worker with its	*/
+	/*	 stack in on-chip memory.				*/
+	/*    b) FmStackSize determines the amount of memory used for	*/
+	/*       the stack if the previous option is enabled. The	*/
+	/*	 default is 1500 bytes, usually allowing 2500 bytes of	*/
+	/*	 on-chip memory to be used for other things like code.	*/
+	/*    c) FmFastCode can be used to move the code of the		*/
+	/*       FmWorker routine to on-chip memory, if enough memory	*/
+	/*	 is available. Note that this affects all the routines	*/
+	/*       held in the same source file as the FmWorker routine,	*/
+	/*	 not just that one routine.				*/
+	/*    d) FmOverloadControl can be used to make the controller	*/
+	/*	 part of the farm perform calculations as well as	*/
+	/*	 produce and consume packets. This is useful if the	*/
+	/*       problem is heavily computation bound and the control	*/
+	/*       program would otherwise spend nearly all of its time	*/
+	/*       waiting for the workers.				*/
+  FmFastStack	= TRUE;
+  /* FmStackSize	= 2048;	*/
+  FmFastCode	= TRUE;
+  /* FmOverloadControl = TRUE; */
+
+	/* 4) if job and/or reply packets are usually the same size	*/
+	/*    then it is possible to tell the farm library about this	*/
+	/*    size. This allows the library to preallocate buffers and	*/
+	/*    avoid the overheads of allocating and releasing them for	*/
+	/*    every packet.						*/
+  FmJobPacketSize = sizeof(Pi_Job);
+  FmReplyPacketSize = sizeof(Pi_Reply);
+
+	/* 5) fault-tolerance options.					*/
+	/*    a) FmFaultHandling enables basic fault tolerance. If one	*/
+	/*       of the workers crashes then the farm library will take	*/
+	/*       recovery action inside the controller, bypassing the	*/
+	/*       worker.						*/
+	/*    b) FmSkipLostPackets specifies what should happen to work	*/
+	/*       packets that were being processed by a worker when its	*/
+	/*       processor crashed. If this flag is set then the	*/
+	/*       library will invent a reply packet. Otherwise it will	*/
+	/*       send the packets to another worker to be calculated	*/
+	/*       again. The former option is designed mainly for time-	*/
+	/*       sensitive applications where it is better to generate  */
+        /*       an incomplete result on time than a complete result	*/
+	/*       too late.						*/
+	/*    c) FmCheckPackets can be set to make the farm calculate	*/
+	/*       every work packet twice, on different processors. If	*/
+	/*       the results produced are inconsistent then recovery	*/
+	/*       action will take place. Note that this option must NOT	*/
+	/*       be enabled if the computation is non-deterministic,	*/
+	/*       for example if any random numbers are involved.	*/
+	/*    d) FmNumberControllers specifies how many control		*/
+	/*       programs there should be. By default there is only one	*/
+	/*       so if the processor running the controller crashes	*/
+	/*	 then the whole application fails. Having multiple	*/
+	/*       controllers avoids this, but greatly increases the	*/
+	/*       amount of communication involved.			*/
+  FmFaultHandling = TRUE;
+  /* FmSkipLostPackets = TRUE;	*/
+  /* FmCheckPackets = TRUE;	*/
+  /* FmNumberControllers = 2;	*/
+
+  FmInitialise(); /* This will never return */
+d43 4
+a46 3
+/**-----------------------------------------------------------------------------
+*** From here on the code is specific to the Pi example.
+**/
+a47 4
+void	Pi_Producer(void)
+{ int		i;
+  Pi_Job	*job;
+
+d49 2
+a50 4
+   { 
+     job = (Pi_Job *) FmGetJobBuffer(sizeof(Pi_Job));
+     job->Duration = Duration;
+     FmSendJob(i, TRUE, job);
+d52 2
+d56 2
+a57 5
+void Pi_Consumer(void)
+{ int		total_attempts	= 0;
+  int		total_successes	= 0;
+  int		crashes		= 0;
+  int		i;
+d59 6
+a64 1
+  double	Pi;
+d66 11
+a76 9
+  for (i = 0; i < FmNumberWorkers; i++)
+   { 
+     reply = FmGetReply(i);
+     if (reply == NULL)
+      crashes++;
+     else
+      { total_attempts  += reply->Attempts;
+        total_successes += reply->Successes;
+      }
+d79 2
+a80 6
+  Pi = 6.0 * ((double) total_successes / (double) total_attempts);
+
+  printf("%d successes out of %d attempts.\n", total_successes, total_attempts);
+  printf("Pi is approximately %g\n", Pi);
+  printf("%d workers failed to complete.\n", crashes);
+  exit(EXIT_SUCCESS);
+@

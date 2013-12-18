@@ -1,0 +1,942 @@
+-- File:	armintr.a
+-- Subsystem:	ARM executive
+-- Author:	P.A.Beskeen
+-- Date:	Oct '92
+--
+-- Description: ARM Helios executive interrupt and exception handling fn's.
+--
+--
+-- RcsId: $Id: armintr.a,v 1.2 1993/08/24 08:41:11 paul Exp $
+--
+-- (C) Copyright 1991 Perihelion Software Ltd.
+-- All Rights Reserved.
+--
+-- RcsLog: $Log: armintr.a,v $
+-- Revision 1.2  1993/08/24  08:41:11  paul
+-- Integrated latest ARM world with Heliosv1.3.1 release.
+-- (CheckPoint).
+--
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include cpustate.m	-- SaveState and CPURegs structures
+include module.m	-- Function macro
+
+
+_if _defp '__IOC [
+	include ARM/ioc.m	-- IOC definitions
+]
+_if _defp '__ARCHIMEDES [
+	include ARM/xcb.m	-- Acorn expansion card bus definitions
+]
+_if _defp '__VY86PID [
+	include ARM/vy86pid.m
+	include root.m
+	_def '__ARM6BASED 1		-- ARM6 based platform
+]
+
+
+-- word IntsAreEnabled(void);
+--
+-- Returns TRUE if ints are enabled globally else false
+--
+-- Called from C so must conform to PCS
+
+	Function IntsAreEnabled
+
+	_if _defp '__ARM6 [
+		error "@@@ IntsAreEnabled() not defined for ARM6"
+	]
+
+	mov	a1, INTRMask
+	-- access to psr bits only possible when pc in Rm position
+	ands	a1, a1, pc
+	moveq	a1, TRUE
+	movne	a1, FALSE
+	movs	pc, lr
+
+
+-- void IntsOn(void);
+--
+-- Enable interrupts globally
+--
+-- Called from C so must conform to PCS
+-- Should only be called from usr mode, otherwise use the AllIntsOn macro
+
+	Function IntsOn
+
+	_if _defp '__ARM6 [
+		error "@@@ IntsOn not defined for ARM6"
+	]
+
+	-- Enable both FIQ and IRQ in processors interrupt mask
+
+	-- Dont use teqp or we will not return using correct lr
+	bic	r14_svc, INTRMask
+	movs	pc, r14_svc
+
+
+-- void IntsOff(void);
+--
+-- Disable interrupts globally
+--
+-- Called from C so must conform to PCS
+-- Should only be called from usr mode, otherwise use the AllIntsOff macro
+
+	Function IntsOff
+
+	_if _defp '__ARM6 [
+		error "@@@ IntsOff not defined for ARM6"
+	]
+
+	-- Disable both FIQ and IRQ in processors interrupt mask
+
+	-- Dont use teqp or we will not return using correct lr
+	orr	r14_svc, INTRMask
+	movs	pc, r14_svc
+
+
+-- void InitEventHandler(VoidFnPtr handler);
+--
+-- Initialise each interrupt vector to call the event handler passed.
+-- The call must be done in a PCS conformant fashion.
+-- The handler expects to be called with the number of the
+-- vector number of the interrupt source.
+--
+-- Note that the C40 version will always call the RootEventHandler() whatever
+-- ignoring the function pointer passed to this function.
+--
+-- Called from C so must conform to PCS
+
+	Function InitEventHandler
+
+	-- This function is not required in Helios-ARM as the IRQ and FIQ
+	-- handlers always call the RootEventHandler() function directly.
+	movs	pc, lr
+
+
+
+-- FIQ_Handler
+--
+-- Interrupt handler for INTR_FIQ
+--
+-- FIQ interrupt vectored to this point, or this code copied to FIQ vector.
+-- This code is very similar to the IRQ handlers.
+--
+-- Note that on entry to the FIQ handler, both FIQ and IRQ interrupts are
+-- disabled, the interrupted threads PC/PSR has been copied into r14_fiq and
+-- the FIQ register bank has been swapped to.
+--
+-- @@@ *WARNING* The current implementation will fail if a FIQ interrupt
+-- occurs at the same time as an IRQ interrupt. This has not been cleaned up
+-- so far as FIQ interrupts are not used for any peripherals. When nestable
+-- interrupts are inplemented, this problem will go away. i.e. The FIQ_Handler
+-- will check the current xroot->InterruptLevel, if it is !=0, then the non
+-- banked User regs and banked SVC regs will be stacked on the SVC stack,
+-- otherwise the state will be saved in the xroot->CurrentSaveArea as at
+-- present.
+--
+-- FIQ sp (r13_fiq) has been pre-loaded to point at the FIQ stack.
+-- FIQ v5 (r8_fiq) has been pre-loaded to point at the ExecRoot.
+
+	Function FIQ_Handler
+
+_if _defp '__VY86PID [
+a6stop3:
+	mov	tmp, hw_PARALLEL & ~0xff
+	add	tmp, hw_PARALLEL & 0xff
+	mvn	a1, 0b01100000
+	strb	a1, (tmp, hw_parallel.GPIO)
+	b a6stop3
+]
+_if _and _defp '__ARCHIMEDES _defp 'SYSDEB [ -- @@@ tmp dbg
+	_DBG [0xff]
+	b FIQ_Handler
+]
+	-- Get address of interrupted threads save state area
+	ldr	r9_fiq, (r8_fiq, ExecRoot.CurrentSaveArea)
+	add	r9_fiq, SaveState.CPUcontext
+
+	-- Save current threads non banked regs into threads save state
+	-- @@@ EASY OPTIMISATION: In theory, due to mandated interrupt handler
+	-- PCS conformance, we shouldn't have to save variable regs (v1-v5 =
+	-- r4-r8), other than v1 (r4) as this is used to hold the interrupted
+	-- threads return address. Note that the internal Clock/Link interrupt
+	-- handlers should be check first to determine if they use these
+	-- registers.
+
+	stmia	r9_fiq, {r0-r7}
+
+	-- As v1 is callee saved, we can hold return address in it, and it
+	-- should still be OK when we return from PCS conformant call to
+	-- RootEventHandler(). Same goes for ExecRoot in v5 (r8_fiq).
+	mov	v1, r14_fiq		-- protect return address.
+
+	_test _or _defp '__IOC _defp '__ARCHIMEDES [
+		-- Check IOC interrupt sources and select pseudo INTR_xxx
+		-- If one is active.
+		mov	tmp, IOC_base
+
+CheckFIQ:
+		-- Check IOC FIQ request register
+		ldrb	a2, (tmp, ioc_regs.irq_a + intr_block.request)
+		teq	a2, 0
+		-- If no FIQ bits set, set INTR_IRQ
+		moveq	a1, INTR_FIQ
+		beq	SetFIQINTR
+
+		-- Note that we don't branch on carry set (cs), as we are
+		-- interested in minimising the maximum latency, not
+		-- minimising the minimum!
+		-- @@@ This code could be optimised further by checking
+		-- individual nibbles and then branching.
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_FIQ_0		-- bit 0 set
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_FIQ_1		-- bit 1
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_FIQ_2		-- 2
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_FIQ_3		-- 3
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_FIQ_4		-- 4
+		movs	a2, a2 lsr 1
+		_test _false [	-- dont bother with bit 7 (force interrupt)
+			mov	a1, INTR_FIQ_6		-- 6
+			movcs	a1, INTR_FIQ_5		-- 5
+		][
+			movcs	a1, INTR_FIQ_5		-- 5
+			movs	a2, a2 lsr 1
+			mov	a1, INTR_FIQ_7		-- 7
+			movcs	a1, INTR_FIQ_6		-- 6
+		]
+
+SetFIQINTR:	-- interrupt number INTR_xxx has been set by this point
+	][
+		-- If no known interrupt sources, just set INTR_FIQ as
+		-- interrupt vector number.
+		mov	a1, INTR_FIQ
+	]
+
+_if _and _defp '__ARCHIMEDES _defp 'SYSDEB [ -- @@@ tmp dbg
+	_DBGB	[0xfe]
+	_DBG2B a1 fiqintr
+]
+
+	-- Setup PCS complient environment
+	-- Note we dont set stack limit as handlers SHOULD NOT check stack
+	-- @@@ can we optimise mov fp,0 out?
+	mov	fp, 0			-- note invalid frame pointer
+
+	-- Skeleton C environment:
+	-- R_USP = FIQ_stack_top
+	-- R_USE - Not needed, as Dispatch() and handlers should never enable
+	--         stack checking
+	-- R_FP  - Not needed???@@@
+	-- R_MT  - not needed (kernel has no module table,
+	--         handlers mt will be set from one held in Event struct)
+	-- R_A1  - Notes which indirect interrupt handler chain to call down
+
+	-- Call RootEventHandler which calls FIQ indirect handler chain
+	patchinstr(PATCHARMJP, labelref(.RootEventHandler),
+		bl	0)
+
+	ldr	r1, (r8_fiq, ExecRoot.CurrentPri)
+	ldr	r2, (r8_fiq, ExecRoot.HighestAvailPri)
+
+	-- If (HighestAvailPri < CurrentPri) CallDispatch();
+	cmp	r2, r1
+	bcc	FIQDispatch		-- bLO (r2 unsigned lower than r1)
+
+	-- Otherwise, resume interrupted thread
+	ldr	r9_fiq, (r8_fiq, ExecRoot.CurrentSaveArea)
+	add	r9_fiq, SaveState.CPUcontext
+
+	-- Move saved return address into FIQ banked reg.
+	mov	r14_fiq, v1
+
+	-- Restore interrupted threads non banked registers
+	ldmia	r9_fiq, {r0-r7}
+
+	_if _defp '__ARM6 [
+		error "possible code change - Return to another mode"
+	]
+
+	-- resume execution at interrupted address, restoring PSR flags
+	subs	pc, r14_fiq, 4
+
+
+	-- void FIQDispatch(ExecRoot *xroot (r8_fiq), int OldThreadPri (r1))
+	--
+	-- A higher priority thread is available to run. Save rest of 
+	-- interrupted threads processor context, prepare it for suspension,
+	-- add to tail of its run Q, and jump to Dispatch() to context switch
+	-- to higher priority thread. The call to Dispatch() is made in SVC
+	-- mode with all interrupts disabled.
+	--
+	-- @@@ Note that this is unfair to interrupted thread as we make no
+	-- attempt at giving it back its unused slice period.
+	--
+	-- On entry:	r8_fiq = ExecRoot
+	--		r1 = old threads priority
+	--		v1 = interrupted threads PC/PSR
+
+FIQDispatch:
+
+	-- Need ExecRoot ptr in non FIQ banked register as we enter SVC mode.
+	GetExecRoot r0		-- Just as fast as copying r8_fiq to r0.
+
+	-- r3 = current threads save area
+	ldr	r3, (r0, ExecRoot.CurrentSaveArea)
+
+	-- Save the FIQ banked User mode registers
+	-- (only the non-banked registers have been saved previously).
+	add	tmp, r3, SaveState.CPUcontext + CPURegs.R_V5
+	stmia	tmp, {r8-r12}^
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM feature)
+
+	-- User mode sp and lr are not contigous with other regs
+	add	tmp, r3, SaveState.CPUcontext + CPURegs.R_USER_SP
+	stmia	tmp, {sp, lr}^
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM feature)
+
+	_if _defp '__ARM6 [
+		error "possible ARM6 code change - adjust lr_fiq return address"
+	]
+	-- Adjust old r14_fiq (v1) to correct return address, preserving PSR
+	and	tmp, v1, PSRFlags	-- preserve flags
+	bic	v1, PSRFlags		-- clear flags
+	sub	v1, 4			-- adjust to correct return address
+	orr	v1, tmp			-- recombine PSR flags and return addr.
+
+	-- Save interrupted threads corrected resume address + PSR flags
+	str	v1, (r3, SaveState.CPUcontext + CPURegs.R_PC)
+
+	-- Keep track of CPU time used by thread.
+	-- oldss->CPUTimeTotal += difftimes(Timer(), oldss->LastTimeStamp);
+	ldr	r5, (r0, ExecRoot.Timer)
+	ldr	r6, (r3, SaveState.LastTimeStamp)
+	sub	r5, r6
+	ldr	r6, (r3, SaveState.CPUTimeTotal)
+	add	r5, r6
+	str	r5, (r3, SaveState.CPUTimeTotal)
+
+	_if _defp '__ARM6 [
+		error "possible ARM6 change - FIQ->SVC mode, FIQ's disabled"
+	]
+	-- Swap to SVC mode with FIQ's and IRQ's still disabled and save
+	-- SVC mode banked registers. Dispatcher is always entered in SVC mode
+	-- with interrupts disabled.
+	teqp	pc, SVCMode | FIQDisable | IRQDisable
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM feature)
+
+	-- Note thread status (implies type of restore required)
+	mov	tmp, THREAD_SLICED
+	str	tmp, (r3, SaveState.status)
+
+	-- Save banked SVC mode regs - sp and lr
+	add	tmp, r3, SaveState.CPUcontext + CPURegs.R_SVC_SP
+	stmia	tmp, {sp, lr}
+
+	-- Get address of stack for Dispatch(). This is a small stack
+	-- that allows interrupts to occur safely while the dispatcher
+	-- stays in its idle loop.
+
+	add	sp, r0, ExecRoot.DispatchStack + DISPATCHSTACKSIZE - 1
+
+	-- Rest of registers should already be C PCS conformant.
+
+	-- Add old thread's SaveState to its priorities Run Q.
+	-- Note that this is done with interrupts disabled to protect it.
+	--	r0 = ExecRoot
+	--	r1 = old threads priority
+	--	r3 = &SaveState
+
+	-- Get base of run queues.
+	-- tmp = &ExecRoot->Queues[0].tail
+	add	tmp, r0, ExecRoot.Queue0.tail
+
+	-- do: Queue[pri].tail = Queue[pri].tail->next = ss
+	-- Adding to empty Q is safe as tail will be pointing to head
+	-- and .next is top element.
+	-- r1 lsl 3 = index Queue[] by priority * sizeof(ThreadQ) (8)
+	ldr	r2, (tmp, r1 lsl 3)		-- r2 = q[pri].tail
+	str	r3, (r2, SaveState.next)	-- Queues[pri].tail->next = ss
+	str	r3, (tmp, r1 lsl 3)		-- Queues[pri].tail = ss
+	mov	a1, 0				-- Q ends at this savestate
+						-- plus used as arg to Dispatch
+	str	a1, (r3, SaveState.next)	-- ss->next = null
+
+	-- Call dispatcher, but note no state to save (a1 = 0).
+
+	-- Skeleton C environment:
+	-- R_USP = dispatch stack for safe timer interrupt during scheduler idle
+	-- R_A1 = NULL (arg to Dispatch())
+	-- R_USE - not needed, as Dispatch() never enables stack checking
+	-- R_FP - not needed
+	-- R_MT - not needed (kernel has no module table)
+	-- R_LR - not needed (we will never return)
+
+	patchinstr(PATCHARMJP, labelref(.Dispatch),
+		b	0)
+
+
+
+-- IRQ_Handler
+--
+-- Interrupt handler for INTR_IRQ
+--
+-- IRQ interrupt vectored to this point.
+-- This code is almost identical to the FIQ handlers.
+
+-- Several entry points are exported for internal executive interrupt
+-- handlers to return to to either continue the current thread, check if
+-- they need to preempt the current thread, or to preempt the current thread.
+
+
+	Function IRQ_Handler
+
+	_if _defp '__IOC [
+		import	TimerIntrHandler
+	]
+	_if _defp '__ARCHIMEDES [
+		import	LinkIntrHandler
+	]
+	_if _defp '__VY86PID [
+		import	TimerIntrHandler
+		import	LinkIntrHandler
+	]
+
+	export	ExternContinueThread,
+		ExternCheckIRQDispatch,
+		ExternIRQDispatch
+
+
+	-- Get address of interrupted threads save state area.
+	GetExecRoot r13_irq
+	ldr	r13_irq, (r13_irq, ExecRoot.CurrentSaveArea)
+	add	r13_irq, SaveState.CPUcontext
+
+	-- Save interrupted threads non banked regs into threads save state
+	-- @@@ EASY OPTIMISATION: In theory, due to mandated indirect interrupt
+	-- handler PCS conformance, we shouldn't have to save variable regs
+	-- (v1-v5 = r4-r8), other than v1 (r4) as this is used to hold the
+	-- interrupted threads return address. Note that the internal Clock/Link
+	-- interrupt handlers should be checked first to determine if they use
+	-- these registers.
+
+	stmia	r13_irq, {r0-r12}
+
+	_if _defp '__ARM6BASED [
+
+		-- ARM6 fixup - Force 26bit mode.
+		A6_SETPSR tmp A6_ModeMask A6_IRQ26Mode
+
+		-- ARM6 fixup - Re-create a 26bit compatible link register.
+		-- Flags and mode.
+		mrs	tmp, spsr			-- Get saved psr
+		and	tmp, FlagMask | ModeMask	-- Save flags and mode
+		orr	lr, tmp
+
+		_if _false [ -- not necessary at the mo.
+			-- Interrupt disables.
+			mrs	tmp, spsr
+			and	tmp, A6_IntrMask
+			mov	tmp, tmp lsl 20	-- adjust to old pos.
+			orr	lr, tmp
+		]
+	]
+
+	_test _defp '__IOC [
+
+		-- Check all IOC interrupt sources and select pseudo INTR_xxx
+		-- if one is active.
+		mov	tmp, IOC_base
+
+CheckIRQA:
+		-- Default to plain old unknown IRQ source, if we cannot find
+		-- interrupt source.
+		mov	a1, INTR_IRQ
+
+		-- Check IOC IRQA request register.
+		ldrb	a2, (tmp, ioc_regs.irq_a + intr_block.request)
+
+		teq	a2, 0
+		beq	CheckIRQB	-- no IRQA bits set, so test IRQB
+
+		-- IOC Timer 0 is used to support the system clock, timer Q
+		-- and time slicing. Check specifically for this interrupt and
+		-- process it if it is raised.
+		tst	a2, IRQA_TM0
+		bne	TimerIntrHandler
+
+		-- Note that we don't branch on carry set (cs), as we are
+		-- interested in minimising the maximum latency, not
+		-- minimising the minimum!
+		-- @@@ This code could be optimised further by checking
+		-- individual nibbles and then branching.
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQA_0		-- bit 0 set
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQA_1		-- bit 1
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQA_2		-- 2
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQA_3		-- 3
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQA_4		-- 4
+		_test _true [	-- dont bother with bit 5 (timer 0 interrupt)
+			movs	a2, a2 lsr 2		-- skip bit 5
+			movcs	a1, INTR_IRQA_6		-- 6
+		][
+			movs	a2, a2 lsr 1
+			movcs	a1, INTR_IRQA_5		-- 5
+			movs	a2, a2 lsr 1
+			movcs	a1, INTR_IRQA_6		-- 6
+		]
+			movs	a2, a2 lsr 1
+			movcs	a1, INTR_IRQA_7		-- 7
+
+		b	SetINTR
+
+CheckIRQB:
+		-- Check IOC IRQB request register
+		ldrb	a2, (tmp, ioc_regs.irq_b + intr_block.request)
+		teq	a2, 0
+
+		-- If no IRQB bits set, set INTR_IRQ
+		beq	SetINTR
+
+		-- @@@ This code could be optimised further by checking
+		-- individual nibbles and then branching.
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_0		-- bit 0 set
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_1		-- bit 1
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_2		-- 2
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_3		-- 3
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_4		-- 4
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_5		-- 5
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_6		-- 6
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQB_7		-- 7
+
+		_if _defp '__ARCHIMEDES [
+			-- IOC IRQB bit 5 is used by the Archi. for all
+			-- Acorn expansion bus cards. Decode this interrupt
+			-- down to the specific card.
+			--
+			-- @@@ some archi's (550/R140/R260) have special
+			-- hardware that does this automatically - this should
+			-- be supported.
+			--
+			-- If the interrupt is from a Gnome link adapter
+			-- podule, then call the handler directly.
+			--
+			-- @@@ in future we should implement these link
+			-- interrupt handlers in the standard fashion as
+			-- this would be simpler to configure alien links
+			-- for. This means that the Event init. should be
+			-- done before the Link init.
+
+			-- Check for IOC XCB interrupt indication.
+			cmp	a1, INTR_IRQB_5		-- XCB interrupt
+			bne	SetINTR
+
+			-- Check for slot 0 card interrupt
+	TestSlot0:
+			mov	a1, XCB_ID 0
+			ldrb	a2, (a1, xcb_id.id0)
+			tst	a2, XCB_ID0_IRQ
+			beq	TestSlot1
+
+			-- Check if card 0 is a link adapter.
+			ldrb	a2, (a1, xcb_id.product_lo)
+			teq	a2, XCB_PRODUCT_TRANSPUTERLINKADAPTER
+
+			-- If so, call link intr. handler with slot # in a2.
+			moveq	a2, 0
+			beq	LinkIntrHandler
+
+			-- Otherwise, set pseudo interrupt number for this slot.
+			mov	a1, INTR_XCB_0
+			b	SetINTR
+
+			-- Check for slot 1 card interrupt
+	TestSlot1:
+			LD_XCB_ID 1 a1
+			ldrb	a2, (a1, xcb_id.id0)
+			tst	a2, XCB_ID0_IRQ
+			beq	TestSlot2
+
+			-- Check if card 1 is a link adapter.
+			ldrb	a2, (a1, xcb_id.product_lo)
+			teq	a2, XCB_PRODUCT_TRANSPUTERLINKADAPTER
+
+			-- If so, call link intr. handler with slot # in a2.
+			moveq	a2, 1
+			beq	LinkIntrHandler
+
+			-- Otherwise, set pseudo interrupt number for this slot.
+			mov	a1, INTR_XCB_1
+			b	SetINTR
+
+
+			-- Check for slot 2 card interrupt
+	TestSlot2:
+			LD_XCB_ID 2 a1
+			ldrb	a2, (a1, xcb_id.id0)
+			tst	a2, XCB_ID0_IRQ
+			beq	TestSlot3
+
+			-- Check if card 2 is a link adapter.
+			ldrb	a2, (a1, xcb_id.product_lo)
+			teq	a2, XCB_PRODUCT_TRANSPUTERLINKADAPTER
+
+			-- If so, call link intr. handler with slot # in a2.
+			moveq	a2, 2
+			beq	LinkIntrHandler
+
+			-- Otherwise, set pseudo interrupt number for this slot.
+			mov	a1, INTR_XCB_2
+			b	SetINTR
+
+
+			-- Check for slot 3 card interrupt
+	TestSlot3:
+			LD_XCB_ID 3 a1
+			ldrb	a2, (a1, xcb_id.id0)
+			tst	a2, XCB_ID0_IRQ
+
+			-- If not one of known card sources, set Unknown
+			-- XCB interrupt number.
+			moveq	a1, INTR_IRQB_5
+			beq	SetINTR
+
+			-- Check if card 3 is a link adapter.
+			ldrb	a2, (a1, xcb_id.product_lo)
+			teq	a2, XCB_PRODUCT_TRANSPUTERLINKADAPTER
+
+			-- If so, call link intr. handler with slot # in a2.
+			moveq	a2, 3
+			beq	LinkIntrHandler
+
+			-- Otherwise, set pseudo interrupt number for this slot.
+			mov	a1, INTR_XCB_3
+		]
+
+SetINTR:	-- Interrupt number INTR_xxx haps been placed into reg a1 at
+		-- this point.
+	][ _test _defp '__VY86PID [
+		-- Check all PID interrupt sources and select pseudo INTR_xxx
+		-- if one is active.
+
+		-- vy86pid's status register is not masked with the interrupt
+		-- enable register! - Do this by hand to detect the actual
+		-- interrupt that has been raised.
+		GetExecRoot a1
+		ldr	a1, (a1, ExecRoot.KernelRoot)
+		ldr	a1, (a1, Root.IRQM_softcopy)
+
+		mov	tmp, hw_INTC
+		ldrb	a2, (tmp, hw_intc.IRQS)
+		and	a2, a1
+
+		-- Detect timer interrupt
+		-- The timer is used to support the system clock, timer Q
+		-- and time slicing. Check specifically for this interrupt and
+		-- intercept it if it is raised.
+		tst	a2, hw_intc_irq_timer
+		bne	TimerIntrHandler
+
+		-- Detect comms related interrupts
+		tst	a2, hw_intc_irq_serial1
+		bne	LinkIntrHandler
+
+		-- Default to plain old unknown IRQ source
+_if _true [ -- @@@ tmp DBG show lower bits of interrupt status on LED
+		mvn	a1, a2 lsr 4
+		ldr	a3,hw_PARALLEL_holder2	-- get the GPIO hardware address
+		strb	a1,(a3,hw_parallel.GPIO)-- and update the LED
+		b	passt
+		hw_PARALLEL_holder2:
+			word	hw_PARALLEL
+passt:
+]
+		mov	a1, INTR_IRQ
+
+		-- Decode interrupt source to pseudo interrupt vector and set
+		-- vector in reg a1.
+		--
+		-- Note that we don't BRANCH on carry set (cs), as we are
+		-- interested in minimising the maximum latency, not
+		-- minimising the minimum!
+		--
+		-- Miss out interrupt sources 0 and 1 (Timer/Serial) as these
+		-- have already been intercepted (hence initial 'lsr 3').
+		movs	a2, a2 lsr 3
+		movcs	a1, INTR_IRQ_PARA	-- bit 2 set
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQ_3		-- bit 3
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQ_4		-- 4
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQ_5		-- 5
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQ_6		-- 6
+		movs	a2, a2 lsr 1
+		movcs	a1, INTR_IRQ_PANIC	-- 7
+	][
+		-- If no known interrupt sources, just set INTR_IRQ as
+		-- interrupt vector number.
+		mov	a1, INTR_IRQ
+	]]
+
+	-- Setup PCS complient environment.
+	--
+	-- Note we dont set stack limit as handlers SHOULD NOT check stack
+	-- @@@ Can we optimise mov fp,0 out? i.e Does it matter?
+	mov	fp, 0			-- note invalid frame pointer
+	mov	sp, IRQ_stack_top + 1	-- load IRQ stack address
+	-- +1 is due to use of pre-decrement falling stack (it then fits into
+	-- a generatable ARM constant nicely).
+
+	-- As v1 is callee saved, we can hold adjusted return address in it,
+	-- and it should still be OK when we return from PCS conformant call to
+	-- RootEventHandler().
+	mov	v1, r14_irq		-- protect return address
+
+
+	-- Skeleton C environment:
+	--
+	-- R_USP = IRQ stack
+	-- R_USE - Not needed, as Dispatch() and handlers should never enable
+	--         stack checking
+	-- R_FP  - Not needed???@@@
+	-- R_MT  - not needed (kernel has no module table,
+	--         handlers mt will be set from one held in Event struct)
+	-- R_A1  - Notes which indirect interrupt handler chain to call down
+
+	-- Call RootEventHandler which calls IRQ indirect handler chain
+	-- All handlers are executed in IRQ mode.
+	patchinstr(PATCHARMJP, labelref(.RootEventHandler),
+		bl	0)
+
+	-- @@@ The RootEventHandler code (WalkList, CallWithModTab, etc)
+	-- should be downcoded to assembler.
+
+CheckIRQDispatch:
+	GetExecRoot r0
+
+	ldr	r1, (r0, ExecRoot.CurrentPri)
+	ldr	r2, (r0, ExecRoot.HighestAvailPri)
+
+	-- if (HighestAvailPri < CurrentPri)
+	--	IRQDispatch();
+	cmp	r2, r1
+	bcc	IRQDispatch		-- bLO (r2 unsigned lower than r1)
+
+	-- Otherwise, restore and continue interrupted thread.
+ContinueThread:
+
+	-- Get address of interrupted threads saved registers.
+	ldr	r13_irq, (r0, ExecRoot.CurrentSaveArea)
+	add	r13_irq, SaveState.CPUcontext
+
+	-- Restore saved return address back to IRQ banked registers.
+	mov	r14_irq, v1
+
+	-- Restore interrupted threads non banked registers
+	ldmia	r13_irq, {r0-r12}
+
+	-- On the ARM6 the spsr will be restored as well.
+	-- Resume execution at adjusted interrupted address, restoring PSR flags
+	subs	pc, r14_irq, 4
+
+
+ExternCheckIRQDispatch:
+	-- Possible re-entry point for internal interrupt handlers (timer/link)
+	-- when current thread needs to be checked for dispatch. i.e. check if
+	-- the highest available priority thread on run Q's is higher than the
+	-- current threads priority.
+	--
+	-- On entry:	
+	-- 	r0 =		ExecRoot
+	-- 	r14_irq =	interrupted threads return address
+
+	ldr	r1, (r0, ExecRoot.CurrentPri)
+	ldr	r2, (r0, ExecRoot.HighestAvailPri)
+
+	-- if (HighestAvailPri < CurrentPri)
+	--	ExternIRQDispatch();
+	cmp	r2, r1
+	bcc	ExternIRQDispatch	-- bLO (r2 unsigned lower than r1)
+
+	-- Otherwise, restore and continue interrupted thread.
+
+ExternContinueThread:
+	-- Possible re-entry point for timer interrupt handler when current
+	-- thread should be continued.
+	--
+	-- On entry:	
+	-- 	r0 =		ExecRoot
+	-- 	r13_irq =	interrupted threads SaveState.CPUcontext
+	-- 	r14_irq =	interrupted threads return address
+
+	-- Restore interrupted threads non banked registers
+	ldmia	r13_irq, {r0-r12}
+
+	-- On the ARM6 the spsr will be restored as well.
+	-- Resume execution at adjusted interrupted address, restoring PSR flags
+	subs	pc, r14_irq, 4
+
+
+-- void IRQDispatch(ExecRoot *xroot, int OldThreadsPri)
+--
+-- A higher priority thread is available to run. Save rest of interrupted
+-- threads processor context, prepare it for suspension, add to tail of its
+-- run Q, and jump to Dispatch() to context switch to higher priority thread.
+-- The call to Dispatch() is made in SVC mode with all interrupts disabled.
+--
+-- @@@ Note that this is unfair to interrupted thread as we make no
+-- attempt at giving it back its unused slice period.
+--
+-- On entry:	
+--	r0 = ExecRoot
+--	r1 = old threads priority
+--	v1 = interrupted threads return address
+
+ExternIRQDispatch:
+	-- Possible re-entry point for timer interrupt handler when current
+	-- thread should be saved and scheduler called.
+
+	-- Setup any required PCS environment that the normal IRQDispatch
+	-- has already done.
+	-- @@@ Can we optimise mov fp,0 out? i.e Does it matter?
+	mov	fp, 0			-- Note invalid frame pointer
+	mov	v1, r14_irq		-- Arrange arguments correctly
+
+IRQDispatch:
+	-- r3 = current threads save area
+	ldr	r3, (r0, ExecRoot.CurrentSaveArea)
+
+	-- Save the IRQ banked User mode registers
+	-- (only the non-banked registers have been saved previously).
+	add	tmp, r3, SaveState.CPUcontext + CPURegs.R_USER_SP
+	stmia	tmp, {sp, lr}^
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM feature)
+
+	_test _defp '__ARM6BASED [
+		nop	-- @@@ Is this required to guard spsr from ARM mode
+			-- change feature?
+
+		-- Save copy of interrupted psr in SaveState.
+		mrs	tmp, spsr
+		str	tmp, (r3, SaveState.CPUcontext + CPURegs.R_CPSR)
+
+		-- Adjust r14_irq to correct return address, preserving PSR
+		-- No psr bits in PC on ARM6.
+		sub	v1, 4			-- adjust to correct return addr.
+	][
+		_test _false [
+		-- Adjust r14_irq to correct return address, preserving PSR
+		-- @@@ Hold on a mo, isn't this all unnecessary? - Just do
+		-- a sub v1, 4!
+		and	tmp, v1, PSRFlags	-- preserve PSR flags in tmp
+		bic	v1, PSRFlags		-- clear flags
+		sub	v1, 4			-- adjust to correct return address
+		orr	v1, tmp			-- recombine PSR flags and return addr.
+		][
+		sub	v1, 4			-- adjust to correct return address
+		]
+	]
+
+	-- Save interrupted threads corrected resume address
+	str	v1, (r3, SaveState.CPUcontext + CPURegs.R_PC)
+
+	-- Keep track of CPU time used by thread.
+	-- oldss->CPUTimeTotal += difftimes(Timer(), oldss->LastTimeStamp);
+	ldr	r5, (r0, ExecRoot.Timer)
+	ldr	r6, (r3, SaveState.LastTimeStamp)
+	sub	r5, r6
+	ldr	r6, (r3, SaveState.CPUTimeTotal)
+	add	r5, r6
+	str	r5, (r3, SaveState.CPUTimeTotal)
+
+	_if _defp '__ARM6 [
+		error "ARM6 32bit world code change IRQ->SVC mode, Ints disabled"
+	]
+	-- Swap to SVC mode and save SVC mode banked registers.
+	-- Dispatcher will be entered in SVC mode with IRQ's and FIQ's disabled.
+	teqp	pc, SVCMode | IRQDisable | FIQDisable
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM feature)
+
+	-- Note thread status (implies type of restore required)
+	mov	tmp, THREAD_SLICED
+	str	tmp, (r3, SaveState.status)
+
+	-- Save banked SVC mode regs - sp and lr
+	add	tmp, r3, SaveState.CPUcontext + CPURegs.R_SVC_SP
+	stmia	tmp, {sp, lr}
+
+	-- Get address of stack for Dispatch(). This is a small stack
+	-- that allows interrupts to occur safely while the dispatcher
+	-- stays in its idle loop.
+
+	add	sp, r0, ExecRoot.DispatchStack + DISPATCHSTACKSIZE - 1
+
+	-- Rest of registers should already be C PCS conformant.
+
+	-- Add old thread's SaveState to its priorities Run Q.
+	-- Note that this is done with interrupts disabled to protect it.
+	--	r0 = ExecRoot
+	--	r1 = old threads priority
+	--	r3 = &SaveState
+
+	-- Get base of run queues.
+	-- tmp = &ExecRoot->Queues[0].tail
+	add	tmp, r0, ExecRoot.Queue0.tail
+
+	-- do: Queue[pri].tail = Queue[pri].tail->next = ss
+	-- Adding to empty Q is safe as tail will be pointing to head
+	-- and .next is top element.
+	-- r1 lsl 3 = index Queue[] by priority * sizeof(ThreadQ) (8)
+	ldr	r2, (tmp, r1 lsl 3)		-- r2 = q[pri].tail
+	str	r3, (r2, SaveState.next)	-- Queues[pri].tail->next = ss
+	str	r3, (tmp, r1 lsl 3)		-- Queues[pri].tail = ss
+	mov	a1, 0				-- Q ends at this savestate
+						-- plus used as arg to Dispatch
+	str	a1, (r3, SaveState.next)	-- ss->next = null
+
+	-- Call dispatcher, but note no state to save (a1 = 0).
+
+	-- Skeleton C environment:
+	-- R_USP = dispatch stack for safe timer interrupt during scheduler idle
+	-- R_A1 = NULL (arg to Dispatch())
+	-- R_USE - not needed, as Dispatch() never enables stack checking
+	-- R_FP - not needed
+	-- R_MT - not needed (kernel has no module table)
+	-- R_LR - not needed (we will never return)
+
+	patchinstr(PATCHARMJP, labelref(.Dispatch),
+		b	0)
+
+
+
+-- end of armintr.a

@@ -1,0 +1,1035 @@
+head	1.2;
+access;
+symbols
+	Helios_1_3_1:1.2
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1
+	Helios1_2:1.1
+	V1_2Beta0:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	92.09.04.10.38.34;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.12.09.15;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@simple backup of pipe stuff
+@
+
+
+1.2
+log
+@fixed compile time warnings
+@
+text
+@
+
+#define _in_pipe
+
+#include "sys.h"
+#include <nonansi.h>
+
+#define progname_ ((char *)(MyTask->TaskEntry)+8)
+
+#define FG_Abort	0x000010E0
+#define RemoteBit	0x00000008
+
+#define Code_Connect	0xa1
+#define Code_Timeout	0xa2
+#define Code_Close	0xa3
+#define Code_Connect1	0xa4
+
+struct P
+{
+	MCB	*req;
+	Port	ack;
+};
+
+typedef struct PipeInfo
+{
+	Node		Node;
+	int		State;
+	Stream		*Stream;
+	Port		ServerPort;
+	Port		DataPort;
+	struct
+	{
+		byte	*buf;
+		word	max;
+		word	size;
+		word	read;
+		word	got;
+	} Pending;
+	struct P	Read, Write;
+	Port		ReadSelect;
+	Port		WriteSelect;
+} PipeInfo;
+
+
+STATIC Semaphore PipeLock;
+
+STATIC List PipeList;
+
+static MCB *DoPipeWrite( PipeInfo *p, MCB *mcb);
+static MCB *ExchangeData(PipeInfo *p);
+
+static MCB *DoPipeRead(PipeInfo *p, MCB *mcb)
+{
+	ReadWrite *rw = (ReadWrite *)mcb->Control;
+	word size = rw->Size;
+
+	if( p->WriteSelect != NullPort )
+	{
+		SendException(p->WriteSelect,O_WriteOnly);
+		p->WriteSelect = NullPort;
+	}
+
+	if( p->Pending.size > 0 )
+	{
+		MCB m;
+		word tfr;
+
+		p->Read.req = NULL;
+		InitMCB(&m,0,mcb->MsgHdr.Reply,NullPort,ReadRc_EOD);
+		tfr = size;
+		if( tfr > p->Pending.size ) tfr = p->Pending.size;
+		m.Data = p->Pending.buf+p->Pending.read;
+		m.MsgHdr.DataSize = (int)tfr;
+		PutMsg(&m);
+
+		p->Read.ack = mcb->MsgHdr.Reply;
+				
+		return mcb;
+	}
+
+	p->Read.req = mcb;	
+
+	if( p->Write.req ) return ExchangeData(p);
+	elif( rw->Timeout == 0 || (p->State & O_WriteOnly) == 0 )
+	{
+		word rc = (p->State & O_WriteOnly)?(EC_Recover|SS_Pipe|EG_Timeout|EO_Pipe):ReadRc_EOF;
+		InitMCB(mcb,0,mcb->MsgHdr.Reply,NullPort,rc);
+		PutMsg(mcb);
+		p->Read.ack = mcb->MsgHdr.Reply;
+		p->Read.req = NULL;
+		return mcb;
+	}
+	
+	return NULL;
+}
+
+static MCB *DoReadAck(PipeInfo *p, MCB *mcb)
+{
+	word got = mcb->Control[0];
+
+	InitMCB(mcb,0,mcb->MsgHdr.Reply,NullPort,Err_Null);
+	PutMsg(mcb);
+	
+	p->Read.ack = NullPort;
+
+	if( p->Write.ack )
+	{
+		InitMCB(mcb,0,p->Write.ack,NullPort,WriteRc_Done);
+		mcb->MsgHdr.ContSize = 1;	
+		PutMsg(mcb);
+		p->Write.ack = NullPort;
+	}
+	
+	if( got > 0 && p->Pending.size > 0 )
+	{
+		p->Pending.size -= got;
+		if( p->Pending.size == 0 )
+		{
+			p->Pending.read = 0;
+			p->Pending.got = 0;
+		}
+		else p->Pending.read += got;
+		if( p->Write.req ) DoPipeWrite(p,p->Write.req);
+		if( p->WriteSelect != NullPort )
+		{
+			SendException(p->WriteSelect,O_WriteOnly);
+			p->WriteSelect = NullPort;
+		}
+	}
+
+	/* once we have emptied the pending buffer, and the writer has	*/
+	/* closed, disallow further reads				*/
+	if( p->Pending.size == 0 && (p->State & O_WriteOnly) == 0 ) 
+		p->State &= ~O_ReadOnly;
+
+	return mcb;	
+}
+
+static MCB *DoPipeWrite( PipeInfo *p, MCB *mcb)
+{
+	ReadWrite *rw = (ReadWrite *)mcb->Control;
+	word size = rw->Size;
+	word got = p->Pending.got;
+	word e;
+
+	/* if there is no reader, report a broken pipe	*/
+	unless( p->State & O_ReadOnly )
+	{
+		InitMCB(mcb,0,mcb->MsgHdr.Reply,NullPort,EC_Error|SS_Pipe|EG_Broken|EO_Pipe);
+		return mcb;
+	}
+
+	if( p->ReadSelect != NullPort )
+	{
+		SendException(p->ReadSelect,O_WriteOnly);
+		p->ReadSelect = NullPort;
+	}
+	
+	p->Write.req = mcb;
+	if( p->Read.req ) return ExchangeData(p);
+	
+	if( got < p->Pending.max )
+	{
+		MCB m;
+		WriteReply rep;
+		Port dataport = p->DataPort;
+		word tfr = size;
+		word avail = p->Pending.max - got;
+
+		if( tfr > avail ) tfr = avail;
+
+		m.Control = (word *)&rep;
+
+		p->Write.req = NULL;
+		
+		rep.first = tfr;
+		rep.rest = tfr;
+		rep.max = tfr;
+
+		InitMCB(&m,MsgHdr_Flags_preserve,mcb->MsgHdr.Reply,dataport,WriteRc_Sizes);
+		m.MsgHdr.ContSize = 3;
+		e = PutMsg(&m);
+
+		m.MsgHdr.Dest = dataport;
+		m.Data = p->Pending.buf+got;
+		if( e >= 0 ) e = GetMsg(&m);
+
+		if( m.MsgHdr.DataSize != tfr ) e = EC_Error;
+		else got += tfr;
+		
+		InitMCB(&m,0,mcb->MsgHdr.Reply,NullPort,WriteRc_Done);
+		rep.first = e<0?e:tfr;
+
+		m.MsgHdr.ContSize = 1;
+		PutMsg(&m);	
+
+		p->Pending.got = got;
+		p->Pending.size += tfr;
+				
+		return mcb;
+	}
+	
+	return NULL;
+}
+
+static MCB *ExchangeData(PipeInfo *p)
+{
+	MCB *rmcb = p->Read.req;
+	MCB *wmcb = p->Write.req;
+	MCB m;
+	WriteReply r;
+	int rsize = (int)((ReadWrite *)(rmcb->Control))->Size;
+	int tfr   = (int)((ReadWrite *)(wmcb->Control))->Size;
+	Port reader = rmcb->MsgHdr.Reply;
+	Port writer = wmcb->MsgHdr.Reply;
+
+	m.Control = (word *)&r;
+
+	p->Read.req = p->Write.req = NULL;
+
+	if( tfr > rsize ) tfr = rsize;
+
+	/* tell writer to send data directly to reader */
+	InitMCB(&m,MsgHdr_Flags_preserve,writer,reader,WriteRc_Sizes);
+	r.first = tfr>60000?60000:tfr;
+	r.rest = r.first;
+	r.max = tfr;
+	m.MsgHdr.ContSize = 3;
+	PutMsg(&m);
+
+	/* the writer will now send its data to the reader	*/
+	
+	p->Read.ack = rmcb->MsgHdr.Reply;
+	p->Write.ack = wmcb->MsgHdr.Reply;
+		
+	FreeMsgBuf(rmcb);
+	return wmcb;
+}
+
+
+static MCB *DoPipeSelect(PipeInfo *p, MCB *mcb)
+{
+	word mode = mcb->MsgHdr.FnRc & Flags_Mode;
+	Port port = mcb->MsgHdr.Reply;
+	word rep = 0;
+
+	if( mode & O_ReadOnly )
+	{
+		FreePort(p->ReadSelect); p->ReadSelect = NullPort;
+		if( p->WriteSelect || p->Pending.size > 0 || p->Write.req ) 
+			rep |= O_ReadOnly;
+		else p->ReadSelect = port;
+	}
+	elif( mode & O_WriteOnly )
+	{
+		FreePort(p->WriteSelect); p->WriteSelect = NullPort;
+		if( p->ReadSelect || p->Read.req ) rep |= O_WriteOnly;
+		else p->WriteSelect = port;	
+	}
+	
+	if( rep ) 
+	{
+		InitMCB(mcb,0,port,NullPort,rep);
+		PutMsg(mcb);
+	}
+	
+	return mcb;
+}
+
+static void AbortRequest(struct P *p, word code)
+{
+	MCB *mcb = p->req;
+	if( mcb == NULL ) return;
+
+	InitMCB(mcb,0,mcb->MsgHdr.Reply,NullPort,code);
+	PutMsg(mcb);
+	FreeMsgBuf(p->req);
+	p->req = NULL;
+}
+
+static MCB *DoPipeClose(PipeInfo *p, MCB *mcb)
+{
+	int state = p->State;
+
+	if( mcb->MsgHdr.FnRc&RemoteBit ) state &= ~O_WriteOnly;
+	else state &= ~O_ReadOnly;	
+	p->State = state;
+	AbortRequest(&p->Read,ReadRc_EOF);
+	AbortRequest(&p->Write,EC_Error|SS_Pipe|EG_Broken|EO_Pipe);
+	if( p->ReadSelect )
+	{
+		InitMCB(mcb,0,p->ReadSelect,NullPort,O_ReadOnly);
+		PutMsg(mcb);
+		p->ReadSelect = NULL;
+	}
+	if( p->WriteSelect )
+	{
+		InitMCB(mcb,0,p->WriteSelect,NullPort,O_WriteOnly);
+		PutMsg(mcb);
+		p->WriteSelect = NULL;
+	}
+	return mcb;
+}
+
+static MCB *DoPipeAbort(PipeInfo *p, MCB *mcb)
+{
+	AbortRequest(&p->Read,EC_Error|SS_Pipe|EG_Exception|EE_Abort);
+	AbortRequest(&p->Write,EC_Error|SS_Pipe|EG_Exception|EE_Abort);
+	return mcb;
+}
+
+static void DoTimeout( struct P *p)
+{
+	if( p->req != NULL )
+	{
+		ReadWrite *rw = (ReadWrite *)p->req->Control;
+		rw->Timeout-=OneSec*2;
+		if( rw->Timeout <= 0 )
+			AbortRequest(p,EC_Recover|SS_Pipe|EG_Timeout|EO_Pipe);
+	}
+}
+
+static MCB  *DoPipeGSize(PipeInfo *p, MCB *mcb)
+{
+	InitMCB(mcb,0,mcb->MsgHdr.Reply,NullPort,Err_Null);
+	MarshalWord(mcb,p->Pending.size);
+	PutMsg(mcb);
+	return mcb;
+}
+
+static MCB  *DoPipeSSize(PipeInfo *p, MCB *mcb)
+{
+	int newsize  = (int)mcb->Control[0];
+	byte *newbuf = Malloc(newsize);
+	word rc      = Err_Null;
+	
+	if( newbuf )
+	{
+		if( p->Pending.size > 0 )
+		{
+			/* there is data in the buffer, copy it to the new */
+			/* buffer if it will fit, otherwise report an error*/
+			if( p->Pending.got <= newsize )
+				memcpy(newbuf,p->Pending.buf,(int)(p->Pending.got));
+			else
+			{
+				rc = EC_Error|SS_Pipe|EG_NoMemory|EO_Pipe;
+				goto done;
+			}
+		}
+		Free(p->Pending.buf);
+		p->Pending.buf = newbuf;
+		p->Pending.max = newsize;
+	}
+	else rc = EC_Error|SS_Pipe|EG_NoMemory|EO_Pipe;
+
+done:
+	InitMCB(mcb,0,mcb->MsgHdr.Reply,NullPort,rc);
+	PutMsg(mcb);	
+	
+	return mcb;
+}
+
+static void PipeServer(PipeInfo *p)
+{
+	MCB *mcb = NULL;
+
+	while( p->State )
+	{
+		word e;
+		
+		if( mcb == NULL ) mcb = NewMsgBuf(0);
+		
+		InitMCB(mcb,0,p->ServerPort,NullPort,0);
+		mcb->Timeout = OneSec*2;
+		
+		e = GetMsg(mcb);
+
+		if( e == EK_Timeout ) 
+		{
+			DoTimeout(&p->Read);
+			DoTimeout(&p->Write);
+			continue;
+		}
+				
+		if( e < Err_Null ) continue;
+
+		switch( e & FG_Mask )
+		{
+		case FG_Read:	 mcb = DoPipeRead(p,mcb);	break;
+		case FG_ReadAck: mcb = DoReadAck(p,mcb);	break;
+		case FG_Write:	 mcb = DoPipeWrite(p,mcb);	break;
+		case FG_Select:	 mcb = DoPipeSelect(p,mcb);	break;
+		case FG_GetSize: mcb = DoPipeGSize(p,mcb);	break;
+		case FG_SetSize: mcb = DoPipeSSize(p,mcb);	break;
+		case FG_Abort:	 mcb = DoPipeAbort(p,mcb);	break;
+		case FG_Close:	 mcb = DoPipeClose(p,mcb);	break;
+		default:
+			InitMCB(mcb,0,mcb->MsgHdr.Reply,NullPort,
+				EC_Error|SS_Pipe|EG_WrongFn|EO_Pipe);
+			PutMsg(mcb);
+		}
+	}
+	Wait(&PipeLock);
+	Remove(&p->Node);
+	Signal(&PipeLock);
+	FreePort(p->ServerPort);
+	FreePort(p->DataPort);
+	Free(p->Pending.buf);
+	Free(p);	
+}
+
+static PipeInfo *InitPipe(Stream *s)
+{
+	PipeInfo *p;
+	word e;
+	MCB mcb;
+
+	p = New(PipeInfo);
+	
+	if( p == NULL ) 
+	{
+		s->Result2 = EC_Error|SS_SysLib|EG_NoMemory|EO_Pipe;
+		return NULL;
+	}
+	memset(p,0,sizeof(PipeInfo));
+
+again:
+	/* now send off a connect message to pipe server	*/
+	InitMCB(&mcb,MsgHdr_Flags_preserve,s->Server,s->Reply,0);
+
+	e = PutMsg(&mcb);
+
+	InitMCB(&mcb,0,s->Reply,NullPort,0);
+	if( e >= 0 ) e = GetMsg(&mcb);
+
+	switch( e )
+	{
+	case Code_Connect:
+	case Code_Connect1:
+		break;		/* simple case drop straight out    */
+
+	case Code_Timeout:	/* other side not yet ready, retry  */
+		goto again;
+			
+	case Code_Close:	/* other end has simply closed	    */
+		e = EC_Error|SS_Pipe|EG_Broken|EO_Pipe;
+	default:		/* an error of some sort	    */
+		if( (e&EG_Mask) == EG_Timeout ) goto again;
+		Free(p);
+		s->Result2 = e;
+		return NULL;
+	}
+
+	/* The pipe is connected */
+
+	Wait(&PipeLock);
+	AddTail(&PipeList,&p->Node);
+	Signal(&PipeLock);
+	
+	p->Stream = s;
+	s->Server = mcb.MsgHdr.Reply;
+	s->Flags |= Flags_Extended|Flags_NoIData;
+	p->Pending.max = 2048;
+	p->DataPort = NewPort();
+
+	while( p->Pending.buf == NULL ) 
+	{
+		p->Pending.buf = Malloc(p->Pending.max);
+		if( p->Pending.buf == NULL ) Delay(OneSec);
+		else
+		{
+			p->Pending.read = 0;
+			p->Pending.got = 0;
+			p->Pending.size = 0;
+		}
+	}
+		
+	p->State = (int)(O_WriteOnly | (s->Flags & O_ReadWrite));
+
+	if( p->State & O_ReadOnly )
+	{
+		p->ServerPort = s->Reply;
+		s->Reply = NewPort();
+		if( !Fork(2000,PipeServer,sizeof(p),p) )
+		{
+			Free(p);
+			s->Result2 = EC_Error|SS_SysLib|EG_NoMemory|EO_Pipe;
+			return NULL;
+		}
+	}
+	else p->ServerPort = NULL;
+	
+	return p;
+}
+
+static word
+GetPipe(
+	PipeInfo *	p,
+	Stream *	s )
+{
+  return p->Stream == s;
+}
+
+
+PRIVATE word FindPorts(Stream *s, word fn, Port *server, Port *reply)
+{
+	PipeInfo *p;
+
+	if( s->Type != Type_Pipe ) *server = s->Server;
+	else
+	{	
+		Wait( &PipeLock );
+		p = (PipeInfo *)SearchList(&PipeList,GetPipe,s);
+		Signal( &PipeLock );
+
+		if( p == NULL ) 
+		{
+			p = InitPipe(s);
+			if( p == NULL ) return s->Result2;
+		}
+		
+		switch( fn )
+		{
+		case FG_Read:
+		case FG_GetSize:
+		case FG_SetSize:
+		case FG_Select|O_ReadOnly:
+			unless( p->State & O_ReadOnly ) return EC_Error|SS_Pipe|EG_Broken|EO_Pipe;
+			*server = p->ServerPort;
+			break;
+		case FG_Select|O_WriteOnly:
+		default:
+			*server = s->Server;
+			break;
+		}
+	}
+
+	if( (GetReady(s->Reply)&EG_Mask) == EG_Invalid ) s->Reply = NewPort();
+	
+	*reply = s->Reply;
+
+	return 0;
+}
+
+PRIVATE word PipeClose(Stream *s)
+{
+	PipeInfo *p;
+	
+	Wait( &PipeLock );
+	p = (PipeInfo *)SearchList(&PipeList,GetPipe,s);
+	Signal( &PipeLock );
+
+	if( p != NULL )
+	{
+		if( p->ServerPort ) SendException(p->ServerPort,FG_Close);
+		SendException(s->Server,FG_Close|RemoteBit);
+		return true;
+	}
+	
+	return false;
+}
+
+PRIVATE void PipeAbort(Stream *s)
+{
+	PipeInfo *p;
+	
+	Wait( &PipeLock );
+	p = (PipeInfo *)SearchList(&PipeList,GetPipe,s);
+	Signal( &PipeLock );
+
+	if( p != NULL )
+	{
+		MCB mcb;
+		InitMCB(&mcb,MsgHdr_Flags_preserve,s->Server,NullPort,FG_Abort|O_WriteOnly);
+		PutMsg(&mcb);		
+		if( p->ServerPort )
+		{
+			mcb.MsgHdr.Dest = p->ServerPort;
+			mcb.MsgHdr.FnRc = FG_Abort|O_ReadOnly;
+			PutMsg(&mcb);
+		}
+		
+	}
+}
+
+PRIVATE Port PipeSelect(Stream *s, word mode)
+{
+	Port server;
+	Port reply = NullPort;
+	MCB mcb;
+
+	if( mode & O_WriteOnly )
+	{
+		if(FindPorts(s,FG_Select|O_WriteOnly,&server,&reply) == Err_Null)
+		{
+			InitMCB(&mcb,MsgHdr_Flags_preserve,server,reply,FG_Select|O_WriteOnly);
+			PutMsg(&mcb);	
+		}
+	}
+	if( mode & O_ReadOnly )
+	{
+		if(FindPorts(s,FG_Select|O_ReadOnly,&server,&reply) == Err_Null)
+		{
+			InitMCB(&mcb,MsgHdr_Flags_preserve,server,reply,FG_Select|O_ReadOnly);
+			PutMsg(&mcb);	
+		}
+	}
+	return reply;
+}
+
+PUBLIC word GrabPipe(Stream *s, Port *ports)
+{
+	return EC_Error|SS_Pipe|EG_Invalid|EO_Pipe;
+}
+
+PUBLIC word UnGrabPipe(Stream *s)
+{
+	return EC_Error|SS_Pipe|EG_Invalid|EO_Pipe;
+}
+
+PUBLIC word Read(Stream *s, byte *buf, word size, word timeout)
+{
+	typedef struct { MCB mcb; ReadWrite rw; } Req;
+	Req r;
+	Port server;
+	Port reply;
+	word e = 0;
+	word res = 0;
+	word seq;
+	word reqtime;
+	bool extended = false;
+	
+#ifdef SYSDEB
+	SysDebug(stream)("Read(%S,%P,%d,%d)",s,buf,size,timeout);
+#endif
+
+	if( (e = CheckStream(s,C_ReOpen)) != Err_Null ) return e;
+		
+	Wait( &s->Mutex );
+
+	r.mcb.Control = (word *)&r.rw;
+	
+	
+retry:
+	if( (e = FindPorts(s,FG_Read,&server,&reply)) != Err_Null) goto done;
+
+	if( server == NullPort ) { e = ReadRc_EOF; goto done; }
+		
+	extended = s->Flags & Flags_Extended;
+	
+	res = 0;
+	
+	InitMCB(&r.mcb,MsgHdr_Flags_preserve,server,reply,FC_GSP|FG_Read|s->FnMod);
+	
+	reqtime = (timeout!=-1)&&(timeout<IdleTimeout)?timeout:IdleTimeout;
+	
+	MarshalWord(&r.mcb,s->Pos);
+	MarshalWord(&r.mcb,size);
+	MarshalWord(&r.mcb,reqtime);
+
+	if( (e = PutMsg( &r.mcb ) ) != Err_Null ) 
+	{
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( (e & EC_Mask) == EC_Warn) ReOpen(s); 
+		goto retry;
+	}
+
+	r.mcb.MsgHdr.Dest = reply;
+	r.mcb.Data	= buf;
+	r.mcb.Timeout	= IOCTimeout+reqtime;
+
+	seq = 0;
+
+	do
+	{
+		word dsize;
+		word csize;
+		
+		if ( (e = GetMsg(&r.mcb)) < Err_Null )
+		{
+			if( ((e&EG_Mask)==EG_Timeout) && (timeout != -1) )
+			{
+				timeout -= reqtime;
+				if( timeout <= 0 ) goto done;
+			}
+			if( (e & EC_Mask) >= EC_Error ) goto done;
+			if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+			goto retry;
+		}
+
+		if( (e & ~ReadRc_Mask) != seq )
+		{ 
+			FreePort(reply);
+			s->Reply = reply = NewPort();
+			e = EC_Warn;
+			goto done;
+		}
+
+		/* we have a message */
+		dsize = r.mcb.MsgHdr.DataSize;
+		csize = r.mcb.MsgHdr.ContSize;
+		
+		/* we also allow some data to be sent in the control vector */
+		/* this usually only happens when we are being sent a full  */
+		/* 64k.							    */
+		if( csize > 0 )
+		{
+			memcpy(	&buf[res+dsize],
+				(byte *)(r.mcb.Control),
+				(int)csize*sizeof(word) );
+			dsize += csize*sizeof(word);
+		}
+
+		res += dsize;
+		r.mcb.Data = &buf[res];
+
+		seq += ReadRc_SeqInc;
+
+	} while( (e & ReadRc_Mask) == ReadRc_More );
+
+done:
+	if( extended )
+	{
+		word err = e;
+		InitMCB(&r.mcb,MsgHdr_Flags_preserve,server,reply,FC_GSP|FG_ReadAck|s->FnMod);
+		r.mcb.Control[0] = err<0?err:res;
+		r.mcb.MsgHdr.ContSize = 1;
+#if 0
+		e = PutMsg(&r.mcb);
+		InitMCB(&r.mcb,0,reply,NullPort,0);
+		e = GetMsg(&r.mcb);
+#else
+		XchMsg(&r.mcb,0);
+#endif
+		if( ((err&EC_Mask) <= EC_Warn) && (timeout > 0) ) goto retry;
+	}
+
+	s->Pos += res;
+	if( e < Err_Null )
+	{
+		s->Result2 = e;
+	}
+	else
+	{
+		s->Result2 = e & ReadRc_Mask;
+		if( res == 0 && e == ReadRc_EOF ) res = -1;
+	}
+	Signal( &s->Mutex );
+	
+#ifdef SYSDEB
+	SysDebug(stream)("Read: %d %x",res,s->Result2);
+#endif
+	return res;
+}
+
+/*--------------------------------------------------------
+-- Write						--
+--							--
+-- Write a buffer full of data to the stream.		--
+-- 							--
+--------------------------------------------------------*/
+
+PUBLIC WORD Write(Stream *s, byte *buf, word size, word timeout)
+{
+	typedef struct { MCB mcb; ReadWrite rw; } Req;
+	struct { word send; word sent; word pos; } tfr,tot;
+	Port server;
+	Port reply;
+	Port dataport;
+	word e = 0;
+	word seq;
+	word dsize;
+	word reqtime;
+	WriteReply *rep;
+	Req r;
+	bool extended;
+
+#ifdef SYSDEB
+	SysDebug(stream)("Write(%S,%P,%d,%d)",s,buf,size,timeout);
+#endif
+	
+	if( (e = CheckStream(s,C_ReOpen)) != Err_Null ) return e;
+
+	r.mcb.Control  = (word *)&r.rw;
+	rep = (WriteReply *)r.mcb.Control;
+
+	Wait(&s->Mutex);
+	
+	tot.send = size;
+	tot.sent = 0;
+	tot.pos = s->Pos;
+	
+retry:
+	tfr.send = tot.send-tot.sent;
+	tfr.sent = 0;
+	tfr.pos = tot.pos;
+	
+	if( (e = FindPorts(s,FG_Write,&server,&reply)) != Err_Null) return e;
+
+	/* if no server, just pretend to send data */
+	if( server == NullPort ) {tot.sent = tot.send; goto done; }
+
+	dataport = server;
+		
+	extended = s->Flags & Flags_Extended;
+
+	seq = 0;
+	
+	InitMCB(&r.mcb,MsgHdr_Flags_preserve,
+		server,reply,FC_GSP+FG_Write|s->FnMod);
+
+	reqtime = (timeout!=-1)&&(timeout<IdleTimeout)?timeout:IdleTimeout;
+	
+	MarshalWord(&r.mcb,tfr.pos);
+	MarshalWord(&r.mcb,tfr.send);
+	MarshalWord(&r.mcb,reqtime);
+
+	/* if this is a small write, send the data with the request	*/
+	/* this trades two extra messages for a copy in the server	*/
+	if( (s->Flags&Flags_NoIData) == 0 && tfr.send < IOCDataMax )
+	{
+		r.mcb.Data = buf;
+		r.mcb.MsgHdr.DataSize = (int)tfr.send;
+		seq += ReadRc_SeqInc;
+	}
+
+	/* send off request */
+	while( (e = PutMsg( &r.mcb ) ) != Err_Null ) 
+	{
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( (e & EC_Mask) == EC_Warn ) { ReOpen(s); goto retry; }
+	}
+
+	/* now wait for first reply... */
+
+	r.mcb.MsgHdr.Dest = reply;
+	r.mcb.Timeout = s->Timeout+reqtime;
+
+	if ( (e = GetMsg(&r.mcb)) < Err_Null )
+	{
+		if( ((e&EG_Mask)==EG_Timeout) && (timeout != -1) )
+		{
+			timeout -= reqtime;
+			if( timeout <= 0 ) goto done;
+		}
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+		goto retry;
+	}
+
+	if( e == WriteRc_Done ) 
+	{
+		if( tfr.send != rep->first ) goto retry;
+		tfr.sent = rep->first;
+		goto writedone;
+	}
+
+	/* Here the server has replied with the first and subsequent	*/
+	/* data sizes.							*/
+
+	if( r.mcb.MsgHdr.Reply != NullPort ) dataport = r.mcb.MsgHdr.Reply;
+	InitMCB(&r.mcb,MsgHdr_Flags_preserve,dataport,NullPort,0);
+	r.mcb.Data = buf;
+
+	dsize = rep->first;
+
+	/* if rest is zero, then only send a block of size of first	*/
+	if( rep->rest == 0 ) tfr.send = dsize;
+
+	/* in extended protocol Control[3] is a max size for the tfr	*/
+	/* this and the rep->rest feature should not be used together	*/
+	if( extended ) tfr.send = rep->max;
+
+	while( tfr.sent < tfr.send )
+	{
+		if ( dsize > tfr.send-tfr.sent ) dsize = tfr.send-tfr.sent;
+
+		if( dsize == (64*1024) )
+		{	/* fix to get 64k message */
+			r.mcb.MsgHdr.DataSize = (int)dsize-4;
+			r.mcb.Control = (word *)(r.mcb.Data + dsize - 4);
+			r.mcb.MsgHdr.ContSize = 1;
+		}
+		else r.mcb.MsgHdr.DataSize = (int)dsize;
+
+		if( tfr.sent+dsize == tfr.send )
+		{
+			r.mcb.MsgHdr.FnRc = seq|ReadRc_EOD;
+			if( dataport != server  ) r.mcb.MsgHdr.Flags = 0;
+		}
+		else r.mcb.MsgHdr.FnRc = seq;
+
+		if( (e = PutMsg( &r.mcb ) ) < Err_Null )
+		{
+			if( (e & EC_Mask) >= EC_Error ) goto done;
+			if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+			goto retry;	
+		}
+
+		tfr.sent += dsize;
+		dsize = rep->rest;	
+		r.mcb.Data = &buf[tfr.sent];
+		seq += ReadRc_SeqInc;
+	}
+
+	/* now get confirmation message */
+
+	r.mcb.MsgHdr.Dest = reply;
+	r.mcb.Timeout = s->Timeout+reqtime;
+
+	if ( (e = GetMsg(&r.mcb)) < Err_Null )
+	{
+		if( (e & EC_Mask) >= EC_Error ) goto done;
+		if( (e & EC_Mask) == EC_Warn ) ReOpen(s);
+		goto retry;
+	}
+
+	/* if the sizes do not agree, try again */
+	if( tfr.sent != rep->first ) goto retry;
+	
+writedone:
+	tot.sent += tfr.sent;
+	
+	if( tot.sent < tot.send )
+	{
+		buf += tfr.sent;
+		tot.pos += tfr.sent;
+		goto retry;
+	}
+
+done:
+	s->Result2 = e;
+	if( e >= 0 ) s->Pos += tot.sent;
+	Signal( &s->Mutex );
+	return tot.sent;
+}
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d73 1
+a73 1
+		m.MsgHdr.DataSize = tfr;
+d212 2
+a213 2
+	int rsize = ((ReadWrite *)(rmcb->Control))->Size;
+	int tfr   = ((ReadWrite *)(wmcb->Control))->Size;
+d333 1
+a333 1
+	int newsize = mcb->Control[0];
+d335 1
+a335 1
+	word rc = Err_Null;
+d344 1
+a344 1
+				memcpy(newbuf,p->Pending.buf,p->Pending.got);
+a403 1
+done:
+d479 1
+a479 1
+	p->State = O_WriteOnly | (s->Flags & O_ReadWrite);
+d497 8
+a504 1
+static word GetPipe(PipeInfo *p, Stream *s) { return p->Stream == s; }
+d506 1
+a506 1
+static word FindPorts(Stream *s, word fn, Port *server, Port *reply)
+d546 1
+a546 1
+static word PipeClose(Stream *s)
+d564 1
+a564 1
+static word PipeAbort(Stream *s)
+d587 1
+a587 1
+static Port PipeSelect(Stream *s, word mode)
+d711 1
+a711 1
+				csize*sizeof(word) );
+d824 1
+a824 1
+		r.mcb.MsgHdr.DataSize = tfr.send;
+d881 1
+a881 1
+			r.mcb.MsgHdr.DataSize = dsize-4;
+d885 1
+a885 1
+		else r.mcb.MsgHdr.DataSize = dsize;
+@

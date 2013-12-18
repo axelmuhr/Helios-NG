@@ -1,0 +1,170 @@
+head	1.1;
+access;
+symbols;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	92.12.05.13.48.14;	author craig;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/*************************************************************************/
+/*									 */
+/*	   Program to control the communication between transputer and	 */
+/*	   Graphics Print Server, found in the I/O Server under Windows  */
+/*									 */
+/*	      Copyright (c), 1990,  CSIR - MIKOMTEK			 */
+/*		  All rights reserved.					 */
+/*									 */
+/*   prngrfx.c								 */
+/*									 */
+/*   The program starts up a print job on the I/O Server, giving the	 */
+/*   I/O Server the name of the metafile to be printed. The program will */
+/*   continually interrogate the I/O Server, enquiring as to whether the */
+/*   print job has terminated, or has been cancelled. The program will	 */
+/*   allow only ONE print job to be active in the I/O Server at any one  */
+/*   time. Any further print jobs, will wait until the active one in the */
+/*   I/O Server has terminated. Only once the I/O Server is free of	 */
+/*   print jobs, will a waiting job be activated.  The program needs the */
+/*   name of the metafile to be printed as an argument. This program	 */
+/*   cannot be run from the command line in HELIOS, and must be executed */
+/*   from within a parent program.					 */
+/*									 */
+/*   Author : S.A. Wilson						 */
+/*									 */
+/*************************************************************************/
+
+
+
+#include <syslib.h>
+#include <string.h>
+#include <stdio.h>
+#include <codes.h>
+
+int Pvt_Message(Stream *, byte *, word, word);
+
+
+/*************************************************************************/
+/* Pvt_Message. 							 */
+/*									 */
+/* Parameters - 							 */
+/*		prn	- The stream to which the messages must be sent. */
+/*		data	- The data to be sent to the stream		 */
+/*		timeout - The timeout for the message on I/O Server side */
+/*		cmd	- The message number				 */
+/*									 */
+/* Function -								 */
+/*    The function will make up a private protocol message using the	 */
+/*    parameters passed to it, and send the message to the stream in the */
+/*    I/O Server identified by prn.					 */
+/*									 */
+/* Returns -								 */
+/*    The function returns 1 if the message was successfully sent, 0 if  */
+/*    not.								 */
+/*									 */
+/*************************************************************************/
+
+
+int Pvt_Message(prn , data, timeout, cmd)
+   Stream *prn;
+   byte   *data;
+   word   timeout, cmd;
+{
+   MCB  mcb;
+   word control[255];
+
+   control[0] = timeout;
+   
+   InitMCB(&mcb, MsgHdr_Flags_preserve, prn->Server, prn->Reply,
+	   0x60000000 | cmd);
+
+   mcb.Timeout	       = OneSec * 30;
+   mcb.Control	       = (word *) control[0];
+   mcb.MsgHdr.ContSize = 1;
+   mcb.Data	       = data;
+   if (data != (byte *) NULL) mcb.MsgHdr.DataSize = strlen(data);
+      else
+	 mcb.MsgHdr.DataSize = 0;
+
+   if (PutMsg(&mcb) != Err_Null) return(0);   /* send message */
+
+   mcb.MsgHdr.Dest = prn->Reply;
+   if (GetMsg(&mcb) != 0) return(0);	      /* get reply */
+
+   if (mcb.MsgHdr.FnRc != Err_Null) return(0);
+   return(1);
+}
+
+
+int main(int argc, char **argv)
+{
+   Stream *prn;
+   Object *prn_obj, *file_obj = (Object *) NULL;
+   int	  result;
+
+/* check that filename of metafile sent */
+
+   if (argc < 1) {
+   	printf("PRINT ERROR : No filename supplied!!\r\n");
+   	return(1);
+   }
+
+/* locate the graphics printer server */
+
+   prn_obj = Locate(NULL, "/grfxprn");
+   if (prn_obj == (Object *) NULL) {
+      printf("Unable to locate the graphics printer server!\r\n");
+      return(1);
+   }
+
+/* Are there any print jobs active in the I/O Server now!. If so, then */
+/* wait until the job is finished before continuing.		       */
+
+   for (; ;) {
+      file_obj = Locate(prn_obj, "PrnJob1");  /* is there a print job? */
+      if (file_obj == (Object *) NULL) break;
+      Delay(OneSec * 20);
+   }
+
+/* open stream to handle printing */
+
+   prn = Open(prn_obj, "PrnJob1", O_ReadWrite | O_Create);
+   if (prn == (Stream *) NULL) {
+      Close(prn_obj);
+      printf("Unable to open a stream to the graphics printer server!\r\n");
+      return(1);
+   }
+
+   Close(prn_obj);
+
+/* Start up the print job */
+
+   result = Pvt_Message(prn, argv[0], OneSec * 5, 0);
+   if (result == 0) {
+     printf("Unable to start printing %s!\r\n", argv[0]);
+     Close(prn);
+     return(1);
+   }
+
+/* interrogate the printer server, until the print job terminates or is */
+/* cancelled.								*/
+
+   for (result = 0; result != 1; )
+      result = Pvt_Message(prn, NULL, OneSec * 5, 1);
+
+   Close(prn);
+   return(0);
+}
+@

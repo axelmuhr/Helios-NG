@@ -1,0 +1,270 @@
+head	1.1;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1
+	C40_Field_Test_2:1.1
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2_Fault:1.1
+	Helios1_2_2_Native:1.1
+	Helios1_2_2_native_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	91.06.03.13.47.11;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@Backup of the parallel library preload program.
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@#include <stdio.h>
+#include <sem.h>
+#include <rmlib.h>
+#include <syslib.h>
+#include <stdarg.h>
+#include <nonansi.h>
+#include <string.h>
+#include <stdlib.h>
+#include <codes.h>
+#include <ctype.h>
+
+static void	preload_usage(void);
+static int	preload(RmProcessor, ...);
+static Object	*loadlib(Object *loader, Object **source, char *name, char *tname);
+static int mystrcmp(char *ms1, char *ms2);
+
+static Object	*FpLib_t8 = Null(Object);
+static Object	*FpLib_t4 = Null(Object);
+static Object	*Posix    = Null(Object);
+static Object	*Clib     = Null(Object);
+static Object	*FpClib   = Null(Object);
+static Object	*Flib_t8  = Null(Object);
+static Object	*Flib_t4  = Null(Object);
+static Object	*Pipe     = Null(Object);
+
+static Semaphore	RmLib_lock;
+static Semaphore	Counter_lock;
+static Semaphore	Thread_finished;
+static int		thread_count = 0;
+
+int main(int argc, char **argv)
+{ bool		C	= FALSE;
+  bool		Fortran	= FALSE;
+  RmNetwork	domain;
+
+  InitSemaphore(&RmLib_lock, 1);
+  InitSemaphore(&Counter_lock, 1);
+  InitSemaphore(&Thread_finished, 0);
+    
+  if (argc != 2) preload_usage();
+  ++argv;
+  if (!mystrcmp(*argv, "C"))
+   C = TRUE;
+  elif (!mystrcmp(*argv, "Fortran"))
+   Fortran = TRUE;
+  else
+   preload_usage();
+
+  domain = RmGetDomain(NULL);
+  if (domain == (RmNetwork) NULL)
+   { fputs("domain: failed to get information about the current domain.\n",
+           stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  (void) RmApplyNetwork(domain, &preload, C, Fortran);
+  Wait(&Counter_lock);
+  while(thread_count-- > 0)
+   Wait(&Thread_finished);
+}
+
+/**
+*** argument error handling.
+**/
+static void preload_usage(void)
+{ fputs("preload: usage, preload [C | Fortran]\n", stderr);
+  exit(EXIT_FAILURE);
+}
+
+/**
+*** The pre-load function. This is called for every processor in the
+*** current domain. It should load the appropriate libraries plus the
+*** pipe server into that processor, from another processor if possible.
+*** The pipe server must be accessed to load it.
+**/
+
+static bool first_time = TRUE;
+static void preload_aux(RmProcessor processor, bool C, bool Fortran);
+
+static int preload(RmProcessor processor, ...)
+{ va_list	args;
+  bool		C;
+  bool		Fortran;
+  
+  va_start(args, processor);
+  C		= va_arg(args, bool);
+  Fortran	= va_arg(args, bool);
+  va_end(args);
+  
+  if (RmIsNetwork(processor))
+   return(RmApplyNetwork((RmNetwork) processor, &preload, C, Fortran));
+
+  if (RmGetProcessorPurpose(processor) != RmP_Helios)
+   return(0);
+
+  if (first_time)
+   { thread_count++;
+     preload_aux(processor, C, Fortran);
+     first_time = FALSE;
+   }
+  else
+   { (void) Fork(1000, preload_aux, 12, processor, C, Fortran);
+     Wait(&Counter_lock);
+     thread_count++;
+     Signal(&Counter_lock);
+   }
+
+  return(0);
+}
+
+static void preload_aux(RmProcessor processor, bool C, bool Fortran)
+{ Object	*proc;
+  Object	*loader;
+  RmProcessor	obtained;
+    
+  Wait(&RmLib_lock);
+  obtained = RmObtainProcessor(processor, NULL);
+  Signal(&RmLib_lock);
+  
+  if (obtained == (RmProcessor) NULL) goto done;
+   
+  proc = RmMapProcessorToObject(obtained);
+  if (proc == Null(Object)) goto done;
+
+  loader = Locate(proc, "loader");
+  if (loader == Null(Object)) goto done;
+   
+  Close(loadlib(loader, &Posix, "Posix", "Posix"));
+  if (RmGetProcessorType(processor) == RmT_T800)
+   Close(loadlib(loader, &FpLib_t8, "FpLib", "FpLib.t8"));
+  else
+   Close(loadlib(loader, &FpLib_t4, "FpLib", "FpLib.t4"));
+  if (C)
+   { Close(loadlib(loader, &Clib, "Clib", "Clib"));
+     Close(loadlib(loader, &FpClib, "fpclib", "fpclib"));
+   }
+  elif (Fortran)
+   { if (RmGetProcessorType(processor) == RmT_T800)
+      Close(loadlib(loader, &Flib_t8, "flib", "flib.t8"));
+     else
+      Close(loadlib(loader, &Flib_t4, "flib", "flib.t4"));
+   }
+
+  { Object *pipe_code   = loadlib(loader, &Pipe, "pipe", "pipe");
+    Object *pipe_server = Locate(proc, "pipe/..");
+    Close(pipe_code);
+    Close(pipe_server);
+  }
+
+done:
+  if (proc != Null(Object)) Close(proc);
+  if (loader	!= Null(Object)) Close(loader);
+  if (obtained	!= (RmProcessor) NULL)
+   { Wait(&RmLib_lock);
+     RmReleaseProcessor(obtained);
+     Signal(&RmLib_lock);
+   }
+  Signal(&Thread_finished);
+  return; 
+}
+
+/**
+*** Load a piece of code into a processor, preferably from another
+*** processor.
+**/
+static Object *loadlib(Object *loader, Object **source, char *name, char *hname)
+{ Object *helios_lib	= Null(Object);
+  Object *disk_copy	= Null(Object);
+  Object *result	= Null(Object);
+
+	/* 1) Check whether the object is already in memory	*/
+  result = Locate(loader, name);
+  if (result != Null(Object))
+   { 	/* If so, use it as the source from now on if necessary	*/
+     if (*source == Null(Object))
+      *source = Locate(result, Null(char));
+     return(result);
+   }
+
+	/* 2) If the code is already in memory somewhere in the	*/
+	/*    network, load it from there.			*/   
+  if (*source != Null(Object))
+   return(Load(loader, *source));
+
+	/* 3) Locate the binary for this library. This may have	*/
+	/*    a .t8 or .t4 extension.				*/
+  helios_lib = Locate(Null(Object), "/helios/lib");
+  if (helios_lib == Null(Object)) goto done;
+
+  disk_copy = Locate(helios_lib, hname);
+  if (disk_copy == Null(Object)) goto done;
+
+	/* 4) Load the code off disk. The /loader entry may	*/
+	/*    now have the wrong name.				*/
+  result = Load(loader, disk_copy);
+  if (result == Null(Object)) goto done;
+
+
+	/* 5) If the object has been loaded as /loader/FpLib.t8	*/
+	/*    it must be renamed to FpLib.			*/
+  if (strcmp(hname, name))
+   { 	/* Rename /loader/FpLib.t8 to /loader/FpLib */
+     Close(result); result = Null(Object);
+     if (Rename(loader, hname, name) < Err_Null) goto done;
+     result = Locate(loader, name);
+   }
+
+	/* 6) Now remember this code for future loading.	*/
+  *source = Locate(result, Null(char));
+
+done:
+  if (helios_lib != Null(Object)) Close(helios_lib);
+  if (disk_copy  != Null(Object)) Close(disk_copy);
+  return(result);
+}
+
+static int mystrcmp(char *ms1, char *ms2)
+{ char *s1 = ms1;
+  char *s2 = ms2; 
+#define ToUpper(x) (islower(x) ? toupper(x) : x)
+  
+  for (;;)
+   { if (*s1 == '\0')
+       return((*s2 == '\0') ? 0L : -1L);
+     elif (*s2 == '\0')
+       return(1L);
+     elif(ToUpper(*s1) < ToUpper(*s2))
+       return(-1L);
+     elif(ToUpper(*s1) > ToUpper(*s2))
+       return(1L);
+     else
+       { s1++; s2++; }
+   }
+}
+
+@

@@ -1,0 +1,203 @@
+-- $Header: /hsrc/filesys/pfs_v2.1/src/msc_new/RCS/mscasm.a,v 1.1 1992/07/13 16:20:44 craig Exp $
+
+--------------------------------------------------------------------------
+--                                                                      --
+--                                                                      --
+--             	    Copyright (C) 1990, Parsytec GmbH			--
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- mscasm.a								--
+--									--
+--	MSC device driver special functions				--
+--                                                                      --
+--------------------------------------------------------------------------
+
+include basic.m
+include procs.m
+include structs.m
+include debug.m
+
+StartModule	mscasm	-1	1
+
+------------------------------------------------------------------------------
+-- word AltWait ( Channel *Event, int nInput,
+--		  Channel **InOut, RCB **Request, int Timeout )
+-- 
+-- Wait alternatively on the given channels or for timeout, if Timeout != -1.
+------------------------------------------------------------------------------
+
+proc AltWait
+[
+    word	Event
+    word	nInput
+    word	InOut
+    word	Request
+    word	Timeout
+]
+[
+    word	temp		-- n.b altwt uses Wptr+0 as temp
+    word	result		-- return value
+    word	i		-- loop counter
+    word	iptr		-- input channel ptr
+    word	rptr		-- request ptr
+    word	DoTimeout	-- evaluated Timeout condition
+]
+[
+    ldc 0  store i		-- initialise loop
+    InOut  store iptr		-- set up pointers
+    Request store rptr
+
+    test [ ceq0 [ Timeout adc 1 ] ]
+    [
+        ldc 0  store DoTimeout	-- disable Timer 
+    ]
+    [
+        ldc 1  store DoTimeout	-- enable Timer
+        Timeout  ldtimer  sum	-- calculate endtime
+        store Timeout
+    ]
+
+    talt			-- start alternate
+
+    Event  ldc 1  enbc		-- enable Event
+    Timeout  DoTimeout  enbt	-- enable Timer
+
+    while [ clt i nInput ]	-- loop over InOuts
+    [
+	iptr  ldnl 0
+	rptr  ldnl 0  eqc 0  enbc	-- enable if Request == NULL
+
+        i  adc 1  store i	-- increment loop counter
+        iptr  adc 4  store iptr	-- and array pointers
+        rptr  adc 4  store rptr
+    ]
+
+    ldc 0  store i		-- initialise loop counter
+    InOut  store iptr		-- and set up pointers
+    Request store rptr		-- for disabling
+
+    taltwt			-- wait
+
+    if [ Event  ldc 1  ldc 0  disc ]	-- Event fired ?
+    [
+    	ldc -1  store result	-- return -1
+    ]
+    
+    while [ clt i nInput ]	-- loop over InOuts
+    [
+	if [ iptr  ldnl 0  rptr  ldnl 0  eqc 0  ldc 0  disc ]
+	[
+	    i store result 	-- InOut[i] fired -> return i
+	]
+
+        i  adc 1  store i	-- increment loop counter
+        iptr  adc 4  store iptr	-- and array pointers
+        rptr  adc 4  store rptr
+    ]
+
+    if [ Timeout  DoTimeout  ldc 0  dist ]	-- Timeout occured ?
+    [
+    	ldc -2  store result	-- return -2
+    ]
+    
+    altend			-- end alternate
+
+    result			-- return result
+]
+
+------------------------------------------------------------------------------
+-- IntWait ( Channel *Event, word Timeout )
+-- 
+-- Wait for an Interrupt with timeout, if Timeout != -1.
+------------------------------------------------------------------------------
+
+proc IntWait
+[
+    word	Event
+    word	Timeout
+]
+[
+    word	temp		-- n.b altwt uses Wptr+0 as temp
+    word	result		-- return value
+    word	DoTimeout	-- evaluated Timeout condition
+]
+[
+    test [ ceq0 [ Timeout adc 1 ] ]
+    [
+        ldc 0  store DoTimeout	-- disable Timer 
+    ]
+    [
+        ldc 1  store DoTimeout	-- enable Timer
+        Timeout  ldtimer  sum	-- calculate endtime
+        store Timeout
+    ]
+
+    talt			-- start alternate
+
+    Event  ldc 1  enbc		-- enable Event
+
+    Timeout  DoTimeout  enbt	-- enable Timer
+
+    taltwt			-- wait
+
+    if [ Event  ldc 1  ldc 0  disc ]	-- Event fired ?
+    [
+    	ldc 1 store result	-- yes, load TRUE
+    ]
+    
+    if [ Timeout  DoTimeout  ldc 0  dist ]	
+    [
+    	ldc 0  store result	-- no, load FALSE
+    ]
+    
+    altend			-- end alternate
+    result			-- return result
+]
+
+------------------------------------------------------------------------------
+-- bmove_ ( word size, byte *dest, byte *source )
+-- 
+-- Perform a high pri blockmove.
+------------------------------------------------------------------------------
+
+proc bmove_
+[
+    word	size
+    word	dest
+    word	source
+]
+[
+]
+[
+    hipri
+    [
+	source
+	dest
+	size
+	move
+    ]
+]
+
+-- Process exit code
+
+.ProcExit:
+	ajw	-4
+	ldl	1
+	ldnl	1
+	ldl	1
+	ldnl	0
+	ldnl	@_FreeStop
+	ldnl	_FreeStop
+	gcall
+
+static 
+[
+	extern func AltWait
+	extern func IntWait
+	extern func ProcExit
+	extern func bmove_
+]
+
+EndModule
+
+--- end of mscasm.a ---

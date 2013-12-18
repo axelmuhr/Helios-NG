@@ -1,0 +1,1314 @@
+head	1.3;
+access;
+symbols
+	Helios1_3:1.3
+	Helios13_beta:1.3
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.3
+date	91.03.07.11.11.21;	author martyn;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.11.05.12.32.14;	author martyn;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.10.17.15.19.27;	author martyn;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@new version from hunt engineering
+@
+text
+@/*
+* huntcom.c
+*
+*	Driver code for HE1000 and Helios File Server
+*
+*	Copyright HUNT ENGINEERING 1990
+*	TEL (0278) 784769, FAX ( 0278) 792688
+*
+* REV 1.1	 Date 2-11-90	  P.W.
+* REV 1.2	 Date 15-2-91	  P.W.	 addition of quick read for verify
+*
+*/
+
+#include <helios.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "huntcom.h"
+#include "scsi.h"
+
+
+/*
+ * HE1000_init()
+ *
+ * Set controlling link to dumb, allocatea table for filesystem use,
+ * set initaiator and target ids.
+ *
+ * Return allocated table number of result less than 0 on error.
+ */
+
+int HE1000_init( WORD link, WORD target_id , WORD tram_id )
+{
+	int	state;
+	WORD	result;
+
+	/* configure link to dumb mode */
+	if((state = link_init(link)) < 0)
+		return(ERROR);
+
+	/* set the controlling link to initiator */
+	if((state = init_link_initiator( link , TRUE )) < 0)
+		return(ERROR);
+
+	/* set the scsi id of this initiator */
+	if((state = set_scsi_id( link , tram_id )) < 0)
+		return(ERROR);
+
+	/* get a table for file system use */
+	if((state = alloc_table( link , &result )) < 0)
+		return(ERROR);
+
+	/* set the target id of the table */
+	if((state = set_target_id( link , result , target_id )) < 0)
+		return(ERROR);
+
+	return(result);
+}
+
+/*
+ * HE1000_release()
+ *
+ * free the allocated table back to system use, free the controlling link
+ *
+ * Return 0 on sucess or less than 0 on error
+ */
+int HE1000_release(WORD link, WORD table)
+{
+
+	/* free the table */
+	free_table(link,table);
+
+	/* set link to unused */
+	init_link_initiator( link , FALSE );
+
+	/* release the link */
+	link_reset(link);
+
+	return(OK);
+}
+
+int scsi_read(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD position,
+	WORD size,
+	WORD sector_size,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[10];
+	int  state;
+	WORD blocks = size / sector_size;
+
+	target_id = target_id;	/* assume its already set */
+	scsi_command[0] = 0x28; /* read 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = getbyte(position,3);
+	scsi_command[3] = getbyte(position,2);
+	scsi_command[4] = getbyte(position,1);
+	scsi_command[5] = getbyte(position,0);
+	scsi_command[6] = 0;
+	scsi_command[7] = getbyte(blocks,1);
+	scsi_command[8] = getbyte(blocks,0);
+	scsi_command[9] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 10 , scsi_command )) < 0)
+		return(ERROR);
+
+	*command_status = send_table( link , table);
+
+	if( *command_status eq 0 )	/* get the data from module */
+	{
+		state = get_data( link , table , size , data );
+		return(state);	/* error or return size */
+	}
+	return(ERROR);
+}
+
+	
+int scsi_read_quick(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD position,
+	WORD *command_status)
+{
+	BYTE scsi_command[10];
+	int  state;
+
+	target_id = target_id;	/* assume its already set */
+	scsi_command[0] = 0x28; /* read 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = getbyte(position,3);
+	scsi_command[3] = getbyte(position,2);
+	scsi_command[4] = getbyte(position,1);
+	scsi_command[5] = getbyte(position,0);
+	scsi_command[6] = 0;
+	scsi_command[7] = 0;
+	scsi_command[8] = 0x1;
+	scsi_command[9] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 10 , scsi_command )) < 0)
+		return(ERROR);
+
+	*command_status = send_table( link , table);
+
+	if( *command_status eq 0 )	/* get the data from module */
+		return(0x0);  /* good  */
+	return(ERROR);
+}
+
+int scsi_write(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD position,
+	WORD size,
+	WORD sector_size,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[10];
+	int  state;
+	WORD blocks = size / sector_size;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x2A; 	/* write 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = getbyte(position,3);
+	scsi_command[3] = getbyte(position,2);
+	scsi_command[4] = getbyte(position,1);
+	scsi_command[5] = getbyte(position,0);
+	scsi_command[6] = 0;
+	scsi_command[7] = getbyte(blocks,1);
+	scsi_command[8] = getbyte(blocks,0);
+	scsi_command[9] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 10 , scsi_command )) < 0)
+		return(state);
+
+	if((state = put_data( link , table , size , data )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+
+	*command_status = send_table( link , table);
+	if (*command_status eq 0)
+		return(OK);
+	else
+		return(ERROR);
+}
+
+int scsi_write_quick(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD position,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x2A; 	/* write 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = getbyte(position,3);
+	scsi_command[3] = getbyte(position,2);
+	scsi_command[4] = getbyte(position,1);
+	scsi_command[5] = getbyte(position,0);
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	*command_status = send_table( link , table);
+	if (*command_status eq 0)
+		return(OK);
+	else
+		return(ERROR);
+}
+
+int scsi_format(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD interleave,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x04; 	/* write 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0x00;
+	scsi_command[3] = getbyte(interleave,1);
+	scsi_command[4] = getbyte(interleave,0);
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+
+	return(OK);
+}
+
+int scsi_start_stop(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD start_stop,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x1B; 	/* write 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0x00;
+	scsi_command[3] = 0x00;
+	scsi_command[4] = getbyte(start_stop,0);
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+
+	return(OK);
+}
+
+int scsi_read_capacity(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD length,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[10];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x25; 	/* read capacity 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 0;
+	scsi_command[5] = 0;
+	scsi_command[6] = 0;
+	scsi_command[7] = 0;
+	scsi_command[8] = 0;
+	scsi_command[9] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 10 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if( *command_status eq 0 )	/* get the data from module */
+	{
+		if((state = get_data( link , table , length , data )) < 0)
+			return(state);
+		else
+			return(state);	/* return data size back */
+	}
+	else
+	  return(ERROR);		/* scsi return bad status back */
+}
+
+int scsi_request_sense(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD length,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x03; 	/* read capacity 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = length;
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if( *command_status eq 0 )	/* get the data from module */
+	{
+		state = get_data( link , table , length , data );
+		return(state);
+	}
+	else
+	  return(ERROR);		/* scsi return bad status back */
+	if ( *command_status < 0 )
+	  return(ERROR);		/* scsi command failed */
+	else
+	  return(OK);
+}
+
+int scsi_test_unit_ready(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x00; 	/* test unit ready 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 0;
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if ( *command_status < 0 )
+	  return(ERROR);		/* scsi command failed */
+	else
+	  return(OK);
+}
+
+int scsi_mode_select(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD no_blocks,
+	WORD block_length,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	BYTE scsi_data[12];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x15; 	/* test unit ready 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 12;		/* parameter list is 12 bytes */
+	scsi_command[5] = 0;
+
+	scsi_data[0]	= 0;
+	scsi_data[1]	= 0;		/* medium type - default */
+	scsi_data[2]	= 0;
+	scsi_data[3]	= 8;		/* 8 bytes to follow */
+
+	scsi_data[4]	= 0;		/* default density */
+	scsi_data[5]	= getbyte(no_blocks,2);
+	scsi_data[6]	= getbyte(no_blocks,1);
+	scsi_data[7]	= getbyte(no_blocks,0);
+	scsi_data[8]	= 0;		/* reserved */
+	scsi_data[9]	= getbyte(block_length,2);
+	scsi_data[10]	= getbyte(block_length,1);
+	scsi_data[11]	= getbyte(block_length,0);
+
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	if((state = put_data( link , table , 12, scsi_data )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if ( *command_status < 0 )
+	  return(ERROR);		/* scsi command failed */
+	else
+	  return(OK);
+}
+
+
+BYTE getbyte(WORD i, BYTE b)
+{
+	return((i >> (8 * b)) & 0xFF);
+}
+
+void scsi_reset( WORD link )
+{
+	assert_bus_reset( link );
+}
+
+int scsi_reassign_block(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD block,
+	WORD *command_status)
+{
+	BYTE scsi_command[26];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x07; 	/* write 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 0;
+	scsi_command[5] = 0;
+
+	scsi_command[6] = 0;
+	scsi_command[7] = 0;
+	scsi_command[8] = 0;
+	scsi_command[9] = 4;
+
+	scsi_command[10] = getbyte(block,3);
+	scsi_command[11] = getbyte(block,2);
+	scsi_command[12] = getbyte(block,1);
+	scsi_command[13] = getbyte(block,0);
+
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+	{
+#ifdef DEBUGGING
+		IOdebug("reassign block: put command failed, link = %d table = %d",link,table);
+#endif
+			return(state);
+	}
+
+	if((state = put_data( link , table , 8 , &scsi_command[6] )) < 0)
+	{
+#ifdef DEBUGGING
+		IOdebug("reassign block: put data failed, link = %d table = %d size = %d",link,table,8);
+#endif
+		return(state);
+	}
+
+	/* send the command on the into bus */
+
+	*command_status = send_table( link , table);
+	if (*command_status eq 0)
+		return(OK);
+	else
+	{
+#ifdef DEBUGGING
+		IOdebug("reassign block: send table failed, link = %d table = %d command_status = %d",link,table,*command_status);
+#endif
+		return(ERROR);
+	}
+}
+
+@
+
+
+1.2
+log
+@Fixed byte loss problem
+@
+text
+@d1 520
+a520 485
+/*
+* huntcom.c
+*
+*	Driver code for HE1000 and Helios File Server
+*
+*	Copyright HUNT ENGINEERING 1990
+*	TEL (0278) 784769, FAX ( 0278) 792688
+*
+* REV 1.1	 Date 2-11-90	  P.W.
+*
+*
+*/
+
+#include <helios.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "huntcom.h"
+#include "scsi.h"
+
+
+/*
+ * HE1000_init()
+ *
+ * Set controlling link to dumb, allocatea table for filesystem use,
+ * set initaiator and target ids.
+ *
+ * Return allocated table number of result less than 0 on error.
+ */
+
+int HE1000_init( WORD link, WORD target_id , WORD tram_id )
+{
+	int	state;
+	WORD	result;
+
+	/* configure link to dumb mode */
+	if((state = link_init(link)) < 0)
+		return(ERROR);
+
+	/* set the controlling link to initiator */
+	if((state = init_link_initiator( link , TRUE )) < 0)
+		return(ERROR);
+
+	/* set the scsi id of this initiator */
+	if((state = set_scsi_id( link , tram_id )) < 0)
+		return(ERROR);
+
+	/* get a table for file system use */
+	if((state = alloc_table( link , &result )) < 0)
+		return(ERROR);
+
+	/* set the target id of the table */
+	if((state = set_target_id( link , result , target_id )) < 0)
+		return(ERROR);
+
+	return(result);
+}
+
+/*
+ * HE1000_release()
+ *
+ * free the allocated table back to system use, free the controlling link
+ *
+ * Return 0 on sucess or less than 0 on error
+ */
+int HE1000_release(WORD link, WORD table)
+{
+
+	/* free the table */
+	free_table(link,table);
+
+	/* set link to unused */
+	init_link_initiator( link , FALSE );
+
+	/* release the link */
+	link_reset(link);
+
+	return(OK);
+}
+
+int scsi_read(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD position,
+	WORD size,
+	WORD sector_size,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[10];
+	int  state;
+	WORD blocks = size / sector_size;
+
+	target_id = target_id;	/* assume its already set */
+	scsi_command[0] = 0x28; /* read 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = getbyte(position,3);
+	scsi_command[3] = getbyte(position,2);
+	scsi_command[4] = getbyte(position,1);
+	scsi_command[5] = getbyte(position,0);
+	scsi_command[6] = 0;
+	scsi_command[7] = getbyte(blocks,1);
+	scsi_command[8] = getbyte(blocks,0);
+	scsi_command[9] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 10 , scsi_command )) < 0)
+		return(ERROR);
+
+	*command_status = send_table( link , table);
+
+	if( *command_status eq 0 )	/* get the data from module */
+	{
+		state = get_data( link , table , size , data );
+		return(state);	/* error or return size */
+	}
+	return(ERROR);
+}
+
+int scsi_write(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD position,
+	WORD size,
+	WORD sector_size,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[10];
+	int  state;
+	WORD blocks = size / sector_size;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x2A; 	/* write 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = getbyte(position,3);
+	scsi_command[3] = getbyte(position,2);
+	scsi_command[4] = getbyte(position,1);
+	scsi_command[5] = getbyte(position,0);
+	scsi_command[6] = 0;
+	scsi_command[7] = getbyte(blocks,1);
+	scsi_command[8] = getbyte(blocks,0);
+	scsi_command[9] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 10 , scsi_command )) < 0)
+		return(state);
+
+	if((state = put_data( link , table , size , data )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+
+	*command_status = send_table( link , table);
+	if (*command_status eq 0)
+		return(OK);
+	else
+		return(ERROR);
+}
+
+int scsi_write_retry(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD position,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x2A; 	/* write 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = getbyte(position,3);
+	scsi_command[3] = getbyte(position,2);
+	scsi_command[4] = getbyte(position,1);
+	scsi_command[5] = getbyte(position,0);
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	*command_status = send_table( link , table);
+	if (*command_status eq 0)
+		return(OK);
+	else
+		return(ERROR);
+}
+
+int scsi_format(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD interleave,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x04; 	/* write 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0x00;
+	scsi_command[3] = getbyte(interleave,1);
+	scsi_command[4] = getbyte(interleave,0);
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+
+	return(OK);
+}
+
+int scsi_start_stop(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD start_stop,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x1B; 	/* write 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0x00;
+	scsi_command[3] = 0x00;
+	scsi_command[4] = getbyte(start_stop,0);
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+
+	return(OK);
+}
+
+int scsi_read_capacity(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD length,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[10];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x25; 	/* read capacity 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 0;
+	scsi_command[5] = 0;
+	scsi_command[6] = 0;
+	scsi_command[7] = 0;
+	scsi_command[8] = 0;
+	scsi_command[9] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 10 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if( *command_status eq 0 )	/* get the data from module */
+	{
+		if((state = get_data( link , table , length , data )) < 0)
+			return(state);
+		else
+			return(state);	/* return data size back */
+	}
+	else
+	  return(ERROR);		/* scsi return bad status back */
+}
+
+int scsi_request_sense(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD length,
+	BYTE *data,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x03; 	/* read capacity 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = length;
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if( *command_status eq 0 )	/* get the data from module */
+	{
+		state = get_data( link , table , length , data );
+		return(state);
+	}
+	else
+	  return(ERROR);		/* scsi return bad status back */
+	if ( *command_status < 0 )
+	  return(ERROR);		/* scsi command failed */
+	else
+	  return(OK);
+}
+
+int scsi_test_unit_ready(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x00; 	/* test unit ready 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 0;
+	scsi_command[5] = 0;
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if ( *command_status < 0 )
+	  return(ERROR);		/* scsi command failed */
+	else
+	  return(OK);
+}
+
+int scsi_mode_select(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD no_blocks,
+	WORD block_length,
+	WORD *command_status)
+{
+	BYTE scsi_command[6];
+	BYTE scsi_data[12];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x15; 	/* test unit ready 6 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 12;		/* parameter list is 12 bytes */
+	scsi_command[5] = 0;
+
+	scsi_data[0]	= 0;
+	scsi_data[1]	= 0;		/* medium type - default */
+	scsi_data[2]	= 0;
+	scsi_data[3]	= 8;		/* 8 bytes to follow */
+
+	scsi_data[4]	= 0;		/* default density */
+	scsi_data[5]	= getbyte(no_blocks,2);
+	scsi_data[6]	= getbyte(no_blocks,1);
+	scsi_data[7]	= getbyte(no_blocks,0);
+	scsi_data[8]	= 0;		/* reserved */
+	scsi_data[9]	= getbyte(block_length,2);
+	scsi_data[10]	= getbyte(block_length,1);
+	scsi_data[11]	= getbyte(block_length,0);
+
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+		return(state);
+
+	if((state = put_data( link , table , 12, scsi_data )) < 0)
+		return(state);
+
+	/* send the command on the into bus */
+	*command_status = send_table( link , table);
+	if ( *command_status < 0 )
+	  return(ERROR);		/* scsi command failed */
+	else
+	  return(OK);
+}
+
+
+BYTE getbyte(WORD i, BYTE b)
+{
+	return((i >> (8 * b)) & 0xFF);
+}
+
+void scsi_reset( WORD link )
+{
+	assert_bus_reset( link );
+}
+
+int scsi_reassign_block(
+	WORD link,
+	WORD table,
+	WORD target_id,
+	WORD lun,
+	WORD block,
+	WORD *command_status)
+{
+	BYTE scsi_command[26];
+	int  state;
+
+	target_id = target_id;		/* assume its already set */
+	scsi_command[0] = 0x07; 	/* write 10 byte command */
+	scsi_command[1] = lun << 5;
+	scsi_command[2] = 0;
+	scsi_command[3] = 0;
+	scsi_command[4] = 0;
+	scsi_command[5] = 0;
+
+	scsi_command[6] = 0;
+	scsi_command[7] = 0;
+	scsi_command[8] = 0;
+	scsi_command[9] = 4;
+
+	scsi_command[10] = getbyte(block,3);
+	scsi_command[11] = getbyte(block,2);
+	scsi_command[12] = getbyte(block,1);
+	scsi_command[13] = getbyte(block,0);
+
+
+	/* put the command into a buffer */
+	if((state = put_command( link , table , 6 , scsi_command )) < 0)
+	{
+#ifdef DEBUGGING
+		IOdebug("reassign block: put command failed, link = %d table = %d",link,table);
+#endif
+			return(state);
+	}
+
+	if((state = put_data( link , table , 8 , &scsi_command[6] )) < 0)
+	{
+#ifdef DEBUGGING
+		IOdebug("reassign block: put data failed, link = %d table = %d size = %d",link,table,8);
+#endif
+		return(state);
+	}
+
+	/* send the command on the into bus */
+
+	*command_status = send_table( link , table);
+	if (*command_status eq 0)
+		return(OK);
+	else
+	{
+#ifdef DEBUGGING
+		IOdebug("reassign block: send table failed, link = %d table = %d command_status = %d",link,table,*command_status);
+#endif
+		return(ERROR);
+	}
+}
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 12
+d30 1
+a30 1
+ 
+d34 1
+a34 1
+	WORD    result;
+d41 3
+a43 3
+        if((state = init_link_initiator( link , TRUE )) < 0)
+        	return(ERROR);
+        
+d45 4
+a48 4
+        if((state = set_scsi_id( link , tram_id )) < 0)	
+        	return(ERROR);
+        
+        /* get a table for file system use */
+d50 1
+a50 1
+        	return(ERROR);
+d54 1
+a54 1
+        	return(ERROR);
+d56 1
+a56 1
+	return(result);        
+d68 1
+a68 1
+	
+d71 1
+a71 1
+	
+d73 2
+a74 2
+        init_link_initiator( link , FALSE );
+	
+d76 3
+a78 3
+        link_reset(link);
+        
+        return(OK);
+d96 2
+a97 2
+	target_id = target_id; 	/* assume its already set */	
+	scsi_command[0] = 0x28;	/* read 10 byte command */
+d107 1
+a107 1
+	
+d110 2
+a111 2
+        	return(state);
+	
+d113 1
+a113 1
+	
+d116 2
+a117 11
+		int 	  actual;
+		scsi_ptrs ptable;
+			
+		/* safety check the data size */
+		state = request_ptrs( link, table ,  &ptable );
+		actual = ptable.current_data - ptable.save_data;
+		if ( actual ne size )
+			return(ERROR);
+				  
+ 	        state = get_data( link , table , size , data );
+       		return(state);	/* got or return resturn size */
+d136 3
+a138 3
+	
+	target_id = target_id; 		/* assume its already set */		
+	scsi_command[0] = 0x2A;		/* write 10 byte command */
+d148 1
+a148 1
+	
+d151 2
+a152 2
+        	return(state);
+	
+d154 2
+a155 2
+       		return(state);
+	
+d175 3
+a177 3
+	
+	target_id = target_id; 		/* assume its already set */		
+	scsi_command[0] = 0x2A;		/* write 10 byte command */
+d183 1
+a183 1
+ 	
+d186 2
+a187 2
+        	return(state);
+	
+d205 3
+a207 3
+	
+	target_id = target_id; 		/* assume its already set */		
+	scsi_command[0] = 0x04;		/* write 6 byte command */
+d213 1
+a213 1
+	
+d216 2
+a217 2
+         	return(state);
+	
+d220 1
+a220 1
+	
+d234 3
+a236 3
+	
+	target_id = target_id; 		/* assume its already set */		
+	scsi_command[0] = 0x1B;		/* write 6 byte command */
+d242 1
+a242 1
+	
+d245 2
+a246 2
+         	return(state);
+	
+d249 1
+a249 1
+	
+d264 3
+a266 3
+	
+	target_id = target_id;	 	/* assume its already set */		
+	scsi_command[0] = 0x25;		/* read capacity 10 byte command */
+d276 1
+a276 1
+	
+d279 2
+a280 2
+         	return(state);
+	
+d286 3
+a288 3
+        		return(state);
+        	else
+	        	return(state);	/* return data size back */
+d291 1
+a291 1
+	  return(ERROR);    		/* scsi return bad status back */
+d305 3
+a307 3
+	
+	target_id = target_id;		/* assume its already set */	
+	scsi_command[0] = 0x03;		/* read capacity 10 byte command */
+d313 1
+a313 1
+	
+d316 2
+a317 2
+         	return(state);
+	
+d323 1
+a323 1
+        	return(state);
+d326 1
+a326 1
+	  return(ERROR);    		/* scsi return bad status back */
+d328 1
+a328 1
+	  return(ERROR);    		/* scsi command failed */
+d342 3
+a344 3
+	
+	target_id = target_id; 		/* assume its already set */		
+	scsi_command[0] = 0x00;		/* test unit ready 6 byte command */
+d350 1
+a350 1
+	
+d353 2
+a354 2
+         	return(state);
+	
+d358 1
+a358 1
+	  return(ERROR);    		/* scsi command failed */
+d375 3
+a377 3
+	
+	target_id = target_id; 		/* assume its already set */		
+	scsi_command[0] = 0x15;		/* test unit ready 6 byte command */
+d383 16
+a398 16
+	
+	scsi_data[0]    = 0;
+	scsi_data[1]    = 0;		/* medium type - default */
+	scsi_data[2]    = 0;
+	scsi_data[3]    = 8;		/* 8 bytes to follow */
+	
+	scsi_data[4]    = 0;		/* default density */
+	scsi_data[5]    = getbyte(no_blocks,2);
+	scsi_data[6]    = getbyte(no_blocks,1);
+	scsi_data[7]    = getbyte(no_blocks,0);		
+	scsi_data[8]    = 0;		/* reserved */
+	scsi_data[9]    = getbyte(block_length,2);
+	scsi_data[10]   = getbyte(block_length,1);	
+	scsi_data[11]   = getbyte(block_length,0);
+	
+	
+d401 1
+a401 1
+         	return(state);
+d404 2
+a405 2
+       		return(state);
+	
+d409 1
+a409 1
+	  return(ERROR);    		/* scsi command failed */
+a419 6
+
+void recover_sync( WORD link )
+{
+	resync( link );
+}
+
+d424 1
+a424 1
+ 
+d435 3
+a437 3
+	
+	target_id = target_id; 		/* assume its already set */		
+	scsi_command[0] = 0x07;		/* write 10 byte command */
+d443 1
+a443 1
+	
+d454 1
+a454 1
+	
+d457 1
+a457 1
+        {
+d461 3
+a463 3
+        		return(state);
+        }
+	
+d465 1
+a465 1
+       	{
+d469 3
+a471 3
+   		return(state);
+   	}
+	
+@

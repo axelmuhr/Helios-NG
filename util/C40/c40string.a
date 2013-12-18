@@ -1,0 +1,492 @@
+-- File:	c40string.a
+-- Subsystem:	'C40 util library
+-- Author:	Nick Clifton
+-- Date:	March '92
+--
+-- This file is Copyright (c) 1991, 1992, by Perihelion Software Ltd
+-- All Rights Reserved
+--
+-- Description: `C40 Assembly language replacment for the C library string
+--		functions. Assembler versions of memcpy() and memset() can be
+--		found in the kernel.
+--
+--		Implements: strlen(), strcpy() and strcmp().
+--
+-- This file should be kept up to date with respect to
+--
+--		/hsrc/kernel/C40/c40nccsupp.a
+--		snake:/users/nickc/ncc/experimental/src/asm/strings.a
+--
+-- RcsId: $Id: c40string.a,v 1.3 1992/04/10 16:46:19 nickc Exp $
+--
+-- (C) Copyright 1991 Perihelion Software Ltd.
+-- 
+-- RcsLog: $Log: c40string.a,v $
+-- Revision 1.3  1992/04/10  16:46:19  nickc
+-- added more comments
+--
+-- Revision 1.2  1992/03/27  10:59:41  nickc
+-- fixed bug in word aligned strcpy
+--
+-- Revision 1.1  1992/03/27  10:56:48  nickc
+-- Initial revision
+--
+--
+
+include c40.m
+
+-- NB/ We do not use the RPTS instruction even though it may seem ideal for
+-- the job becuase it locks out interruots, and we cannot afford to loose
+-- interrupt latency in real-time applications
+
+.strlen:
+--
+--      unsigned long strlen( unsigned char * str );
+--
+-- Upon Entry:
+--	R_A1	byte pointer to string
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	Number of characters in the string
+--
+-- Corrupts
+--	R_A2, R_A3, R_A4, R_T1, R_ADDR1, ST
+--
+-- Purpose
+--	Calculates the number of characters in a string
+--	Does NOT check for NULL pointers
+--
+	LSH	-2,      R_A1,   R_ADDR1	-- convert byte offset to word offset
+	ADDI	R_BASE,  R_ADDR1		-- point to start of string
+	AND3	3,       R_A1,   R_A2		-- get bottom two bits of byte address
+	LDIu	0,       R_A1			-- initialise count of number of characters in string
+	BeqD	len.word_aligned		-- if the pointer is word aligned then skip to fast section
+	MPYI	8,       R_A2			-- convert byte selector to bit selector
+	LDI	0xFF,    R_A4			-- load mask
+	LSH	R_A2,    R_A4			-- move mask into position
+					-- branch (might) take place now
+
+	-- we know that the pointer is not word aligned
+
+	LDI	*R_ADDR1++(1), R_A3		-- get word at start of string and advance pointer
+
+len.loop1:
+	TSTB	R_A4,    R_A3			-- test byte of word
+	Beq	R_LR				-- found a 0 byte, so return
+	ADDI	1,       R_A1			-- increment count of non 0 bytes
+	LSH	8,       R_A4			-- move mask
+	Bne	len.loop1			-- carry on until mask is empty
+
+	-- we know now that the pointer is now word aligned
+
+len.word_aligned:
+	LDHI	0x0101,  R_A2			-- load high part of first  constant
+	OR	0x0101,  R_A2			-- load low  part of first  constant
+	LDHI	0x8080,  R_A4			-- load high part of second constant
+	OR	0x8080,  R_A4			-- load low  part of second constant
+	LDI	*R_ADDR1++(1), R_A3		-- get next word making up string and advance pointer
+
+len.loop2:
+	SUBI3	R_A2,    R_A3, R_T1		-- subtract first constant from word
+	ANDN	R_A3,    R_T1			-- and in the inverse of the word
+	AND	R_A4,    R_T1			-- and in second constant
+	BeqD	len.loop2			-- if the result is 0 then there are no non-0 bytes in the word !
+	LDIeq	*R_ADDR1++(1), R_A3		-- get next word making up string (but only if no 0 byte found)
+	ADDI	4,       R_A1			-- increment count of non 0 bytes found
+	NOP					-- padding
+					-- branch (might) happen now
+
+	-- we know now that there is a 0 byte somewhere in R_A3
+
+	LB0	R_A3,    R_A2			-- get bottom byte of word
+	BeqD	R_LR				-- if bottom byte is 0 return (delayed)
+	SUBI	4,       R_A1			-- adjust byte count
+	LB1	R_A3,    R_A2			-- get second byte of word
+	NOP					-- padding
+					-- return (might) take place now
+	BeqD	R_LR				-- if second byte is zero return (delayed)
+	ADDI	1,       R_A1			-- increment byte count
+	LB2	R_A3,    R_A2			-- get third byte
+	LDIne	2,       R_A2			-- if third byte is non zero add 2 to count
+					-- return (might) take place now
+	BuD	R_LR				-- return (delayed)
+	LDIeq	1,       R_A2			-- if third byte is zero add 1 to count
+	ADDI	R_A2,    R_A1			-- add the value decided upon to the count
+	NOP					-- padding
+					-- return
+
+.strcmp:
+--
+--      signed long strcmp( unsigned char * str1, unsigned char * str );
+--
+-- Upon Entry:
+--	R_A1	byte pointer to first string
+--	R_A2	byte pointer to second string
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	0 if str1 and str2 match, < 0 if str1 < str2, or > 0 if str1 > str2
+--
+-- Corrupts
+--	R_A2, R_A3, R_A4, R_T1, R_FT1, R_ADDR1, R_ADDR2, ST
+--
+-- Purpose
+--	Performs a lexigraphical comparison of two strings
+--	Does NOT check for NULL pointers
+--
+	CMPI	R_A1,   R_A2			-- examine the two pointers
+	BeqD	R_LR				-- if they are the same then return (delayed)
+	LDIeq	0,      R_A1			-- returing a match
+	LSH	-2,     R_A1,   R_ADDR1		-- convert byte pointer to word offset
+	ADDI	R_BASE, R_ADDR1			-- convert first string to word pointer
+					-- return (might) happen now
+	AND	3, R_A1				-- extract byte selector
+	LSH	-2,     R_A2,   R_ADDR2		-- convert second string to word offset
+	ADDI	R_BASE, R_ADDR2			-- convert word offset to word pointer
+	AND	3, R_A2				-- extract byte selector
+	ADDI3	R_A1,   R_A2, R_A3		-- sum the byte selectors
+	Beq	cmp.word_aligned		-- if the pointers are byte aligned then skip next section
+
+	--
+	-- we know that the pointers are not word aligned
+	--
+	-- R_ADDR1	word pointer  to first  string
+	-- R_ADDR2	word pointer  to second string
+	-- R_A1		byte selector of first  string
+	-- R_A2		byte selector of second string
+	--
+
+	CMPI	R_A1,   R_A2			-- compare the two byte selectors
+	Bne	cmp.not_even_close		-- if they differ then use the long winded method
+	LDI	*R_ADDR1++(1), R_A3		-- load word from first  pointer
+	|| LDI	*R_ADDR2++(1), R_A4		-- load word from second pointer
+	LDI	0xFF,   R_A2	 		-- load mask
+	MPYI	8,      R_A1			-- convert byte selector to bit selector
+	LSH	R_A1,   R_A2			-- move mask into position
+	AND3	R_A3,   R_A2, R_A1		-- get byte from first  word
+	AND3	R_A4,   R_A2, R_T1		-- get byte from second word
+	SUBI	R_T1,   R_A1			-- compare the two bytes
+cmp.loop1:
+	Bne	R_LR				-- if the do not match then return
+	CMPI	0, R_T1				-- examine bytes
+	Beq	R_LR				-- if they are zero then return
+	LSH	8, R_A2				-- shift mask up to next byte
+	BneD	cmp.loop1			-- continue until no mask left (delayed)
+	AND3	R_A3,   R_A2, R_A1		-- get byte from first  word
+	AND3	R_A4,   R_A2, R_T1		-- get byte from second word
+	SUBI	R_T1,   R_A1			-- compare the two bytes
+					-- branch (might) take place now
+cmp.word_aligned:
+	--
+	-- we know that the pointers are now word aligned
+	--
+	-- R_ADDR1	word pointer  to first  string
+	-- R_ADDR2	word pointer  to second string
+	--
+
+	LDHI	0x0101, R_A1			-- load high part of first  constant
+	OR	0x0101, R_A1			-- load low  part of first  constant
+	LDHI	0x8080, R_A2			-- load high part of second constant
+	OR	0x8080, R_A2			-- load low  part of second constant
+	LDI	*R_ADDR1++(1), R_A3		-- load word from first  pointer
+	|| LDI	*R_ADDR2++(1), R_A4		-- load word from second pointer
+	CMPI	R_A3,   R_A4			-- compare the two words
+cmp.loop2:
+	BneD	cmp.mismatch			-- words do not match
+	SUBI3	R_A1,   R_A3, R_T1		-- subtract first constant from word
+	ANDN	R_A3,   R_T1			-- AND in inverse of word
+	AND	R_A2,   R_T1			-- AND in second constant
+					-- branch (might) take place now
+	BeqD	cmp.loop2			-- if result is 0 then there are no non-zero bytes in the word
+	LDIeq	*R_ADDR1++(1), R_A3		-- load word from first  pointer
+	LDIeq	*R_ADDR2++(1), R_A4		-- load word from second pointer
+	CMPI	R_A3,   R_A4			-- compare the two words
+					-- branch (might) take place now
+
+	--
+	-- we now know that there is a zero byte somewhere in the first word
+	--
+	-- R_A3	- word from first  string
+	-- R_A4	- word from second string
+	--
+
+	BeqD	R_LR				-- if the two words are the same return (delayed)
+	LB0	R_A3,   R_A1			-- get first byte of first  word
+	LB0	R_A4,   R_A2			-- get first byte of second word
+	SUBI	R_A2,   R_A1			-- compare the bytes
+					-- return (might) happen now
+	BneD	R_LR				-- if they are different return (delayed)
+	LB1	R_A3,   R_FT1			-- get second byte of first  word
+	LB1	R_A4,   R_T1			-- get second byte of second word
+	CMPI	0,      R_A2			-- examine the first two bytes
+					-- return (might) happen now
+	Beq	R_LR				-- if they are zero then return 
+	SUBI3	R_T1,   R_FT1, R_A1		-- compare the second bytes
+	BneD	R_LR				-- if they differ then return (delayed)
+	LB2	R_A3,   R_A2			-- get third byte of first  word
+	LB2	R_A4,   R_T1			-- get third byte of second word
+	CMPI	0,      R_FT1			-- examine the second bytes
+					-- return (might) happen now
+	Beq	R_LR				-- if they are zero then return
+	SUBI3	R_T1,   R_A2, R_A1		-- compare the third bytes
+	BneD	R_LR				-- if they differ then return (delayed)
+	LB3	R_A4,   R_A3			-- get the fourth byte of the second word
+	LDIeq	0,      R_A4			-- if it is zero then load 0
+	LDIne	1,      R_A4			-- otherwise load 1
+					-- return (might) happen now
+	BuD	R_LR				-- return (delayed)
+	LDI	R_A4,   R_A1			-- put loaded value into return register
+	CMPI	0,      R_A2			-- examine the third bytes
+	LDIeq	0,      R_A1			-- if they were zero then return 0
+					-- return takes place now
+
+cmp.mismatch:
+	-- we know that the two words differ somewhere
+	--
+	-- R_A3	- word from first  string
+	-- R_A4	- word from second string
+	--
+
+	LB0	R_A3,   R_A1			-- get first byte of first  word
+	LB0	R_A4,   R_A2			-- get first byte of second word
+	SUBI	R_A2,   R_A1			-- compare the bytes
+					-- return (might) happen now
+	BneD	R_LR				-- if they are different return (delayed)
+	LB1	R_A3,   R_FT1			-- get second byte of first  word
+	LB1	R_A4,   R_T1			-- get second byte of second word
+	CMPI	0,      R_A2			-- examine the first two bytes
+					-- return (might) happen now
+	Beq	R_LR				-- if they are zero then return 
+	SUBI3	R_T1,   R_FT1, R_A1		-- compare the second bytes
+	BneD	R_LR				-- if they differ then return (delayed)
+	LB2	R_A3,   R_A2			-- get third byte of first  word
+	LB2	R_A4,   R_T1			-- get third byte of second word
+	CMPI	0,      R_FT1			-- examine the second bytes
+					-- return (might) happen now
+	Beq	R_LR				-- if they are zero then return
+	SUBI3	R_T1,   R_A2, R_A1		-- compare the third bytes
+	BneD	R_LR				-- if they differ then return (delayed)
+	LB3	R_A3,   R_FT1			-- get the fourth byte of the first  word
+	LB3	R_A4,   R_A2			-- get the fourth byte of the second word
+	SUBI3	R_A2,   R_FT1, R_A3		-- and compare them
+					-- return (might) take place now
+	BuD	R_LR				-- return (delayed)
+	CMPI	0,      R_T1			-- examine the third bytes
+	LDIne	R_A3,   R_A1result		-- if they are not 0 then put result of compare in result reg
+	NOP					-- padding
+					-- return takes place now
+cmp.not_even_close:
+	--
+	-- we know that the pointers are not word aligned and
+	-- that their byte selectors do not match
+	--
+	-- R_ADDR1	word pointer  to first  string
+	-- R_ADDR2	word pointer  to second string
+	-- R_A1		byte selector of first  string
+	-- R_A2		byte selector of second string
+	--
+
+	LDI	*R_ADDR1++(1), R_A3		-- load word from first  pointer
+	|| LDI	*R_ADDR2++(1), R_A4		-- load word from second pointer
+
+	LDI	0xFF,    R_T1			-- load mask for first  word
+	MPYI	8,       R_A1			-- convert first  byte selector to bit selector
+	LSH	R_A1,    R_T1			-- move first  mask into position
+	NEGI	R_A1,    R_FT2			-- prepare to shift to the right
+	LDI	0xFF,    R_FT1			-- load mask for second word
+	MPYI	8,       R_A2			-- convert second byte selector to bit selector
+	LSH	R_A2,    R_FT1			-- move second mask into position
+	NEGI	R_A2,    R_ADDR3		-- prepare to shift to right
+cmp.loop3:
+	AND3	R_A3,    R_T1, R_A1		-- get byte from first word
+	LSH	R_FT2,    R_A1			-- shift into bottom byte
+	AND3	R_A4,    R_FT1, R_A2		-- get byte from second word
+	LSH	R_ADDR3, R_A2			-- shift into bottom byte
+
+	SUBI	R_A2,    R_A1			-- compare the two bytes
+	Bne	R_LR				-- if they differ then return
+	CMPI	0,       R_A2			-- examine the two bytes
+	Beq	R_LR				-- if they are zero then return
+
+	LSH	8,       R_T1			-- shift first mask to next byte
+	BneD	cmp.over1			-- skip the auto increment load as increment ALWAYS happens
+	LDIeq	0xFF,    R_T1			-- if mask was empty then renew first mask
+	LDIeq	 8,      R_FT2			-- if mask was empty then renew right shift count
+	ADDI	-8,      R_FT2			-- increment right shift count
+					-- branch (might) take place here
+	LDI	*R_ADDR1++(1), R_A3		-- if mask was empty then get next word of first string
+cmp.over1:
+	LSH	8,       R_FT1			-- shift second word mask to next byte
+	BneD	cmp.loop3			-- skip auto increment load if mask is still OK
+	LDIeq	0xFF,    R_FT1			-- if mask was empty then renew second mask
+	LDIeq	 8,      R_ADDR3		-- if mask was empty then renew right shift count
+	ADDI	-8,      R_ADDR3		-- increment right shift count
+					-- branch (might) happen now
+	BuD	cmp.loop3			-- continue (delayed)
+	LDI	*R_ADDR2++(1), R_A4		-- if mask was empty then get next word of second string
+	NOP					-- padding
+	NOP					-- padding
+					-- branch takes place now
+
+_if _false [
+.strcpy:
+--
+--	void strcpy( unsigned char * destination, unsigned const char * source );
+--
+--	copies contents of the source string to the destination string,
+--	up to and including the zero byte
+--
+-- Upon Entry:
+--	R_A1	byte offset of the destination string
+--	R_A2	byte offset of the source      string
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	no return value
+--
+-- Corrupts
+--	R_A2, R_A3, R_A4, R_T1, R_FT1, R_FT2, R_ADDR1, R_ADDR2, ST
+--
+-- Purpose
+--	Copies one string to another
+--	Does NOT check for NULL pointers
+--
+	LSH	-2,       R_A1,   R_ADDR1	-- convert destination byte offset to word offset
+	LSH	-2,       R_A2,   R_ADDR2	-- convert source byte offset to word offset
+	ADDI	R_BASE,   R_ADDR1		-- convert dest word offset to word pointer
+	ADDI	R_BASE,   R_ADDR2		-- convert source word offset to word pointer
+	AND	3,        R_A1			-- extract byte selector of destination offset
+	AND	3,        R_A2			-- extract byte selector of source      offset
+	ADDI3	R_A1,     R_A2,   R_A3		-- combine byte selectors
+	Beq	cpy.word_aligned		-- if they are word aligned then skip next bit
+	CMPI	R_A1,     R_A2			-- examine the byte selectors again
+	Bne	cpy.by_hand			-- if they are not even the same then skip 
+	--
+	--
+	-- R_A1 = R_A2	byte selectors for strings
+	-- R_ADDR1	word pointer to destination string
+	-- R_ADDR2	word pointer to source      string
+	--
+	-- string pointers are not word aligned, but they have the same byte offset
+	--
+	LDI	*R_ADDR2++(1), R_A2		-- get hold of word from source      string
+	|| LDI	*R_ADDR1, R_A4			-- get hold of word from destination string
+	LDI	0xFF,     R_A3			-- load mask
+	MPYI	8,        R_A1			-- convert byte selector to bit selector
+	LSH	R_A1,     R_A3			-- move mask into position
+cpy.loop1:
+	AND3	R_A3,     R_A2, R_A1		-- get byte from source string
+	BeqD	cpy.done			-- if it is zero then terminate loop (delayed)
+	ANDN	R_A3,     R_A4			-- mask out byte in destination word
+	OR	R_A1,     R_A4			-- move byte into destination
+	LSH	8,        R_A3			-- move mask up
+					-- branch (might) take place now
+	Bne	cpy.loop1			-- continue until no more mask
+	STI	R_A4,    *R_ADDR1++(1)		-- save word back into destination
+					-- drop through into word aligned code
+cpy.word_aligned:
+	--
+	-- R_ADDR1	word pointer to destination string
+	-- R_ADDR2	word pointer to source      string
+	--
+	-- string pointers are word aligned
+	--
+	LDHI	0x0101,   R_A1			-- load high part of first  constant
+	OR	0x0101,   R_A1			-- load low  part of first  constant
+	LDHI	0x8080,   R_A2			-- load high part of second constant
+	BuD	cpy.into_loop			-- move into the middle of the loop (delayed)
+	OR	0x8080,   R_A2			-- load low  part of second constant
+	LDI	*R_ADDR2++(1),  R_A3		-- load word from source pointer
+	SUBI3	R_A1,     R_A3, R_T1		-- subtract first constant from word
+
+cpy.loop2:
+	STI	R_A4,    *R_ADDR1++(1)		-- save the word into the destination
+
+cpy.into_loop:
+	ANDN	R_A3,     R_T1			-- AND in inverse of word
+	AND	R_A2,     R_T1			-- AND in second constant
+	BeqD	cpy.loop2			-- if result is non-zero then break out of loop (delayed)
+	LDIeq	R_A3,     R_A4			-- if the word did not have a 0 byte in it get ready to save it 
+	LDIeq	*R_ADDR2++(1),  R_A3		-- get a new source word
+	SUBI3	R_A1,     R_A3, R_T1		-- subtract first constant from word
+					-- branch (might) take place now
+	--
+	-- R_A3		word from source string 
+	-- R_ADDR1	word pointer to destination
+	--
+	LDI	*R_ADDR1, R_A4			-- get word at destination
+	LDI	0xFF,     R_A1			-- load a mask
+	MB0	R_A3,     R_A4			-- merge in bottom byte
+	TSTB	R_A1,     R_A3			-- examine the bottom byte
+	Beq	cpy.done			-- if it is 0 we have finished
+	LSH	8,        R_A1			-- adjust mask
+	MH0	R_A3,     R_A4			-- otherwise merge in bottom two bytes
+	TSTB	R_A1,     R_A3			-- examine this byte
+	Beq	cpy.done			-- if it is 0 we have finished
+	LSH	8,        R_A1			-- adjust mask
+	LSH3	-16,	  R_A3,	 R_A2		-- put third byte into bottom byte of R_A2
+	MB2	R_A2,     R_A4			-- merge in the third byte
+	BuD	R_LR				-- return (delayed)
+	TSTB	R_A1,     R_A3			-- examine the third byte
+	LDIne	R_A3,     R_A4			-- if it non zero then the fourth byte must be merged as well
+cpy.done:
+	--
+	-- we have finished copying, but the final (composite) word is still in R_A4
+	--
+	STI	R_A4,    *R_ADDR1		-- place resultant word
+					-- return (might) takes place now
+	Bu	R_LR				-- return
+
+cpy.by_hand:
+	--
+	-- R_A1 		byte selector for destination string
+	-- R_A2		byte selector for source      string
+	-- R_ADDR1	word pointer  to  destination string
+	-- R_ADDR2	word pointer  to  source      string
+	--
+	-- string pointers are not word aligned, and they do not have the same byte selectors
+	--
+	SUBI3	R_A2,     R_A1, R_FT2		-- calculate shift factor
+	MPYI	8,        R_FT2			-- convert byte shift to bit shift
+	LDI	*R_ADDR2++(1), R_A3		-- get word from source
+	|| LDI	*R_ADDR1, R_A4			-- get word from destination
+	LDI	0xFF,     R_T1			-- load source mask
+	MPYI	8,        R_A2			-- convert byte selector into bit selector
+	LSH	R_A2,     R_T1			-- move source mask into position
+	LDI	0xFF,     R_FT1			-- load destination mask
+	MPYI	8,        R_A1			-- convert byte selector into bit selector
+	LSH	R_A1,     R_FT1			-- move destination mask into position
+cpy.loop3:
+	AND3	R_T1,     R_A3, R_A1		-- get byte from source
+	LSH	R_FT2,     R_A1			-- move into position for destination
+	BeqD	cpy.done			-- if the byte is zero then we have finished copying
+	ANDN	R_FT1,     R_A4			-- mask out byte in destination word
+	OR	R_A1,     R_A4			-- merge in byte
+	NOP					-- padding
+					-- branch (might) take place now
+	LSH	8,        R_T1			-- adjust source mask
+	Bne	cpy.over			-- if the mask is still present skip the next bit
+	LDI	*R_ADDR2++(1), R_A3		-- get a new word from the source
+	BuD	cpy.loop3			-- we know that destination shift will not empty the mask
+	LDI	0xFF,     R_T1			-- resetore the source mask
+	XOR	0xE0,     R_FT2			-- correct the bit shift
+cpy.over:
+	LSH	8,        R_FT1			-- adjust destination mask
+					-- branch (might) take place now
+	Bne	cpy.loop3			-- if it is not empty then carry on loop (delayed)
+	LDI	0xFF,     R_FT1			-- reset destination mask
+	BuD	cpy.loop3			-- return to loop (delayed)
+	STI	R_A4,    *R_ADDR1++(1)		-- save destination word		
+	LDI	*R_ADDR1, R_A4			-- get new destination word
+	XOR	0xE0,     R_FT2			-- correct bit shift
+					-- branch takes place now
+
+]
+
+
+-- end of c40string.a
+

@@ -1,0 +1,292 @@
+head	1.5;
+access;
+symbols
+	Helios_1_3_1:1.5
+	Helios_C40_1_3_Official_Release:1.5
+	Alenia_release:1.5
+	Helios1_3:1.4
+	C40_Field_Test_2:1.4
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1
+	Helios1_2:1.1
+	V1_2Beta0:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.5
+date	92.12.02.16.45.01;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.08.13.15.42.49;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.07.27.15.00.09;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.06.17.10.10.05;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.05.13.44.15;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@error handling
+@
+
+
+1.5
+log
+@removed back trace function
+@
+text
+@/* error.c: ANSI draft (X3J11 May 86) code (various error routines) */
+/* Copyright (C) A.C. Norman and A. Mycroft */
+/* version 0.01 */
+/* $Id: error.c,v 1.4 1992/08/13 15:42:49 paul Exp nickc $ */
+
+#include <helios.h>
+#include "norcrosys.h"
+#include "sysdep.h"
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include <signal.h>
+
+#ifndef ESIGNUM
+#define ESIGNUM 3  /* Also present in <signal.c> */
+#endif
+
+/* from <assert.h> */
+void _assert_fail(char *expr, char *file, int line)
+{   fprintf(stderr, "*** assertion failed: %s, file %s, line %d\n",
+            expr, file, line);
+    abort();
+}
+
+/* following static moved out from fn to get past Helios/ARM compiler bug */
+static char v[80];
+
+/* from <string.h> */
+char *
+strerror( int n )
+{
+  switch (n)
+    {
+    case 0:      return "No error (errno = 0)";
+    case EDOM:   return "EDOM - function argument out of range";
+    case ERANGE: return "ERANGE - function result not representable";
+    case ESIGNUM:return "ESIGNUM - illegal signal number to signal() or raise()";
+    default:
+      if (n & 0x80000000)
+	sprintf(v, "Helios error %x", n);
+      else
+	sprintf(v, "Posix error %d", n);
+      return v;
+    }
+}
+
+/* from <stdio.h> */
+void
+perror( const char * s )
+{
+  if (s != NULL && *s != '\0')
+    fprintf( stderr, "%s: ", s );
+
+  fprintf( stderr, "%s\n", strerror( errno ) );
+}
+
+
+void _sysdie(const char *s)
+{   char v[200];
+    sprintf(v, "*** fatal error in run time system: %s", s); 
+/* BLV - used to be %.80s, but this does not work at the moment */
+    _sys_msg(v);
+    _exit(1);
+}
+
+
+/* end of error.c */
+@
+
+
+1.4
+log
+@backtrace should only be for C40 - fixed
+@
+text
+@d4 1
+a4 1
+/* $Id: error.c,v 1.3 1992/07/27 15:00:09 paul Exp $ */
+a65 95
+
+
+#ifdef __C40
+#pragma no_stack_checks
+
+/*
+ * Function:
+ *	back_trace
+ *
+ * Arguments:
+ *	none 
+ *
+ * Description:
+ *	prints out a trace of all the functions on the stack
+ *	starting with the parent of the function calling this function
+ *
+ * Returns:
+ *	nothing
+ */
+
+void
+backtrace( void )
+{
+  extern int 	_backtrace( char *, int );
+  char		func_name[ 80 ];	/* XXX - beware of assumption of maximum size of function name */
+  int		fp;
+  
+
+  fprintf(stderr, "Execution back trace ...\n");
+
+  /* get name of our parent, and initialise backtrace */
+
+  if ((fp = _backtrace( func_name, NULL )) == NULL)
+    {
+      fprintf(stderr, "<Failed to locate initial parent function>\n");
+
+      return;
+    }
+
+  /* then for every parent function ... */
+  
+  forever
+    {
+      char *	ptr;
+
+      
+      /* announce ourselves */
+
+      fprintf(stderr, "%s\n", func_name);
+            
+      /* if we have reached main we have finished */
+
+      ptr = func_name;
+      
+      if (*ptr == '_')
+	++ptr;
+
+      if (ptr[ 0 ] == 'm' &&
+	  ptr[ 1 ] == 'a' &&
+	  ptr[ 2 ] == 'i' &&
+	  ptr[ 3 ] == 'n' &&
+	  ptr[ 4 ] == '\0')
+	break;
+      
+      if (ptr[ 0 ] == '.' &&
+	  ptr[ 1 ] == '_' &&
+	  ptr[ 2 ] == 'P' &&
+	  ptr[ 3 ] == 'r' &&
+	  ptr[ 4 ] == 'o' &&
+	  ptr[ 5 ] == 'c' &&
+	  ptr[ 6 ] == 'E' &&
+	  ptr[ 7 ] == 'x' &&
+	  ptr[ 8 ] == 'i' &&
+	  ptr[ 9 ] == 't' &&
+	  ptr[ 10 ] == '\0')
+	break;
+      
+      /* discover name of parent */
+      
+      if ((fp = _backtrace( func_name, fp )) == NULL)
+	{
+	  fprintf(stderr, "<Failed to locate parent function>\n");
+
+	  break;
+	}
+    }
+  
+  fprintf(stderr, "Execution back trace finished\n" );
+  
+  /* finished */
+  
+  return;	
+
+} /* back_trace */
+#endif /* __C40 */
+@
+
+
+1.3
+log
+@added backtrace()
+@
+text
+@d4 1
+a4 1
+/* $Id: error.c,v 1.2 1992/06/17 10:10:05 nickc Exp paul $ */
+d68 1
+d160 1
+@
+
+
+1.2
+log
+@minor cosmetic changes
+@
+text
+@a0 1
+
+d4 1
+a4 1
+/* $Id: error.c,v 1.1 1990/09/05 13:44:15 nick Exp nickc $ */
+d6 1
+d66 94
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d5 1
+a5 1
+/* $Id$ */
+d30 2
+a31 1
+char *strerror(int n)
+d33 12
+a44 12
+    switch (n)
+    {   case 0:      return "No error (errno = 0)";
+        case EDOM:   return "EDOM - function argument out of range";
+        case ERANGE: return "ERANGE - function result not representable";
+        case ESIGNUM:
+            return "ESIGNUM - illegal signal number to signal() or raise()";
+        default:
+            if (n & 0x80000000)
+              sprintf(v, "Helios error %x", n);
+            else
+              sprintf(v, "Posix error %d", n);
+            return v;
+d49 7
+a55 3
+void perror(const char *s)
+{   if (s != 0 && *s != 0) fprintf(stderr, "%s: ", s);
+    fprintf(stderr, "%s\n", strerror(errno));
+@

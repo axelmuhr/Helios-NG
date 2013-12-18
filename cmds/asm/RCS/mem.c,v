@@ -1,0 +1,561 @@
+head	1.5;
+access;
+symbols
+	Helios1_3:1.5
+	Helios13_beta:1.4
+	Helios1_2_2:1.4
+	Helios1_2_2Beta:1.4
+	Helios1_2_1:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.5
+date	92.09.25.10.41.21;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	91.06.07.07.30.14;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.28.13.18.10;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.11.18.33.24;	author jon;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.24.16.34.57;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Cleaned up all the different flags used into a standard coherent set. The
+asm now builds for all targets correctly again
+@
+text
+@/****************************************************************/
+/* File: mem.c                                                  */
+/*                                                              */
+/*                                                              */
+/* Author: NHG 19-Feb-87                                        */
+/****************************************************************/
+/* $Id: mem.c,v 1.4 1991/06/07 07:30:14 nickc Exp $ */
+
+#include "asm.h"
+
+#define trace if(traceflags&db_mem)_trace
+
+PUBLIC  WORD  	heapsize;		/* amount of heap memory used   */
+
+PRIVATE VMRef 	vmheap;			/* virtual heap			*/
+
+PUBLIC VMRef 	codeseg;		/* start of current segment	*/
+
+PUBLIC WORD 	codesize;		/* amount of code memory used   */
+
+PUBLIC WORD 	exprsize;		/* amount of memory used by exprs */
+
+PUBLIC WORD 	codeflags = 0;		/* flags for code.flags field	*/
+
+#define HEAPDELTA	20000
+
+#ifdef MWC
+UBYTE *lmalloc();
+#define MALLOC(n) (UBYTE *)lmalloc(n)
+#else
+#ifdef IBMPC
+UBYTE *getml();
+#define MALLOC(n) (UBYTE *)getml(n)
+#else
+#ifdef __STDC__
+void *malloc(int n);
+#else
+byte *malloc();
+#endif
+#define MALLOC(n) (UBYTE *)malloc(n)
+#endif
+#endif
+
+#ifndef wordlen
+#define wordlen( s ) (((s) + 3) & ~3)
+#endif
+
+/********************************************************/
+/* initmem                                              */
+/*                                                      */
+/* initialise memory system                             */
+/********************************************************/
+
+PUBLIC void
+initmem()
+{
+  VMInit( NULL, vmpagesize );
+	
+  codeseg  = VMPage();
+  vmheap   = VMPage();
+  codesize = 0;
+  exprsize = 0;
+
+  return;
+}
+
+/********************************************************/
+/* alloc                                                */
+/*                                                      */
+/* allocate n bytes from the heap                       */
+/********************************************************/
+
+PUBLIC UBYTE *
+alloc( n )
+  INT 		n;
+{
+  UBYTE *	v;
+
+
+  v = MALLOC( n );
+
+  if ( v == NULL )
+    error( "Cannot get local heap space" );
+
+  heapsize += n;
+	
+  return v;
+}
+
+/********************************************************/
+/* unary                                                */
+/* binary                                               */
+/*                                                      */
+/* routines for building expression tree nodes          */
+/*                                                      */
+/********************************************************/
+
+PUBLIC VMRef
+unary( ntype, etype, expr )
+  WORD ntype, etype;
+  WORD expr;
+{
+  VMRef 	v    = VMNew( sizeof (Unode) );
+  Unode *	node = VMAddr( Unode, v );
+
+  
+  node->ntype  = ntype;
+  node->etype  = etype;
+  node->expr.w = expr;
+  
+  exprsize += sizeof (Unode);
+  
+  trace( "unary %x %x : %x %x", v, node, etype, expr );
+
+  return v;
+}
+
+PUBLIC VMRef
+binary( ntype, ltype, rtype, lexp, rexp )
+  WORD ntype,ltype,rtype;
+  WORD lexp,rexp;
+{
+  VMRef 	v    = VMNew( sizeof (Bnode) );
+  Bnode *	node = VMAddr( Bnode, v );
+
+  node->ntype  = ntype;
+  node->ltype  = ltype;
+  node->rtype  = rtype;
+  node->lexp.w = lexp;
+  node->rexp.w = rexp;
+  
+  trace( "binary %x %x : l %x %x r %x %x", v, node, ltype, lexp, rtype, rexp );
+  
+  exprsize += sizeof (Bnode);
+  
+  return v;
+}
+
+/********************************************************/
+/* newcode                                              */
+/*                                                      */
+/* allocates and initialise a new code structure        */
+/*                                                      */
+/********************************************************/
+
+extern WORD lineno;
+
+PUBLIC VMRef
+newcode( type, size, vtype, loc, value )
+  WORD 		type;
+  WORD 		size;
+  WORD		vtype;
+  WORD 		loc;
+  WORD 		value;
+{
+  Code *	p;
+  VMRef 	v;
+	
+
+  codeptr();	/* ensure there is space */
+	
+  v = VMalloc( sizeof (Code), codeseg );
+	
+  p = VMAddr( Code, v );
+		
+  trace( "newcode: %8lx : %2lx %3ld %3ld %8lx", p, type, size, vtype, value );
+
+  p->type    = type;
+  p->size    = size;
+  p->vtype   = vtype;
+  p->flags   = codeflags; codeflags = 0;
+  p->loc     = loc;
+  p->value.w = value;
+
+#ifdef LINENO
+  p->line    = lineno;
+#endif
+
+  codesize += sizeof (Code);
+	
+  VMDirty( v );
+
+  return v;
+}
+
+PUBLIC VMRef
+codeptr()
+{	
+  /* if this would be the last code entry in the segment, get a	*/
+  /* new block and add a s_newseg entry.				*/
+
+  if ( VMleft(codeseg) < sizeof (Code) * 2 )
+    {
+      VMRef 	newseg  = VMPage();
+      VMRef 	v       = VMalloc( sizeof (Code), codeseg );
+      Code *	codetop = VMAddr( Code, v );
+
+      
+      if ( NullRef( newseg ) )
+	error( "Cannot get code segement" );
+
+      codetop->type  = s_newseg;
+      codetop->size  = 0;
+      codetop->vtype = 0;
+#ifdef LINENO
+      codetop->line  = lineno;
+#endif
+      codetop->value.v = newseg;
+      codetop->loc     = -1;
+      
+      codesize += sizeof (Code);
+      
+      trace( "code extension: %lx", codeseg );
+      
+      VMDirty( v ) ;
+      
+      codeseg = newseg;
+    }
+
+  return VMnext( codeseg );
+}
+
+extern VMRef
+VMNew( size )
+  int size;
+{
+  VMRef v;
+
+
+  size = wordlen( size );
+
+  v = VMalloc( size, vmheap );
+	
+  if ( NullRef( v ) ) 
+    {
+      vmheap = VMPage();
+      
+      v = VMalloc( size, vmheap );
+    }
+
+  VMDirty( v );
+  
+  return v;
+}
+
+@
+
+
+1.4
+log
+@new improved version (50% speed increase)
+@
+text
+@d7 1
+a7 1
+/* $Id: mem.c,v 1.3 90/09/28 13:18:10 nick Exp $ */
+d35 1
+a35 1
+#ifdef ANSI
+@
+
+
+1.3
+log
+@tidied
+@
+text
+@d7 1
+a7 1
+/* $Id$ */
+d13 1
+a13 3
+PRIVATE UBYTE *heapbase;	/* base of current heap seg	*/
+PRIVATE UBYTE *heaptop;		/* top of current heap seg	*/
+PUBLIC  WORD  heapsize;		/* amount of heap memory used   */
+d15 1
+a15 1
+PRIVATE VMRef vmheap;		/* virtual heap			*/
+d17 1
+a17 1
+PUBLIC VMRef codeseg;		/* start of current segment	*/
+d19 1
+a19 1
+PUBLIC WORD codesize;		/* amount of code memory used   */
+d21 1
+a21 1
+PUBLIC WORD exprsize;		/* amount of memory used by exprs */
+d23 1
+a23 1
+PUBLIC WORD codeflags = 0;	/* flags for code.flags field	*/
+d44 3
+a46 1
+#define wordlen(s) (((s)+3)&~3)
+d54 2
+a55 1
+PUBLIC void initmem()
+d57 1
+a57 1
+	VMInit(NULL,vmpagesize);
+d59 4
+a62 4
+	codeseg = VMPage();
+	vmheap = VMPage();
+	codesize = 0;
+	exprsize = 0;
+d64 1
+a64 6
+#if 0		
+       	heapbase = MALLOC(HEAPDELTA);
+       	if( heapbase == 0 ) error("Cannot get heap space");
+       	heaptop = &(heapbase[HEAPDELTA]);
+#endif
+
+d73 3
+a75 2
+PUBLIC UBYTE *alloc(n)
+INT n;
+d77 1
+a77 1
+        UBYTE *v;
+a78 2
+#if 0
+	n = (n+3) & (~3);  /* adjust to 4 bytes */
+d80 1
+a80 7
+       	if( &(heapbase[n]) > heaptop )
+       	{
+       		heapbase = MALLOC(HEAPDELTA);
+	       	if( heapbase == 0 ) error("Cannot get heap space");
+		heaptop = &(heapbase[HEAPDELTA]);
+		trace("heap extension %lx to %lx",heapbase,heaptop);
+	}
+d82 2
+a83 1
+	heapbase += n;
+d85 1
+d87 1
+a87 12
+	v = heapbase;
+
+	trace("alloc: n = %ld v = %lx heaptop = %lx ",n,v,heaptop);
+
+#endif
+	v = MALLOC(n);
+
+	if( v == NULL ) error("Cannot get local heap space");
+
+	heapsize += n;
+	
+	return v;
+d98 4
+a101 3
+PUBLIC VMRef unary(ntype, etype, expr)
+WORD ntype, etype;
+WORD expr;
+d103 13
+a115 8
+	VMRef v = VMNew(sizeof(Unode));
+        Unode *node = VMAddr(Unode,v);
+        node->ntype = ntype;
+        node->etype = etype;
+        node->expr.w = expr;
+        exprsize += sizeof(Unode);
+	trace("unary %x %x : %x %x",v,node,etype,expr);
+        return v;
+d118 4
+a121 3
+PUBLIC VMRef binary(ntype,ltype,rtype,lexp,rexp)
+WORD ntype,ltype,rtype;
+WORD lexp,rexp;
+d123 14
+a136 10
+	VMRef v = VMNew(sizeof(Bnode));
+        Bnode *node = VMAddr(Bnode,v);
+        node->ntype = ntype;
+        node->ltype = ltype;
+        node->rtype = rtype;
+        node->lexp.w = lexp;
+        node->rexp.w = rexp;
+	trace("binary %x %x : l %x %x r %x %x",v,node,ltype,lexp,rtype,rexp);
+        exprsize += sizeof(Bnode);
+        return v;
+d148 7
+a154 5
+PUBLIC VMRef newcode(type,size,vtype,loc,value)
+WORD type;
+WORD size,vtype;
+WORD value;
+WORD loc;
+d156 2
+a157 2
+	Code *p;
+	VMRef v;
+d159 2
+a160 1
+	codeptr();	/* ensure there is space */
+d162 1
+a162 1
+	v = VMalloc(sizeof(Code),codeseg);
+d164 1
+a164 1
+	p = VMAddr(Code,v);
+d166 9
+a174 7
+        trace("newcode: %8lx : %2lx %3ld %3ld %8lx",p,type,size,vtype,value);
+        p->type = type;
+        p->size = size;
+        p->vtype = vtype;
+        p->flags = codeflags; codeflags = 0;
+        p->loc = loc;
+        p->value.w = value;
+d176 1
+a176 1
+        p->line = lineno;
+d178 2
+a179 1
+	codesize += sizeof(Code);
+d181 1
+a181 1
+        VMDirty(v);
+d183 1
+a183 1
+	return v;
+d186 2
+a187 1
+PUBLIC VMRef codeptr()
+d189 2
+a190 2
+	/* if this would be the last code entry in the segment, get a	*/
+	/* new block and add a s_newseg entry.				*/
+d192 9
+a200 7
+	if( VMleft(codeseg) < sizeof(Code)*2 )
+	{
+		VMRef newseg = VMPage();
+		VMRef v = VMalloc(sizeof(Code),codeseg);
+		Code *codetop = VMAddr(Code,v);
+                
+                if( NullRef(newseg) ) error("Cannot get code segement");
+d202 3
+a204 3
+		codetop->type = s_newseg;
+		codetop->size = 0;
+		codetop->vtype = 0;
+d206 1
+a206 1
+		codetop->line = lineno;
+d208 11
+a218 2
+		codetop->value.v = newseg;
+		codetop->loc = -1;
+d220 1
+a220 10
+		codesize += sizeof(Code);
+		
+		trace("code extension: %lx",codeseg);
+	
+	        VMDirty(v);
+		
+		codeseg = newseg;
+	}
+
+	return VMnext(codeseg);
+d223 3
+a225 2
+extern VMRef VMNew(size)
+int size;
+d227 1
+a227 1
+	VMRef v;
+a228 1
+	size = wordlen(size);
+d230 3
+a232 1
+	v = VMalloc(size,vmheap);
+d234 6
+a239 5
+	if( NullRef(v) ) 
+	{
+		vmheap = VMPage();
+		v = VMalloc(size,vmheap);
+	}
+d241 3
+a243 3
+        VMDirty(v);
+
+	return v;
+@
+
+
+1.2
+log
+@mod <asm.h> to "asm.h"
+@
+text
+@d7 1
+a7 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/asm/RCS/mem.c,v 1.1 90/08/24 16:34:57 james Exp Locker: jon $";
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 1
+a7 1
+static char *rcsid = "$Header$";
+d9 1
+a9 1
+#include <asm.h>
+@

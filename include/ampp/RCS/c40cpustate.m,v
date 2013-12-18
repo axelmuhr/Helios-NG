@@ -1,0 +1,371 @@
+head	1.6;
+access;
+symbols;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	92.09.17.15.48.25;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.08.05.10.50.35;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.07.27.15.01.43;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.06.17.18.29.03;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.06.10.15.33.15;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.12.11.16.19.44;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@c40 cpu save state manifests
+@
+
+
+1.6
+log
+@new field to support TimedWait added
+@
+text
+@-- File:	c40cpustate.m
+-- Subsystem:	'C40 Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	Nov '91
+--
+-- Description: 'C40 specific CPU savestate manifests
+--
+--		WARNING: These definition must be kept up to date
+--		with <savestate.h>
+--
+--
+-- RcsId: $Id: c40cpustate.m,v 1.5 1992/08/05 10:50:35 paul Exp $
+--
+-- (C) Copyright 1991 Perihelion Software Ltd.
+
+
+_report ['include 'c40cpustate.m]
+_def 'c40cpustate.m_flag 1
+
+include structs.m
+include c40.m
+
+
+-- CPURegs structure, used to hold CPU context of suspended threads
+
+			     -- C PCS BINDING NAME:
+					-- 'C40 REGISTER NAME:
+						-- FUNCTION:
+struct CPURegs [
+	word	PC				-- PC of sliced thread
+
+	word	ST		-- st :	   status reg
+
+						-- C ADDRESS REGS
+	word	ADDR1		-- ar0:
+	word	ADDR2		-- ar1:
+	word	ADDR3		-- ar2:
+	word	ADDR4		-- ar3:
+
+						-- MISC ADDRESS REGS
+	word	MT		-- ar4:    module table pointer
+	word	ATMP		-- ar5:    temporary address reg
+	word	USP		-- ar6:    user stack pointer
+	word	FP		-- ar7:    frame pointer
+
+						-- REGISTER ARGUMENTS
+	word	A1		-- r0 :    first arg and result reg
+	word	R0f		-- r0 :    fp extension to 32bit reg
+
+	word	A2		-- r1 :    32bits
+	word	R1f		-- r1 :    fpext
+	word	A3		-- r2 :    32bits
+	word	R2f		-- r2 :    fpext
+	word	A4		-- r3 :    32bits
+	word	R3f		-- r3 :    fpext
+
+						-- REGISTER VARIABLES
+	word	V1		-- r4 :    32bits
+	word	R4f		-- r4 :    fpext
+	word	V2		-- r5 :    32bits
+	word	R5f		-- r5 :    fpext
+	word	V3		-- r6 :    32bits
+	word	R6f		-- r6 :    fpext
+	word	V4		-- r7 :    32bits
+	word	R7f		-- r7 :    fpext
+
+						-- TEMPORARY REGISTERS
+	word	T1		-- r8 :    32bits
+	word	R8f		-- r8 :    fpext
+	word	T2		-- r9 :    32bits
+	word	R9f		-- r9 :    fpext
+	word	T3		-- r10:    32bits
+	word	R10f		-- r10:    fpext
+
+						-- MISC REGISTERS
+	word	LR		-- r11:   link register
+	word	R11f		-- r11:   fpext
+	word	V6		-- dp :   variable reg (data page pointer)
+	word	BASE		-- ir0:   byte address base
+	word	USE		-- ir1:   user stack end pointer
+	word	V5		-- bk :   variable reg
+
+						-- TEMPORARY BACK-END REGS
+	word	TMP1		-- rs :
+	word	TMP2		-- re :
+	word	TMP3		-- rc :
+]
+
+-- last register in CPU context
+_def 'CPURegs.LASTREG	CPURegs.TMP3
+
+
+-- The save state structure used for holding the state of a suspended thread
+struct SaveState [
+	word	next			-- for queueing on run Q's
+	word	nextknown		-- for exec housekeeping
+	word	stdsavearea		-- permanent save area
+	word	priority		-- thread priority
+	word	endtime			-- Wakeup time if Sleep()ing
+	word	status			-- Thread status
+	word	stack_chunk		-- current stack chunk header
+	word	TimedWaitUtil		-- true if OK, false if timedout
+	word	CPUTimeTotal		-- milliseconds of CPU time used
+	word	LastTimeStamp		-- Time stamp at last resume/slice (uS)
+	word	InitialTime		-- Startup time of thread (Msecs)
+	word	InitialFn		-- WPTR to thread's root fn
+	struct	CPURegs CPUcontext	-- CPU state of this thread
+]
+
+
+-- SaveState status values
+
+_def 'THREAD_STARTUP		0	-- thread is just starting
+_def 'THREAD_SLICED		1	-- runnable, was sliced, needs RTI 
+_def 'THREAD_RUNNABLE		2	-- runnable, resheduled, needs RestoreCPUState2() 
+_def 'THREAD_RUNNING		3	-- current CPU thread 
+_def 'THREAD_KILLED		4	-- thread has been Stop()'ed 
+_def 'THREAD_BOGUS		5	-- illegal state of thread 
+					-- THREAD_SLICED status in normal dispatch 
+_def 'THREAD_SAVED		6	-- only use for user SaveCPUState() 
+_def 'THREAD_SLEEP		7	-- on timer Q
+_def 'THREAD_TIMEDWAIT		8	-- on timer and semaphore Q's 
+_def 'THREAD_SEMAPHORE		9	-- on semaphore Q 
+_def 'THREAD_MSGREAD		10	-- blocked reading msg 
+_def 'THREAD_MSGWRITE		11	-- blocked writing internal msg 
+
+_def 'THREAD_MULTIWAIT		12	-- blocked during MultiWait
+
+_def 'THREAD_LINKRX		13	-- blocked reading external msg 
+_def 'THREAD_LINKTX		14	-- blocked writeing external msg 
+
+_def 'THREAD_LINKWRITEQ		15	-- blocked on queue to write external msg 
+_def 'THREAD_LINKWAIT		16	-- guardian waiting on dumb link 
+_def 'THREAD_LINKEND		17	-- waiting for linktx/rx to complete 
+					-- while in kernel: KillTask, 
+					-- Configure, WaitLink or JumpLink 
+_def 'THREAD_LINKXOFF		18	-- waiting for XON on link 
+
+_def 'THREAD_LINKTHRU1		19	-- single buffering thru-routed msg 
+_def 'THREAD_LINKTHRU2		20	-- double buffering thru-routed msg 
+
+_def 'THREAD_DMAREQ		21	-- waiting for a DMA engine (not used)
+
+
+
+-- end of c40cpustate.m
+@
+
+
+1.5
+log
+@added fields to record processor and run time on a per thread basis
+@
+text
+@d12 1
+a12 1
+-- RcsId: $Id: c40cpustate.m,v 1.4 1992/07/27 15:01:43 paul Exp $
+d102 1
+@
+
+
+1.4
+log
+@added  stack extension and time fields to save state
+@
+text
+@d12 1
+a12 1
+-- RcsId: $Id: c40cpustate.m,v 1.3 1992/06/17 18:29:03 paul Exp $
+d102 3
+a104 2
+	word	starttime		-- startup time of thread
+	word	CPUtime			-- Thread status
+@
+
+
+1.3
+log
+@ added SLICE_STARTUP and altered order of status values.
+@
+text
+@d12 1
+a12 1
+-- RcsId: $Id: c40cpustate.m,v 1.2 1992/06/10 15:33:15 paul Exp $
+d101 2
+@
+
+
+1.2
+log
+@updated with thread status numbers
+@
+text
+@d12 1
+a12 1
+-- RcsId: $Id: c40cpustate.m,v 1.1 1991/12/11 16:19:44 paul Exp $
+d109 6
+a114 9
+_def 'THREAD_RUNNING		1	-- current CPU thread 
+_def 'THREAD_SLICED		2	-- runnable, was sliced, needs RTI 
+_def 'THREAD_RUNNABLE		3	-- runnable, resheduled, needs RestoreCPUState2() 
+_def 'THREAD_SLEEP		4	-- on timer Q */ 
+_def 'THREAD_TIMEDWAIT		5	-- on timer and semaphore Q's 
+_def 'THREAD_SEMAPHORE		6	-- on semaphore Q 
+_def 'THREAD_SAVED		7	-- only use for user SaveCPUState() 
+_def 'THREAD_KILLED		8	-- thread has been Stop()'ed 
+_def 'THREAD_BOGUS		9	-- illegal state of thread 
+d116 4
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d12 1
+a12 1
+-- RcsId: $Id$
+a14 3
+-- 
+-- RcsLog: $Log$
+--
+d20 1
+d22 111
+a132 90
+/* Element offsets within a save state structure */
+_def 'SS_next		0		/* for queueing on run Q's */
+_def 'SS_nextknown	1		/* for exec housekeeping */
+_def 'SS_stdsavearea	2		/* permanent save area */
+_def 'SS_priority	3		/* thread priority */
+_def 'SS_wakeup		4		/* Wakeup time if Sleep()ing */
+_def 'SS_status		5		/* Thread status */
+_def 'SS_CPUtime	6		/* Thread status */
+_def 'SS_CPUcontext	7		/* CPU state of this thread */
+
+
+/* SaveState status values */
+_def 'THREAD_RUNNING		1	/* current CPU thread */
+_def 'THREAD_SLICED		2	/* was sliced - needs RTI ret */
+_def 'THREAD_RUNNABLE		3	/* resheduled - use RestoreCPUState */
+_def 'THREAD_SLEEP		4	/* on timer Q */ 
+_def 'THREAD_TIMEDWAIT		5	/* on timer and semaphore Q's */
+_def 'THREAD_SEMAPHORE		6	/* on semaphore Q */
+_def 'THREAD_MSGREAD		7	/* blocked reading internal msg */
+_def 'THREAD_MSGWRITE		8	/* blocked writing internal msg */
+_def 'THREAD_LINKREAD		9 	/* blocked reading external msg */
+_def 'THREAD_LINKWRITE		10	/* blocked writing external msg */
+_def 'THREAD_SAVED		11	/* only use for user SaveCPUState */
+_def 'THREAD_KILLED		12	/* thread has been Stop()'ed */
+_def 'THREAD_BOGUS		13	/* illegal state of thread */
+					/* Reasons: */
+					/* THREAD_SLICED status in normal dispatch */
+
+
+/* SaveState CPUContext Offsets */
+			     /* C PCS BINDING NAME: */
+					/* 'C40 REGISTER NAME: */
+						/* FUNCTION: */
+
+_def 'SSCTX_PC		0	/*	   PC of sliced thread */
+_def 'SSCTX_R_ST	1	/* st :	   status reg */
+
+						/* C ADDRESS REGS */
+_def 'SSCTX_R_ADDR1	2	/* ar0: */
+_def 'SSCTX_R_ADDR2	3	/* ar1: */
+_def 'SSCTX_R_ADDR3	4	/* ar2: */
+_def 'SSCTX_R_ADDR4	5	/* ar3: */
+
+						/* MISC ADDRESS REGS */
+_def 'SSCTX_R_MT	6	/* ar4:    module table pointer */
+_def 'SSCTX_R_ATMP	7	/* ar5:    temporary address reg */
+_def 'SSCTX_R_USP	8	/* ar6:    user stack pointer */
+_def 'SSCTX_R_FP	9	/* ar7:    frame pointer */
+
+						/* REGISTER ARGUMENTS */
+_def 'SSCTX_R_A1	10	/* r0 :    first arg and result reg */
+_def 'SSCTX_R_R0f	11	/* r0 :    fp extension to 32bit reg */
+
+_def 'SSCTX_R_A2	12	/* r1 :    32bits */
+_def 'SSCTX_R_R1f	13	/* r1 :    fpext */
+_def 'SSCTX_R_A3	14	/* r2 :    32bits */
+_def 'SSCTX_R_R2f	15	/* r2 :    fpext */
+_def 'SSCTX_R_A4	16	/* r3 :    32bits */
+_def 'SSCTX_R_R3f	17	/* r3 :    fpext */
+
+						/* REGISTER VARIABLES */
+_def 'SSCTX_R_V1	18	/* r4 :    32bits */
+_def 'SSCTX_R_R4f	19	/* r4 :    fpext */
+_def 'SSCTX_R_V2	20	/* r5 :    32bits */
+_def 'SSCTX_R_R5f	21	/* r5 :    fpext */
+_def 'SSCTX_R_V3	22	/* r6 :    32bits */
+_def 'SSCTX_R_R6f	23	/* r6 :    fpext */
+_def 'SSCTX_R_V4	24	/* r7 :    32bits */
+_def 'SSCTX_R_R7f	25	/* r7 :    fpext */
+
+						/* TEMPORARY REGISTERS */
+_def 'SSCTX_R_T1	26	/* r8 :    32bits */
+_def 'SSCTX_R_R8f	27	/* r8 :    fpext */
+_def 'SSCTX_R_T2	28	/* r9 :    32bits */
+_def 'SSCTX_R_R9f	29	/* r9 :    fpext */
+_def 'SSCTX_R_T3	30	/* r10:    32bits */
+_def 'SSCTX_R_R10f	31	/* r10:    fpext */
+
+						/* MISC REGISTERS */
+_def 'SSCTX_R_LR	32	/* r11:   link register */
+_def 'SSCTX_R_R11f	33	/* r11:   fpext */
+_def 'SSCTX_R_DP	34	/* dp :   data page pointer */
+_def 'SSCTX_R_BASE	35	/* ir0:   byte address base */
+_def 'SSCTX_R_USE	36	/* ir1:   user stack end pointer */
+_def 'SSCTX_R_IP	37	/* bk :   temporary register */
+
+						/* TEMPORARY BACK-END REGS */
+_def 'SSCTX_R_TMP1	38	/* rs : */
+_def 'SSCTX_R_TMP2	39	/* re : */
+_def 'SSCTX_R_TMP3	40	/* rc : */
+d134 2
+a135 1
+_def 'SSCTX_LASTREG	40	/* always at end of save state */
+d137 1
+a137 1
+-- end of SaveState structure definitions
+@

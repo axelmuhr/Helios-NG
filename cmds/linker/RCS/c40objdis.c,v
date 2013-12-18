@@ -1,0 +1,4058 @@
+head	1.22;
+access;
+symbols
+	Helios_1_3_1:1.20
+	Helios_C40_1_3_Official_Release:1.19
+	Alenia_release:1.19
+	C40_Field_Test_2:1.17
+	C40_Field_Test_R1:1.12;
+locks; strict;
+comment	@ * @;
+
+
+1.22
+date	94.01.18.12.27.24;	author nickc;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	94.01.05.14.42.53;	author nickc;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	93.06.22.08.42.50;	author nickc;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	92.12.08.09.36.20;	author nickc;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	92.10.20.10.36.39;	author nickc;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.09.14.08.31.43;	author nickc;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.09.04.14.35.10;	author paul;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.08.24.17.19.23;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.07.15.17.02.10;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.07.15.15.55.19;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.05.15.15.29.47;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	91.11.22.16.39.17;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	91.11.22.16.19.29;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.10.29.13.21.08;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.10.23.13.37.01;	author paul;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.10.22.17.14.52;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.10.21.16.53.30;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.10.21.15.18.09;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	91.10.18.15.32.21;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.10.10.16.22.08;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.10.09.09.20.42;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.10.08.16.17.25;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.22
+log
+@added folding.  Fixed decoding of Type 10 MPY||SUB.  Fixed decoding of "op3 <immediate>, *+ARn(disp), reg"
+@
+text
+@/*{{{  Comments */
+
+/*
+ * objdisas - disassembler for the 'C40 object dumper
+ *
+ * Author: 	N Clifton
+ * Version:	$Revision: 1.21 $
+ * Date:	$Date: 1994/01/05 14:42:53 $
+ */
+
+/* @@@@@@ Still to be done:
+ *
+ * IACK		- no second reg
+ * RPTS		- no second reg
+ * ROTS		- no first operand
+ * SUB / ASH3 / LSH3 parallel instructions
+ *		- swap operand order
+ *
+ */
+
+/*}}}*/
+/*{{{  Includes */
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#ifdef SUN4
+#include <unistd.h>	/* for SEEK_SET */
+#endif
+
+#include "c40ops.h"
+#include "c40target.h"
+
+/*}}}*/
+/*{{{  Constants */
+
+#ifndef TRUE
+#define TRUE	1
+#define FALSE	0
+#endif
+
+#define COL_OP_CODE	39
+#define COL_OPERAND	10
+#define COL_DESTINATION	30
+#define COL_OPERAND2	39 + 10
+
+/*}}}*/
+/*{{{  Macros */
+
+#define is_op(      instruction, op_code )	 (((instruction) >> 23)        == (op_code))
+#define is_monadic( instruction )		(is_op( instruction, OP_ABSF  ) || \
+						 is_op( instruction, OP_ABSI  ) || \
+  						 is_op( instruction, OP_FIX   ) || \
+  						 is_op( instruction, OP_FLOAT ) || \
+  						 is_op( instruction, OP_NEGF  ) || \
+  						 is_op( instruction, OP_NEGI  ) || \
+  						 is_op( instruction, OP_NOT   ) )
+
+/*}}}*/
+/*{{{  Types */
+
+typedef enum
+  {
+    TYPE_SIGNED,
+    TYPE_UNSIGNED,
+    TYPE_FLOATING
+    }
+immed_type;
+
+/*}}}*/
+/*{{{  Variables */
+
+static int 	current_column = 0;		/* number of characters printed out on current line */
+extern FILE *	outfd;				/* file to which to send output */
+extern int	pcsregs;			/* display true of PCS reg aliases */
+
+/*}}}*/
+/*{{{  Code */
+
+/*{{{  myprint() */
+
+/*
+ * display a message, keeping a track of where we are
+ */
+
+static void
+myprint( const char * format, ... )
+{
+  static char	buffer[ 1024 ];			/* XXX */
+  va_list	args;
+  char *	start;
+  char *	ptr;
+
+
+  va_start( args, format );
+
+  vsprintf( buffer, format, args );
+
+  current_column += strlen( buffer );
+
+  start = buffer;
+  
+  while ((ptr = (char *)strchr( start, '%' )) != NULL)
+    {
+      *ptr = '\0';
+
+      fprintf( outfd, start );
+
+      fprintf( outfd, "%%" );
+
+      start = ptr + 1;
+    }
+
+  fprintf( outfd, start );
+
+  va_end( args );
+
+  return;
+    
+} /* myprint */
+
+/*}}}*/
+/*{{{  pad_to() */
+
+/*
+ * output spaces until the given column is reached
+ */
+
+static void
+pad_to( int goal_column )
+{
+  if (current_column < goal_column)
+    {
+      while (current_column < goal_column)
+	{
+	  fputc( ' ', outfd );
+
+	  ++current_column;
+	}
+    }
+  else if (current_column > goal_column)
+    {
+      fputc( ' ', outfd );
+    }
+
+  return;
+
+} /* pad_to */
+
+/*}}}*/
+/*{{{  new_line() */
+
+/*
+ * send a newline character, adjusting column count aswell
+ */
+
+static void
+new_line( void )
+{
+  fputc( '\n', outfd );
+
+  current_column = 0;
+
+  return;
+  
+} /* new_line */
+
+/*}}}*/
+/*{{{  _regname() */
+
+/*
+ * Disassembler routines
+ */
+
+char *
+_regname( long int r )
+{
+  static char *	regstr =
+    "R0 \0R1 \0R2 \0R3 \0R4 \0R5 \0R6 \0R7 \0"
+      "AR0\0AR1\0AR2\0AR3\0AR4\0AR5\0AR6\0AR7\0"
+	"DP \0IR0\0IR1\0BK \0SP \0ST \0DIE\0IIE\0"
+	  "IIF\0RS \0RE \0RC \0R8 \0R9 \0R10\0R11\0";
+  
+  r &= 0x1f;
+  
+  if (pcsregs) {
+      switch (r)	{
+	  /* r0-7 */
+	default:
+	  
+	case 0x00 : return("R_A1");
+	case 0x01 : return("R_A2");
+	case 0x02 : return("R_A3");
+	case 0x03 : return("R_A4");
+	case 0x04 : return("R_FV1");
+	case 0x05 : return("R_FV2");
+	case 0x06 : return("R_FT1");
+	case 0x07 : return("R_FT2");
+	  
+	  /* ar0 - ar7 */
+	case 0x08 : return("R_ADDR1");
+	case 0x09 : return("R_ADDR2");
+	case 0x0a : return("R_ADDR3");
+	case 0x0b : return("R_ADDR4");
+	case 0x0c : return("R_MT");
+	case 0x0d : return("R_ATMP");
+	case 0x0e : return("R_USP");
+	case 0x0f : return("R_FP");
+	  
+	  /* odds and sods */
+	case 0x10 : return("R_V1");
+	case 0x11 : return("R_BASE");
+	case 0x12 : return("R_USE");
+	case 0x13 : return("R_V2");
+	case 0x14 : return("R_SSP");
+	case 0x15 : return("R_ST");
+	case 0x16 : return("DIE");
+	case 0x17 : return("IIE");
+	case 0x18 : return("IIF");
+	  
+	case 0x19 : return("R_TMP1");
+	case 0x1a : return("R_TMP2");
+	case 0x1b : return("R_TMP3");
+	  
+	  /* ar8 - ar11 */
+	case 0x1c : return("R_V3");
+	case 0x1d : return("R_V4");
+	case 0x1e : return("R_T1");
+	case 0x1f : return("R_LR");
+	}
+    }
+  else
+    {
+      return ((r * 4) + regstr);
+    }  
+} /* _regname */
+
+/*}}}*/
+/*{{{  _condname() */
+
+static char *	condstr =
+  "u\0\0\0\0lo\0\0\0ls\0\0\0hi\0\0\0hs\0\0\0eq\0\0\0ne\0\0\0"
+  "lt\0\0\0le\0\0\0gt\0\0\0ge\0\0\0<xx>\0nv\0\0\0v\0\0\0\0"
+  "nuf\0\0uf\0\0\0nlv\0\0lv\0\0\0nluf\0luf\0\0zuf\0\0"
+  "<xx>\0<xx>\0<xx>\0<xx>\0<xx>\0<xx>\0<xx>\0"
+  "<xx>\0<xx>\0<xx>\0<xx>\0";
+  
+#define _condname( r ) ((((r) & 0x1f) * 5) + condstr)
+
+/*}}}*/
+/*{{{  decode_indirect_address() */
+
+/*
+ * decodes the indirect addressing field of a 'C40 op code
+ */
+
+static void
+decode_indirect_address(
+			long int	mode,
+			long int	addr,
+			long int	disp )
+{
+  switch (mode)
+    {
+    case B_00000:	myprint( "*+AR%ld(%d)",          addr, disp ); break;
+    case B_00001:	myprint( "*-AR%ld(%d)",          addr, disp ); break;
+    case B_00010:	myprint( "*++AR%ld(%d)",         addr, disp ); break;
+    case B_00011:	myprint( "*--AR%ld(%d)",         addr, disp ); break;
+    case B_00100:	myprint( "*AR%ld++(%d)",         addr, disp ); break;
+    case B_00101:	myprint( "*AR%ld--(%d)",         addr, disp ); break;
+    case B_00110:	myprint( "*AR%ld++(%d)%%",       addr, disp ); break;
+    case B_00111:	myprint( "*AR%ld--(%d)%%",       addr, disp ); break;
+    case B_01000:	myprint( "*+AR%ld(IR0)",         addr       ); break;
+    case B_01001:	myprint( "*-AR%ld(IR0)",         addr       ); break;
+    case B_01010:	myprint( "*++AR%ld(IR0)",        addr       ); break;
+    case B_01011:	myprint( "*--AR%ld(IR0)",        addr       ); break;
+    case B_01100:	myprint( "*AR%ld++(IR0)",        addr       ); break;
+    case B_01101:	myprint( "*AR%ld--(IR0)",        addr       ); break;
+    case B_01110:	myprint( "*AR%ld++(IR0)%%",      addr       ); break;
+    case B_01111:	myprint( "*AR%ld--(IR0)%%",      addr       ); break;
+    case B_10000:	myprint( "*+AR%ld(IR1)",         addr       ); break;
+    case B_10001:	myprint( "*-AR%ld(IR1)",         addr       ); break;
+    case B_10010:	myprint( "*++AR%ld(IR1)",        addr       ); break;
+    case B_10011:	myprint( "*--AR%ld(IR1)",        addr       ); break;
+    case B_10100:	myprint( "*AR%ld++(IR1)",        addr       ); break;
+    case B_10101:	myprint( "*AR%ld--(IR1)",        addr       ); break;
+    case B_10110:	myprint( "*AR%ld++(IR1)%%",      addr       ); break;
+    case B_10111:	myprint( "*AR%ld--(IR1)%%",      addr       ); break;
+    case B_11000:	myprint( "*AR%ld",               addr       ); break;
+    case B_11001:	myprint( "*AR%ld++(IR0)B",       addr       ); break;
+    }
+  
+  return;
+  
+} /* decode_indirect_addressing */
+
+/*}}}*/
+/*{{{  mask_and_sign_extend_word() */
+
+/*
+ * extracts the bits specified by 'mask' from the word 'value'
+ * if necessary the resulting word is sign extended.
+ * 'mask' must be a contigous set of bits starting from
+ * the least significant bit
+ */
+
+signed long
+mask_and_sign_extend_word(
+			  unsigned long	value,
+			  unsigned long	mask )
+{
+  value &= mask;
+
+  if (value & ((mask + 1) >> 1))
+    {
+      value |= ~mask;
+    }
+
+  return (signed long)value;
+  
+} /* mask_and_sign_extend_word */
+
+/*}}}*/
+/*{{{  decode_short_float() */
+
+/*
+ * turns a 16 bit integer into a string
+ * representing a short format C40 style
+ * floating point number
+ */
+
+static const char *
+decode_short_float( long int number )
+{
+  static char	buffer[ 20 ];
+  long int	e;
+  long int	s;
+  long int	f;
+  union
+    {
+      float		f;	/* XXX beware of assumption that 	*/
+      unsigned long	l;	/* sizeof (float) == sizeof (long)	*/
+    }
+  converter;
+  
+  
+  if (number & 0xffff0000UL)
+    {
+      return "";
+    }
+  
+  /*
+   * format is ...
+   *
+   *
+   *  15      12   11   10       0
+   *  ____________________________
+   * |          |      |          |
+   * | exponent | sign | mantissa |
+   * |          |      |          |
+   *  ----------------------------
+   *
+   * interpretation is ...
+   *
+   * e = -8, s = 0, m = 0 => 0.0
+   * s = 0                =>   01.m  x 2^e
+   * s = -1               => -(10.m) x 2^e
+   *
+   */
+  
+  /* extract components */
+  
+  e = (number & 0xf000U) >> 12;
+  s =  number & 0x0800U;
+  f =  number & 0x07ffU;
+  
+  e = mask_and_sign_extend_word( e, 0xf );
+  
+  /* handle the special case */
+  
+  if (s == 0 && e == -8 && f == 0)
+    {
+      return "0.0";
+    }
+  
+  /* convert the binary value into host specific floating point value */
+  
+#if defined HP || defined __SUN4 || defined RS6000
+  
+  /* convert to IEEE single precision */
+  
+  e += 0x7f;
+  
+  if (s == 0)
+    {
+      converter.l = (e << 23) | (f << (22 - 10));
+    }
+  else
+    {
+      if (f == 0)
+	{
+	  converter.l = ((e + 1) << 23) | (1 << 31);
+	}
+      else
+	{
+	  converter.l = (e << 23) | (((((~f) + 1) << (22 - 10))) & ((1 << 23) - 1)) | (1 << 31);
+	}
+    }
+#else
+  
+  /* convert to C40 single precision */
+  
+  converter.l = (e << 24) | (s << (23 - 11)) | (f << (22 - 10));
+  
+#endif /* __HELIOSC40 */
+  
+  /* convert to a string */
+  
+  sprintf( buffer, "%f", converter.f );
+
+  /* return the string */
+  
+  return buffer;
+  
+} /* decode_short_float */
+
+/*}}}*/
+/*{{{  decode_diadic_address() */
+
+/*
+ * decodes the addressing modes (the 'G' field)
+ * of a 'C40 diadic op code
+ */
+
+static void
+decode_diadic_address(
+		      long int		op_code,	/* instruction to be decode       */
+		      char *		instruction,	/* string identifying instruction */
+		      immed_type	type,		/* type of immediate values       */
+		      int		store )		/* non zero if a store operation  */
+{
+  char *	pdest;
+  long int	dest;
+  long int	src;
+  
+  
+  /*
+   * we have a diaidic op code
+   *
+   * bits 16 - 20 encode destination
+   * bits 21 - 22 encode addressing type
+   * bits 23 - 28 encode op code
+   * bits 29 - 31 are 000
+   */
+
+  dest = (op_code >> 16) & 0x1f;
+      
+  if ((op_code >> 23) == OP_RPTS || (op_code >> 23) == OP_IACK)
+    {
+      /* this op code has no destination */
+      
+      pdest = NULL;
+    }
+  else
+    {
+      if (type == TYPE_FLOATING && (op_code >> 23) != OP_FIX)
+	{
+	  /* the destination (or source) register of a floating point op must be R0 - R11 */
+	  
+	  if (!is_extended_precision_register( dest ))
+	    {
+	      return;
+	    }
+	}
+      
+      pdest = _regname( dest );
+    }
+  
+  myprint( instruction );
+
+  pad_to( COL_OPERAND );
+
+  switch ((op_code >> 21) & 0x3)
+    {
+    case 0: /* register to register */
+      /*
+       * we have a diaidic op code, using register addressing
+       *
+       * bits  0 - 4  encode source register
+       * bits  5 - 15 are 00000000000
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+
+      if (op_code & 0xffe0)
+	{
+	  return;	  
+	}
+      
+      src = op_code & 0x1f;
+      
+      if (type == TYPE_FLOATING)
+	{
+	  /* the source register of a floating point op must be R0 - R11 */
+	  
+	  if (!is_extended_precision_register( src ))
+	    {
+	      return;
+	    }
+	}
+      
+      myprint( "%s", _regname( src ) );
+      
+      if (pdest && (dest != src || !is_monadic( op_code )))
+	myprint( ", %s", pdest );
+      
+      break;
+	      
+    case 1: /* direct */
+      /*
+       * we have a diaidic op code, using direct addressing
+       *
+       * bits  0 - 15 are an unsigned offset to the data page register
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+
+      if (store)	/* pdest is actually source */
+	myprint( "%s, @@%#04.4lx", pdest, (op_code & 0xffff) );
+      else if (pdest)
+	myprint( "@@%#04.4lx, %s", (op_code & 0xffff), pdest );
+      else
+	myprint( "@@%#04.4lx", (op_code & 0xffff) );
+
+      break;
+
+    case 2: /* indirect */
+      /*
+       * we have a diaidic op code, using indirect addressing
+       *
+       * bits  0 -  7 encode the displacment
+       * bits  8 - 10 encode the address register
+       * bits 11 - 15 encode the mode
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+
+	{
+	  long int	disp =  op_code       & 0xff;
+	  long int	addr = (op_code >> 8) & 0x07;
+
+
+	  if (store)
+	    {
+	      myprint( "%s, ", pdest );
+
+	      decode_indirect_address( op_code >> 11 & 0x1f, addr, disp );
+	    }
+	  else
+	    {
+	      decode_indirect_address( (op_code >> 11) & 0x1f, addr, disp );
+
+	      if (pdest)
+		myprint( ", %s", pdest );
+	    }
+	}
+      break;
+      
+    case 3: /* immediate */
+      /*
+       * we have a diaidic op code, using immeadiate addressing
+       *
+       * bits  0 - 15 are a signed immeadiate value
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+
+      if (type == TYPE_SIGNED)
+	dest = mask_and_sign_extend_word( op_code, 0x0000ffffU );
+      else
+	dest = op_code & 0xffffU;
+      
+      if (type == TYPE_FLOATING)
+	{
+	  myprint( "%s, %s", decode_short_float( dest ), pdest );
+	}
+      else if (dest < 500 && dest > -500 && type == TYPE_SIGNED)
+	{
+	  myprint( "%-3ld, %s", dest, pdest );
+	}
+      else if (pdest)
+	{
+	  myprint( "%#-3lx, %s", dest, pdest );
+	}
+      else
+	{
+	  myprint( "%#-3lx", dest );
+	}
+      
+      break;      
+    }
+
+  return;
+  
+} /* decode_diadic_address */
+  
+
+/*}}}*/
+/*{{{  decode_integer_store() */
+
+/*
+ * handle the special case of the STI op code
+ */
+
+static void
+decode_integer_store( long int op_code )
+{
+  long int	dest;
+
+  
+  /*
+   * we have an integer store
+   *
+   * bits  0 - 15 encode destination
+   * bits 16 - 20 encode source
+   * bits 21 - 22 encode addressing type
+   * bits 23 - 31 are 000101010
+   */
+
+  dest = (op_code >> 16) & 0x1f;
+
+  switch ((op_code >> 21) & 0x3)
+    {
+    case 0: /* indirect immediate */
+      /*
+       * bits  0 - 15 are an unsigned offset from the data page register
+       * bits 16 - 20 encode value
+       * bits 21 - 31 are 00010101000
+       */
+
+      myprint( "STIK" );
+      
+      pad_to( COL_OPERAND );
+      
+      myprint( "%-3ld, @@%#04.4lx", mask_and_sign_extend_word( dest, 0x1f ), (op_code & 0xffff) );
+
+      break;
+	      
+    case 1: /* direct register */
+      /*
+       * bits  0 - 15 are an unsigned offset to the data page register
+       * bits 16 - 20 encode source register
+       * bits 21 - 31 are 00010101001
+       */
+
+      myprint( "STI" );
+      
+      pad_to( COL_OPERAND );
+      
+      myprint( "%s, @@%#04.4lx", _regname( dest ), (op_code & 0xffff) );
+
+      break;
+
+    case 2: /* indirect register */
+      /*
+       * bits  0 -  7 encode the displacment
+       * bits  8 - 10 encode the address register
+       * bits 11 - 15 encode the mode
+       * bits 16 - 20 encode source register
+       * bits 21 - 31 are 00010101010
+       */
+
+      myprint( "STI" );
+      
+      pad_to( COL_OPERAND );
+      
+      myprint( "%s, ", _regname( dest ) );
+
+      decode_indirect_address( (op_code >> 11) & 0x1f, (op_code >> 8) & 0x7, op_code & 0xff );
+
+      break;
+      
+    case 3: /* indirect immediate */
+      /*
+       * bits  0 -  7 encode the displacment
+       * bits  8 - 10 encode the address register
+       * bits 11 - 15 encode the mode
+       * bits 16 - 20 encode source value
+       * bits 21 - 31 are 00010101011
+       */
+
+      myprint( "STIK" );
+      
+      pad_to( COL_OPERAND );
+      
+      myprint( "%-3ld, ", mask_and_sign_extend_word( dest, 0x1f ) );
+      
+      decode_indirect_address( (op_code >> 11) & 0x1f, (op_code >> 8) & 0x7, op_code & 0xff );
+
+      break;      
+    }
+
+  return;
+  
+} /* decode_integer_store */
+
+/*}}}*/
+/*{{{  decode_flow_control() */
+
+/*
+ * decodes a 'C40 opcode concerned with handling program execution
+ */
+
+static void
+decode_flow_control(
+		    long int	op_code,
+		    long int	pc )
+{
+  /*
+   * we have a flow control op code
+   *
+   * bits 30 - 31 are 01
+   *
+   * other bits are semi-random
+   */
+
+  if (op_code & (1 << 29))
+    {
+      /* bits 29 - 31 are 011 */
+
+      if (op_code & (1 << 28))
+	{
+	  /* bits 28 - 31 are 0111 */
+	  
+	  if (op_code & (1 << 27))
+	    {
+	      /* bits 27 - 31 are 01111 */
+
+	      if (op_code & (1 << 24))
+		{
+		  /*
+		   * we have a repeat block with register addressing
+		   *
+		   * bits  0 -  4 encode the source
+		   * bits  5 - 22 are 000000000000000000
+		   * bit  23      encodes the delay
+		   * bits 24 - 31 are 01111001
+		   */
+
+		  if (op_code & (1 << 23))
+		    {
+		      myprint( "RPTBD" );
+		      
+		      pad_to( COL_OPERAND );
+		      
+		      myprint( "%s", _regname( op_code ) );
+		    }
+		  else
+		    {
+		      myprint( "RPTB" );
+
+		      pad_to( COL_OPERAND );
+
+		      myprint( "%s", _regname( op_code ) );
+		    }
+		}
+	      else
+		{
+		  /* bits 24 - 31 are 01111xx0 */
+
+		  if (op_code & (1 << 23))
+		    {
+		      /*
+		       * we have a conditional return from subroutine
+		       *
+		       * bits  0 - 15 are 0000000000000000
+		       * bits 16 - 20 encode the condition 
+		       * bits 21 - 31 are 01111000100
+		       */
+
+		      myprint( "RETS%s", _condname( op_code >> 16 ) );
+		    }
+		  else
+		    {
+		      /*
+		       * we have a conditional return from interrupt
+		       *
+		       * bits  0 - 15 are 0000000000000000
+		       * bits 16 - 20 encode the condition
+		       * bit  21      encodes the delay type
+		       * bits 22 - 31 are 0111100000
+		       */
+
+		      if (op_code & (1 << 21))
+			{
+			  myprint( "RETI%sD", _condname( op_code >> 16 ) );
+			}
+		      else
+			{
+			  myprint( "RETI%s", _condname( op_code >> 16 ) );
+			}
+		    }
+		}
+	    }
+	  else
+	    {
+	      /* bits 27 - 31 are 01110 */
+	      
+	      if (op_code & (1 << 26))
+		{
+		  /* bits 26 - 31 are 011101 */
+
+		  if (op_code & (1 << 25))
+		    {
+		      /*
+		       * we have a transfer between register file and expansion register file
+		       *
+		       * bits  0 -  5 encode the source register
+		       * bits  6 - 15 are 0000000000
+		       * bits 16 - 20 encode the destination register
+		       * bits 21 - 22 are 00
+		       * bit  23      encodes the transfer type
+		       * bits 24 - 31 are 01110110
+		       */
+
+		      if (op_code & (1 << 23))
+			{
+			  myprint( "LDPE" );
+
+			  pad_to( COL_OPERAND );
+			  
+			  myprint( "%s, %s",
+				  _regname( op_code ),
+				  (((op_code >> 16) & 0xf) == 0) ? "IVTP" : "TVTP" );
+			}
+		      else
+			{
+			  myprint( "LDEP" );
+
+			  pad_to( COL_OPERAND );
+			  
+			  myprint( "%s, %s",
+				  ((op_code & 0xf) == 0) ? "IVTP" : "TVTP",
+				  _regname( op_code >> 16 ) );
+			}
+		    }
+		  else
+		    {
+		      char	op[ 10 ];
+
+		  
+		      /*
+		       * we have a conditional trap
+		       *
+		       * bits  0 -  8 encode the trap number
+		       * bits  9 - 15 are 0000000
+		       * bits 16 - 20 encode the condition
+		       * bits 21 - 22 are 00
+		       * bit  23      encodes the trap type
+		       * bits 24 - 31 are 01110100
+		       */
+
+		      if (op_code & (1 << 23))
+			{
+			  strcpy( op, "LAT" );
+			}
+		      else
+			{
+			  strcpy( op, "TRAP" );
+			}
+		      
+		      strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+
+		      myprint( op );
+
+		      pad_to( COL_OPERAND );
+		      
+		      myprint( "%lu", op_code & 0x1ff );
+		    }
+		}
+	      else
+		{
+		  char	op[ 10 ];
+		  
+		  
+		  /*
+		   * we have a conditional jump to subroutine
+		   *
+		   * bits  0 - 15 encode the source register or displacement
+		   * bits 16 - 20 encode the condition
+		   * bits 21      encodes the jump type
+		   * bits 22 - 24 are 000
+		   * bit  25      encodes the addressing mode
+		   * bits 26 - 31 are 011100
+		   */
+
+		  if (op_code & (1 << 21))
+		    {
+		      strcpy( op, "LAJ" );
+		    }
+		  else
+		    {
+		      strcpy( op, "CALL" );
+		    }
+
+		  strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+
+		  myprint( op );
+
+		  pad_to( COL_OPERAND );
+		  
+		  if (op_code & (1 << 25))
+		    {
+		      op_code = mask_and_sign_extend_word( (unsigned long)op_code, 0xffffL );
+		      
+		      myprint( "%+d", op_code );
+
+		      pad_to( COL_DESTINATION );
+
+		      myprint( "// PC = %#x", pc / 4 + (op_code + 1) );
+		    }
+		  else
+		    {
+		      myprint( "%s", _regname( op_code & 0x1f ) );
+		    }
+		}
+	    }
+	}
+      else
+	{
+	  /* bits 28 - 31 are 0110 */
+
+	  if (op_code & (1 << 27))
+	    {
+	      /* bits 27 - 31 are 01101 */
+
+	      if (op_code & (1 << 26))
+		{
+		  char		op[ 10 ];
+		  long int	addr;
+		  long int	offset;
+		  
+
+		  /*
+		   * we have a conditional decrement and branch
+		   *
+		   * bits  0 - 15 encode the source register or displacement
+		   * bits 16 - 20 encode the condition
+		   * bits 21      encodes delay
+		   * bits 22 - 24 encodes the address register to be decremented
+		   * bit  25      encodes the addressing mode
+		   * bits 26 - 31 are 011011
+		   */
+
+		  strcpy( op, "DB" );
+
+		  strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+		  
+		  if (op_code & (1 << 21))
+		    {
+		      strcat( op, "D" );
+
+		      offset = 4;
+		    }
+		  else
+		    {
+		      offset = 1;
+		    }
+
+		  addr = (op_code >> 22) & 0x7;
+
+		  myprint( op );
+
+		  pad_to( COL_OPERAND );
+		  
+		  if (op_code & (1 << 25))
+		    {
+		      op_code = mask_and_sign_extend_word( (unsigned long)op_code, 0xffffL );
+		      
+		      myprint( "AR%1ld, %+d", addr, op_code );
+
+		      pad_to( COL_DESTINATION );
+
+		      myprint( "// PC = %#x", pc / 4 + (op_code + offset) );
+		    }
+		  else
+		    {
+		      myprint( "AR%1ld, %s", addr, _regname( op_code & 0x1f ) );
+		    }
+		}
+	      else
+		{
+		  char	op[ 10 ];
+		  int	offset = 0;
+		  
+
+		  /*
+		   * we have a conditional branch
+		   *
+		   * bits  0 - 15 encode the source register or displacement
+		   * bits 16 - 20 encode the condition
+		   * bits 21 - 23 encode the type of branch
+		   * bits 24      is 0
+		   * bit  25      encodes the addressing mode
+		   * bits 26 - 31 are 011010
+		   */
+
+		  strcpy( op, "B" );
+
+		  strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+		  
+		  switch ((op_code >> 21) & 0x7)
+		    {
+		    case B_000:	                    offset = 1; break;
+		    case B_001:	strcat( op, "D"  ); offset = 3; break;
+		    case B_010: return;
+		    case B_011:	strcat( op, "AT" ); offset = 3; break;
+		    case B_100:	return;
+		    case B_101:	strcat( op, "AF" ); offset = 3; break;
+		    case B_110:	return;
+		    case B_111:	return;
+		    }
+
+		  myprint( op );
+
+		  pad_to( COL_OPERAND );
+		  
+		  if (op_code & (1 << 25))
+		    {
+		      op_code = mask_and_sign_extend_word( (unsigned long)op_code, 0xffffL );
+		      
+		      myprint( "%+d", op_code );
+
+		      pad_to( COL_DESTINATION );
+		      
+		      myprint( "// PC = %#x", pc / 4 + (op_code + offset) );
+		    }
+		  else
+		    {
+		      myprint( "%s", _regname( op_code & 0x1f ) );
+		    }
+		}
+	    }
+	  else
+	    {
+	      int	offset = 0;
+
+	      
+	      /* bits 27 - 31 are 01100 */
+
+	      switch ((op_code >> 24) & 0x7)
+		{
+		case B_000: myprint( "BR"    ); offset = 1;  break;
+		case B_001: myprint( "BRD"   ); offset = 3;  break;
+		case B_010: myprint( "CALL"  ); offset = 1;  break;
+		case B_011: myprint( "LAJ"   ); offset = 3;  break;
+		case B_100: myprint( "RPTB"  ); offset = 1;  break;
+		case B_101: myprint( "RPTBD" ); offset = 3;  break;
+		case B_110: myprint( "SWI"   ); return;
+		default:
+		case B_111: return;
+		}
+
+	      op_code = mask_and_sign_extend_word( (unsigned long)op_code, 0xffffffL );
+
+	      pad_to( COL_OPERAND );
+
+	      myprint( "%+d", op_code );
+
+	      pad_to( COL_DESTINATION );
+	      
+	      myprint( "// PC = %#x", pc / 4 + (op_code + offset) );
+	    }
+	}
+    }
+  else
+    {
+      char 		op[ 10 ];
+      immed_type	type;      
+      
+      
+      /*
+       * we have a conditional load op
+       *
+       * bits  0 - 15 encode the source
+       * bits 16 - 20 encode the destination
+       * bits 21 - 22 encode the addressing mode
+       * bits 23 - 27 encode the condition
+       * bit  28      encodes op
+       * bits 29 - 31 are 010
+       */
+
+      if (((op_code >> 28) & 0x1) == 0)
+	{
+	  strcpy( op, "LDF" );
+
+	  type = TYPE_FLOATING;
+	}
+      else
+	{
+	  strcpy( op, "LDI" );
+
+	  type = TYPE_SIGNED;
+			     
+	}
+      
+      strcat( op, _condname( (op_code >> 23) & 0x1f ) );
+
+      decode_diadic_address( op_code, op, type, FALSE );
+    }
+
+  return;
+
+} /* decode_flow_control */
+
+/*}}}*/
+/*{{{  decode_non_word_load() */
+
+/*
+ * decodes a 'C40 op code concerened with loading non-word quantities
+ */
+
+static void
+decode_non_word_load( long int op_code ) /* instruction */
+{
+  char		op[ 5 ];
+  long int	B;
+  
+  
+  /*
+   * we have a non-word data transfer
+   *
+   * bits  0 - 16 encode source
+   * bits 17 - 20 encode destination
+   * bits 21 - 22 encode addressing type
+   * bits 23 - 24 MAY encode a byte selector
+   * bits 24 - 27 encode op
+   * bits 28 - 31 are 1011
+   */
+
+  B = ((op_code >> 23) & 0x03);
+  
+  switch ((op_code >> 24) & 0x0f)
+    {
+    case OP_LB:
+    case B_0001:
+      strcpy( op, "LB0" );
+      
+      op[ 2 ] = (char)('0' + B);
+      
+      decode_diadic_address( op_code, op, TYPE_SIGNED, FALSE );
+      
+      break;
+
+    case OP_LBU:
+    case B_0011:
+      strcpy( op, "LBU0" );
+      
+      op[ 3 ] = (char)('0' + B);
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+
+    case OP_LWL:
+    case B_0101:
+      strcpy( op, "LWL0" );
+
+      op[ 3 ] = (char)('0' + B);
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+
+    case OP_LWR:
+    case B_0111:
+      strcpy( op, "LWR0" );
+
+      op[ 3 ] = (char)('0' + B);
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+
+    case OP_MB:
+    case B_1001:
+      strcpy( op, "MB0" );
+
+      op[ 2 ] = (char)('0' + B);
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+
+    case OP_LH:
+      strcpy( op, "LH0" );
+
+      op[ 2 ] = (char)('0' + (B & 1));
+      
+      decode_diadic_address( op_code, op, TYPE_SIGNED, FALSE );
+      
+      break;
+      
+    case OP_LHU:
+      strcpy( op, "LHU0" );
+
+      op[ 3 ] = (char)('0' + (B & 1));
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+
+    case OP_MH:
+      strcpy( op, "MH0" );
+
+      op[ 2 ] = (char)('0' + (B & 1));
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+
+    default:
+      return;
+    }
+
+  return;
+
+} /* decode_non_word_load */
+
+/*}}}*/
+/*{{{  decode_special_triadic() */
+
+/*
+ * decodes a multiple parallel triadic op code
+ */
+
+static void
+decode_special_triadic( long int op_code ) /* instruction */
+{
+  char *	op1;
+  char *	op2;
+  long int	src1;
+  long int	src2;
+  long int	src3;
+  long int	src4;
+  long int	dst1;
+  long int	dst2;
+  
+  
+  /*
+   * we have a special form of triadic op code
+   *
+   * bits  0 -  7 encode src4
+   * bits  8 - 15 encode src3
+   * bits 16 - 18 encode src2
+   * bits 19 - 21 encode src1
+   * bit  22      encodes dst2
+   * bit  23      encodes dst1
+   * bits 24 - 25 encode addressing mode
+   * bits 26 - 27 encode operation
+   * bits 28 - 31 are 1000
+   */
+
+  src4 =  op_code        & 0xff;
+  src3 = (op_code >>  8) & 0xff;
+  src2 = (op_code >> 16) & 0x7;
+  src1 = (op_code >> 19) & 0x7;
+  dst2 = ((op_code >> 22) & 0x1) + 2;
+  dst1 = (op_code >> 23) & 0x1;
+  
+  switch ((op_code >> 26) & 0x3)
+    {
+    default:
+    case OP_MPYF3_ADDF3:	op1 = "MPYF3"; op2 = "ADDF3"; break;
+    case OP_MPYF3_SUBF3:	op1 = "MPYF3"; op2 = "SUBF3"; break;
+    case OP_MPYI3_ADDI3:	op1 = "MPYI3"; op2 = "ADDI3"; break;
+    case OP_MPYI3_SUBI3:	op1 = "MPYI3"; op2 = "SUBI3"; break;
+    }
+
+  switch ((op_code >> 24) & 0x3)
+    {
+    case B_00:	/* src3 op1 src4, src1 op2 src2 */
+      
+      myprint( "%s", op1 );
+
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+
+      myprint( ", " );
+      
+      decode_indirect_address( src4 >> 3, src4 & 7, 1 );
+
+      myprint( ", %s", _regname( dst1 ) );
+
+      new_line();
+      
+      pad_to( COL_OP_CODE );
+
+      myprint( "|| %s", op2 );
+
+      pad_to( COL_OPERAND2 );
+      
+      myprint( "%s, %s, %s", _regname( src1 ), _regname( src2 ), _regname( dst2 ) );
+
+      break;
+      
+    case B_01:	/* src3 op1 src1, src4 op2 src2 */
+      
+      myprint( "%s", op1 );
+
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+
+      myprint( ", %s, %s", _regname( src1 ), _regname( dst1 ), op2 );
+
+      new_line();
+
+      pad_to( COL_OP_CODE );
+      
+      myprint( "|| %s", op2 );
+
+      pad_to( COL_OPERAND2 );
+      
+      decode_indirect_address( src4 >> 3, src4 & 7, 1 );
+
+      myprint( ", %s, %s", _regname( src2 ), _regname( dst2 ) );
+
+      break;
+      
+    case B_10:	/* src1 op1 src2, src3 op2 src4 */
+      
+      myprint( "%s", op1 );
+
+      pad_to( COL_OPERAND );
+
+      myprint( "%s, %s, %s", _regname( src1 ), _regname( src2 ), _regname( dst1 ) );
+
+      new_line();
+
+      pad_to( COL_OP_CODE );
+      
+      myprint( "|| %s ", op2 );
+
+      pad_to( COL_OPERAND2 );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+
+      myprint( ", " );
+
+      decode_indirect_address( src4 >> 3, src4 & 7, 1 );
+
+      myprint( ", %s", _regname( dst2 ) );
+
+      break;
+      
+    case B_11:	/* src3 op1 src1, src2 op2 src4 */
+      
+      myprint( "%s", op1 );
+
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+
+      myprint( ", %s, %s", _regname( src1 ), _regname( dst1 ) );
+
+      new_line();
+
+      pad_to( COL_OP_CODE );
+      
+      myprint( "|| %s", op2 );
+
+      pad_to( COL_OPERAND2 );
+      
+      myprint( "%s, ", _regname( src2 ) );
+
+      decode_indirect_address( src4 >> 3, src4 & 7, 1 );
+
+      myprint( ", %s", _regname( dst2 ) );
+
+      break;
+    }
+  
+  return;
+  
+} /* decode_special_triadic */
+
+/*}}}*/
+/*{{{  decode_non_word_load_or_triadic() */
+
+static void
+decode_non_word_load_or_triadic( long int op_code ) /* instruction */
+{
+  /*
+   * we have either a special form of triadic op code or a non-word data transfer
+   *
+   * bits 28 - 29 encode form
+   * bits 30 - 31 are 10
+   */
+
+  switch ((op_code >> 28) & 0x3)
+    {
+    case B_00:	decode_special_triadic( op_code ); break;
+    case B_01:	return;
+    case B_10:	return;
+    case B_11:	decode_non_word_load(   op_code ); break;
+    }
+
+  return;
+
+} /* decode_non_word_load_or_triadic */
+
+/*}}}*/
+/*{{{  decode_traidic_parallel_addressing() */
+
+static void
+decode_triadic_parallel_addressing(
+				   long int	op_code,
+				   char *	first_op,
+				   char *	second_op )
+{
+  unsigned long	src1;
+  unsigned long	src2;
+  unsigned long	src3;
+  unsigned long	dst1;
+  unsigned long	dst2;
+
+  
+  /*
+   * we have a triaidic parallel op code of the form:
+   *
+   *    first_op  src2, src1, dst1
+   * || second_op src3, dst2
+   *
+   *
+   * bits  0 -  7 encode src2
+   * bits  8 - 15 encode dst2
+   * bits 16 - 18 encode src3
+   * bits 19 - 21 encode src1
+   * bits 22 - 24 encode dst1
+   * bits 25 - 29 encode the operation
+   * bits 30 - 31 are 11
+   */
+
+  src2 = (op_code      ) & 0xff;
+  dst2 = (op_code >>  8) & 0xff;
+  src3 = (op_code >> 16) & 0x07;
+  src1 = (op_code >> 19) & 0x07;
+  dst1 = (op_code >> 22) & 0x07;
+  
+  myprint( "%s ", first_op );
+
+  pad_to( COL_OPERAND );
+  
+  decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+  
+  myprint( ", %s, %s", _regname( src1 ), _regname( dst1 ) );
+
+  new_line();
+  
+  pad_to( COL_OP_CODE );
+  
+  myprint( "|| %s", second_op );
+
+  pad_to( COL_OPERAND2 );
+  
+  myprint( "%s, ", _regname( src3 ) );
+      
+  decode_indirect_address( dst2 >> 3, dst2 & 7, 1 );
+      
+  return;
+      
+} /* decode_triadic_parallel_addressing */
+
+/*}}}*/
+/*{{{  decode_diadic_parallel_addressing() */
+
+static void
+decode_diadic_parallel_addressing(
+				  long int	op_code,
+				  char *	first_op,
+				  char *	second_op )
+{
+  unsigned long	src2;
+  unsigned long	src3;
+  unsigned long	dst1;
+  unsigned long	dst2;
+
+  
+  /*
+   * we have a diaidic parallel op code of the form:
+   *
+   *    first_op  src2, dst1
+   * || second_op src3, dst2
+   *
+   *
+   * bits  0 -  7 encode src2
+   * bits  8 - 15 encode dst2
+   * bits 16 - 18 encode src3
+   * bits 19 - 21 are 000
+   * bits 22 - 24 encode dst1
+   * bits 25 - 29 encode the operation
+   * bits 30 - 31 are 11
+   */
+
+  src2 = (op_code      ) & 0xff;
+  dst2 = (op_code >>  8) & 0xff;
+  src3 = (op_code >> 16) & 0x07;
+  dst1 = (op_code >> 22) & 0x07;
+  
+  /* validity test */
+  
+  if (((op_code >> 19) & 0x07) != 0)
+    {
+      return;
+    }
+
+  myprint( "%s", first_op );
+
+  pad_to( COL_OPERAND );
+  
+  decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+
+  myprint( ", %s", _regname( dst1 ) );
+
+  new_line();
+  
+  pad_to( COL_OP_CODE );
+  
+  myprint( "|| %s", second_op );
+
+  pad_to( COL_OPERAND2 );
+  
+  myprint( "%s, ", _regname( src3 ) );
+      
+  decode_indirect_address( dst2 >> 3, dst2 & 7, 1 );
+  
+  return;
+      
+} /* decode_triadic_parallel_addressing */
+
+/*}}}*/
+/*{{{  decode_parallel_op() */
+
+  
+static void
+decode_parallel_op( long int op_code ) /* instruction */
+{
+  unsigned long	field1;
+  unsigned long	field2;
+  unsigned long	field3;
+  unsigned long	field4;
+  unsigned long	field5;
+
+  
+  /*
+   * we have a parallel op code
+   *
+   * bits  0 -  7 encode field1
+   * bits  8 - 15 encode field2
+   * bits 16 - 18 encode field3
+   * bits 19 - 21 encode field4
+   * bits 22 - 24 encode field5
+   * bits 25 - 29 encode the operation
+   * bits 30 - 31 are 11
+   */
+
+  field1 = (op_code      ) & 0xff;
+  field2 = (op_code >>  8) & 0xff;
+  field3 = (op_code >> 16) & 0x07;
+  field4 = (op_code >> 19) & 0x07;
+  field5 = (op_code >> 22) & 0x07;
+  
+  switch ((op_code >> 25) & 0x1f)
+    {
+    case OP_STF_STF:
+      /* validity tests */
+
+      if (field4 != 0)
+	{
+	  return;
+	}
+      
+      myprint( "STF" );
+      
+      pad_to( COL_OPERAND );
+
+      myprint( "%s, ", _regname( field5 ) );
+      
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+
+      new_line();
+
+      pad_to( COL_OP_CODE );
+      
+      myprint( "|| STF" );
+
+      pad_to( COL_OPERAND2 );
+
+      myprint( "%s, ", _regname( field3 ) );
+      
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+      
+      break;
+      
+    case OP_STI_STI:
+      /* validity tests */
+
+      if (field4 != 0)
+	{
+	  return;
+	}
+      
+      myprint( "STI" );
+
+      pad_to( COL_OPERAND );
+
+      myprint( "%s, ", _regname( field5 ) );
+      
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+
+      new_line();
+      
+      pad_to( COL_OP_CODE );
+      
+      myprint( "|| STI" );
+
+      pad_to( COL_OPERAND2 );
+
+      myprint( "%s, ", _regname( field3 ) );
+      
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+      
+      break;
+      
+    case OP_LDF_LDF:
+      /* validity tests */
+
+      if (field3 != 0)
+	{
+	  return;
+	}
+      
+      myprint( "LDF" );
+
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+      
+      myprint( ", %s", _regname( field5 ) );
+
+      new_line();
+
+      pad_to( COL_OP_CODE );
+      
+      myprint( "|| LDF" );
+
+      pad_to( COL_OPERAND2 );
+      
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+
+      myprint( ", %s", _regname( field4 ) );
+      
+      break;
+      
+    case OP_LDI_LDI:
+      /* validity tests */
+
+      if (field3 != 0)
+	{
+	  return;
+	}
+      
+      myprint( "LDI" );
+
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+      
+      myprint( ", %s", _regname( field5 ) );
+
+      new_line();
+      
+      pad_to( COL_OP_CODE );
+
+      myprint( "|| LDI" );
+
+      pad_to( COL_OPERAND2 );
+      
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+
+      myprint( ", %s", _regname( field4 ) );
+      
+      break;
+      
+    case OP_ABSF_STF:	decode_diadic_parallel_addressing(  op_code, "ABSF",   "STF" ); break;
+    case OP_ABSI_STI:	decode_diadic_parallel_addressing(  op_code, "ABSI",   "STI" ); break;
+    case OP_ADDF3_STF:	decode_triadic_parallel_addressing( op_code, "ADDF3",  "STF" ); break;
+    case OP_ADDI3_STI:	decode_triadic_parallel_addressing( op_code, "ADDI3",  "STI" ); break;
+    case OP_AND3_STI:	decode_triadic_parallel_addressing( op_code, "AND3",   "STI" ); break;
+    case OP_ASH3_STI:	decode_triadic_parallel_addressing( op_code, "ASH3",   "STI" ); break;
+    case OP_FIX_STI:	decode_diadic_parallel_addressing(  op_code, "FIX",    "STI" ); break;
+    case OP_FLOAT_STF:	decode_diadic_parallel_addressing(  op_code, "FLOAT",  "STF" ); break;
+    case OP_LDF_STF:	decode_diadic_parallel_addressing(  op_code, "LDF",    "STF" ); break;
+    case OP_LDI_STI:	decode_diadic_parallel_addressing(  op_code, "LDI",    "STI" ); break;
+    case OP_LSH3_STI:	decode_triadic_parallel_addressing( op_code, "LSH3",   "STI" ); break;
+    case OP_MPYF3_STF:	decode_triadic_parallel_addressing( op_code, "MPYF3",  "STF" ); break;
+    case OP_MPYI3_STI:	decode_triadic_parallel_addressing( op_code, "MPYI3",  "STI" ); break;
+    case OP_NEGF_STF:	decode_diadic_parallel_addressing(  op_code, "NEGF",   "STF" ); break;
+    case OP_NEGI_STI:	decode_diadic_parallel_addressing(  op_code, "NEGI",   "STI" ); break;
+    case OP_NOT_STI:	decode_diadic_parallel_addressing(  op_code, "NOT",    "STI" ); break;
+    case OP_OR3_STI:	decode_triadic_parallel_addressing( op_code, "OR3",    "STI" ); break;
+    case OP_SUBF3_STF:	decode_triadic_parallel_addressing( op_code, "SUBF3",  "STF" ); break;
+    case OP_SUBI3_STI:	decode_triadic_parallel_addressing( op_code, "SUBI3",  "STI" ); break;
+    case OP_XOR3_STI:	decode_triadic_parallel_addressing( op_code, "XOR3",   "STI" ); break;
+    case OP_TOIEEE_STF:	decode_diadic_parallel_addressing(  op_code, "TOIEEE", "STF" ); break;
+    case OP_FRIEEE_STF:	decode_diadic_parallel_addressing(  op_code, "FRIEEE", "STF" ); break;
+    default:
+      return;
+    }
+
+  return;
+
+} /* decode_parallel_op */
+
+/*}}}*/
+/*{{{  decode_triadic_address() */
+
+/*
+ * deocdes a 'C40 triadic op code
+ */
+
+static void
+decode_triadic_address(
+		       long int		op_code,	/* instruction                    */
+		       char *		instruction,	/* string identifying the op code */
+		       immed_type	type )		/* type of operation              */
+{
+  char *	pdest;
+  long int	dest;
+  unsigned long	addr;
+  unsigned long	src1;
+  unsigned long	src2;
+  
+
+  /*
+   * we have a triaidic op code
+   *
+   * bits  0 -  7 encode source2
+   * bits  8 - 15 encode source1
+   * bits 16 - 20 encode destination register
+   * bits 21 - 22 encode addessing mode
+   * bits 23 - 27 encode op code
+   * bit  28      encodes addressing type
+   * bits 29 - 31 are 001
+   */
+
+  myprint( instruction );
+
+  pad_to( COL_OPERAND );
+  
+  dest = (op_code >> 16) & 0x1f;
+
+  if (type == TYPE_FLOATING)
+    {
+      /* the destination (or source) register of a floating point op must be R0 - R11 */
+
+      if (!is_extended_precision_register( dest ))
+	{
+	  return;	  
+	}
+    }
+
+  pdest = _regname( dest );
+  
+  /* build combined addressing type */
+
+  addr = (op_code >> 28) & 0x1;
+
+  addr <<= 2;
+
+  addr |= ((op_code >> 21) & 0x3);
+
+  /* extract source fields */
+  
+  src2 =  op_code       & 0xff;
+  src1 = (op_code >> 8) & 0xff;
+
+  /* and print out result */
+  
+  switch (addr)
+    {
+    case B_000:	/* src1 = register, src2 = register */
+      
+      myprint( "%s, %s, %s",
+	      _regname( src2 & 0x3f ),
+	      _regname( src1 & 0x3f ),
+	      pdest );
+      break;
+
+    case B_001: /* src1 = indirect, src2 = register */
+
+      myprint( "%s, ", _regname( src2 & 0x3f ) );
+	      
+      decode_indirect_address( src1 >> 3, src1 & 7, 1 );
+
+      myprint( ", %s", pdest );
+      
+      break;
+      
+    case B_010:	/* src1 = register, src2 = indirect */
+      
+      decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+
+      myprint( ", %s", _regname( src1 & 0x3f ) );
+      
+      myprint( ", %s", pdest );
+      
+      break;
+
+    case B_011:	/* src1 = indirect, src2 = indirect */
+      
+      decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+
+      myprint( ", " );
+      
+      decode_indirect_address( src1 >> 3, src1 & 7, 1 );
+
+      myprint( ", %s", pdest );
+      
+      break;
+
+    case B_100: /* src1 = register, src2 = immediate */
+      
+      if (type == TYPE_FLOATING)
+	return;
+      else if (type == TYPE_SIGNED)
+	{
+	  op_code = mask_and_sign_extend_word( op_code, 0xff );
+	  
+	  myprint( "%-3ld, %s, %s",
+		  op_code,
+		  _regname( src1 & 0x3f ),
+		  pdest );	  
+	}      
+      else
+	{
+	  myprint( "%#-3lx, %s, %s",
+		  op_code & 0xff,
+		  _regname( src1 & 0x3f ),
+		  pdest );	  
+	}      
+     
+      break;
+      
+    case B_101:	/* src1 = register, src2 = indirect */
+      
+      myprint( "*+AR%.1ld(%.2lu), %s, %s",
+	      src2 & 0x7, (src2 >> 3),
+	      _regname( src1 & 0x3f ),
+	      pdest );
+      break;
+      
+    case B_110:	/* src1 = indirect, src2 = immediate */
+      
+      if (type == TYPE_FLOATING)
+	{
+	  return;
+	}
+      else if (type == TYPE_SIGNED)
+	{
+	  myprint( "%-3ld, *+AR%.1ld(%.2lu), %s",
+		  mask_and_sign_extend_word( op_code, 0xff ),
+		  src1 & 0x7, (src1 >> 3),
+		  pdest );      
+	}
+      else
+	{
+	  myprint( "%#-3lx, *+AR%.1ld(%.2lu), %s",
+		  op_code & 0xff,
+		  src1 & 0x7, (src1 >> 3),
+		  pdest );
+	}
+     
+      break;
+      
+    case B_111:	/* src1 = indirect, src2 = indirect */
+      
+      myprint( "*+AR%.1ld(%.2lu), *+AR%.1ld(%.2lu), %s",
+	      src2 & 0x7, (src2 >> 3),
+	      src1 & 0x7, (src1 >> 3),
+	      pdest );
+      break;
+      
+    default:
+      break;
+    }
+
+  return;
+  
+} /* decode_triadic_address */
+
+/*}}}*/
+/*{{{  decode_monadic_op() */
+
+static void
+decode_monadic_op(
+		  long int	op_code,
+		  char *	instruction )
+{
+  myprint( "%s", instruction );
+
+  pad_to( COL_OPERAND );
+  
+  myprint( "%s", _regname( (op_code >> 16) & 0x1f ) );
+
+  return;
+  
+} /* decode_mondadic_op */
+
+/*}}}*/
+/*{{{  decode_sequential_op() */
+
+  
+static void
+decode_sequential_op( long int op_code ) /* instruction */
+{
+  /*
+   * bit  29      encodes diadic or triadic style op codes
+   * bits 30 - 31 are 00
+   */
+  
+  if (op_code & 0x20000000L)
+    {
+      /*
+       * triaidic op code
+       *
+       * bits 23 - 27 encode op code
+       * bit  28      encodes addressing type
+       * bits 29 - 31 are 001
+       */
+
+      switch ((op_code >> 23) & 0x1f)
+	{
+	case OP_ADDC3:	decode_triadic_address( op_code, "ADDC3"   , TYPE_SIGNED   ); return;
+	case OP_ADDF3:	decode_triadic_address( op_code, "ADDF3"   , TYPE_FLOATING ); return;
+	case OP_ADDI3:	decode_triadic_address( op_code, "ADDI3"   , TYPE_SIGNED   ); return;
+	case OP_ASH3:	decode_triadic_address( op_code, "ASH3"    , TYPE_SIGNED   ); return;
+	case OP_CMPF3:	decode_triadic_address( op_code, "CMPF3"   , TYPE_FLOATING ); return;
+	case OP_CMPI3:	decode_triadic_address( op_code, "CMPI3"   , TYPE_SIGNED   ); return;
+	case OP_LSH3:	decode_triadic_address( op_code, "LSH3"    , TYPE_SIGNED   ); return;
+	case OP_MPYF3:	decode_triadic_address( op_code, "MPYF3"   , TYPE_FLOATING ); return;
+	case OP_MPYI3:	decode_triadic_address( op_code, "MPYI3"   , TYPE_SIGNED   ); return;
+	case OP_SUBB3:	decode_triadic_address( op_code, "SUBB3"   , TYPE_SIGNED   ); return;
+	case OP_SUBF3:	decode_triadic_address( op_code, "SUBF3"   , TYPE_FLOATING ); return;
+	case OP_SUBI3:	decode_triadic_address( op_code, "SUBI3"   , TYPE_SIGNED   ); return;
+	case OP_MPYSHI3:decode_triadic_address( op_code, "MPYSHI3" , TYPE_SIGNED   ); return;
+	case OP_AND3:	decode_triadic_address( op_code, "AND3"    , TYPE_SIGNED   ); return;
+	case OP_ANDN3:	decode_triadic_address( op_code, "ANDN3"   , TYPE_SIGNED   ); return;
+	case OP_OR3:	decode_triadic_address( op_code, "OR3"     , TYPE_SIGNED   ); return;
+	case OP_TSTB3:	decode_triadic_address( op_code, "TSTB3"   , TYPE_SIGNED   ); return;
+	case OP_XOR3:	decode_triadic_address( op_code, "XOR3"    , TYPE_SIGNED   ); return;
+	case OP_MPYUHI3:decode_triadic_address( op_code, "MPYUHI3" , TYPE_SIGNED   ); return;
+	default:
+	  return;
+	}
+    }
+  else
+    {
+      /*
+       * diaidic op code
+       *
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+
+      switch (op_code >> 23)
+	{
+	case OP_ABSF:	decode_diadic_address( op_code, "ABSF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_ABSI:	decode_diadic_address( op_code, "ABSI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_ADDC:	decode_diadic_address( op_code, "ADDC"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_ADDF:	decode_diadic_address( op_code, "ADDF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_ADDI:	decode_diadic_address( op_code, "ADDI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_AND:	decode_diadic_address( op_code, "AND"    , TYPE_UNSIGNED, FALSE ); return;
+	case OP_ANDN:	decode_diadic_address( op_code, "ANDN"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_ASH:	decode_diadic_address( op_code, "ASH"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_CMPF:	decode_diadic_address( op_code, "CMPF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_CMPI:	decode_diadic_address( op_code, "CMPI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_FIX:	decode_diadic_address( op_code, "FIX"    , TYPE_FLOATING, FALSE ); return;
+	case OP_FLOAT:	decode_diadic_address( op_code, "FLOAT"  , TYPE_SIGNED,   FALSE ); return;
+	case OP_IDLE:	myprint( "IDLE"                          ); return;
+	case OP_LDE:	decode_diadic_address( op_code, "LDE"    , TYPE_FLOATING, FALSE ); return;
+	case OP_LDF:	decode_diadic_address( op_code, "LDF"    , TYPE_FLOATING, FALSE ); return;
+	case OP_LDFI:	decode_diadic_address( op_code, "LDFI"   , TYPE_FLOATING, FALSE ); return;
+	case OP_LDI:	decode_diadic_address( op_code, "LDI"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDII:	decode_diadic_address( op_code, "LDII"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDM:	decode_diadic_address( op_code, "LDM"    , TYPE_FLOATING, FALSE ); return;
+	case OP_LSH:	decode_diadic_address( op_code, "LSH"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_MPYF:	decode_diadic_address( op_code, "MPYF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_MPYI:	decode_diadic_address( op_code, "MPYI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_NEGB:	decode_diadic_address( op_code, "NEGB"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_NEGF:	decode_diadic_address( op_code, "NEGF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_NEGI:	decode_diadic_address( op_code, "NEGI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_NOP:	myprint( "NOP"                           ); return;
+	case OP_NORM:	decode_diadic_address( op_code, "NORM"   , TYPE_FLOATING, FALSE ); return;
+	case OP_NOT:	decode_diadic_address( op_code, "NOT"    , TYPE_UNSIGNED, FALSE ); return;
+	case OP_POP:	decode_monadic_op(     op_code, "POP"    ); return;
+	case OP_POPF:	decode_monadic_op(     op_code, "POPF"   ); return;
+	case OP_PUSH:	decode_monadic_op(     op_code, "PUSH"   ); return;
+	case OP_PUSHF:	decode_monadic_op(     op_code, "PUSHF"  ); return;
+	case OP_OR:	decode_diadic_address( op_code, "OR"     , TYPE_UNSIGNED, FALSE ); return;
+	case OP_RND:	decode_diadic_address( op_code, "RND"    , TYPE_FLOATING, FALSE ); return;
+	case OP_ROL:	decode_monadic_op(     op_code, "ROL"    ); return;
+	case OP_ROLC:	decode_monadic_op(     op_code, "ROLC"   ); return;
+	case OP_ROR:	decode_monadic_op(     op_code, "ROR"    ); return;
+	case OP_RORC:	decode_monadic_op(     op_code, "RORC"   ); return;
+	case OP_RPTS:	decode_diadic_address( op_code, "RPTS"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_STF:	decode_diadic_address( op_code, "STF"    , TYPE_FLOATING, TRUE  ); return;
+	case OP_STFI:	decode_diadic_address( op_code, "STFI"   , TYPE_FLOATING, TRUE  ); return;
+	case OP_STI:	decode_integer_store(  op_code           ); return;
+	case OP_SIGI:	decode_diadic_address( op_code, "SIGI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_STII:	decode_diadic_address( op_code, "STII"   , TYPE_SIGNED,   TRUE  ); return;
+	case OP_SUBB:	decode_diadic_address( op_code, "SUBB"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBC:	decode_diadic_address( op_code, "SUBC"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBF:	decode_diadic_address( op_code, "SUBF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_SUBI:	decode_diadic_address( op_code, "SUBI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBRB:	decode_diadic_address( op_code, "SUBRB"  , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBRF:	decode_diadic_address( op_code, "SUBRF"  , TYPE_FLOATING, FALSE ); return;
+	case OP_SUBRI:	decode_diadic_address( op_code, "SUBRI"  , TYPE_SIGNED,   FALSE ); return;
+	case OP_TSTB:	decode_diadic_address( op_code, "TSTB"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_XOR:	decode_diadic_address( op_code, "XOR"    , TYPE_UNSIGNED, FALSE ); return;
+	case OP_IACK:	decode_diadic_address( op_code, "IACK"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_TOIEEE:	decode_diadic_address( op_code, "TOIEEE" , TYPE_FLOATING, FALSE ); return;
+	case OP_FRIEEE:	decode_diadic_address( op_code, "FRIEEE" , TYPE_FLOATING, FALSE ); return;
+	case OP_RSQRF:	decode_diadic_address( op_code, "RSQRF"  , TYPE_FLOATING, FALSE ); return;
+	case OP_RCPF:	decode_diadic_address( op_code, "RCPF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_MPYSHI:	decode_diadic_address( op_code, "MPYSHI" , TYPE_SIGNED,   FALSE ); return;
+	case OP_MPYUHI:	decode_diadic_address( op_code, "MPYUHI" , TYPE_UNSIGNED, FALSE ); return;
+	case OP_LDA:	decode_diadic_address( op_code, "LDA"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDPK:	decode_diadic_address( op_code, "LDPK"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDHI:	decode_diadic_address( op_code, "LDHI"   , TYPE_UNSIGNED, FALSE ); return;
+	default:
+	  return;
+	}
+    }
+  
+  return;
+  
+} /* decode_sequential_op */
+
+/*}}}*/
+/*{{{  disassemble() */
+
+void
+disassemble(
+	    unsigned long	instruction,
+	    unsigned long	pc,
+	    int			flag )
+{
+  /*
+   * bits 30 and 31 encode instruction type
+   */
+
+  if (flag)
+    current_column = 80;
+  else
+    current_column = 0;
+  
+  switch ((instruction >> 30) & 0x3)
+    {
+    default:
+    case 0: decode_sequential_op(            instruction     ); return;
+    case 1: decode_flow_control(             instruction, pc ); return;
+    case 2: decode_non_word_load_or_triadic( instruction     ); return;
+    case 3: decode_parallel_op(              instruction     ); return;
+    }
+
+} /* disassemble */
+
+/*}}}*/
+
+/*}}}*/
+
+/* end of c40objdis.c */
+@
+
+
+1.21
+log
+@fixed sparc build
+@
+text
+@d1 2
+d7 2
+a8 2
+ * Version:	$Revision: 1.20 $
+ * Date:	$Date: 1993/06/22 08:42:50 $
+d21 3
+d34 3
+d47 3
+d58 4
+d70 3
+d77 5
+d122 2
+d150 2
+d168 2
+d238 2
+d250 2
+d297 2
+d323 2
+d427 3
+d616 3
+d715 2
+d1124 2
+d1238 2
+d1360 1
+a1360 1
+      decode_indirect_address( src4 >> 4, src4 & 7, 1 );
+d1397 2
+d1422 2
+d1484 3
+a1486 1
+  
+d1551 3
+d1735 2
+d1883 1
+a1883 1
+		  src1 & 0x7, (src1 >> 2),
+d1890 1
+a1890 1
+		  src1 & 0x7, (src1 >> 2),
+d1912 2
+d1930 3
+d2060 2
+d2088 6
+@
+
+
+1.20
+log
+@removed extraneous fflush calls
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.19 $
+ * Date:	$Date: 1992/12/08 09:36:20 $
+d351 1
+a351 1
+#if defined HP || defined sparc
+@
+
+
+1.19
+log
+@removed conmpile time warnings
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.18 $
+ * Date:	$Date: 1992/10/20 10:36:39 $
+a73 4
+  fflush( outfd );
+
+  fseek( outfd, 0L, SEEK_END );
+  
+a92 2
+  fflush( outfd );
+
+a119 2
+
+  fflush( outfd );
+@
+
+
+1.18
+log
+@fixed decoding of FP numbersa
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.17 $
+ * Date:	$Date: 1992/09/14 08:31:43 $
+d21 1
+d154 2
+a155 1
+char *_regname( int r )
+d157 4
+a160 4
+	static char *	regstr =
+	  "R0 \0R1 \0R2 \0R3 \0R4 \0R5 \0R6 \0R7 \0"
+	  "AR0\0AR1\0AR2\0AR3\0AR4\0AR5\0AR6\0AR7\0"
+	  "DP \0IR0\0IR1\0BK \0SP \0ST \0DIE\0IIE\0"
+d162 54
+a216 1
+	r &= 0x1f;
+a217 47
+	if (pcsregs) {
+		switch (r)	{
+			/* r0-7 */
+			case 0x00 : return("R_A1");
+			case 0x01 : return("R_A2");
+			case 0x02 : return("R_A3");
+			case 0x03 : return("R_A4");
+			case 0x04 : return("R_FV1");
+			case 0x05 : return("R_FV2");
+			case 0x06 : return("R_FT1");
+			case 0x07 : return("R_FT2");
+
+			/* ar0 - ar7 */
+			case 0x08 : return("R_ADDR1");
+			case 0x09 : return("R_ADDR2");
+			case 0x0a : return("R_ADDR3");
+			case 0x0b : return("R_ADDR4");
+			case 0x0c : return("R_MT");
+			case 0x0d : return("R_ATMP");
+			case 0x0e : return("R_USP");
+			case 0x0f : return("R_FP");
+
+			/* odds and sods */
+			case 0x10 : return("R_V1");
+			case 0x11 : return("R_BASE");
+			case 0x12 : return("R_USE");
+			case 0x13 : return("R_V2");
+			case 0x14 : return("R_SSP");
+			case 0x15 : return("R_ST");
+			case 0x16 : return("DIE");
+			case 0x17 : return("IIE");
+			case 0x18 : return("IIF");
+
+			case 0x19 : return("R_TMP1");
+			case 0x1a : return("R_TMP2");
+			case 0x1b : return("R_TMP3");
+
+			/* ar8 - ar11 */
+			case 0x1c : return("R_V3");
+			case 0x1d : return("R_V4");
+			case 0x1e : return("R_T1");
+			case 0x1f : return("R_LR");
+		}
+	} else
+		return ((r * 4) + regstr);
+}
+		       
+d234 3
+a236 3
+			int	mode,
+			int	addr,
+			int	disp )
+d304 1
+a304 1
+decode_short_float( int number )
+d307 3
+a309 3
+  int		e;
+  int		s;
+  int		f;
+d405 1
+a405 1
+		      int		op_code,	/* instruction to be decode       */
+d411 2
+a412 2
+  int		dest;
+  int		src;
+d424 2
+a433 2
+      dest = (op_code >> 16) & 0x1f;
+      
+d523 2
+a524 2
+	  int	disp =  op_code       & 0xff;
+	  int	addr = (op_code >> 8) & 0x07;
+d589 1
+a589 1
+decode_integer_store( int op_code )
+d591 1
+a591 1
+  int	dest;
+d687 2
+a688 2
+		    int	op_code,
+		    int pc )
+d910 3
+a912 3
+		  char	op[ 10 ];
+		  int	addr;
+		  int	offset;
+d965 1
+a965 1
+		  int	offset;
+d1017 1
+a1017 1
+	      int	offset;
+d1093 1
+a1093 1
+decode_non_word_load( int op_code ) /* instruction */
+d1095 2
+a1096 2
+  char	op[ 5 ];
+  int	B;
+d1110 1
+a1110 1
+  B = (int)((op_code >> 23) & 0x03);
+d1118 1
+a1118 1
+      op[ 2 ] = '0' + B;
+d1128 1
+a1128 1
+      op[ 3 ] = '0' + B;
+d1138 1
+a1138 1
+      op[ 3 ] = '0' + B;
+d1148 1
+a1148 1
+      op[ 3 ] = '0' + B;
+d1158 1
+a1158 1
+      op[ 2 ] = '0' + B;
+d1167 1
+a1167 1
+      op[ 2 ] = '0' + (B & 1);
+d1176 1
+a1176 1
+      op[ 3 ] = '0' + (B & 1);
+d1185 1
+a1185 1
+      op[ 2 ] = '0' + (B & 1);
+d1205 1
+a1205 1
+decode_special_triadic( int op_code ) /* instruction */
+d1209 6
+a1214 6
+  int		src1;
+  int		src2;
+  int		src3;
+  int		src4;
+  int		dst1;
+  int		dst2;
+d1240 1
+d1358 1
+a1358 1
+decode_non_word_load_or_triadic( int op_code ) /* instruction */
+d1382 1
+a1382 1
+				   int		op_code,
+d1442 1
+a1442 1
+				  int		op_code,
+d1506 1
+a1506 1
+decode_parallel_op( int op_code ) /* instruction */
+d1692 3
+a1694 3
+		      int		op_code,	/* instruction                    */
+		      char *		instruction,	/* string identifying the op code */
+		      immed_type	type )		/* type of operation              */
+d1697 1
+a1697 1
+  int		dest;
+d1863 1
+a1863 1
+		  int		op_code,
+d1878 1
+a1878 1
+decode_sequential_op( int op_code ) /* instruction */
+@
+
+
+1.17
+log
+@fixed for compilation on Sparc
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.16 $
+ * Date:	$Date: 1992/09/04 14:35:10 $
+d351 1
+a351 1
+#ifdef __HELIOSC40
+a352 6
+  /* convert to C40 single precision */
+  
+  converter.l = (e << 24) | (s << (23 - 11)) | (f << (22 - 10));
+  
+#else
+  
+d372 6
+d383 1
+a383 1
+  
+@
+
+
+1.16
+log
+@added -p option to display PCS register aliases
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.15 $
+ * Date:	$Date: 1992/08/24 17:19:23 $
+d21 4
+@
+
+
+1.15
+log
+@removed error messages since they do not help
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.14 $
+ * Date:	$Date: 1992/07/15 17:02:10 $
+d52 1
+a53 1
+
+d149 56
+a204 7
+static char *	regstr =
+  "R0 \0R1 \0R2 \0R3 \0R4 \0R5 \0R6 \0R7 \0"
+  "AR0\0AR1\0AR2\0AR3\0AR4\0AR5\0AR6\0AR7\0"
+  "DP \0IR0\0IR1\0BK \0SP \0ST \0DIE\0IIE\0"
+  "IIF\0RS \0RE \0RC \0R8 \0R9 \0R10\0R11\0";
+
+#define _regname( r ) ((((r) & 0x1f) * 4) + regstr)
+@
+
+
+1.14
+log
+@improved decoding of immediate values
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.13 $
+ * Date:	$Date: 1992/07/15 15:55:19 $
+a204 2
+    default:
+      myprint( "<unknown>" );
+d259 1
+a259 1
+      return "bad format short float";
+d379 1
+a379 2
+	      myprint( "<destination of FP op (%s) is not an FP register (%s)>",
+		     instruction, _regname( dest ) );
+d406 1
+a406 2
+	  myprint( "<bad value in source field of register addressed op %s (%x)>",
+		 instruction, op_code );
+d417 1
+a417 2
+	      myprint( "<non FP source register %s for op %s (%x)>",
+		     _regname( src ), instruction, op_code );
+d924 8
+a931 8
+		    case B_000:	                                   offset = 1; break;
+		    case B_001:	strcat( op, "D"  );                offset = 3; break;
+		    case B_010: myprint( "<bad %08lx>", op_code );             return;
+		    case B_011:	strcat( op, "AT" );                offset = 3; break;
+		    case B_100:	myprint( "<bad %08lx>", op_code );             return;
+		    case B_101:	strcat( op, "AF" );                offset = 3; break;
+		    case B_110:	myprint( "<bad %08lx>", op_code );             return;
+		    case B_111:	myprint( "<bad %08lx>", op_code );             return;
+d963 7
+a969 7
+		case B_000:	myprint( "BR"    ); offset = 1;  break;
+		case B_001:	myprint( "BRD"   ); offset = 3;  break;
+		case B_010:	myprint( "CALL"  ); offset = 1;  break;
+		case B_011:	myprint( "LAJ"   ); offset = 3;  break;
+		case B_100:	myprint( "RPTB"  ); offset = 1;  break;
+		case B_101:	myprint( "RPTBD" ); offset = 3;  break;
+		case B_110:	myprint( "SWI"   ); return;
+d971 1
+a971 1
+		case B_111:	myprint( "<bad %08lx>", op_code ); return;
+d1131 1
+a1131 2
+      myprint( "<bad %08lx>", op_code ); return;
+      break;
+d1308 2
+a1309 2
+    case B_01:	myprint( "<bad %08lx>", op_code ); return;
+    case B_10:	myprint( "<bad %08lx>", op_code ); return;
+d1415 1
+a1415 1
+      myprint( "<bad %08lx>", op_code ); return;
+d1478 1
+a1478 1
+	  myprint( "<illegal field>" ); return;
+d1508 1
+a1508 1
+	  myprint( "<illegal field>" ); return;
+d1538 1
+a1538 1
+	  myprint( "<illegal field>" ); return;
+d1568 1
+a1568 1
+	  myprint( "<illegal field>" ); return;
+d1616 1
+a1616 2
+      myprint( "<bad %08lx>", op_code ); return;
+      break;
+d1665 1
+a1665 1
+	  myprint( "<destination register of FP operation is not FP>" );
+d1731 1
+a1731 1
+	myprint( "<triadic floating point immediate operations are impossible>" );
+d1763 1
+a1763 1
+	  myprint( "<triadic floating point immediate operations are impossible>" );
+a1790 1
+      myprint( "<bad %08lx>", op_code ); return;
+d1855 1
+a1855 1
+	  myprint( "<unknown>" ); return;
+d1933 1
+a1933 1
+	  myprint( "<bad %08lx>", op_code ); return;
+@
+
+
+1.13
+log
+@fixed to send output to output file
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.12 $
+ * Date:	$Date: 1992/05/15 15:29:47 $
+d34 15
+d51 1
+a51 4
+extern FILE *	outfd;
+
+extern void	inform( const char * message, ... );
+
+d150 1
+a150 1
+  "R0\0\0R1\0\0R2\0\0R3\0\0R4\0\0R5\0\0R6\0\0R7\0\0"
+d152 2
+a153 2
+  "DP\0\0IR0\0IR1\0BK\0\0SP\0\0ST\0\0DIE\0IIE\0"
+  "IIF\0RS\0\0RE\0\0RC\0\0R8\0\0R9\0\0R10\0R11\0";
+d239 101
+d346 4
+a349 4
+		      int	w,		/* instruction */
+		      char *	op_code,	/* string identifying instruction */
+		      int	floating,	/* non zero if floating point operation */
+		      int	store )		/* non zero if a store operation */
+d353 2
+a354 1
+
+a356 2
+   * XXX - NC
+   *
+d365 7
+a371 7
+  myprint( op_code );
+
+  pad_to( COL_OPERAND );
+
+  dest = (w >> 16) & 0x1f;
+
+  if (floating)
+d373 3
+a375 3
+      /* the destination (or source) register of a floating point op must be R0 - R11 */
+
+      if (!is_extended_precision_register( dest ))
+d377 7
+a383 1
+	  myprint( "R<illegal>" );
+d385 2
+d388 4
+d393 1
+a393 3
+  pdest = _regname( dest );
+  
+  switch ((w >> 21) & 0x3)
+a396 2
+       * XXX - NC
+       *
+d407 24
+a430 2
+      myprint( "%s, %s", _regname( w & 0x1f ), pdest );
+
+a434 2
+       * XXX - NC
+       *
+d445 3
+a447 1
+	myprint( "%s, @@%#04.4lx", pdest, (w & 0xffff) );
+d449 1
+a449 1
+	myprint( "@@%#04.4lx, %s", (w & 0xffff), pdest );
+a454 2
+       * XXX - NC
+       *
+d467 2
+a468 2
+	  int		disp = w & 0xff;
+	  int		addr = (w >> 8) & 0x7;
+d475 1
+a475 1
+	      decode_indirect_address( w >> 11 & 0x1f, addr, disp );
+d479 4
+a482 3
+	      decode_indirect_address( (w >> 11) & 0x1f, addr, disp );
+	      
+	      myprint( ", %s", pdest );
+a488 2
+       * XXX - NC
+       *
+d498 17
+a514 2
+      if (floating)
+	myprint( "%#4f, %s", (double)mask_and_sign_extend_word( w , 0xffffL ), pdest );
+d516 3
+a518 3
+	myprint( "%d, %s", mask_and_sign_extend_word( w, 0xffff ), pdest );
+
+      break;
+d520 1
+d533 1
+a533 1
+decode_integer_store( int w )
+d535 1
+a535 1
+  int		dest;
+a538 2
+   * XXX - NC
+   *
+d547 1
+a547 1
+  dest = (w >> 16) & 0x1f;
+d549 1
+a549 1
+  switch ((w >> 21) & 0x3)
+a552 2
+       * XXX - NC
+       *
+d562 1
+a562 1
+      myprint( "%s, @@%#04.4lx", mask_and_sign_extend_word( dest, 0x1f ), (w & 0xffff) );
+a567 2
+       * XXX - NC
+       *
+d577 1
+a577 1
+      myprint( "%s, @@%#04.4lx", _regname( dest ), (w & 0xffff) );
+a582 2
+       * XXX - NC
+       *
+d596 1
+a596 1
+      decode_indirect_address( w >> 11 & 0x1f, (w >> 8) & 0x7, w & 0xff );
+a601 2
+       * XXX - NC
+       *
+d613 1
+a613 1
+      myprint( "%d, ", mask_and_sign_extend_word( dest, 0x1f ) );
+d615 1
+a615 1
+      decode_indirect_address( w >> 11 & 0x1f, (w >> 8) & 0x7, w & 0xff );
+d617 1
+a617 2
+      break;
+      
+d630 3
+a632 1
+decode_flow_control( int w, int pc )
+a634 2
+   * XXX - NC
+   *
+d642 1
+a642 1
+  if (w & (1 << 29))
+d646 1
+a646 1
+      if (w & (1 << 28))
+d650 1
+a650 1
+	  if (w & (1 << 27))
+d654 1
+a654 1
+	      if (w & (1 << 24))
+a656 2
+		   * XXX - NC
+		   *
+d665 1
+a665 1
+		  if (w & (1 << 23))
+d671 1
+a671 1
+		      myprint( "%s", _regname( w ) );
+d679 1
+a679 1
+		      myprint( "%s", _regname( w ) );
+d686 1
+a686 1
+		  if (w & (1 << 23))
+a688 2
+		       * XXX - NC
+		       *
+d696 1
+a696 1
+		      myprint( "RETS%s", _condname( w >> 16 ) );
+a700 2
+		       * XXX - NC
+		       *
+d709 1
+a709 1
+		      if (w & (1 << 21))
+d711 1
+a711 1
+			  myprint( "RETI%sD", _condname( w >> 16 ) );
+d715 1
+a715 1
+			  myprint( "RETI%s", _condname( w >> 16 ) );
+d724 1
+a724 1
+	      if (w & (1 << 26))
+d728 1
+a728 1
+		  if (w & (1 << 25))
+a730 2
+		       * XXX - NC
+		       *
+d741 1
+a741 1
+		      if (w & (1 << 23))
+d748 2
+a749 2
+				  _regname( w ),
+				  (((w >> 16) & 0xf) == 0) ? "IVTP" : "TVTP" );
+d758 2
+a759 2
+				  ((w & 0xf) == 0) ? "IVTP" : "TVTP",
+				  _regname( w >> 16 ) );
+a767 2
+		       * XXX - NC
+		       *
+d778 1
+a778 1
+		      if (w & (1 << 23))
+d787 1
+a787 1
+		      strcat( op, _condname( (w >> 16) & 0x1f ) );
+d793 1
+a793 1
+		      myprint( "%lu", w & 0x1ff );
+a801 2
+		   * XXX - NC
+		   *
+d812 1
+a812 1
+		  if (w & (1 << 21))
+d821 1
+a821 1
+		  strcat( op, _condname( (w >> 16) & 0x1f ) );
+d827 1
+a827 1
+		  if (w & (1 << 25))
+d829 1
+a829 1
+		      w = mask_and_sign_extend_word( (unsigned long)w, 0xffffL );
+d831 1
+a831 1
+		      myprint( "%+d", w );
+d835 1
+a835 1
+		      myprint( "// PC = %#x", pc / 4 + (w + 1) );
+d839 1
+a839 1
+		      myprint( "%s", _regname( w & 0x1f ) );
+d848 1
+a848 1
+	  if (w & (1 << 27))
+d852 1
+a852 1
+	      if (w & (1 << 26))
+d854 3
+a856 3
+		  char		op[ 10 ];
+		  int		addr;
+		  int		offset;
+a859 2
+		   * XXX - NC
+		   *
+d872 1
+a872 1
+		  strcat( op, _condname( (w >> 16) & 0x1f ) );
+d874 1
+a874 1
+		  if (w & (1 << 21))
+d878 1
+a878 1
+		      offset = 3;
+d885 1
+a885 1
+		  addr = (w >> 22) & 0x7;
+d891 1
+a891 1
+		  if (w & (1 << 25))
+d893 1
+a893 1
+		      w = mask_and_sign_extend_word( (unsigned long)w, 0xffffL );
+d895 1
+a895 1
+		      myprint( "AR%1ld, %+d", addr, w );
+d899 1
+a899 1
+		      myprint( "// PC = %#x", pc / 4 + (w + offset) );
+d903 1
+a903 1
+		      myprint( "AR%1ld, %s", addr, _regname( w & 0x1f ) );
+a912 2
+		   * XXX - NC
+		   *
+d925 1
+a925 1
+		  strcat( op, _condname( (w >> 16) & 0x1f ) );
+d927 1
+a927 1
+		  switch ((w >> 21) & 0x7)
+d929 8
+a936 8
+		    case B_000:	offset = 1; break;
+		    case B_001:	strcat( op, "D"  ); offset = 3; break;
+		    case B_010: myprint( "<bad %08lx>", w ); return;
+		    case B_011:	strcat( op, "AT" ); offset = 3; break;
+		    case B_100:	myprint( "<bad %08lx>", w ); return;
+		    case B_101:	strcat( op, "AF" ); offset = 3; break;
+		    case B_110:	myprint( "<bad %08lx>", w ); return;
+		    case B_111:	myprint( "<bad %08lx>", w ); return;
+d943 1
+a943 1
+		  if (w & (1 << 25))
+d945 1
+a945 1
+		      w = mask_and_sign_extend_word( (unsigned long)w, 0xffffL );
+d947 1
+a947 1
+		      myprint( "%+d", w );
+d951 1
+a951 1
+		      myprint( "// PC = %#x", pc / 4 + (w + offset) );
+d955 1
+a955 1
+		      myprint( "%s", _regname( w & 0x1f ) );
+d966 1
+a966 1
+	      switch ((w >> 24) & 0x7)
+d976 1
+a976 1
+		case B_111:	myprint( "<bad %08lx>", w ); return;
+d979 1
+a979 1
+	      w = mask_and_sign_extend_word( (unsigned long)w, 0xffffffL );
+d983 1
+a983 1
+	      myprint( "%+d", w );
+d987 1
+a987 1
+	      myprint( "// PC = %#x", pc / 4 + (w + offset) );
+d993 2
+a994 2
+      char 	op[ 10 ];
+      int	floating;
+a997 2
+       * XXX - NC
+       *
+d1008 1
+a1008 1
+      if (((w >> 28) & 0x1) == 0)
+d1012 1
+a1012 1
+	  floating = TRUE;
+d1018 2
+a1019 1
+	  floating = FALSE;
+d1022 1
+a1022 1
+      strcat( op, _condname( (w >> 23) & 0x1f ) );
+d1024 1
+a1024 3
+      decode_diadic_address( w, op, floating, FALSE );
+      
+      return;
+d1037 1
+a1037 1
+decode_non_word_load( int w ) /* instruction */
+a1043 2
+   * XXX - NC
+   *
+d1054 1
+a1054 1
+  B = (int)((w >> 23) & 0x03);
+d1056 1
+a1056 1
+  switch ((w >> 24) & 0x0f)
+d1064 1
+a1064 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1074 1
+a1074 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1084 1
+a1084 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1094 1
+a1094 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1104 1
+a1104 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1113 1
+a1113 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1122 1
+a1122 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1131 1
+a1131 1
+      decode_diadic_address( w, op, FALSE, FALSE );
+d1136 1
+a1136 1
+      myprint( "<bad %08lx>", w ); return;
+d1150 1
+a1150 1
+decode_special_triadic( int w ) /* instruction */
+a1162 2
+   * XXX - NC
+   *
+d1176 6
+a1181 6
+  src4 =  w        & 0xff;
+  src3 = (w >>  8) & 0xff;
+  src2 = (w >> 16) & 0x7;
+  src1 = (w >> 19) & 0x7;
+  dst2 = ((w >> 22) & 0x1) + 2;
+  dst1 = (w >> 23) & 0x1;
+d1183 1
+a1183 1
+  switch ((w >> 26) & 0x3)
+d1191 1
+a1191 1
+  switch ((w >> 24) & 0x3)
+d1193 2
+a1194 1
+    case B_00:
+d1219 2
+a1220 1
+    case B_01:
+d1243 2
+a1244 1
+    case B_10:
+d1269 2
+a1270 1
+    case B_11:
+d1302 1
+a1302 1
+decode_non_word_load_or_triadic( int w ) /* instruction */
+a1304 2
+   * XXX - NC
+   *
+d1311 1
+a1311 1
+  switch ((w >> 28) & 0x3)
+d1313 4
+a1316 4
+    case B_00:	decode_special_triadic( w ); break;
+    case B_01:	myprint( "<bad %08lx>", w ); return;
+    case B_10:	myprint( "<bad %08lx>", w ); return;
+    case B_11:	decode_non_word_load(   w ); break;
+d1326 1
+a1326 1
+				   int	w,
+a1337 2
+   * XXX - NC
+   *
+d1353 5
+a1357 5
+  src2 = (w      ) & 0xff;
+  dst2 = (w >>  8) & 0xff;
+  src3 = (w >> 16) & 0x07;
+  src1 = (w >> 19) & 0x07;
+  dst1 = (w >> 22) & 0x07;
+d1386 1
+a1386 1
+				  int	w,
+a1396 2
+   * XXX - NC
+   *
+d1412 4
+a1415 4
+  src2 = (w      ) & 0xff;
+  dst2 = (w >>  8) & 0xff;
+  src3 = (w >> 16) & 0x07;
+  dst1 = (w >> 22) & 0x07;
+d1419 1
+a1419 1
+  if (((w >> 19) & 0x07) != 0)
+d1421 1
+a1421 1
+      myprint( "<bad %08lx>", w ); return;
+d1450 1
+a1450 1
+decode_parallel_op( int w ) /* instruction */
+a1459 2
+   * XXX - NC
+   *
+d1471 5
+a1475 5
+  field1 = (w      ) & 0xff;
+  field2 = (w >>  8) & 0xff;
+  field3 = (w >> 16) & 0x07;
+  field4 = (w >> 19) & 0x07;
+  field5 = (w >> 22) & 0x07;
+d1477 1
+a1477 1
+  switch ((w >> 25) & 0x1f)
+d1599 22
+a1620 22
+    case OP_ABSF_STF:	decode_diadic_parallel_addressing(  w, "ABSF",   "STF" ); break;
+    case OP_ABSI_STI:	decode_diadic_parallel_addressing(  w, "ABSI",   "STI" ); break;
+    case OP_ADDF3_STF:	decode_triadic_parallel_addressing( w, "ADDF3",  "STF" ); break;
+    case OP_ADDI3_STI:	decode_triadic_parallel_addressing( w, "ADDI3",  "STI" ); break;
+    case OP_AND3_STI:	decode_triadic_parallel_addressing( w, "AND3",   "STI" ); break;
+    case OP_ASH3_STI:	decode_triadic_parallel_addressing( w, "ASH3",   "STI" ); break;
+    case OP_FIX_STI:	decode_diadic_parallel_addressing(  w, "FIX",    "STI" ); break;
+    case OP_FLOAT_STF:	decode_diadic_parallel_addressing(  w, "FLOAT",  "STF" ); break;
+    case OP_LDF_STF:	decode_diadic_parallel_addressing(  w, "LDF",    "STF" ); break;
+    case OP_LDI_STI:	decode_diadic_parallel_addressing(  w, "LDI",    "STI" ); break;
+    case OP_LSH3_STI:	decode_triadic_parallel_addressing( w, "LSH3",   "STI" ); break;
+    case OP_MPYF3_STF:	decode_triadic_parallel_addressing( w, "MPYF3",  "STF" ); break;
+    case OP_MPYI3_STI:	decode_triadic_parallel_addressing( w, "MPYI3",  "STI" ); break;
+    case OP_NEGF_STF:	decode_diadic_parallel_addressing(  w, "NEGF",   "STF" ); break;
+    case OP_NEGI_STI:	decode_diadic_parallel_addressing(  w, "NEGI",   "STI" ); break;
+    case OP_NOT_STI:	decode_diadic_parallel_addressing(  w, "NOT",    "STI" ); break;
+    case OP_OR3_STI:	decode_triadic_parallel_addressing( w, "OR3",    "STI" ); break;
+    case OP_SUBF3_STF:	decode_triadic_parallel_addressing( w, "SUBF3",  "STF" ); break;
+    case OP_SUBI3_STI:	decode_triadic_parallel_addressing( w, "SUBI3",  "STI" ); break;
+    case OP_XOR3_STI:	decode_triadic_parallel_addressing( w, "XOR3",   "STI" ); break;
+    case OP_TOIEEE_STF:	decode_diadic_parallel_addressing(  w, "TOIEEE", "STF" ); break;
+    case OP_FRIEEE_STF:	decode_diadic_parallel_addressing(  w, "FRIEEE", "STF" ); break;
+d1622 1
+a1622 1
+      myprint( "<bad %08lx>", w ); return;
+d1637 3
+a1639 3
+		      int	w,		/* instruction */
+		      char *	op_code,	/* string identifying the op code */
+		      int	floating )	/* non zero if floating point operation */
+d1643 1
+a1643 1
+  unsigned long	type;
+a1648 2
+   * XXX - NC
+   *
+d1660 1
+a1660 1
+  myprint( op_code );
+d1664 1
+a1664 1
+  dest = (w >> 16) & 0x1f;
+d1666 1
+a1666 1
+  if (floating)
+d1672 1
+a1672 1
+	  myprint( "R<illegal>" ); return;
+d1680 1
+a1680 1
+  type = (w >> 28) & 0x1;
+d1682 1
+a1682 1
+  type <<= 2;
+d1684 1
+a1684 1
+  type |= ((w >> 21) & 0x3);
+d1688 2
+a1689 2
+  src2 = w & 0xff;
+  src1 = (w >> 8) & 0xff;
+d1693 1
+a1693 1
+  switch (type)
+d1737 19
+a1755 4
+      myprint( "%d, %s, %s",
+	      mask_and_sign_extend_word( w, 0xff ),
+	      _regname( src1 & 0x3f ),
+	      pdest );
+d1768 19
+a1786 4
+      myprint( "%d, *+AR%.1ld(%.2lu), %s",
+	      mask_and_sign_extend_word( w, 0xff ),
+	      src1 & 0x7, (src1 >> 3),
+	      pdest );
+d1793 1
+a1793 1
+	      src1 & 0x7,(src1 >> 3),
+d1798 1
+a1798 1
+      myprint( "<bad %08lx>", w ); return;
+d1808 17
+a1824 1
+decode_sequential_op( int w ) /* instruction */
+a1826 2
+   * XXX - NC
+   *
+d1831 1
+a1831 1
+  if (w & 0x20000000L)
+a1833 2
+       * XXX - NC
+       *
+d1841 1
+a1841 1
+      switch ((w >> 23) & 0x1f)
+d1843 19
+a1861 19
+	case OP_ADDC3:	decode_triadic_address( w, "ADDC3"   , FALSE ); return;
+	case OP_ADDF3:	decode_triadic_address( w, "ADDF3"   , TRUE  ); return;
+	case OP_ADDI3:	decode_triadic_address( w, "ADDI3"   , FALSE ); return;
+	case OP_AND3:	decode_triadic_address( w, "AND3"    , FALSE ); return;
+	case OP_ANDN3:	decode_triadic_address( w, "ANDN3"   , FALSE ); return;
+	case OP_ASH3:	decode_triadic_address( w, "ASH3"    , FALSE ); return;
+	case OP_CMPF3:	decode_triadic_address( w, "CMPF3"   , TRUE  ); return;
+	case OP_CMPI3:	decode_triadic_address( w, "CMPI3"   , FALSE ); return;
+	case OP_LSH3:	decode_triadic_address( w, "LSH3"    , FALSE ); return;
+	case OP_MPYF3:	decode_triadic_address( w, "MPYF3"   , TRUE  ); return;
+	case OP_MPYI3:	decode_triadic_address( w, "MPYI3"   , FALSE ); return;
+	case OP_OR3:	decode_triadic_address( w, "OR3"     , FALSE ); return;
+	case OP_SUBB3:	decode_triadic_address( w, "SUBB3"   , FALSE ); return;
+	case OP_SUBF3:	decode_triadic_address( w, "SUBF3"   , TRUE  ); return;
+	case OP_SUBI3:	decode_triadic_address( w, "SUBI3"   , FALSE ); return;
+	case OP_TSTB3:	decode_triadic_address( w, "TSTB3"   , FALSE ); return;
+	case OP_XOR3:	decode_triadic_address( w, "XOR3"    , FALSE ); return;
+	case OP_MPYSHI3:decode_triadic_address( w, "MPYSHI3" , FALSE ); return;
+	case OP_MPYUHI3:decode_triadic_address( w, "MPYUHI3" , FALSE ); return;
+a1868 2
+       * XXX - NC
+       *
+d1875 1
+a1875 1
+      switch (w >> 23)
+d1877 63
+a1939 63
+	case OP_ABSF:	decode_diadic_address( w, "ABSF"   , TRUE,  FALSE ); return;
+	case OP_ABSI:	decode_diadic_address( w, "ABSI"   , FALSE, FALSE ); return;
+	case OP_ADDC:	decode_diadic_address( w, "ADDC"   , FALSE, FALSE ); return;
+	case OP_ADDF:	decode_diadic_address( w, "ADDF"   , TRUE,  FALSE ); return;
+	case OP_ADDI:	decode_diadic_address( w, "ADDI"   , FALSE, FALSE ); return;
+	case OP_AND:	decode_diadic_address( w, "AND"    , FALSE, FALSE ); return;
+	case OP_ANDN:	decode_diadic_address( w, "ANDN"   , FALSE, FALSE ); return;
+	case OP_ASH:	decode_diadic_address( w, "ASH"    , FALSE, FALSE ); return;
+	case OP_CMPF:	decode_diadic_address( w, "CMPF"   , TRUE,  FALSE ); return;
+	case OP_CMPI:	decode_diadic_address( w, "CMPI"   , FALSE, FALSE ); return;
+	case OP_FIX:	decode_diadic_address( w, "FIX"    , TRUE,  FALSE ); return;
+	case OP_FLOAT:	decode_diadic_address( w, "FLOAT"  , FALSE, FALSE ); return;
+	case OP_IDLE:	myprint( "IDLE" ); return;
+	case OP_LDE:	decode_diadic_address( w, "LDE"    , TRUE,  FALSE ); return;
+	case OP_LDF:	decode_diadic_address( w, "LDF"    , TRUE,  FALSE ); return;
+	case OP_LDFI:	decode_diadic_address( w, "LDFI"   , TRUE,  FALSE ); return;
+	case OP_LDI:	decode_diadic_address( w, "LDI"    , FALSE, FALSE ); return;
+	case OP_LDII:	decode_diadic_address( w, "LDII"   , FALSE, FALSE ); return;
+	case OP_LDM:	decode_diadic_address( w, "LDM"    , TRUE,  FALSE ); return;
+	case OP_LSH:	decode_diadic_address( w, "LSH"    , FALSE, FALSE ); return;
+	case OP_MPYF:	decode_diadic_address( w, "MPYF"   , TRUE,  FALSE ); return;
+	case OP_MPYI:	decode_diadic_address( w, "MPYI"   , FALSE, FALSE ); return;
+	case OP_NEGB:	decode_diadic_address( w, "NEGB"   , FALSE, FALSE ); return;
+	case OP_NEGF:	decode_diadic_address( w, "NEGF"   , TRUE,  FALSE ); return;
+	case OP_NEGI:	decode_diadic_address( w, "NEGI"   , FALSE, FALSE ); return;
+	case OP_NOP:	myprint( "NOP" ); return;
+	case OP_NORM:	decode_diadic_address( w, "NORM"   , TRUE,  FALSE ); return;
+	case OP_NOT:	decode_diadic_address( w, "NOT"    , FALSE, FALSE ); return;
+	case OP_POP:	myprint( "POP" );   pad_to( COL_OPERAND ); myprint( "%s", _regname( (w >> 16) & 0x1f ) ); return;
+	case OP_POPF:	myprint( "POPF" );  pad_to( COL_OPERAND ); myprint( "%s", _regname( (w >> 16) & 0x1f ) ); return;
+	case OP_PUSH:	myprint( "PUSH" );  pad_to( COL_OPERAND ); myprint( "%s", _regname( (w >> 16) & 0x1f ) ); return;
+	case OP_PUSHF:	myprint( "PUSHF" ); pad_to( COL_OPERAND ); myprint( "%s", _regname( (w >> 16) & 0x1f ) ); return;
+	case OP_OR:	decode_diadic_address( w, "OR"     , FALSE, FALSE ); return;
+	case OP_RND:	decode_diadic_address( w, "RND"    , TRUE,  FALSE ); return;
+	case OP_ROL:	decode_diadic_address( w, "ROL"    , FALSE, FALSE ); return;
+	case OP_ROLC:	decode_diadic_address( w, "ROLC"   , FALSE, FALSE ); return;
+	case OP_ROR:	decode_diadic_address( w, "ROR"    , FALSE, FALSE ); return;
+	case OP_RORC:	decode_diadic_address( w, "RORC"   , FALSE, FALSE ); return;
+	case OP_RPTS:	decode_diadic_address( w, "RPTS"   , FALSE, FALSE ); return;
+	case OP_STF:	decode_diadic_address( w, "STF"    , TRUE,  TRUE  ); return;
+	case OP_STFI:	decode_diadic_address( w, "STFI"   , TRUE,  TRUE  ); return;
+	case OP_STI:	decode_integer_store( w ); return;
+	case OP_STII:	decode_diadic_address( w, "STII"   , FALSE, TRUE  ); return;
+	case OP_SIGI:	decode_diadic_address( w, "SIGI"   , FALSE, FALSE ); return;
+	case OP_SUBB:	decode_diadic_address( w, "SUBB"   , FALSE, FALSE ); return;
+	case OP_SUBC:	decode_diadic_address( w, "SUBC"   , FALSE, FALSE ); return;
+	case OP_SUBF:	decode_diadic_address( w, "SUBF"   , TRUE,  FALSE ); return;
+	case OP_SUBI:	decode_diadic_address( w, "SUBI"   , FALSE, FALSE ); return;
+	case OP_SUBRB:	decode_diadic_address( w, "SUBRB"  , FALSE, FALSE ); return;
+	case OP_SUBRF:	decode_diadic_address( w, "SUBRF"  , TRUE,  FALSE ); return;
+	case OP_SUBRI:	decode_diadic_address( w, "SUBRI"  , FALSE, FALSE ); return;
+	case OP_TSTB:	decode_diadic_address( w, "TSTB"   , FALSE, FALSE ); return;
+	case OP_XOR:	decode_diadic_address( w, "XOR"    , FALSE, FALSE ); return;
+	case OP_IACK:	decode_diadic_address( w, "IACK"   , FALSE, FALSE ); return;
+	case OP_TOIEEE:	decode_diadic_address( w, "TOIEEE" , TRUE,  FALSE ); return;
+	case OP_FRIEEE:	decode_diadic_address( w, "FRIEEE" , TRUE,  FALSE ); return;
+	case OP_RSQRF:	decode_diadic_address( w, "RSQRF"  , TRUE,  FALSE ); return;
+	case OP_RCPF:	decode_diadic_address( w, "RCPF"   , TRUE,  FALSE ); return;
+	case OP_MPYSHI:	decode_diadic_address( w, "MPYSHI" , FALSE, FALSE ); return;
+	case OP_MPYUHI:	decode_diadic_address( w, "MPYUHI" , FALSE, FALSE ); return;
+	case OP_LDA:	decode_diadic_address( w, "LDA"    , FALSE, FALSE ); return;
+	case OP_LDPK:	decode_diadic_address( w, "LDPK"   , FALSE, FALSE ); return;
+	case OP_LDHI:	decode_diadic_address( w, "LDHI"   , FALSE, FALSE ); return;
+d1941 1
+a1941 1
+	  myprint( "<bad %08lx>", w ); return;
+a1956 2
+   * XXX - NC
+   *
+@
+
+
+1.12
+log
+@improved output slightly
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.11 $
+ * Date:	$Date: 1991/11/22 16:39:17 $
+d36 1
+d38 1
+a38 1
+extern void inform( const char * message, ... );
+d41 1
+d57 1
+a57 1
+  fflush( stdout );
+d59 1
+a59 1
+  fseek( stdout, 0L, SEEK_END );
+d71 1
+a71 1
+      fprintf( stdout, start );
+d73 1
+a73 1
+      fprintf( stdout, "%%" );
+d78 1
+a78 1
+  fprintf( stdout, start );
+d80 1
+a80 1
+  fflush( stdout );
+d100 1
+a100 1
+	  fputc( ' ', stdout );
+d107 1
+a107 1
+      fputc( ' ', stdout );
+d110 1
+a110 1
+  fflush( stdout );
+d124 1
+a124 1
+  fputc( '\n', stdout );
+@
+
+
+1.11
+log
+@oops, forgot to change over names of local header files
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.10 $
+ * Date:	$Date: 1991/11/22 16:19:29 $
+a33 10
+/*
+ * Paul likes the '||' of parallel instructions under the op-code
+ * whereas Nick likes the op-codes themselves to line up.  Hence
+ * for Paul the value of NICKS_STYLE is 0, and for Nick the value
+ * is 3
+ */
+
+#ifndef NICKS_STYLE
+#define NICKS_STYLE	0
+#endif
+d801 1
+a801 1
+		    case B_010: myprint( "<bad>" ); return;
+d803 1
+a803 1
+		    case B_100:	myprint( "<bad>" ); return;
+d805 2
+a806 2
+		    case B_110:	myprint( "<bad>" ); return;
+		    case B_111:	myprint( "<bad>" ); return;
+d846 1
+a846 1
+		case B_111:	myprint( "<bad>" ); return;
+d1011 1
+a1011 1
+      myprint( "<bad>" ); return;
+d1085 1
+a1085 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1106 1
+a1106 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1127 1
+a1127 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1154 1
+a1154 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1189 3
+a1191 3
+    case B_01:	myprint( "<bad>" ); return;
+    case B_10:	myprint( "<bad>" ); return;
+    case B_11:	decode_non_word_load( w );   break;
+d1246 1
+a1246 1
+  pad_to( COL_OP_CODE - NICKS_STYLE );
+d1300 1
+a1300 1
+      myprint( "<bad>" ); return;
+d1313 1
+a1313 1
+  pad_to( COL_OP_CODE - NICKS_STYLE );
+d1378 1
+a1378 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1408 1
+a1408 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1438 1
+a1438 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1468 1
+a1468 1
+      pad_to( COL_OP_CODE - NICKS_STYLE );
+d1503 1
+a1503 1
+      myprint( "<bad>" ); return;
+d1651 1
+a1651 1
+      myprint( "<bad>" ); return;
+d1784 1
+a1784 1
+	  myprint( "<bad>" ); return;
+@
+
+
+1.10
+log
+@fixed decoding of IDLE
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.8 $
+ * Date:	$Date: 1991/10/31 12:05:54 $
+d21 2
+a22 2
+#include "ops.h"
+#include "target.h"
+@
+
+
+1.9
+log
+@merged paul's and nick's fixes
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.7 $
+ * Date:	$Date: 1991/10/29 13:18:04 $
+d21 2
+a22 2
+#include "c40ops.h"
+#include "c40target.h"
+d1742 1
+a1742 1
+	case OP_IDLE:	decode_diadic_address( w, "IDLE"   , FALSE, FALSE ); return;
+@
+
+
+1.8
+log
+@fixed parallel instr. dest regs
+@
+text
+@d6 1
+a6 2
+ * Date:	$Date: 1991/10/22 17:14:52 $
+ * Updates:	Paul Beskeen
+a11 1
+ * NOP		- no second reg
+a12 1
+ * TSTB / CMP	- no second operand
+d31 2
+a32 1
+#define COL_OPERAND2	39+10
+d34 6
+d41 4
+a172 2
+  pad_to( COL_OPERAND );
+  
+d414 1
+d416 1
+d418 1
+d433 1
+d435 1
+d452 1
+d454 1
+d473 1
+d475 1
+d477 1
+a477 1
+
+d707 5
+a711 1
+		      myprint( "%+d\t// PC = %#x", w, pc + (w + 1) );
+d773 5
+a777 1
+		      myprint( "AR%1ld, %+d\t// PC = %#x", addr, w, pc + (w + offset) );
+d827 5
+a831 1
+		      myprint( "%+d\t// PC = %#x", w, pc + (w + offset) );
+d863 5
+a867 1
+	      myprint( "%+d\t// PC = %#x", w, pc + (w + offset) );
+d1067 1
+a1068 1
+  dst2 = (w >> 22) & 0x1;
+d1095 1
+a1095 1
+      pad_to( COL_OP_CODE );
+d1101 1
+a1101 1
+      myprint( "%s, %s, %s", _regname( src1 ), _regname( src2 ), _regname( dst2 + 2 ) );
+d1116 1
+a1116 1
+      pad_to( COL_OP_CODE );
+d1124 1
+a1124 1
+      myprint( ", %s, %s", _regname( src2 ), _regname( dst2 + 2 ) );
+d1137 1
+a1137 1
+      pad_to( COL_OP_CODE );
+d1149 1
+a1149 1
+      myprint( ", %s", _regname( dst2 + 2 ) );
+d1164 1
+a1164 1
+      pad_to( COL_OP_CODE );
+d1174 1
+a1174 1
+      myprint( ", %s", _regname( dst2 + 2 ) );
+d1178 1
+a1178 1
+
+d1180 1
+a1180 1
+
+d1256 1
+a1256 1
+  pad_to( COL_OP_CODE );
+a1312 4
+#if 0
+  pad_to( COL_OP_CODE );
+#endif
+  
+d1323 1
+a1323 1
+  pad_to( COL_OP_CODE );
+d1388 1
+a1388 1
+      pad_to( COL_OP_CODE );
+d1418 1
+a1418 1
+      pad_to( COL_OP_CODE );
+d1448 1
+a1448 1
+      pad_to( COL_OP_CODE );
+d1478 1
+a1478 1
+      pad_to( COL_OP_CODE );
+d1755 1
+a1755 1
+	case OP_NOP:	decode_diadic_address( w, "NOP"   , FALSE, FALSE ); return;
+@
+
+
+1.7
+log
+@fixed || MPY src,dst reg swap problem
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision: 1.6 $
+ * Date:	$Date: 1991/10/21 16:53:30 $
+d1070 1
+a1070 1
+      myprint( "%s, %s, %s", _regname( src1 ), _regname( src2 ), _regname( dst2 ) );
+d1093 1
+a1093 1
+      myprint( ", %s, %s", _regname( src2 ), _regname( dst2 ) );
+d1118 1
+a1118 1
+      myprint( ", %s", _regname( dst2 ) );
+d1143 1
+a1143 1
+      myprint( ", %s", _regname( dst2 ) );
+d1147 1
+a1147 1
+  
+d1149 1
+a1149 1
+  
+@
+
+
+1.6
+log
+@added ldpk processing
+@
+text
+@d5 3
+a7 2
+ * Version:	$Revision: 1.5 $
+ * Date:	$Date: 1991/10/21 15:18:09 $
+d10 12
+d33 2
+a34 2
+#define COL_OPERAND	15
+#define COL_OPERAND2	39+15
+d408 3
+a410 2
+
+      myprint( "STIK\t%s, @@%#04.4lx", mask_and_sign_extend_word( dest, 0x1f ), (w & 0xffff) );
+d423 3
+a425 1
+      myprint( "STI\t%s, @@%#04.4lx", _regname( dest ), (w & 0xffff) );
+d440 3
+a442 1
+      myprint( "STI\t%s, ", _regname( dest ) );
+d459 4
+a462 2
+      myprint( "STIK\t%d, ", mask_and_sign_extend_word( dest, 0x1f ) );
+	
+d472 1
+a472 1
+  
+d1036 2
+a1037 2
+  dst1 = (w >> 22) & 0x1;
+  dst2 = (w >> 23) & 0x1;
+@
+
+
+1.5
+log
+@applied new fixes by NC
+@
+text
+@d5 2
+a6 2
+ * Version:	$Revision$
+ * Date:	$Date$
+d19 3
+a21 3
+#define COL_OP_CODE	15
+#define COL_OPERAND	37
+#define COL_OPERAND2	37+15
+d1044 1
+a1044 1
+      pad_to( COL_OP_CODE - 3 );
+d1065 1
+a1065 1
+      pad_to( COL_OP_CODE - 3 );
+d1086 1
+a1086 1
+      pad_to( COL_OP_CODE - 3 );
+d1113 1
+a1113 1
+      pad_to( COL_OP_CODE - 3 );
+d1205 1
+a1205 1
+  pad_to( COL_OP_CODE - 3 );
+d1262 1
+d1264 1
+d1276 1
+a1276 1
+  pad_to( COL_OP_CODE - 3 );
+d1341 1
+a1341 1
+      pad_to( COL_OP_CODE - 3 );
+d1371 1
+a1371 1
+      pad_to( COL_OP_CODE - 3 );
+d1401 1
+a1401 1
+      pad_to( COL_OP_CODE - 3 );
+d1431 1
+a1431 1
+      pad_to( COL_OP_CODE - 3 );
+d1744 1
+@
+
+
+1.4
+log
+@fixed several problems:
+default displacement is 1 not 0 in some triadic and all parallel ind. addriing
+idle/nop/lda/ldpk decoding
+>>3 not >>2 in type two indirect addressing operands
+column padding for || par. instr.
+comment addition to branches to show logical pc to jump to.
+@
+text
+@d5 2
+a6 2
+ * Version:	2
+ * Date:	24/9/91
+d19 2
+a20 2
+#define COL_OP_CODE	37
+#define COL_OPERAND	15
+d586 1
+a586 2
+				  (((w >> 16) & 0xf) == 0) ? "IVTP" : "TVTP"
+			  );
+d596 1
+a596 2
+				  _regname( w >> 16 )
+			  );
+d1044 1
+a1044 1
+      pad_to( COL_OP_CODE );
+d1065 1
+a1065 1
+      pad_to( COL_OP_CODE );
+d1086 1
+a1086 1
+      pad_to( COL_OP_CODE );
+d1113 1
+a1113 1
+      pad_to( COL_OP_CODE );
+d1205 1
+a1205 1
+  pad_to( COL_OP_CODE );
+d1262 2
+d1274 1
+a1274 1
+  pad_to( COL_OP_CODE );
+d1339 1
+a1339 1
+      pad_to( COL_OP_CODE );
+d1369 1
+a1369 1
+      pad_to( COL_OP_CODE );
+d1399 1
+a1399 1
+      pad_to( COL_OP_CODE );
+d1429 1
+a1429 1
+      pad_to( COL_OP_CODE );
+d1693 1
+a1705 4
+	case OP_IDLE:	myprint( "IDLE" ); return;
+#if 0
+	case OP_NOP:	myprint( "NOP" ); return;	/* XXX - not quite true can use indirect addressing to adjust address registers */
+#else
+a1706 1
+#endif
+d1773 4
+a1776 4
+    case 0: decode_sequential_op( instruction ); return;
+    case 1: decode_flow_control( instruction, pc ); return;
+    case 2: decode_non_word_load_or_triadic( instruction ); return;
+    case 3: decode_parallel_op( instruction ); return;
+@
+
+
+1.3
+log
+@changed condition code l to be lt
+@
+text
+@d19 1
+a19 1
+#define COL_OP_CODE	1
+d21 1
+d459 1
+a459 1
+decode_flow_control( int w )
+d585 3
+a587 1
+				  _regname( w ), "<xxx unknown expansion register xxx>" );
+d596 3
+a598 1
+				  "<xxx unknown expansion register xxx>", _regname( w >> 16 ) );
+d674 1
+a674 1
+		      myprint( "%+d", w );		      
+d719 1
+a719 1
+		      offset = 4;
+d736 1
+a736 1
+		      myprint( "AR%1ld, %+d", addr, w );
+d768 1
+a768 1
+		    case B_000:	offset = 0; break;
+d786 1
+a786 1
+		      myprint( "%+d", w );
+d803 5
+a807 5
+		case B_000:	myprint( "BR"    ); offset = 0;  break;
+		case B_001:	myprint( "BRD"   ); offset = -3;  break;
+		case B_010:	myprint( "CALL"  ); offset = 0; break;
+		case B_011:	myprint( "LAJ"   ); offset = -3; break;
+		case B_100:	myprint( "RPTB"  ); offset = 0;  break;
+d818 1
+a818 1
+	      myprint( "%+d", w );
+d1036 1
+a1036 1
+      decode_indirect_address( src3 >> 3, src3 & 7, 0 );
+d1040 1
+a1040 1
+      decode_indirect_address( src4 >> 3, src4 & 7, 0 );
+d1046 1
+a1046 1
+      pad_to( COL_OP_CODE - 3 );
+d1050 1
+a1050 1
+      pad_to( COL_OPERAND );
+d1061 1
+a1061 1
+      decode_indirect_address( src3 >> 3, src3 & 7, 0 );
+d1067 1
+a1067 1
+      pad_to( COL_OP_CODE - 3 );
+d1071 1
+a1071 1
+      pad_to( COL_OPERAND );
+d1073 1
+a1073 1
+      decode_indirect_address( src4 >> 3, src4 & 7, 0 );
+d1088 1
+a1088 1
+      pad_to( COL_OP_CODE - 3 );
+d1092 1
+a1092 1
+      pad_to( COL_OPERAND );
+d1094 1
+a1094 1
+      decode_indirect_address( src3 >> 3, src3 & 7, 0 );
+d1098 1
+a1098 1
+      decode_indirect_address( src4 >> 4, src4 & 7, 0 );
+d1109 1
+a1109 1
+      decode_indirect_address( src3 >> 3, src3 & 7, 0 );
+d1115 1
+a1115 1
+      pad_to( COL_OP_CODE - 3 );
+d1119 1
+a1119 1
+      pad_to( COL_OPERAND );
+d1123 1
+a1123 1
+      decode_indirect_address( src4 >> 3, src4 & 7, 0 );
+d1201 1
+a1201 1
+  decode_indirect_address( src2 >> 3, src2 & 7, 0 );
+d1207 1
+a1207 1
+  pad_to( COL_OP_CODE - 3 );
+d1211 1
+a1211 1
+  pad_to( COL_OPERAND );
+d1215 1
+a1215 1
+  decode_indirect_address( dst2 >> 3, dst2 & 7, 0 );
+a1263 2
+  pad_to( COL_OP_CODE );
+  
+d1268 1
+a1268 1
+  decode_indirect_address( src2 >> 3, src2 & 7, 0 );
+d1274 1
+a1274 1
+  pad_to( COL_OP_CODE - 3 );
+d1278 1
+a1278 1
+  pad_to( COL_OPERAND );
+d1282 1
+a1282 1
+  decode_indirect_address( dst2 >> 3, dst2 & 7, 0 );
+d1335 1
+a1335 1
+      decode_indirect_address( field1 >> 3, field1 & 7, 0 );
+d1339 1
+a1339 1
+      pad_to( COL_OP_CODE - 3 );
+d1343 1
+a1343 1
+      pad_to( COL_OPERAND );
+d1347 1
+a1347 1
+      decode_indirect_address( field2 >> 3, field2 & 7, 0 );
+d1365 1
+a1365 1
+      decode_indirect_address( field1 >> 3, field1 & 7, 0 );
+d1369 1
+a1369 1
+      pad_to( COL_OP_CODE - 3 );
+d1373 1
+a1373 1
+      pad_to( COL_OPERAND );
+d1377 1
+a1377 1
+      decode_indirect_address( field2 >> 3, field2 & 7, 0 );
+d1393 1
+a1393 1
+      decode_indirect_address( field1 >> 3, field1 & 7, 0 );
+d1399 1
+a1399 1
+      pad_to( COL_OP_CODE - 3 );
+d1403 1
+a1403 1
+      pad_to( COL_OPERAND );
+d1405 1
+a1405 1
+      decode_indirect_address( field2 >> 3, field2 & 7, 0 );
+d1423 1
+a1423 1
+      decode_indirect_address( field1 >> 3, field1 & 7, 0 );
+d1429 1
+a1429 1
+      pad_to( COL_OP_CODE - 3 );
+d1433 1
+a1433 1
+      pad_to( COL_OPERAND );
+d1435 1
+a1435 1
+      decode_indirect_address( field2 >> 3, field2 & 7, 0 );
+d1551 1
+a1551 1
+      decode_indirect_address( src1 >> 3, src1 & 7, 0 );
+d1573 1
+a1573 1
+      decode_indirect_address( src1 >> 3, src1 & 7, 0 );
+d1590 1
+a1590 1
+	      src2 & 0x7, (src2 >> 2),
+d1599 1
+a1599 1
+	      src1 & 0x7, (src1 >> 2),
+d1606 2
+a1607 2
+	      src2 & 0x7, (src2 >> 2),
+	      src1 & 0x7,(src1 >> 2),
+a1692 1
+	case OP_IDLE:	decode_diadic_address( w, "IDLE"   , FALSE, FALSE ); return;
+d1705 2
+d1708 3
+d1777 2
+a1778 2
+    case 0: decode_sequential_op(            instruction ); return;
+    case 1: decode_flow_control(             instruction ); return;
+d1780 1
+a1780 1
+    case 3: decode_parallel_op(              instruction ); return;
+@
+
+
+1.2
+log
+@NickC's disassembler add on for objdump
+@
+text
+@d133 1
+a133 1
+  "l\0\0\0\0le\0\0\0gt\0\0\0ge\0\0\0<xx>\0nv\0\0\0v\0\0\0\0"
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d11 2
+a12 2
+#include "ops.h"
+#include "target.h"
+@

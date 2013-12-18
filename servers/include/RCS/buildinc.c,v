@@ -1,0 +1,351 @@
+head	1.3;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.3
+date	92.09.04.10.49.47;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.11.08.20.17.53;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.03.28.17.10.27;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@Program to generate the include disk binary image, a file that contains
+all the header files with comments stripped out and in a format suitable
+for the server library.
+@
+
+
+1.3
+log
+@fixed compile time warnings
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--			H E L I O S   S E R V E R S			--
+--			---------------------------			--
+--                                                                      --
+--             Copyright (C) 1991, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+--  buildinc.c								--
+--                                                                      --
+--	Program to rebuild the include disk when required.		--
+--                                                                      --
+--	Author:  BLV 21.3.91						--
+--                                                                      --
+------------------------------------------------------------------------*/
+
+/* $Header: /hsrc/servers/include/RCS/buildinc.c,v 1.2 1991/11/08 20:17:53 bart Exp nickc $ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <nonansi.h>
+#include <syslib.h>
+#include <queue.h>
+#include <gsp.h>
+#include <servlib.h>
+#include "include.h"
+
+static	WORD WalkDir(char *name, WordFnPtr fn);
+static	WORD add_entry(char *dir_name, DirEntry *dir_entry);
+static	void copy_file(FileEntry *entry, char *buffer, int size);
+static 	WORD write_entry(FileEntry *entry, FILE *output);
+
+static	List IncludeList;
+
+/**
+*** Build an include disk.
+*** 1) walk down all the entries in /helios/include and add them to a list
+*** 2) open the output file
+*** 3) write the number of entries in the list
+*** 4) walk down the list and add the entries to the file
+**/
+
+int main(void)
+{ WORD	number_entries;
+  FILE	*output;
+  
+  InitList(&IncludeList);
+  number_entries = WalkDir("/helios/include", &add_entry);
+
+  output = fopen(IncludeDisk, "wb");
+  if (output == Null(FILE))
+   { fprintf(stderr, "buildinc : failed to open output file %s\n", IncludeDisk);
+     exit(EXIT_FAILURE);
+   }
+
+  if (fwrite((void *) &number_entries, sizeof(WORD), 1, output) < 1)
+   { fprintf(stderr, "buildinc : failed to write number of entries to %s\n",
+   	IncludeDisk);
+     exit(EXIT_FAILURE);
+   }
+
+  if (SearchList(&IncludeList, &write_entry, output) != 0)
+   { fprintf(stderr, "buildinc : failed to write all data to %s\n",
+   		IncludeDisk);
+     exit(EXIT_FAILURE);
+   }
+
+  fclose(output);
+  return(EXIT_SUCCESS);
+}
+
+/**
+*** Write a single entry to the output file
+**/
+static WORD write_entry(FileEntry *entry, FILE *f)
+{ int	size = sizeof(FileEntry) + (int)entry->ObjNode.Size;
+  size	= (size + 3) & ~3;
+  if (fwrite((void *) entry, 1, size, f) < 1)
+   return(1);
+  else
+   return(0);	
+}
+
+/**
+*** This routine is called from WalkDir(). 
+*** 1) check that this direntry is a file rather than a subdirectory
+*** 2) open the file and see how big it is. C library I/O is used to
+***    avoid carriage-return/linefeed problems.
+*** 3) allocate a buffer for the file and another to hold the file entry.
+*** 4) read in all of the file
+*** 5) copy the data to the file entry, stripping out comments
+*** 6) add the new entry to the list.
+**/
+static WORD add_entry(char *dir_name, DirEntry *dir_entry)
+{ char		name[IOCDataMax];
+  FILE		*file;
+  char		*buffer;
+  FileEntry	*file_entry;
+  int		size;
+
+	/* For now ignore sub-directories */  
+  if (dir_entry->Type != Type_File) return(0);
+
+  strcpy(name, dir_name);
+  strcat(name, "/");
+  strcat(name, dir_entry->Name);
+  file = fopen(name, "r");
+  if (file == Null(FILE))
+   { fprintf(stderr, "buildinc : failed to open %s\n", name);
+     exit(EXIT_FAILURE);
+   }
+   
+  size = (int)GetFileSize(Heliosno(file));
+  if (size < 0)
+   { fprintf(stderr, "buildinc : fault 0x%08x determining size of %s\n",
+   		size, name);    
+     exit(EXIT_FAILURE);
+   }
+   
+  buffer = (char *) Malloc(size);
+  if (buffer == Null(char))  
+   { fprintf(stderr, "buildinc : not enough memory for %s\n", name);
+     exit(EXIT_FAILURE);
+   }
+  file_entry = (FileEntry *) Malloc(sizeof(FileEntry) + (word)size);
+  if (file_entry == Null(FileEntry))
+   { fprintf(stderr, "buildinc : not enough memory for %s\n", name);
+     exit(EXIT_FAILURE);
+   }
+
+  InitNode(&(file_entry->ObjNode), dir_entry->Name, Type_File, 0, DefFileMatrix);
+  if ((size = fread((void *) buffer, 1, size,  file)) < 0)
+   { fprintf(stderr, "buildinc : error reading file %s\n", name);
+     exit(EXIT_FAILURE);
+   }
+
+  fclose(file);
+  copy_file(file_entry, buffer, size);
+  Free(buffer);
+  AddTail(&IncludeList, &(file_entry->ObjNode.Node));
+  return(1);
+}
+
+/**
+*** Copy a single header file currently held in memory to another buffer,
+*** stripping out comments.
+**/
+static void copy_file(FileEntry *entry, char *buffer, int size)
+{ int	dest_index	= 0;
+  int	source_index	= 0;
+  char	*dest_buffer	= (char *) &(entry->Data[0]);
+
+  for ( ; source_index < size; )
+   { if ((buffer[source_index] != '/') || (buffer[source_index+1] != '*'))
+      { dest_buffer[dest_index++] = buffer[source_index++];
+        continue;
+      }
+     for (source_index += 2; source_index < size; source_index++)
+      if ((buffer[source_index] == '*') && (buffer[source_index+1] == '/'))
+       { source_index += 2; break; }
+   }
+  entry->ObjNode.Size = dest_index;
+}
+
+/**
+*** Usual WalkDir() routine.
+**/
+static WORD WalkDir(char *name, WordFnPtr fn)
+{ Object *o = Locate(CurrentDir, name);
+  WORD   sum = 0;
+  int	 i;
+  
+  if (o == Null(Object))
+   { fprintf(stderr, "Error : unknown directory %s\n", name);
+     return(0);
+   }
+   
+  if ((o->Type & Type_Flags) == Type_Stream)
+   return(0);
+   
+  { Stream *s = Open(o, Null(char), O_ReadOnly);
+    WORD size;
+    DirEntry *entry, *cur;
+    
+    if (s == Null(Stream))
+     { fprintf(stderr, "Error : unable to open directory %s\n", name);
+       Close(o);
+       return(0);
+     }
+
+    size = GetFileSize(s);
+    if (size == 0) return(0);
+    entry = (DirEntry *) Malloc(size);
+    if (entry == Null(DirEntry))
+     { Close(s); Close(o); return(0); }
+     
+    if (Read(s, (BYTE *) entry, size, -1) != size)
+     { fprintf(stderr, "Error reading directory %s\n", name);
+       Close(s); Close(o); Free(entry);
+       return(0);
+     }
+    
+    cur = entry;
+    for (i = 0; i < size; cur++, i += sizeof(DirEntry) )
+     { if ( (!strcmp(cur->Name, ".")) || (!strcmp(cur->Name, "..")) )
+        continue;
+       sum += (*fn)(s->Name, cur);
+     }
+
+    Free(entry);
+    Close(s);
+  }  
+    
+  Close(o);
+  return(sum);
+}
+
+@
+
+
+1.2
+log
+@modified to match the description in the book.
+@
+text
+@d17 1
+a17 1
+/* $Header: /users/bart/hsrc/servers/include/RCS/buildinc.c,v 1.1 1991/03/28 17:10:27 bart Exp $ */
+d77 1
+a77 1
+{ int	size = sizeof(FileEntry) + entry->ObjNode.Size;
+d79 1
+a79 1
+  if (fwrite((void *) entry, 1, size, f) < 0)
+d114 1
+a114 1
+  size = GetFileSize(Heliosno(file));
+d126 1
+a126 1
+  file_entry = (FileEntry *) Malloc(sizeof(FileEntry) + size);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+/* $Header: /giga/HeliosRoot/Helios/servers/logger/RCS/logger.c,v 1.4 90/12/01 15:03:43 bart Exp $ */
+d29 1
+a29 4
+#define eq ==
+#define ne !=
+
+	WORD WalkDir(char *name, WordFnPtr fn);
+a32 1
+static	List	IncludeList;
+d34 2
+d50 1
+d52 1
+a52 1
+  if (output eq Null(FILE))
+d56 1
+d62 2
+a63 1
+  if (SearchList(&IncludeList, &write_entry, output) ne 0)
+d68 1
+a87 1
+BLV    enhancement, cope with subdirectories specified on the command line
+d103 1
+a103 1
+  if (dir_entry->Type ne Type_File) return(0);
+d109 1
+a109 1
+  if (file eq Null(FILE))
+d122 1
+a122 1
+  if (buffer eq Null(char))  
+d127 1
+a127 1
+  if (file_entry eq Null(FileEntry))
+d131 1
+d137 1
+d155 1
+a155 1
+   { if ((buffer[source_index] ne '/') || (buffer[source_index+1] ne '*'))
+d160 1
+a160 1
+      if ((buffer[source_index] eq '*') && (buffer[source_index+1] eq '/'))
+d169 1
+a169 1
+WORD WalkDir(char *name, WordFnPtr fn)
+d179 1
+a179 1
+  if ((o->Type & Type_Flags) eq Type_Stream)
+d186 1
+a186 1
+    if (s eq Null(Stream))
+d193 1
+a193 1
+    if (size eq 0) return(0);
+d198 1
+a198 1
+    if (Read(s, (BYTE *) entry, size, -1) ne size)
+@

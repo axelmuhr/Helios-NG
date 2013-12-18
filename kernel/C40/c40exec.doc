@@ -1,0 +1,210 @@
+TMS320C40 Executive Notes
+-------------------------
+
+
+Introduction
+
+The Helios executives function is to create an processor independent interface
+between the Helios kernel and the CPU architecture. It is simply a thin
+veneer over the raw machine that provides basic scheduling, interprocessor
+communications and thread creation facilities.
+
+The C40 port of Helios implements an executive that goes one stage further,
+and separates out its processor dependent and independent parts of an
+executives implemention. It implements the majority of the executive in C.
+This allows quicker implementation of Helios on new architectures as only the
+bare minimum of processor specific code has to be written. All C files
+starting with a 'g' are generic parts of the exec. Otherwise the
+files (usually assembler source) are prefixed with processor acronyms such
+as 'c40' for the TMS320C40 processor.
+Small processor specific changes to the generic source are bracketed by
+#ifdef __PROC ... #endif. This approach also allows a stage by stage
+optimisation approach, where parts of the C code can be conditionaly
+compiled out and replaced by assembler.
+
+The scheduler implemented is a realtime scheduler with eight priority
+levels ranging from 0 (highest priority) to 7. The number of levels is a
+compile time variable. The highest level simply runs threads until they
+completed or are blocked. No time-slicing occurs during their execution. This
+Allows a simple way of implementing monitors, without having to resort to
+semaphores or disabling interrupts. The remaining priorities are round
+robin timesliced within that level. The (currently) compile time timeslice
+is 100 milliseconds (1/10 sec). If any higher priority threads are available
+they are always run.
+
+Each thread saves its state in a permanent area pointed to by
+SaveState->stdsavearea and while the thread is running
+ExecRoot->CurrentSaveArea. This area is allocated when the thread is created
+by stealing sizeof(SaveState) from the top of the stack passed to
+CreateProcess(). @@@ Calls to CreateProcess could automatically add
+sizeof(SaveState) to their stack memory allocation. The current highest
+available priority with a thread to run is held in ExecRoot->HighestPri. This
+minimises the time spent by the scheduler walking down the run Q's
+
+On the 'C40, the C/User stack (AR6) has built-in stack extension. Production
+versions of the kernel will have this turned off, beta versions will have the
+stack check function print error messages if the available stack space
+is exausted. Normally all stacks will have at least 512 bytes available when
+calls to the kernel take place. The Helios/C40 PCS implements this with a
+stack guard of 64 words (PCS_STACKGUARD) always available after the stack end
+pointed to by the stack end pointer (IR1).
+
+Note that many executive and kernel functions disable and enable interrupts
+globally. As calls to IntsOn() and IntsOff() are not stacked, user
+programs that use these functions and call the kernel may have interrupts
+re-enabled at in-opertune moments!
+
+
+
+Memory map for Helios/C40:
+
+		Hi
+---------------------------------	0xffff ffff
+|				|	GLOBAL BUS (used by Helios for code)
+|				|
+|				|
+|				|
+~				~
+---------------------------------
+|				|
+|	Nucleus #2		|	Nucleus loaded here if global bus
+|				|	memory is available.
+---------------------------------	0x8000 0000
+
+
+---------------------------------	0x7fff ffff
+|				|
+|				|
+|				|
+|				|
+|				|
+~				~
+---------------------------------
+|				|	Nucleus loaded here if global bus
+|	Nucleus #1		|	memory is unavailable.
+|				|
+---------------------------------	0x0030 0440
+|must lie on 0x200 word boundary|
+|   size = 0x40 words (256kb)	|
+|				|
+|     Interrupt Vector Table	|
+---------------------------------	0x0030 0400
+|must lie on 0x200 word boundary|
+| size = 0x200 words (2kb)	|	Could possibly place this on global bus
+|				|
+|				|
+| 	Trap Vector Table	|
+---------------------------------	0x0030 0200
+| size = 0x180 words (1.5kb)	|
+|				|	Could increase size slightly by reducing
+|				|	size of ExecRoot.
+|    System (interrupt) stack	|
+---------------------------------	0x0030 0080
+| size = 0x80 words (512bytes)	|
+|				|	ExecRoot points to Nucleus load address.
+|				|	ExecRoot address can be loaded with LDHI
+|	ExecRoot		|
+---------------------------------	0x0030 0000
+|    size = 0x400 words (4kb)	|
+|				|
+|				|
+|	on chip RAM #1		|
+---------------------------------	0x002f fbc0
+|    size = 0x400 words (4kb)	|
+|				|
+|				|
+|	on chip RAM #0		|
+---------------------------------	0x002f f800
+|				|
+|	C40 Reserved 		|
+---------------------------------	0x0020 0000
+|				|
+|	C40 Reserved 		|
+---------------------------------
+|				|
+|				|
+|	On chip Peripherals	|
+---------------------------------	0x0010 0000
+|				|
+|	C40 Reserved 		|
+---------------------------------	0x0000 0fff
+|    size = 0x1000 (16kb)	|
+|				|
+|	On chip ROM		|	LOCAL BUS (Used by Helios to store Data)
+---------------------------------	0x0000 0000
+		Lo
+
+
+
+
+TODO:
+-----
+
+When optimising code, make sure all major functions are aligned to 32 word
+address boundaries - this will give the best performance from the cache.
+(see page 3-28).
+
+Check and see where we can specifically reduce time spent in timeslice code
+and generally reduce the maximum latency. See where we can just turn
+SliceIntsOff(), rather going the whole hog and increasing our interrupt
+latency with use of IntsOff().
+
+Add StoreSize() FastStoreSize() and InitErrorCodes to executive porting guide.
+
+Ir0 should be moved in the SaveState to just after the ST. This would allow
+a few ~10-20 cycles to be saved in the timeslice context switch. Also
+changes in the Save/RestoreCPU/SlicedState() functions.
+
+Use of ExecRoot in ar0, rather than ar3 in EndOfDMAInterrupt Tx/Rx/TxAndRx
+would allow more optimal interface to extern_slice_now (could jump to point
+where we push ar4, missing out pop and push of ar3).
+
+The path through the timer interrupt handler should be optimised for the
+worst case, not the most often case as it is at the moment. This would reduce
+the interrupt latency, as would the SaveState re-organisation noted above.
+
+Use IDROM for processor timeslice calc.
+
+Auto Memsizeing if IDROM says 0 mem.
+
+Check if next slicon after TMX will have interrupt bugs fixed - then look
+at ways of reducing the interrupt latency still further - then no need to
+disable interrupts during context switch (except PUSHF/POPF)? Use semaphore
+when evicting runQ's, etc during taskkill (use root for sem, and check through
+known thread Q? (+ semaphores?)).
+
+Check through timeslice code for pipeline conflicts
+Check code generated by C for pipeline conflicts.
+
+Check that longjump takes auto stack extension into account.
+
+Check that interrupt driven linkIO actually works (completely untested so far).
+
+Suss out how we wish to implement Allocatable DMA for users.
+	- give them the engine they request (if associated with dumb /
+	 unconnected / user allocated link).
+	- give them any unused links associated DMA engine
+	- keep track of usage of links and give them least used DMA eng
+	- implement interrupt driven link handler - use for each link that
+	- has lost its DMA engine.
+	- Allow user to specify overall DMA priorities (need access to DMA
+	engine 0 to do this).
+	- fns that return bitmap/number of free DMA engines
+
+
+Optimisations of LinkTx/Rx:
+	Remove link protocol byte(word).
+	Re-write entire linkmsg/guardian code and make use of automatic
+	DMA linkage + only alloc/free DMA engines when their are no
+	requests pending.
+	Direct link to link DMA (thru routing).
+	To free-up more DMA engines, we should hang dumb links (+intelligent
+	servers waiting for a protocol word) off a link read ready interrupt,
+	on getting interrupt, we then grab a DMA engine.
+
+NOTE that msghdr's should always be word aligned. - either place check for this
+in code, or force alignment by copy into static word buffer. IF THIS IS NOT
+FIXED IT MUST BE DOCUMENTED.
+
+Check all @@@ comments.
+

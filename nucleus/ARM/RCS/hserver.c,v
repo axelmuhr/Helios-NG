@@ -1,0 +1,573 @@
+head     1.2;
+branch   ;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @ * @;
+
+
+1.2
+date     90.10.22.11.19.46;  author paul;  state Exp;
+branches ;
+next     1.1;
+
+1.1
+date     90.09.25.18.42.26;  author paul;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+1.2
+log
+@include root.h
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S   N U C L E U S                      --
+--                     ---------------------------                      --
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- hserver.c								--
+--                                                                      --
+--	Native /helios server						--
+--                                                                      --
+--	Author:  PAB 1/5/90						--
+--                                                                      --
+-- The native /helios directory only allows subdirectories and links	--
+-- to be made in its directory structure. It is simply to allow A ROM	--
+-- based Helios system to support several filing systems that may wish	--
+-- to supply different parts of the system, for instance a plug-in ROM	--
+-- card may supply a new resident library, this has to be loaded from   --
+-- /helios/lib, /helios/lib now being a subdirectory in /helios that	--
+-- just holds links to the real file systems that provide the relevant	--
+-- files.								--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RCSId: $Id: hserver.c,v 1.1 90/09/25 18:42:26 paul Exp $ */
+ 
+#include <helios.h>	/* standard header */
+
+#define __in_hserver 1	/* flag that we are in this module */
+#define in_kernel 1	/* Cheat to get access to the "Config" information */
+
+/*--------------------------------------------------------
+-- 		     Include Files			--
+--------------------------------------------------------*/
+
+#include <string.h>
+#include <codes.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <task.h>
+#include <config.h>
+#include <root.h>
+
+/*--------------------------------------------------------
+--		Private Data Definitions 		--
+--------------------------------------------------------*/
+
+typedef struct File {
+	ObjNode		ObjNode;	/* node for directory struct	*/
+} File;
+#define Upb		ObjNode.Size	/* use ObjNode size field	*/
+#define Buffers		ObjNode.Contents /* use ObjNode contents field	*/
+#define Users		ObjNode.Account  /* number of opens		*/
+
+#define FileMax		1024		/* bytes in each block		*/
+
+DirNode		Root;			/* root of directory system	*/
+
+#ifndef DEMANDLOADED
+NameInfo Info =
+{	NullPort,
+	Flags_StripName,
+	DefNameMatrix,
+	(word *)NULL
+};
+#endif
+
+static int basename(char *base, char *str);
+static void StdLink(char *src, char *dst);
+
+static void do_open(ServInfo *);
+static void do_create(ServInfo *);
+static void do_delete(ServInfo *);
+static void do_serverinfo(ServInfo *);
+
+static DispatchInfo HServerInfo = {
+	&Root,
+	NullPort,
+	SS_HServer,
+	NULL,
+	{ NULL, 0 },
+	{
+		{ do_open,	2000 },		/* FG_Open		*/
+		{ do_create,	2000 },		/* FG_Create		*/
+		{ DoLocate,	2000 },		/* FG_Locate		*/
+		{ DoObjInfo,	2000 },		/* FG_ObjectInfo	*/
+		{ do_serverinfo,2000 },		/* FG_ServerInfo	*/
+		{ do_delete,	2000 },		/* FG_Delete		*/
+		{ DoRename,	2000 },		/* FG_Rename		*/
+		{ DoLink,	2000 },		/* FG_Link		*/
+		{ DoProtect,	2000 },		/* FG_Protect		*/
+		{ DoSetDate,	2000 },		/* FG_SetDate		*/
+		{ DoRefine,	2000 },		/* FG_Refine		*/
+		{ NullFn,	2000 }		/* FG_CloseObj		*/
+	}
+};
+
+
+/*--------------------------------------------------------
+-- main							--
+--							--
+-- Entry point of /helios server.			--
+--							--
+--------------------------------------------------------*/
+
+int main()
+{
+#ifndef DEMANDLOADED
+	Object *nte;
+#endif
+	char mcname[100];
+
+#ifdef STANDALONE
+	Environ env;
+	GetEnv(MyTask->Port,&env); /* posix exec send's env ! */
+	/* if executed by procman alone, we shouldn't read this */
+#endif
+
+	MachineName(mcname);
+	
+	HServerInfo.ParentName = mcname;
+	
+	InitNode( (ObjNode *)&Root, "helios", Type_Directory, 0, DefRootMatrix );
+	InitList( &Root.Entries );
+	Root.Nentries = 0;
+
+#ifdef DEMANDLOADED
+	HServerInfo.ReqPort = MyTask->Port;
+#else
+	Info.Port = HServerInfo.ReqPort = NewPort();
+#endif
+	/* .. of root is a link to our machine root	*/
+	{
+		Object *o;
+		LinkNode *Parent;
+
+		o = Locate(NULL,mcname);
+
+		Parent = (LinkNode *)Malloc(sizeof(LinkNode) + strlen(mcname));	
+		InitNode( &Parent->ObjNode, "..", Type_Link, 0, DefLinkMatrix );
+		Parent->Cap = o->Access;
+		strcpy(Parent->Link,mcname);
+		Root.Parent = (DirNode *)Parent;
+
+#ifndef DEMANDLOADED
+		/* demand loaded servers already have name entry */
+		nte = Create(o,"helios",Type_Name,sizeof(NameInfo),
+				(byte *)&Info);
+#endif				
+		Close(o);
+	}
+
+#ifdef INSYSTEMIMAGE
+	/* reply to procman that we have started */
+	/* if we are part of system image 0x456 is expect to be returned */
+	{
+		MCB m;
+		word e;
+		InitMCB(&m,0,MyTask->Parent,NullPort,0x456);
+		e = PutMsg(&m);
+	}
+#endif
+
+	/* create set of standard default links in /helios */
+	/* StdLink() assumes an implicit /helios in dest. */
+	/* and will create any directories that the dst. name is prefixed by */
+
+	if ((GetRoot()->Flags) & Root_Flags_ROM)
+	{
+		StdLink("/rom/helios/lib", "lib");
+		StdLink("/rom/helios/etc", "etc");
+		StdLink("/rom/helios/bin", "bin");
+		StdLink("/rom/helios/cshrc", "cshrc");
+#if 1	/* added by JGSmith */
+		StdLink("/rom/helios/loginrc", "loginrc");
+#endif
+		StdLink("/rom/helios/include", "include");
+# if 0
+		/* yet to be tested - MkDir */
+		Create(NULL, "/ram/tmp", Type_Directory, 0, NULL);
+		StdLink("/ram/tmp", "tmp");
+# else
+		StdLink("/ram", "tmp");
+# endif
+	}
+	else
+	{
+		StdLink("/files/helios/lib", "lib");
+		StdLink("/files/helios/etc0", "etc");
+		StdLink("/files/helios/bin", "bin");
+		StdLink("/files/helios/cshrc", "cshrc");
+#if 1	/* added by JGSmith */
+		StdLink("/files/helios/loginrc", "loginrc");
+#endif
+		StdLink("/files/helios/include", "include");
+		StdLink("/files/helios/tmp", "tmp");
+	}
+
+	Dispatch(&HServerInfo);
+
+#ifndef DEMANDLOADED
+	Delete(nte,NULL);
+#endif
+}
+
+/*--------------------------------------------------------
+-- NewDir						--
+--							--
+-- Add a new subdirectory 				--
+--							--
+--------------------------------------------------------*/
+
+DirNode *NewDir(DirNode *dir,string name, word flags, Matrix matrix)
+{
+	DirNode *d = New(DirNode);
+
+	if( d == NULL ) return NULL;
+
+	InitNode((ObjNode *)d,name,Type_Directory,flags,matrix);
+
+	InitList(&d->Entries);
+	d->Nentries = 0;
+	d->Parent = dir;
+
+	Insert(dir, (ObjNode *)d, TRUE );
+
+	return d;
+}
+
+/*--------------------------------------------------------
+--  StdLink						--
+--							--
+--  StdLink() creates a link between the 'src' file/dir --
+--  to 'dst'. 'dst' is implicitly assumed to be in the	--
+--  /helios directory. It will also create any		--
+--  directories that the 'dst' name is prefixed by	--
+--							--
+--------------------------------------------------------*/
+
+static void StdLink(char *src, char *dst)
+{
+	LinkNode *l;
+
+	if (*dst == '/')
+		return;	/* ignore absolute pathnames */
+
+	if ((l = (LinkNode *)Malloc(sizeof(LinkNode) + strlen(src))) != NULL)
+	{
+		int idx = 0;
+		DirNode *Dir = &Root;
+		DirNode *NewDir = &Root;
+		char base[NameMax];
+
+	      	/* IOdebug("Link From = %s, To /helios/%s",src,dst);*/
+
+		while ((idx = basename(base, dst)) != 0)
+		{
+			dst += idx;
+			if ((NewDir = (DirNode *) Lookup(Dir, base, TRUE)) == NULL)
+			{
+				DirNode *d = New(DirNode);
+
+				if( d == NULL ) return;
+
+				InitNode((ObjNode *)d,base,Type_Directory,0,DefDirMatrix);
+				InitList(&d->Entries);
+				d->Nentries = 0;
+				d->Parent = Dir;
+
+				Insert(Dir, (ObjNode *)d, TRUE );
+				NewDir = d;
+			}
+			Dir = NewDir;
+		}
+
+		InitNode(&l->ObjNode,base,Type_Link,0,DefLinkMatrix);
+		l->Cap = Locate(NULL, src)->Access;
+		strcpy(l->Link,src);
+		Insert(NewDir,&l->ObjNode,FALSE);
+	}
+}
+
+
+/*--------------------------------------------------------
+-- Action Procedures					--
+--							--
+--------------------------------------------------------*/
+
+static void do_open(ServInfo *servinfo)
+{
+	MCB *m = servinfo->m;
+	MsgBuf *r;
+	DirNode *d;
+	File *f;
+	IOCMsg2 *req = (IOCMsg2 *)(m->Control);
+	Port reqport;
+	char *pathname = servinfo->Pathname;
+	
+
+	d = (DirNode *)GetTargetDir(servinfo);
+
+	if( d == NULL )
+	{
+		ErrorMsg(m,Err_Null);
+		return;
+	}
+
+	r = New(MsgBuf);
+
+	if( r == NULL )
+	{
+		ErrorMsg(m,EC_Error+EG_NoMemory);
+		return;
+	}
+
+	f = (File *)GetTargetObj(servinfo);
+
+	if( f == NULL && (req->Arg.Mode & O_Create) ) 
+	{
+		m->MsgHdr.FnRc &= SS_Mask; /* PAB: clear any error set by GetContextObj */
+
+		/* if file does not exist, see whether we are allowed to */
+		/* create a file here.					 */
+		unless( CheckMask(req->Common.Access.Access,AccMask_W) ) 
+		{
+			ErrorMsg(m,EC_Error+EG_Protected+EO_Directory);
+			Free(r);
+			return;
+		}
+
+		{
+			char *name;
+			IOCCreate *req = (IOCCreate *)(m->Control);
+	
+			name = objname(pathname);	
+
+			if( req->Type == Type_Directory ) 
+				f = (File *)NewDir(d, name, 0, DefDirMatrix );
+			else
+			{
+				/* don't allow file creation */
+				ErrorMsg(m,EC_Error+EG_Create+EO_File);
+				Free(r);
+				return;
+			}
+		}
+	}
+			
+
+	if( f == NULL )
+	{
+		ErrorMsg(m,Err_Null);
+		Free(r);
+		return;
+	}
+
+	unless( CheckMask(req->Common.Access.Access,req->Arg.Mode&Flags_Mode) ) 
+	{
+		ErrorMsg(m,EC_Error+EG_Protected+EO_File);
+		Free(r);
+		return;
+	}
+
+	FormOpenReply(r,m,&f->ObjNode,Flags_Server|Flags_Closeable, pathname);
+
+	reqport = NewPort();
+	r->mcb.MsgHdr.Reply = reqport;
+	PutMsg(&r->mcb);
+	Free(r);
+
+	/* Should be no files, so dont allow any stream operations */
+	if( f->ObjNode.Type != Type_Directory )
+		ErrorMsg(m,EC_Error+EG_Open+EO_File);
+
+	DirServer(servinfo,m,reqport);
+	FreePort(reqport);
+	return;
+}
+
+static void do_create(ServInfo *servinfo)
+{
+	MCB *m = servinfo->m;
+	MsgBuf *r;
+	DirNode *d;
+	File *f;
+	IOCCreate *req = (IOCCreate *)(m->Control);
+	char *pathname = servinfo->Pathname;
+
+	d = GetTargetDir(servinfo);
+
+	if( d == NULL )
+	{
+		ErrorMsg(m,EO_Directory);
+		return;
+	}
+
+	f = (File *)GetTargetObj(servinfo);
+	
+	if( f != NULL )
+	{
+		ErrorMsg(m,EC_Error+EG_Create+EO_File);
+		return;
+	}
+
+	unless( CheckMask(req->Common.Access.Access,AccMask_W) ) 
+	{
+		ErrorMsg(m,EC_Error+EG_Protected+EO_Directory);
+		return;
+	}
+
+	r = New(MsgBuf);
+
+	if( r == NULL )
+	{
+		ErrorMsg(m,EC_Error+EG_NoMemory);
+		return;
+	}
+
+	{
+		char *name;
+		IOCCreate *req = (IOCCreate *)(m->Control);
+
+		name = objname(pathname);	
+
+		if( req->Type == Type_Directory ) 
+			f = (File *)NewDir(d, name, 0, DefDirMatrix );
+		else
+		{
+			/* don't allow file creation */
+			ErrorMsg(m,EC_Error+EG_Create+EO_File);
+			Free(r);
+			return;
+		}
+	}
+
+	if( f == NULL )
+	{
+		ErrorMsg(m,0);
+		Free(r);
+		return;
+	}
+
+	FormOpenReply(r,m,&f->ObjNode, 0, pathname);
+
+	PutMsg(&r->mcb);
+
+	Free(r);
+}
+
+static void do_delete(ServInfo *servinfo)
+{
+	MCB *m = servinfo->m;
+	File *f;
+	IOCCommon *req = (IOCCommon *)(m->Control);
+
+	f = (File *)GetTarget(servinfo);
+
+	if( f == NULL )
+	{
+		ErrorMsg(m,EO_File);
+		return;
+	}
+	
+	unless( CheckMask(req->Access.Access,AccMask_D) ) 
+	{
+		ErrorMsg(m,EC_Error+EG_Protected+EO_File);
+		return;
+	}
+
+	if( f->ObjNode.Type == Type_Directory &&
+		((DirNode *)f)->Nentries != 0 )
+	{
+		ErrorMsg(m,EC_Error+EG_Delete+EO_Directory);
+		return;
+	}
+	
+	Unlink(&f->ObjNode,FALSE);
+	Free(f);
+
+	ErrorMsg(m,Err_Null);
+}
+
+static void do_serverinfo(ServInfo *servinfo)
+{
+	char *pathname = servinfo->Pathname;
+	NullFn(servinfo);
+}
+
+
+/*--------------------------------------------------------
+-- basename()						--
+--							--
+-- This is used for splitting up file names.		--
+-- Copy chars out of str into pfix until either a null 	--
+-- is found or '/' is encountered. Returns pos in str 	--
+-- of char after ch, or 0 if null is encountered	--
+-- 							--
+--------------------------------------------------------*/
+
+static int basename(char *base, char *str)
+{
+	int ptr = 0;
+	while( str[ptr] != '/' )
+	{
+		if( str[ptr] == '\0' )
+		{ base[ptr] = '\0'; return 0; }
+		else if( ptr < NameMax-1 ) base[ptr] = str[ptr];
+		ptr++;
+	}
+	base[ptr] = '\0';
+	return ptr+1;
+}
+
+
+#ifdef __XPUTER
+void _stack_error(void)
+{
+	IOdebug("/helios server stack overflow!!");
+}
+#elif defined (__HELIOSARM)
+static void __stack_overflow(void)
+{
+	IOdebug("/helios server stack overflow!");
+}
+static void __stack_overflow_1(void)
+{
+	IOdebug("/helios server stack overflow1!");
+}
+#endif
+
+
+/* End of hserver.c */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d25 1
+a25 1
+/* RCSId: $Id$ */
+d42 1
+@

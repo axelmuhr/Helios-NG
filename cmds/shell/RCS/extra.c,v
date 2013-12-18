@@ -1,0 +1,516 @@
+head	1.11;
+access;
+symbols
+	Helios_1_3_1:1.9
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.7
+	Helios1_3:1.7
+	C40_Field_Test_2:1.7
+	C40_Field_Test_R1:1.6
+	Helios13_beta:1.6
+	Helios1_2_2:1.6
+	Helios1_2_2Beta:1.6
+	Helios1_2_1:1.5
+	Helios1_2:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.11
+date	94.03.01.14.14.03;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	94.02.07.11.53.50;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	93.08.13.09.59.23;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	93.08.12.15.55.37;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.09.02.15.33.23;	author martyn;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.06.04.11.08.10;	author martyn;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.04.02.09.33.16;	author martyn;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.12.06.11.41.24;	author martyn;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.11.23.18.05.58;	author martyn;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.11.22.12.34.01;	author martyn;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.23.15.59.30;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.11
+log
+@added some more debugging to fatal memory error but problem disappeared in the meantime!
+@
+text
+@/**
+*
+* Title:  Helios Shell - Extra Support.
+*
+* Author: Andy England
+*
+* Date:   May 1988
+*
+*         (c) Copyright 1988, Perihelion Software Ltd.
+*
+*         All Rights Reserved.
+*
+* $Header: /hsrc/cmds/shell/RCS/extra.c,v 1.10 1994/02/07 11:53:50 nickc Exp nickc $
+*
+**/
+#include "shell.h"
+
+LIST filelist;
+LIST looplist;
+
+BOOL pushdir(char *path)
+{
+  char name[PATH_MAX + 1];
+
+  if (getcwd(name, PATH_MAX) == NULL) return FALSE;
+  unless (changedir(path)) return FALSE;
+  adddir(name);
+  dirs();
+  return TRUE;
+}
+
+BOOL changedir(char *path)
+{
+  char name[PATH_MAX + 1];
+  char **cdpathargv;
+  char *cdpath;
+  void stripslash(char *);
+
+  stripslash(path);
+  unless (chdir(path) == -1)
+  {
+    if (getcwd(name, PATH_MAX) == NULL) return FALSE;
+    set("cwd", makeargv(name));
+    return TRUE;
+  }
+  unless ((cdpathargv = findvar("cdpath")) == NULL)
+  {
+    until ((cdpath = *cdpathargv++) == NULL)
+    {
+      formfilename(name, cdpath, path);
+      stripslash(name);
+      unless (chdir(name) == -1)
+      {
+        if (getcwd(name, PATH_MAX) == NULL) return FALSE;
+        set("cwd", makeargv(name));
+        return TRUE;
+      }
+    }
+  }
+  return FALSE;
+}
+
+BOOL dirs()
+{
+  char path[PATH_MAX + 1];
+
+  if (getcwd(path, PATH_MAX) == NULL) return FALSE;
+  printf("%s ", path);
+  WalkList((List *)&dirlist, (WordFnPtr)putdirnode);
+  putchar('\n');
+  return TRUE;
+}
+
+void newfile(FILE *file)
+{
+  FILEINFO *fileinfo = new(FILEINFO);
+  int fd = fileno(file);
+
+#ifdef DEBUGGING
+  DEBUG("newfile()\n");
+#endif  
+fileinfo->inputfile = inputfile;
+  fileinfo->interactive = interactive;
+  fileinfo->cmd = globcmd;
+  fileinfo->argv = globargv;
+  inputfile = file;
+  interactive = (BOOL) isatty(fd);
+  globcmd = NULL;
+  innewfile++ ;
+#ifdef SYSDEB
+  fileinfo->next = fileinfo->prev = fileinfo;
+#endif
+  AddHead((List *)&filelist, (Node *)fileinfo);
+}
+
+void oldfile()
+{
+  FILEINFO *fileinfo = (FILEINFO *)RemHead(&filelist);
+
+#ifdef DEBUGGING
+  DEBUG("oldfile()\n");
+#endif
+  fclose(inputfile);
+  freecmd(globcmd);
+  freeargv(globargv);
+  inputfile = fileinfo->inputfile;
+  interactive = fileinfo->interactive;
+  innewfile-- ;
+  globcmd = fileinfo->cmd;
+  globargv = fileinfo->argv;
+  freememory((int *)fileinfo);
+}
+
+void tidyupfiles()
+{
+#ifdef DEBUGGING
+  DEBUG("tidyupfiles()\n");
+#endif
+  until (filelist.Head->Next == NULL) oldfile();
+}
+
+void newloop()
+{
+  LOOPINFO *loopinfo = new(LOOPINFO);
+
+#ifdef DEBUGGING
+  DEBUG("newloop()\n");
+#endif
+  loopinfo->cmd = globcmd;
+  globcmd = NULL;
+#ifdef SYSDEB
+  loopinfo->next = loopinfo->prev = loopinfo;
+#endif
+  AddHead(&looplist, (NODE *)loopinfo);
+}
+
+void oldloop()
+{
+  LOOPINFO *loopinfo = (LOOPINFO *)RemHead(&looplist);
+
+#ifdef DEBUGGING
+  DEBUG("oldloop()\n");
+#endif
+  freecmd(globcmd);
+  globcmd = loopinfo->cmd;
+  freememory((int *)loopinfo);
+}
+
+void tidyuploops()
+{
+#ifdef DEBUGGING
+  DEBUG("tidyuploops()\n");
+#endif
+  until (looplist.Head->Next == NULL) oldloop();
+}
+
+BOOL inloop()
+{
+  return (BOOL) (looplist.Head->Next != NULL);
+}
+
+char *strdup(char *s)
+{
+  char *d = (char *)newmemory(strlen(s) + 1);
+
+  strcpy(d, s);
+  return d;
+}
+
+
+char *newmemory(int size)
+{
+  if (memorychecking)
+  {
+    int *mem = (int *)malloc(size + sizeof(int) + sizeof (int));
+    char *bmem = (char *)mem;
+
+    if (mem == NULL) exit(error(ERR_NOMEMORY, NULL));
+    mem[0] = size;
+    totalmemory += size;
+    					/* Put adress of size behind	*/
+    					/* allocated data area		*/
+    memcpy (&bmem[size+sizeof(int)], &mem, sizeof(int));
+    return (char *)(mem + 1);
+  }
+  else return (char *)malloc(size);
+}
+
+void freememory(int *mem)
+{
+  if (memorychecking)
+  {
+    int size;
+    char *bmem;
+
+    mem = (int *)mem - 1;
+    bmem = (char *)mem;
+    size = ((int *)mem)[0];
+    					/* check size address...	*/
+    if ( ((word)mem & 3) || memcmp(&mem, &bmem[size+sizeof(int)], sizeof (int)))
+    {
+      IOdebug ("shell: fatal memory error at %x.", (int *)mem);
+      memcpy (&mem, &bmem[size+sizeof(int)], sizeof(int));
+      IOdebug( "size = %x, ptr to mem = %x ", size, mem );
+      exit (1);
+    }
+    totalmemory -= size;
+  }
+  free(mem);
+}
+
+
+
+void putmem()
+{
+  printf("Memory used = %d bytes\n", totalmemory);
+}
+
+void stripslash(char *name)
+{
+	char *freeloc, *p = (char *) Malloc((word)strlen(name)+1);
+	char *start = name;
+
+	if(p == (char *)NULL)
+		return;
+
+	freeloc = p;
+
+	memcpy(p, name, strlen(name)+1);
+
+	while(*p)
+		{
+		*name++ = *p;
+		if(*p++ == '/')
+			while(*p == '/')
+				p++;
+		}
+
+	*name = 0;
+
+	if(name[-1] == '/' && (name > start+1))
+		name[-1] = 0;
+
+	Free(freeloc);
+
+	return;
+}
+
+int strnequ(char *p, char *q, int n)
+{
+	if(p == (char *)NULL || q == (char *)NULL)
+		return 0;
+
+	return(strncmp(p, q, n) == 0);
+}
+
+int strequ(char *p, char *q)
+{
+	if(p == (char *)NULL || q == (char *)NULL)
+		return 0;
+
+	return(strcmp(p, q) == 0);
+}
+@
+
+
+1.10
+log
+@added conditional code to initialise nodes before adding them to lists
+@
+text
+@d13 1
+a13 1
+* $Header: /hsrc/cmds/shell/RCS/extra.c,v 1.9 1993/08/13 09:59:23 nickc Exp nickc $
+d202 3
+a204 1
+      IOdebug ("shell: fatal memory error at %x.", (int *)mem+1);
+@
+
+
+1.9
+log
+@fixed compile time warning messages (for ARM)
+@
+text
+@d13 1
+a13 1
+* $Header: /hsrc/cmds/shell/RCS/extra.c,v 1.8 1993/08/12 15:55:37 nickc Exp nickc $
+d90 3
+d131 3
+@
+
+
+1.8
+log
+@fixed compile time warnings
+@
+text
+@d13 1
+a13 1
+* $Header: /hsrc/cmds/shell/RCS/extra.c,v 1.7 1992/09/02 15:33:23 martyn Exp nickc $
+d87 1
+a87 1
+  interactive = isatty(fd);
+d153 1
+a153 1
+  return (looplist.Head->Next != NULL);
+d213 1
+a213 1
+	char *freeloc, *p = Malloc((word)strlen(name)+1);
+@
+
+
+1.7
+log
+@change strequ and strnequ from amcros to subroutines, so that we can check
+for NULL pointers.
+@
+text
+@d13 1
+a13 1
+* $Header: /hsrc/cmds/shell/RCS/extra.c,v 1.6 1991/06/04 11:08:10 martyn Exp martyn $
+d21 1
+a21 2
+BOOL pushdir(path)
+char *path;
+d32 1
+a32 2
+BOOL changedir(path)
+char *path;
+d74 1
+a74 2
+void newfile(file)
+FILE *file;
+d156 1
+a156 2
+char *strdup(s)
+char *s;
+d165 1
+a165 2
+char *newmemory(size)
+int size;
+d183 1
+a183 2
+void freememory(mem)
+int *mem;
+d213 1
+a213 1
+	char *freeloc, *p = Malloc(strlen(name)+1);
+@
+
+
+1.6
+log
+@modified stripslash to strip single trailing slash (and to free its
+malloced mem !)
+@
+text
+@d13 1
+a13 1
+* $Header: /hsrc/cmds/shell/RCS/extra.c,v 1.5 1991/04/02 09:33:16 martyn Exp $
+d245 16
+@
+
+
+1.5
+log
+@added code to strip multiple slashes from $cwd
+@
+text
+@d13 1
+a13 1
+* $Header: /usr/perihelion/Helios/cmds/shell/RCS/extra.c,v 1.4 90/12/06 11:41:24 martyn Exp $
+d219 2
+a220 1
+	char *p = Malloc(strlen(name)+1);
+d225 2
+d238 5
+@
+
+
+1.4
+log
+@new fixes to clean up after a stream write error
+@
+text
+@d13 1
+a13 1
+* $Header: /usr/perihelion/Helios/cmds/shell/RCS/extra.c,v 1.1 90/08/23 15:59:30 james Exp $
+d39 1
+d41 1
+d53 1
+d215 22
+@
+
+
+1.3
+log
+@more changes to fix CTRL-C and error recovery longjmp bugs
+@
+text
+@d89 1
+a89 1
+  innewfile = TRUE;
+d105 1
+a105 1
+  innewfile = FALSE;
+@
+
+
+1.2
+log
+@changes to try and fix CTRL-C processing
+@
+text
+@a89 3
+#ifndef OLDCODE
+  fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d13 1
+a13 1
+* $Header$
+d89 1
+d108 1
+@

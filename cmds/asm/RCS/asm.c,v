@@ -1,0 +1,1176 @@
+head	1.15;
+access;
+symbols
+	Helios1_3:1.12
+	Helios13_beta:1.11
+	Helios1_2_2:1.10
+	Helios1_2_2Beta:1.10
+	Helios1_2_1:1.8;
+locks; strict;
+comment	@ * @;
+
+
+1.15
+date	94.11.08.09.47.15;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	94.08.09.16.34.42;	author al;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	93.06.10.14.04.35;	author bart;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.09.25.10.41.21;	author paul;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	91.12.02.15.13.43;	author martyn;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	91.06.20.09.27.50;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.06.07.07.30.14;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.03.28.15.07.35;	author nick;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.03.04.11.40.55;	author martyn;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.01.08.15.39.21;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.12.19.14.45.07;	author martyn;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.09.28.12.19.13;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.11.18.27.40;	author jon;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.28.09.59.01;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.24.16.28.54;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.15
+log
+@Fixed DOS version to always open files in binary mode, regardless of setting of preasm flag
+@
+text
+@/****************************************************************/
+/* File: asm.c                                                  */
+/*                                                              */
+/*                                                              */
+/* Author: NHG 19-Feb-87                                        */
+/* Modified to compile under Norcroft C: AEv 21-Jan-88		*/
+/****************************************************************/
+/* $Id: asm.c,v 1.14 1994/08/09 16:34:42 al Exp nickc $ */
+
+#include "asm.h"
+#include <ctype.h>
+
+#ifdef __STDC__
+#include <stdlib.h>
+#endif
+
+#ifdef LATTICE
+#include <fcntl.h>
+#endif
+
+#ifdef __HELIOS
+#include <task.h>
+#include <memory.h>
+#include <nonansi.h>
+#include <module.h>
+#endif
+
+#include "getargs.h"
+
+PUBLIC  FILE *infd;
+PUBLIC  FILE *outfd;
+PUBLIC  FILE *verfd;
+PUBLIC  jmp_buf error_level;
+PRIVATE jmp_buf default_level;
+PUBLIC  WORD errors;
+PRIVATE WORD phase = 0;
+PUBLIC  WORD traceflags;
+PUBLIC  WORD warnflags;
+PRIVATE WORD maxerr = 0;
+PUBLIC  WORD preasm = FALSE;
+PUBLIC  WORD hexopt = FALSE;
+PRIVATE WORD image  = i_helios;
+PUBLIC  WORD defopt = FALSE;
+PUBLIC  WORD fastopt = TRUE;
+PUBLIC  WORD verbose = FALSE;
+PUBLIC  WORD inlib = FALSE;
+PUBLIC  FILE *deffd;
+PUBLIC  WORD vmpagesize = 8*1024;
+PUBLIC  WORD instr_size = 3;
+
+PRIVATE WORD needobjed = FALSE;
+PRIVATE WORD noname = FALSE;
+PRIVATE char *progname = NULL;
+PRIVATE WORD stack_size = -1;
+PRIVATE WORD heap_size = -1;
+
+PUBLIC  BYTE infile[128];
+PRIVATE BYTE outfile[128];
+PUBLIC  char *curfile;
+
+#ifdef __STDC__
+#define BUFSIZE (8*1024)
+PRIVATE BYTE inbuf[BUFSIZE];
+PRIVATE BYTE outbuf[BUFSIZE];
+#endif
+
+WORD filemod;
+WORD filepos = -1;
+
+PUBLIC WORD waste;
+
+/* void unload(void); */
+#ifdef __DOS386
+
+#undef max
+#undef min
+WORD max(WORD a, WORD b);
+PRIVATE WORD parsearg(char ***aargv);
+PRIVATE void tidy1(void);
+PRIVATE void tidyup(void);
+
+#else /* !__DOS386 */
+
+WORD max(ellipsis);
+PRIVATE WORD parsearg(ellipsis);
+PRIVATE void tidy1(ellipsis);
+PRIVATE void tidyup(ellipsis);
+
+#endif /* __DOS386 */
+
+#ifdef MWC
+long _stksize = 20000;
+#endif
+#ifdef IBMPC
+int _stack = 4096;
+#endif
+
+PRIVATE void
+_asm( argc, argv )		/* NB cannot call the function asm() as this is a reserved word in some C compilers */
+  int 		argc;
+  char ** 	argv;
+{
+	WORD infiles = 0;
+	int start, inend, growend, end;
+	ArgStack	*argstack = NULL;    
+
+        infd = stdin;
+        outfd = stdout;
+	
+#ifdef LATTICE
+        verfd = stdout;
+#else
+        verfd = stderr;
+#endif
+
+	deffd = (FILE *) NULL;
+        infile[0] = 0;
+        memcpy(error_level,default_level,sizeof(jmp_buf));
+        errors = 0;
+
+        argv++;
+	argc--;
+
+	inend = growend = end = start = time(NULL);
+	
+        if( setjmp(error_level) == 0 )
+        {
+	  
+                initmem();
+                initcode();
+                initmodules();
+                initsym();
+                initasm();
+
+                report("Transputer Assembler V1.9");
+                report("Copyright (C) 1987, Perihelion Software Ltd.");
+
+                phase = 1;
+                while( (*argv != NULL) || (argstack != NULL) )
+                {
+			if (*argv == NULL)
+			{
+				popargs(&argstack, &argc, &argv);
+				continue;
+			}
+
+			if ( **argv == '@@')
+			{
+				char **argfile;
+
+				argfile = getargs((*argv)+1, &argc);
+				if (argfile == NULL)
+				{
+					error("Unable to open or create arguments from %s\n", (*argv)+1);
+					argv++;
+				} else {
+					/* argv+1 is pushed so we return to the next argv */
+					pushargs(&argstack, argc-1, argv+1);
+					argv = argfile;
+				}
+
+				continue;
+			}
+
+                        if ( parsearg(&argv) == TRUE )
+                        {
+				infiles++; filemod = 0; filepos = -1;
+                                assemble();
+                                tidy1();
+                                tempval++;
+                                inlib = FALSE;
+                        }
+                }
+
+		if( infiles == 0 )	/* if no command line files, use stdin */
+		{
+			assemble();
+		}
+
+                genend();	/* finish off last module */
+
+		inend = growend = end = time(NULL);
+				
+                report("\nSyntax analysis complete");
+
+		strcpy(infile,outfile);
+		if( warnflags & warn_unref ) show_unref();
+	
+                if( !preasm && errors == 0 )
+                {
+                        phase = 2;
+                        setmodules();
+			growdata();
+			report("Semantic analysis complete");
+                        growcode();
+			growend = end = time(NULL);
+                        report("\nCode growing complete");
+
+                }
+
+                if( !preasm && errors == 0 )
+                {
+                        phase = 3;
+                        switch( (int)image )
+                        {
+                        case i_helios: genimage();      break;
+                        }
+
+			if( !noname && progname == NULL && outfd != stdout )
+			{
+				char *p = &outfile[strlen(outfile)];
+				while( *(p-1) != '/' && p != outfile ) 
+				{
+					if( *p == '.' ) *p = '\0';
+					p--;
+				}
+				progname = p;
+				needobjed = 1;
+			}
+			
+			fflush(outfd);
+			
+                        report("Image file generated");
+			
+                        if( needobjed ) objed(outfd,progname,stack_size,heap_size);
+                }
+
+                if( preasm && errors == 0 )
+                {
+                        phase = 2;
+                        genpreasm();
+
+                        report("Object code generated");
+
+                }
+
+        }
+                                                               
+	end = time(NULL);
+
+report("Code Density:    Percent        %8ld Waste          %8ld",((simPc+4-waste)*100)/(simPc+4),waste);
+report("Times (secs):    Total          %8ld Input          %8ld",end-start,inend-start);
+report("                 Growing        %8ld Output         %8ld",growend-inend,end-growend);
+report("Memory used:     Code           %8ld Local Heap     %8ld",codesize,heapsize);
+report("                 Symbols        %8ld Expressions    %8ld",symsize,exprsize);
+
+	VMStats();
+	
+	modstats();
+
+	if( traceflags&db_refs ) printtab(Symtab);
+
+	if( traceflags&db_vm ) showvm();
+			
+        tidyup();
+
+        exit(maxerr);
+
+        return;
+}
+
+/********************************************************/
+/* main                                                 */
+/*                                                      */
+/* Initialise everything and call the assembler         */
+/*                                                      */
+/********************************************************/
+
+PUBLIC int
+main( argc, argv )
+  int argc;
+  BYTE **argv;
+{
+#if defined(__HELIOS) && defined(__TRAN)
+	int			stack_size = 3000;
+	static Carrier *	stack      = NULL;
+
+	
+	stack = AllocFast( stack_size , &MyTask->MemPool );
+
+	if (stack)
+	  Accelerate( stack, _asm, sizeof (argc) + sizeof (argv), argc, argv );
+	else
+#endif
+	  _asm( argc, argv );
+
+	return 0;
+}
+
+PRIVATE WORD parsearg(aargv)
+char ***aargv;
+{
+	char **argv = *aargv;
+	char *arg = *argv;
+
+#define _ARG_ if( *++arg == '\0' ) arg = *(++argv);	
+
+        if( *arg == '-' )
+        {
+        	arg++;
+                switch( *arg )
+                {
+                case 'v':
+                    verbose = !verbose;
+                    if( *++arg != '\0' )
+                    {
+                        FILE *vfd = fopen(arg,"w");
+                        if( vfd == 0 ) error("Cannot open %s for output",arg+2);
+                        verfd = vfd;
+                    }
+                    break;
+
+
+                case 't':
+                	arg++;
+                        while( *arg != '\0' )
+                        {
+                                switch( (int)locase(*arg) )
+                                {
+                                case 'l': traceflags ^= db_lex;      break;
+                                case 's': traceflags ^= db_syn;      break;
+                                case 'c': traceflags ^= db_gencode;  break;
+                                case 'g': traceflags ^= db_growcode; break;
+                                case 'o': traceflags ^= db_genimage; break;
+                                case 'e': traceflags ^= db_expr;     break;
+                                case 'v': traceflags ^= db_eval;     break;
+                                case 'p': traceflags ^= db_preasm;   break;
+                                case 'z': traceflags ^= db_vm; 	     break;
+				case 'k': traceflags ^= db_kludge;   break;
+				case 'f': traceflags ^= db_files;    break;
+				case 'm': traceflags ^= db_mem;      break;
+				case 'y': traceflags ^= db_sym;      break;
+				case 'd': traceflags ^= db_modules;  break;
+				case 'r': traceflags ^= db_refs;     break;
+                                }
+                                arg++;
+                        }
+                        break;
+
+		case 'w':
+                	arg++;
+                        while( *arg != '\0' )
+                        {
+                                switch( (int)locase(*arg) )
+                                {
+                                case 'r': warnflags ^= warn_unref;   break;
+                                case 'u': warnflags ^= warn_undef;   break;
+                                }
+                                arg++;
+                        }
+			break;			
+
+		case 'I':
+			_ARG_
+			instr_size = (long)atol(arg);
+			break;
+
+                case 'p':
+                        preasm = TRUE;
+                        break;
+
+                case 'x':
+                        hexopt = TRUE;
+                        break;
+
+                case 'i':
+                        image = *arg;
+                        break;
+
+		case 'f':
+			fastopt = !fastopt;
+			break;
+
+		case 'd':
+			defopt = TRUE;
+			_ARG_;
+			deffd = fopen(arg,"w");
+			if(deffd == NULL ) error("Cannot open %s for output",arg+2);
+			break;
+
+		case 'n':
+			_ARG_
+			needobjed = 1;
+			progname = arg;
+			break;
+			
+		case 's':
+			_ARG_
+			needobjed = 1;
+			stack_size = (long)atol(arg);
+			break;
+
+		case 'h':
+			_ARG_;
+			needobjed = 1;
+			heap_size = (long)atol(arg);
+			break;			
+
+		case 'N':
+			noname = TRUE;
+			break;
+			
+#ifdef VM
+		case 'm':
+			_ARG_;
+			VMfilename = arg;
+			break;
+			
+		case 'z':
+			_ARG_;
+			vmpagesize = (long)atol(arg);
+			break;
+			
+		case 'M':
+			_ARG_;
+			VMLeave = (long)atol(arg);
+			break;
+#endif		
+                case 'o':
+                	_ARG_;
+                        strcpy(outfile,arg);
+#if defined(SUN4)
+			unlink(outfile);
+#else
+                        remove(outfile);
+#endif
+#ifdef LATTICE
+                        if( !hexopt ) 
+			{
+				_iomode ^= O_RAW;
+	                        outfd = fopen(outfile,"w");
+				_iomode ^= O_RAW;
+			}
+#endif
+#ifdef MWC
+			outfd = fopen(outfile,hexopt?"w+":"wb+");
+#endif
+#if defined(SUN4) || defined(RS6000)
+			outfd = fopen(outfile,"w+");
+#endif
+#ifdef SUN
+			outfd = fopen(outfile,"w+");
+#endif
+#ifdef IBMPC
+			outfd = fopen(outfile,"w+");
+#endif
+#ifdef __DOS386
+			outfd = fopen(outfile,"wb+");
+#endif
+#ifdef __HELIOS
+			outfd = fopen(outfile,hexopt?"w+":"wb+");
+#endif
+                        if( outfd == 0 ) error("Cannot open %s for output",outfile);
+#ifdef __STDC__
+			setvbuf( outfd, outbuf, _IOFBF, BUFSIZE );
+#endif
+                        break;
+
+
+		case 'l':
+			_ARG_;
+			inlib = TRUE;
+			goto inputfile;
+
+		case '\0':
+			strcpy( infile, "stdin" );
+			infd   = stdin;
+			goto openedfile;
+			break;
+                }
+                *aargv = ++argv;
+                return FALSE;
+        }
+        else
+	  {
+           inputfile:
+	        strcpy(infile,arg);
+#ifdef LATTICE
+                if( !preasm ) 
+		{
+			_iomode ^= O_RAW;
+	                infd = fopen(infile,"r");
+                	_iomode ^= O_RAW;
+		}
+#endif
+#ifdef MWC
+		infd = fopen(infile,preasm?"r":"rb");
+#endif
+#if defined(SUN4) || defined(RS6000)
+		infd = fopen(infile,"r");
+#endif
+#ifdef SUN
+		infd = fopen(infile,"r");
+#endif
+#ifdef IBMPC
+		infd = fopen(infile,"r");
+#endif
+#ifdef __DOS386
+		infd = fopen(infile,"rb");
+#endif
+#ifdef __HELIOS
+		infd = fopen(infile,"rb");
+#endif
+                if( infd == 0 )
+		{
+		 error("Cannot open %s for input",infile);
+		}
+openedfile:		
+		if( verbose )
+		{
+			fprintf(verfd,"Reading %s                                     \r",infile);
+			fflush(verfd);
+		}
+#ifdef __STDC__
+		setvbuf( infd, inbuf, _IOFBF, BUFSIZE );
+#endif
+                lineno = 1;
+                *aargv = ++argv;
+                return TRUE;
+        }
+}
+
+
+#ifdef __DOS386
+PUBLIC void error(BYTE *str, ...)
+{
+	va_list	argptr;
+
+	va_start(argptr, str);
+#ifdef LINENO
+        fprintf(verfd,"Fatal Error: %s %ld :",infile,lineno);
+#else
+        fprintf(verfd,"Fatal Error: %s :",infile);
+#endif
+        vfprintf(verfd,str,argptr);
+        putc('\n',verfd);
+        maxerr = max(maxerr,20);
+#if defined(SUN4)
+	{
+		float x = 0.0;
+		float y = 0.0;
+		float z;
+
+		z = x/y;		/* force fpe to get core dump	*/
+	}
+#endif
+	va_end(argptr);
+	exit(maxerr);
+}
+
+PUBLIC void warn(BYTE *str, ...)
+{
+	va_list	argptr;
+
+	va_start(argptr, str);
+#ifdef LINENO
+        fprintf(verfd,"Warning: %s %ld :",infile,lineno);
+#else
+        fprintf(verfd,"Warning: %s :",infile);
+#endif
+        vfprintf(verfd,str,argptr);
+        putc('\n',verfd);
+	va_end(argptr);
+}
+
+PUBLIC void warn_error(BYTE *str, ...)
+{
+	va_list	argptr;
+
+	va_start(argptr, str);
+#ifdef LINENO
+        fprintf(verfd,"Warning: %s %ld :",infile,lineno);
+#else
+        fprintf(verfd,"Warning: %s :",infile);
+#endif
+        vfprintf(verfd,str,argptr);
+        putc('\n',verfd);
+
+        errors++;
+        maxerr = max(maxerr,10);
+	va_end(argptr);
+}
+
+
+PUBLIC void report(BYTE *str, ...)
+{
+	va_list argptr;
+
+	if( !verbose ) return;
+
+	va_start(argptr, str);
+        vfprintf(verfd,str,argptr);
+        putc('\n',verfd);
+	va_end(argptr);
+}
+
+
+PUBLIC void _trace(BYTE *str, ...)
+{
+       va_list argptr;
+
+       va_start(argptr, str);
+       fprintf(verfd,"%x: ",filepos);
+       vfprintf(verfd,str,argptr);
+       putc('\n',verfd);
+       va_end(argptr);
+}
+
+
+PUBLIC void recover(BYTE *str, ...)
+{
+	va_list	argptr;
+
+	va_start(argptr, str);
+        warn(str, argptr);
+	va_end(argptr);
+        longjmp(error_level,1);
+}
+
+#else /* !__DOS386 */
+
+PUBLIC void error(str,a,b,c,d,e,f)
+BYTE *str;
+INT a,b,c,d,e,f;
+{
+#ifdef LINENO
+        fprintf(verfd,"Fatal Error: %s %ld :",infile,lineno);
+#else
+        fprintf(verfd,"Fatal Error: %s :",infile);
+#endif
+        fprintf(verfd,str,a,b,c,d,e,f);
+        putc('\n',verfd);
+        maxerr = max(maxerr,20);
+#if defined(SUN4)
+	{
+		float x = 0.0;
+		float y = 0.0;
+		float z;
+
+		z = x/y;		/* force fpe to get core dump	*/
+	}
+#endif
+	exit(maxerr);
+}
+
+PUBLIC void warn(str,a,b,c,d,e,f)
+BYTE *str;
+INT a,b,c,d,e,f;
+{
+#ifdef LINENO
+        fprintf(verfd,"Warning: %s %ld :",infile,lineno);
+#else
+        fprintf(verfd,"Warning: %s :",infile);
+#endif
+        fprintf(verfd,str,a,b,c,d,e,f);
+        putc('\n',verfd);
+}
+
+PUBLIC void warn_error(str,a,b,c,d,e,f)
+BYTE *str;
+INT a,b,c,d,e,f;
+{
+#ifdef LINENO
+        fprintf(verfd,"Warning: %s %ld :",infile,lineno);
+#else
+        fprintf(verfd,"Warning: %s :",infile);
+#endif
+        fprintf(verfd,str,a,b,c,d,e,f);
+        putc('\n',verfd);
+
+        errors++;
+        maxerr = max(maxerr,10);
+}
+
+
+PUBLIC void report(str,a,b,c,d,e,f,g,h,i,j,k)
+BYTE *str;
+INT a,b,c,d,e,f,g,h,i,j,k;
+{
+	if( !verbose ) return;
+        fprintf(verfd,str,a,b,c,d,e,f,g,h,i,j,k);
+        putc('\n',verfd);
+}
+
+
+PUBLIC void _trace(str,a,b,c,d,e,f,g,h,i,j,k)
+BYTE *str;
+INT a,b,c,d,e,f,g,h,i,j,k;
+{
+       fprintf(verfd,"%x: ",filepos);
+       fprintf(verfd,str,a,b,c,d,e,f,g,h,i,j,k);
+       putc('\n',verfd);
+}
+
+
+PUBLIC void recover(str,a,b,c,d,e,f)
+BYTE *str;
+INT a,b,c,d,e,f;
+{
+        warn(str,a,b,c,d,e,f);
+        longjmp(error_level,1);
+}
+
+#endif /* __DOS386 */
+
+PRIVATE void tidyup()
+{
+        tidy1();
+        if(outfd != stdout && outfd != NULL) { fclose(outfd); outfd = stdout; }
+        if(verfd != stderr && verfd != NULL) { fclose(verfd); verfd = stderr; }
+        if(deffd != NULL) { fclose(deffd); deffd =  NULL; }
+        VMTidy();
+}
+
+PRIVATE void tidy1()
+{
+        if(infd != stdin && infd != NULL) 
+        {
+        	fclose(infd); 
+        	infd = stdin; 
+        }
+}
+
+PUBLIC WORD uch = -2;
+PUBLIC WORD unreadready = FALSE;
+
+#ifdef RDCH_FN
+
+PUBLIC WORD asm_rdch()
+{
+   WORD c = uch;
+
+   if( c == -2 ){
+#ifdef MWC
+	c = bingetc(infd);
+	if( c == 0xffffL ) c = EOF;
+#else
+        c = getc(infd);
+#endif
+   }
+   else uch = -2;
+   filepos++;
+   return c;
+}
+
+
+PUBLIC WORD unrdch(c)
+WORD c;
+{
+   filepos--;
+   uch = c;
+}
+#endif
+#ifndef LATTICE
+PUBLIC WORD min(a,b)
+WORD a,b;
+{
+        return a<b ? a : b;
+}
+
+PUBLIC WORD max(a,b)
+WORD a,b;
+{
+        return a>b ? a : b;
+}
+#endif
+@
+
+
+1.14
+log
+@Added prototyping for fussy WATCOM and @@argfile support
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.13 1993/06/10 14:04:35 bart Exp $ */
+d499 1
+a499 1
+		infd = fopen(infile,preasm?"r":"rb");
+@
+
+
+1.13
+log
+@First attempt at porting to RS6000
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.12 1992/09/25 10:41:21 paul Exp bart $ */
+d28 2
+d73 12
+a85 1
+WORD max(ellipsis);
+d89 2
+d105 1
+a105 1
+    
+d139 1
+a139 1
+                while( *argv != NULL ) 
+d141 24
+d447 3
+d498 3
+d524 98
+a645 1
+
+d704 1
+@
+
+
+1.12
+log
+@Cleaned up all the different flags used into a standard coherent set. The
+asm now builds for all targets correctly again
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.11 1991/12/02 15:13:43 martyn Exp $ */
+d399 1
+a399 1
+#if defined(SUN4)
+d447 1
+a447 1
+#if defined(SUN4)
+@
+
+
+1.11
+log
+@finally removed ORION
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.10 1991/06/20 09:27:50 nickc Exp martyn $ */
+d13 1
+a13 1
+#ifdef NORCROFT
+d21 1
+a21 1
+#ifdef __TRAN
+d59 1
+a59 1
+#ifdef ANSI
+d235 1
+a235 1
+#ifdef __TRAN
+d408 1
+a408 1
+#ifdef NORCROFT
+d412 1
+a412 1
+#ifdef ANSI
+d456 1
+a456 1
+#ifdef NORCROFT
+d469 1
+a469 1
+#ifdef ANSI
+@
+
+
+1.10
+log
+@changed asm() to _asm() because asm is a keyword reserved by the SUN4 compiler
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.9 1991/06/07 07:30:14 nickc Exp nickc $ */
+d383 1
+a383 1
+#if defined(ORION) || defined(SUN4)
+d399 1
+a399 1
+#if defined(ORION) || defined(SUN4)
+d447 1
+a447 1
+#if defined(ORION) || defined(SUN4)
+d491 1
+a491 1
+#if defined(ORION) || defined(SUN4)
+@
+
+
+1.9
+log
+@new improved version (50% speed increase)
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.8 1991/03/28 15:07:35 nick Exp $ */
+d83 2
+a84 2
+void
+asm( argc, argv )
+d243 1
+a243 1
+	  Accelerate( stack, asm, sizeof (argc) + sizeof (argv), argc, argv );
+d246 1
+a246 1
+	  asm( argc, argv );
+@
+
+
+1.8
+log
+@Unused code calculated and reported.
+Fatal and non-fatal warnings now allowed
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.6 91/01/08 15:39:21 nickc Exp $ */
+d21 7
+d83 4
+a86 10
+/********************************************************/
+/* main                                                 */
+/*                                                      */
+/* Initialise everything and call the assembler         */
+/*                                                      */
+/********************************************************/
+
+PUBLIC int main(argc,argv)
+int argc;
+BYTE **argv;
+d90 1
+d94 1
+d113 1
+d220 1
+a220 1
+        return 0;
+d223 28
+d268 1
+a268 1
+                        FILE *vfd = fopen(arg+2,"w");
+d432 2
+a433 1
+        else {
+@
+
+
+1.7
+log
+@changed SPARKY to SUN4.
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.6 91/01/08 15:39:21 nickc Exp Locker: martyn $ */
+d29 1
+d40 1
+d50 1
+d61 2
+d143 3
+d197 2
+a198 1
+	
+d269 18
+d482 14
+a495 1
+#if 0
+a497 1
+#endif
+@
+
+
+1.6
+log
+@now interprets an argument of '-' as meaning 'read from stdin'
+@
+text
+@d8 1
+a8 1
+/* $Id$ */
+d324 1
+a324 1
+#if defined(ORION) || defined(SPARKY)
+d340 1
+a340 1
+#if defined(ORION) || defined(SPARKY)
+d387 1
+a387 1
+#if defined(ORION) || defined(SPARKY)
+d431 1
+a431 1
+#if defined(ORION) || defined(SPARKY)
+@
+
+
+1.5
+log
+@added sparky stuff
+@
+text
+@d8 1
+a8 1
+/* $Id: asm.c,v 1.4 90/09/28 12:19:13 nick Exp Locker: martyn $ */
+d324 1
+a324 1
+#if defined(ORION) || defined (SPARKY)
+d363 6
+a368 1
+			
+d375 1
+a375 1
+                strcpy(infile,arg);
+d403 1
+@
+
+
+1.4
+log
+@tidied
+@
+text
+@d8 1
+a8 1
+/* $Id$ */
+d324 1
+a324 1
+#ifdef ORION
+d340 1
+a340 1
+#ifdef ORION
+d382 1
+a382 1
+#ifdef ORION
+d425 1
+a425 1
+#ifdef ORION
+@
+
+
+1.3
+log
+@mod <asm.h> to "asm.h"
+@
+text
+@d8 1
+a8 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/asm/RCS/asm.c,v 1.2 90/08/28 09:59:01 james Exp $";
+a206 2
+       	/* SccsId = SccsId; Commented out by paulh 28/8/90 during change of source control to RCS */
+       	
+@
+
+
+1.2
+log
+@commented out a line that used string Sccs since that does not exist any more
+@
+text
+@d8 1
+a8 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/asm/RCS/asm.c,v 1.1 90/08/24 16:28:54 james Exp Locker: james $";
+d10 1
+a10 1
+#include <asm.h>
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d8 1
+a8 1
+static char *rcsid = "$Header$";
+d207 1
+a207 1
+       	SccsId = SccsId;
+@

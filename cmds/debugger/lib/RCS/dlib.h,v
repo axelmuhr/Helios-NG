@@ -1,0 +1,527 @@
+head	1.6;
+access;
+symbols
+	Helios_1_3_1:1.6
+	Helios_C40_1_3_Official_Release:1.5
+	Alenia_release:1.5
+	Helios13_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.6
+date	93.05.18.11.57.12;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.12.04.11.14.48;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.11.04.14.55.46;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.10.08.15.28.00;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.08.19.09.47.51;	author craig;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.17.09.58;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@fixed transputer prototyoes for notify_command() functions
+@
+text
+@/**
+*
+* Title:        Debug Library Header File.
+*
+* Author:       Andy England
+*
+* Date:         March 1989
+*
+* Modified By:  Nick Clifton
+*
+* Date:         October 1992
+*
+*         (c) Copyright 1988 - 1992, Perihelion Software Ltd.
+*
+*         All Rights Reserved.
+*
+* $Header: /hsrc/cmds/debugger/lib/RCS/dlib.h,v 1.5 1992/12/04 11:14:48 nickc Exp nickc $
+*
+**/
+
+#ifndef __dlib_h
+#define __dlib_h
+
+#ifdef __C40
+#include <c40.h>	/* for wordptr */
+#endif
+
+#define AND 		&&
+#define OR		||
+
+typedef int		BOOL;
+typedef Node		NODE;
+typedef List		LIST;
+
+#define FrameStackSize	100
+
+#ifdef	MYDEBUG
+#define DLib_Slot 	18
+#else
+#define DLib_Slot 	19
+#endif
+
+#define HashMax 	211
+
+#define RealGetMsg	(debug->GetMsg)
+#define RealPutMsg	(debug->PutMsg)
+
+#ifdef __C40
+
+#define CODE_IN_HIGH_MEMORY
+#ifdef CODE_IN_HIGH_MEMORY
+
+#define WordPtr	MPtr
+
+#define MP_StructGet( type, field, ptr )	MP_GetWord( (ptr), (offsetof( type, field ) / sizeof (word) ) )
+#define MP_memcpy( cptr, wptr, woff, wrds )	MP_GetData( (char *)cptr, wptr, woff, wrds )
+
+#else /* code not in high memory */
+
+#define WordPtr	word *
+
+#define MP_StructGet( type, field, ptr )	(((type *)ptr)->field)
+#define MP_memcpy( cptr, wptr, woff, wrds )	memcpy( (char *)cptr, (char *)(wptr + woff * sizeof (word)), (int)wrds * sizeof (word) )
+
+#endif /* not CODE_IN_HIGH_MEMORY */
+
+#define MP_RTOA( ptr )				(ptr + MP_GetWord( (ptr), 0 ))
+#define GetProcInfo( ptr, field )		MP_GetWord( (ptr), (offsetof( ProcInfo, field ) / sizeof (word) ) )
+
+#define T_SourceInfo	  T_FileName
+
+typedef struct
+  {
+    word	Type;			/* T_SourceInfo flag (=> T_FileName)     */
+    word	Modnum;			/* module number of compiled source file */
+    byte	Name[ Variable ];	/* name of source file                   */
+  }
+SourceInfo;
+
+#else /* not __C40 */
+
+#define GetProcInfo(p) 	((ProcInfo *)((char *)(p) - sizeof(ProcInfo)))
+
+#endif /* __C40 */
+
+typedef struct
+  {
+    int 	Type;
+    int		Id;
+  }
+Source;
+
+typedef struct
+  {
+    NODE        node;
+#ifdef __C40
+    MPtr     procinfo;
+#else
+    Proc *	proc;    
+#endif
+    word        flags;
+    word        calls;
+    word        time;
+  }
+FUNC;
+
+typedef struct
+  {
+    LIST 	threadlist;
+    LIST	breakpointlist;
+    LIST 	watchpointlist;
+    Stream * 	stream;
+    Port	port;
+    Port 	reply;
+    Semaphore	lock;
+    LIST	functable[ HashMax ];
+    word (*	GetMsg)(MCB *);
+    word (*	PutMsg)(MCB *);
+    word (*	Fork)(word, VoidFnPtr, word, ...);
+  }
+DEBUG;
+
+typedef struct
+  {
+    word 	modnum;
+    word	line;
+  }
+LOCATION;
+
+#ifdef __C40
+typedef struct
+  {
+    MPtr	procinfo;
+    WordPtr	frameptr;
+    WordPtr	stackptr;
+    word	line;
+  }
+FRAME;
+#else
+typedef struct
+  {
+    Proc *	proc;
+    byte *	wptr;
+    word	line;
+  }
+FRAME;
+#endif /* not __C40 */
+	  
+typedef struct
+  {
+    NODE 	node;
+    BOOL	watchstop;
+    Semaphore	sync;
+    FRAME *	framestk;
+    FRAME *	frameptr;
+    FRAME *	stopframe;
+    BOOL	profiling;
+    BOOL	stopping;
+    BOOL	tracing;
+    Port	port;
+    word	flags;
+#ifdef __C40
+    void (*	notify_entry)(   MPtr procinfo, MPtr frame_ptr, MPtr stack_ptr );
+    void (*	notify_command)( word line_number, MPtr sourceinfo );
+    word (*	notify_return)(  MPtr procinfo, word return_val  );
+#else
+    void (*	notify_entry)(   Proc *, byte *   );
+    void (*	notify_command)( int,    Module * );
+    word (*	notify_return)(  Proc *, word     );
+#endif
+  }
+THREAD;
+
+typedef struct breakpoint
+  {
+    NODE 	node;
+    LOCATION	loc;
+    word	threshold;
+    int		count;
+#ifdef V1_1
+    BOOL 	temp;      /* tempory breakpoint for until commands */
+#endif
+  }
+BREAKPOINT;
+
+typedef struct
+  {
+    void *	addr;
+    word	size;
+  }
+MEMLOCATION;
+
+typedef struct watchpoint
+  {
+    NODE 	node;
+    MEMLOCATION	loc;
+    int		usage;
+#ifdef OLD_CODE
+    byte 	copy[];
+#else
+    byte * 	copy;	/* fix for ANSI compilation */  
+#endif
+  }
+WATCHPOINT;
+
+#ifdef __C40
+PUBLIC void _notify_entry(	MPtr procinfo, MPtr frame_ptr, MPtr stack_ptr );
+PUBLIC word _notify_return(	MPtr procinfo, word return_value );
+PUBLIC void _notify_command(	word line_number, MPtr sourceinfo );
+#else
+PUBLIC void _notify_entry(	Proc *, byte *   );
+PUBLIC word _notify_return(	Proc *, word     );
+PUBLIC void _notify_command(	int,    Module * );
+#endif
+
+#endif /* __dlib_h */
+@
+
+
+1.5
+log
+@fixed for code in high memory
+@
+text
+@d17 1
+a17 1
+* $Header: /hsrc/cmds/debugger/lib/RCS/dlib.h,v 1.4 1992/11/04 14:55:46 nickc Exp nickc $
+d168 1
+a168 1
+    void (*	notify_command)( word,   Module * );
+d208 2
+a209 2
+PUBLIC word _notify_return(	MPtr procinfo, word    return_value  );
+PUBLIC void _notify_command(	word line_number, MPtr sourceinfo    );
+d213 1
+a213 1
+PUBLIC void _notify_command(	word,   Module * );
+@
+
+
+1.4
+log
+@C40 version completed
+@
+text
+@d17 1
+a17 1
+* $Header: /m/giga/Helios.tmp/Helios/cmds/debugger/lib/RCS/dlib.h,v 1.3 1992/10/08 15:28:00 nickc Exp nickc $
+d50 1
+d53 1
+a53 1
+#define WordPtr	wordptr
+d55 2
+a56 2
+#define WP_StructGet( type, field, ptr )	WP_GetWord( (ptr), (offsetof( type, field ) / sizeof (word) ) )
+#define WP_memcpy( cptr, wptr, woff, wrds )	WP_GetData( (char *)cptr, wptr, woff, wrds )
+d62 2
+a63 2
+#define WP_StructGet( type, field, ptr )	(((type *)ptr)->field)
+#define WP_memcpy( cptr, wptr, woff, wrds )	memcpy( (char *)cptr, (char *)(wptr + woff * sizeof (word)), (int)wrds * sizeof (word) )
+d67 2
+a68 2
+#define WP_RTOA( ptr )				(ptr + WP_GetWord( (ptr), 0 ))
+#define GetProcInfo( ptr, field )		WP_GetWord( (ptr), (offsetof( ProcInfo, field ) / sizeof (word) ) )
+d70 2
+d97 1
+a97 1
+    wordptr     procinfo;
+d133 1
+a133 1
+    wordptr	procinfo;
+d163 3
+a165 3
+    void (*	notify_entry)(   wordptr procinfo, wordptr frame_ptr, wordptr stack_ptr );
+    void (*	notify_command)( word line_number, wordptr sourceinfo );
+    word (*	notify_return)(  wordptr procinfo, word return_val  );
+d207 3
+a209 3
+PUBLIC void _notify_entry(	wordptr procinfo, wordptr frame_ptr, wordptr stack_ptr );
+PUBLIC word _notify_return(	wordptr procinfo, word    return_value  );
+PUBLIC void _notify_command(	word line_number, wordptr sourceinfo    );
+@
+
+
+1.3
+log
+@applied fixes for C40 compilation
+@
+text
+@d17 1
+a17 1
+* $Header: /hsrc/cmds/debugger/lib/RCS/dlib.h,v 1.2 1991/08/19 09:47:51 craig Exp nickc $
+a54 1
+#define WP_RTOA( ptr )				(ptr + WP_GetWord( (ptr), 0 ))
+d56 2
+a57 1
+#else
+a61 1
+#define WP_RTOA( ptr )				RTOA( *(ptr) )
+d66 2
+a67 1
+#define GetProcInfo(p)	(p)
+d94 1
+a94 1
+    WordPtr     procinfo;
+d130 1
+a130 1
+    WordPtr	procinfo;
+d132 1
+d160 1
+a160 1
+    void (*	notify_entry)(   wordptr procinfo, wordptr frameptr );
+d204 1
+a204 1
+PUBLIC void _notify_entry(	wordptr procinfo, wordptr frame_pointer );
+@
+
+
+1.2
+log
+@changes from V1.1 to V2.0 (see documentation for details)
+@
+text
+@d3 1
+a3 1
+* Title:  Debug Library.
+d5 1
+a5 1
+* Author: Andy England
+d7 1
+a7 1
+* Date:   March 1989
+d9 1
+a9 1
+*         (c) Copyright 1988, Perihelion Software Ltd.
+d11 4
+d17 1
+a17 1
+* $Header: /users/craig/cmds/debugger/lib/RCS/dlib.h,v 1.1 1990/08/28 17:09:58 james Exp craig $
+d21 9
+a29 2
+#define AND &&
+#define OR  ||
+d31 3
+a33 3
+typedef int BOOL;
+typedef Node NODE;
+typedef List LIST;
+d35 1
+a35 1
+#define FrameStackSize 100
+d38 1
+a38 1
+#define DLib_Slot 18
+d40 1
+a40 1
+#define DLib_Slot 19
+d43 35
+a77 1
+#define HashMax 211
+d79 1
+a79 65
+#define RealGetMsg (debug->GetMsg)
+#define RealPutMsg (debug->PutMsg)
+
+#define GetProcInfo(p) ((ProcInfo *)((char *)(p) - sizeof(ProcInfo)))
+
+typedef struct
+{
+  int Type;
+  int Id;
+} Source;
+
+typedef struct
+{
+  NODE node;
+  Proc *proc;
+  word flags;
+  word calls;
+  word time;
+} FUNC;
+
+typedef struct
+{
+  LIST threadlist;
+  LIST breakpointlist;
+  LIST watchpointlist;
+  Stream *stream;
+  Port port;
+  Port reply;
+  Semaphore lock;
+  LIST functable[HashMax];
+  word (*GetMsg)(MCB *);
+  word (*PutMsg)(MCB *);
+  word (*Fork)(word, VoidFnPtr, word, ...);
+} DEBUG;
+
+typedef struct
+{
+  int modnum;
+  int line;
+} LOCATION;
+
+typedef struct
+{
+  Proc *proc;
+  byte *wptr;
+  int line;
+} FRAME;
+
+typedef struct
+{
+  NODE node;
+  BOOL watchstop;
+  Semaphore sync;
+  FRAME *framestk;
+  FRAME *frameptr;
+  FRAME *stopframe;
+  BOOL profiling;
+  BOOL stopping;
+  BOOL tracing;
+  Port port;
+  word flags;
+  void (*notify_entry)(Proc *, byte *);
+  void (*notify_command)(int, Module *);
+  word (*notify_return)(Proc *, word);
+} THREAD;
+d81 89
+d171 5
+a175 5
+{
+  NODE node;
+  LOCATION loc;
+  int threshold;
+  int count;
+d177 1
+a177 1
+  BOOL temp;      /* tempory breakpoint for until commands */
+d179 2
+a180 1
+} BREAKPOINT;
+d183 5
+a187 4
+{
+  void *addr;
+  int size;
+} MEMLOCATION;
+d190 23
+a212 10
+{
+  NODE node;
+  MEMLOCATION loc;
+  int usage;
+  byte copy[];
+} WATCHPOINT;
+
+PUBLIC void _notify_entry(Proc *, byte *);
+PUBLIC word _notify_return(Proc *, word);
+PUBLIC void _notify_command(int, Module *);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d13 1
+a13 1
+* $Header$
+d26 3
+d30 1
+@

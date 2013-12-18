@@ -1,0 +1,96 @@
+#! /bin/sh
+# Last modified 5/18/89
+# iter is the number of runs - default is 5
+iter=${1-5}
+
+# allow selection of timing program
+timer=/bin/time
+srcdir=../src
+resdir=../res
+bindir=../bin
+tmpfile=temporary
+# Create a result directory if it doesn't exist already
+if [ ! -d ${resdir} ]
+then
+        mkdir ${resdir}
+fi
+# timing result and log file
+rfile=${resdir}/gcc.time
+logfile=${resdir}/gcc.log
+
+# Save old versions of files.
+if [ -f ${logfile} ] 
+then 
+        mv ${rfile} ${rfile}- 
+fi
+if [ -f ${logfile} ] 
+then 
+        mv ${logfile} ${logfile}-  
+fi
+
+files="jump.i varasm.i toplev.i gcc.i dbxout.i genrecog.i emit-rtl.i \
+        regclass.i recog.i genoutput.i explow.i print-tree.i \
+        stmt.i cexp.i tree.i insn-recog.i integrate.i optabs.i insn-emit.i"
+
+# assembly language files to be created
+sfiles="jump.s varasm.s toplev.s gcc.s dbxout.s genrecog.s emit-rtl.s \
+        regclass.s recog.s genoutput.s explow.s print-tree.s \
+        stmt.s cexp.s tree.s insn-recog.s integrate.s optabs.s insn-emit.s"
+
+
+# start compilation
+# First iteration is the checking iteration
+chkflg=0
+echo "Starting Compilation...."
+echo "Hostname:    `hostname`" > ${rfile}
+echo "Start time:  `date`" >> ${rfile}
+errflg=0
+while [ ${iter} -gt 0 ]
+do
+	# remove any pre-existing *.s files
+	/bin/rm -f *.s
+	echo "Iteration ${iter}"
+	$timer ${srcdir}/gcc -O -S -B${srcdir}/ $files 2>> ${rfile} 1>> ${logfile}
+	iter=`expr ${iter} - 1`
+
+	# The chkflag is to check if the diffs have been done.
+	# It is set to 1 after the first iteration.
+	if [ ${chkflg} -eq 0 ]
+        then
+		echo "	Start Check"
+	fi
+	# check that files were actually compiled into assembly language
+	for i in ${sfiles}
+	do
+		# If the files wern't there, theres no point doing diffs
+		if [ ! -s ${i} ]
+		then
+			echo "***Error:  ${i} not built"
+			echo "***Error:  ${i} not built" >> ${rfile}
+			errflg=1
+		elif [ ${chkflg} -eq 0 ]
+		then
+#			Check status returned from diff
+			diff ${i} sun-68k-sfiles/${i}  > ${tmpfile}
+			if [ $? -ne 0 ]
+			then
+				errflg=1
+				echo "		Found a difference in ${i}. See ${logfile}"
+				echo "diff ${bindir}/${i}    ${bindir}/sun-68k-sfiles/${i}" >> ${logfile}
+				cat ${tmpfile} >> ${logfile}
+			fi
+		fi
+	done
+	if [ ${chkflg} -eq 0 ]
+        then
+		if [ ${errflg} -ne 1 ]
+		then
+			echo "      	No errors found"
+		fi
+		echo "	Finish Check"
+	fi
+	chkflg=1
+done
+rm -f ${tmpfile}
+echo "Finish time: `date`" >> ${rfile}
+exit 0

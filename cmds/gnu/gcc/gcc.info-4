@@ -1,0 +1,1218 @@
+Info file gcc.info, produced by Makeinfo, -*- Text -*- from input
+file gcc.texinfo.
+
+This file documents the use and the internals of the GNU compiler.
+
+Copyright (C) 1988, 1989 Free Software Foundation, Inc.
+
+Permission is granted to make and distribute verbatim copies of this
+manual provided the copyright notice and this permission notice are
+preserved on all copies.
+
+Permission is granted to copy and distribute modified versions of
+this manual under the conditions for verbatim copying, provided also
+that the section entitled ``GNU General Public License'' is included
+exactly as in the original, and provided that the entire resulting
+derived work is distributed under the terms of a permission notice
+identical to this one.
+
+Permission is granted to copy and distribute translations of this
+manual into another language, under the above conditions for modified
+versions, except that the section entitled ``GNU General Public
+License'' and this permission notice may be included in translations
+approved by the Free Software Foundation instead of in the original
+English.
+
+ 
+
+File: gcc.info,  Node: RTL Objects,  Next: Accessors,  Prev: RTL,  Up: RTL
+
+RTL Object Types
+================
+
+RTL uses four kinds of objects: expressions, integers, strings and
+vectors.  Expressions are the most important ones.  An RTL expression
+(``RTX'', for short) is a C structure, but it is usually referred to
+with a pointer; a type that is given the typedef name `rtx'.
+
+An integer is simply an `int', and a string is a `char *'.  Within
+RTL code, strings appear only inside `symbol_ref' expressions, but
+they appear in other contexts in the RTL expressions that make up
+machine descriptions.  Their written form uses decimal digits.
+
+A string is a sequence of characters.  In core it is represented as a
+`char *' in usual C fashion, and it is written in C syntax as well. 
+However, strings in RTL may never be null.  If you write an empty
+string in a machine description, it is represented in core as a null
+pointer rather than as a pointer to a null character.  In certain
+contexts, these null pointers instead of strings are valid.
+
+A vector contains an arbitrary, specified number of pointers to
+expressions.  The number of elements in the vector is explicitly
+present in the vector.  The written form of a vector consists of
+square brackets (`[...]') surrounding the elements, in sequence and
+with whitespace separating them.  Vectors of length zero are not
+created; null pointers are used instead.
+
+Expressions are classified by "expression codes" (also called RTX
+codes).  The expression code is a name defined in `rtl.def', which is
+also (in upper case) a C enumeration constant.  The possible
+expression codes and their meanings are machine-independent.  The
+code of an RTX can be extracted with the macro `GET_CODE (X)' and
+altered with `PUT_CODE (X, NEWCODE)'.
+
+The expression code determines how many operands the expression
+contains, and what kinds of objects they are.  In RTL, unlike Lisp,
+you cannot tell by looking at an operand what kind of object it is. 
+Instead, you must know from its context--from the expression code of
+the containing expression.  For example, in an expression of code
+`subreg', the first operand is to be regarded as an expression and
+the second operand as an integer.  In an expression of code `plus',
+there are two operands, both of which are to be regarded as
+expressions.  In a `symbol_ref' expression, there is one operand,
+which is to be regarded as a string.
+
+Expressions are written as parentheses containing the name of the
+expression type, its flags and machine mode if any, and then the
+operands of the expression (separated by spaces).
+
+Expression code names in the `md' file are written in lower case, but
+when they appear in C code they are written in upper case.  In this
+manual, they are shown as follows: `const_int'.
+
+In a few contexts a null pointer is valid where an expression is
+normally wanted.  The written form of this is `(nil)'.
+
+
+
+File: gcc.info,  Node: Accessors,  Next: Flags,  Prev: RTL Objects,  Up: RTL
+
+Access to Operands
+==================
+
+For each expression type `rtl.def' specifies the number of contained
+objects and their kinds, with four possibilities: `e' for expression
+(actually a pointer to an expression), `i' for integer, `s' for
+string, and `E' for vector of expressions.  The sequence of letters
+for an expression code is called its "format".  Thus, the format of
+`subreg' is `ei'.
+
+Two other format characters are used occasionally: `u' and `0'.  `u'
+is equivalent to `e' except that it is printed differently in
+debugging dumps, and `0' means a slot whose contents do not fit any
+normal category.  `0' slots are not printed at all in dumps, and are
+often used in special ways by small parts of the compiler.
+
+There are macros to get the number of operands and the format of an
+expression code:
+
+`GET_RTX_LENGTH (CODE)'
+     Number of operands of an RTX of code CODE.
+
+`GET_RTX_FORMAT (CODE)'
+     The format of an RTX of code CODE, as a C string.
+
+Operands of expressions are accessed using the macros `XEXP', `XINT'
+and `XSTR'.  Each of these macros takes two arguments: an
+expression-pointer (RTX) and an operand number (counting from zero). 
+Thus,
+
+     XEXP (X, 2)
+
+accesses operand 2 of expression X, as an expression.
+
+     XINT (X, 2)
+
+accesses the same operand as an integer.  `XSTR', used in the same
+fashion, would access it as a string.
+
+Any operand can be accessed as an integer, as an expression or as a
+string.  You must choose the correct method of access for the kind of
+value actually stored in the operand.  You would do this based on the
+expression code of the containing expression.  That is also how you
+would know how many operands there are.
+
+For example, if X is a `subreg' expression, you know that it has two
+operands which can be correctly accessed as `XEXP (X, 0)' and `XINT
+(X, 1)'.  If you did `XINT (X, 0)', you would get the address of the
+expression operand but cast as an integer; that might occasionally be
+useful, but it would be cleaner to write `(int) XEXP (X, 0)'.  `XEXP
+(X, 1)' would also compile without error, and would return the
+second, integer operand cast as an expression pointer, which would
+probably result in a crash when accessed.  Nothing stops you from
+writing `XEXP (X, 28)' either, but this will access memory past the
+end of the expression with unpredictable results.
+
+Access to operands which are vectors is more complicated.  You can
+use the macro `XVEC' to get the vector-pointer itself, or the macros
+`XVECEXP' and `XVECLEN' to access the elements and length of a vector.
+
+`XVEC (EXP, IDX)'
+     Access the vector-pointer which is operand number IDX in EXP.
+
+`XVECLEN (EXP, IDX)'
+     Access the length (number of elements) in the vector which is in
+     operand number IDX in EXP.  This value is an `int'.
+
+`XVECEXP (EXP, IDX, ELTNUM)'
+     Access element number ELTNUM in the vector which is in operand
+     number IDX in EXP.  This value is an RTX.
+
+     It is up to you to make sure that ELTNUM is not negative and is
+     less than `XVECLEN (EXP, IDX)'.
+
+All the macros defined in this section expand into lvalues and
+therefore can be used to assign the operands, lengths and vector
+elements as well as to access them.
+
+
+
+File: gcc.info,  Node: Flags,  Next: Machine Modes,  Prev: Accessors,  Up: RTL
+
+Flags in an RTL Expression
+==========================
+
+RTL expressions contain several flags (one-bit bit-fields) that are
+used in certain types of expression.  Most often they are accessed
+with the following macros:
+
+`MEM_VOLATILE_P (X)'
+     In `mem' expressions, nonzero for volatile memory references. 
+     Stored in the `volatil' field and printed as `/v'.
+
+`MEM_IN_STRUCT_P (X)'
+     In `mem' expressions, nonzero for reference to an entire
+     structure, union or array, or to a component of one.  Zero for
+     references to a scalar variable or through a pointer to a scalar.
+     Stored in the `in_struct' field and printed as `/s'.
+
+`REG_USER_VAR_P (X)'
+     In a `reg', nonzero if it corresponds to a variable present in
+     the user's source code.  Zero for temporaries generated
+     internally by the compiler.  Stored in the `volatil' field and
+     printed as `/v'.
+
+`REG_FUNCTION_VALUE_P (X)'
+     Nonzero in a `reg' if it is the place in which this function's
+     value is going to be returned.  (This happens only in a hard
+     register.)  Stored in the `integrated' field and printed as `/i'.
+
+     The same hard register may be used also for collecting the
+     values of functions called by this one, but
+     `REG_FUNCTION_VALUE_P' is zero in this kind of use.
+
+`RTX_UNCHANGING_P (X)'
+     Nonzero in a `reg' or `mem' if the value is not changed
+     explicitly by the current function.  (If it is a memory
+     reference then it may be changed by other functions or by
+     aliasing.)  Stored in the `unchanging' field and printed as `/u'.
+
+`RTX_INTEGRATED_P (INSN)'
+     Nonzero in an insn if it resulted from an in-line function call.
+     Stored in the `integrated' field and printed as `/i'.  This may
+     be deleted; nothing currently depends on it.
+
+`INSN_DELETED_P (INSN)'
+     In an insn, nonzero if the insn has been deleted.  Stored in the
+     `volatil' field and printed as `/v'.
+
+`CONSTANT_POOL_ADDRESS_P (X)'
+     Nonzero in a `symbol_ref' if it refers to part of the current
+     function's ``constants pool''.  These are addresses close to the
+     beginning of the function, and GNU CC assumes they can be
+     addressed directly (perhaps with the help of base registers). 
+     Stored in the `unchanging' field and printed as `/u'.
+
+These are the fields which the above macros refer to:
+
+`used'
+     This flag is used only momentarily, at the end of RTL generation
+     for a function, to count the number of times an expression
+     appears in insns.  Expressions that appear more than once are
+     copied, according to the rules for shared structure (*note
+     Sharing::.).
+
+`volatil'
+     This flag is used in `mem' and `reg' expressions and in insns. 
+     In RTL dump files, it is printed as `/v'.
+
+     In a `mem' expression, it is 1 if the memory reference is
+     volatile.  Volatile memory references may not be deleted,
+     reordered or combined.
+
+     In a `reg' expression, it is 1 if the value is a user-level
+     variable.  0 indicates an internal compiler temporary.
+
+     In an insn, 1 means the insn has been deleted.
+
+`in_struct'
+     This flag is used in `mem' expressions.  It is 1 if the memory
+     datum referred to is all or part of a structure or array; 0 if
+     it is (or might be) a scalar variable.  A reference through a C
+     pointer has 0 because the pointer might point to a scalar
+     variable.
+
+     This information allows the compiler to determine something
+     about possible cases of aliasing.
+
+     In an RTL dump, this flag is represented as `/s'.
+
+`unchanging'
+     This flag is used in `reg' and `mem' expressions.  1 means that
+     the value of the expression never changes (at least within the
+     current function).
+
+     In an RTL dump, this flag is represented as `/u'.
+
+`integrated'
+     In some kinds of expressions, including insns, this flag means
+     the rtl was produced by procedure integration.
+
+     In a `reg' expression, this flag indicates the register
+     containing the value to be returned by the current function.  On
+     machines that pass parameters in registers, the same register
+     number may be used for parameters as well, but this flag is not
+     set on such uses.
+
+
+
+File: gcc.info,  Node: Machine Modes,  Next: Constants,  Prev: Flags,  Up: RTL
+
+Machine Modes
+=============
+
+A machine mode describes a size of data object and the representation
+used for it.  In the C code, machine modes are represented by an
+enumeration type, `enum machine_mode', defined in `machmode.def'. 
+Each RTL expression has room for a machine mode and so do certain
+kinds of tree expressions (declarations and types, to be precise).
+
+In debugging dumps and machine descriptions, the machine mode of an
+RTL expression is written after the expression code with a colon to
+separate them.  The letters `mode' which appear at the end of each
+machine mode name are omitted.  For example, `(reg:SI 38)' is a `reg'
+expression with machine mode `SImode'.  If the mode is `VOIDmode', it
+is not written at all.
+
+Here is a table of machine modes.
+
+`QImode'
+     ``Quarter-Integer'' mode represents a single byte treated as an
+     integer.
+
+`HImode'
+     ``Half-Integer'' mode represents a two-byte integer.
+
+`PSImode'
+     ``Partial Single Integer'' mode represents an integer which
+     occupies four bytes but which doesn't really use all four.  On
+     some machines, this is the right mode to use for pointers.
+
+`SImode'
+     ``Single Integer'' mode represents a four-byte integer.
+
+`PDImode'
+     ``Partial Double Integer'' mode represents an integer which
+     occupies eight bytes but which doesn't really use all eight.  On
+     some machines, this is the right mode to use for certain pointers.
+
+`DImode'
+     ``Double Integer'' mode represents an eight-byte integer.
+
+`TImode'
+     ``Tetra Integer'' (?) mode represents a sixteen-byte integer.
+
+`SFmode'
+     ``Single Floating'' mode represents a single-precision (four
+     byte) floating point number.
+
+`DFmode'
+     ``Double Floating'' mode represents a double-precision (eight
+     byte) floating point number.
+
+`XFmode'
+     ``Extended Floating'' mode represents a triple-precision (twelve
+     byte) floating point number.  This mode is used for IEEE
+     extended floating point.
+
+`TFmode'
+     ``Tetra Floating'' mode represents a quadruple-precision
+     (sixteen byte) floating point number.
+
+`BLKmode'
+     ``Block'' mode represents values that are aggregates to which
+     none of the other modes apply.  In RTL, only memory references
+     can have this mode, and only if they appear in string-move or
+     vector instructions.  On machines which have no such
+     instructions, `BLKmode' will not appear in RTL.
+
+`VOIDmode'
+     Void mode means the absence of a mode or an unspecified mode. 
+     For example, RTL expressions of code `const_int' have mode
+     `VOIDmode' because they can be taken to have whatever mode the
+     context requires.  In debugging dumps of RTL, `VOIDmode' is
+     expressed by the absence of any mode.
+
+`EPmode'
+     ``Entry Pointer'' mode is intended to be used for function
+     variables in Pascal and other block structured languages.  Such
+     values contain both a function address and a static chain
+     pointer for access to automatic variables of outer levels.  This
+     mode is only partially implemented since C does not use it.
+
+`CSImode, ...'
+     ``Complex Single Integer'' mode stands for a complex number
+     represented as a pair of `SImode' integers.  Any of the integer
+     and floating modes may have `C' prefixed to its name to obtain a
+     complex number mode.  For example, there are `CQImode',
+     `CSFmode', and `CDFmode'.  Since C does not support complex
+     numbers, these machine modes are only partially implemented.
+
+`BImode'
+     This is the machine mode of a bit-field in a structure.  It is
+     used only in the syntax tree, never in RTL, and in the syntax
+     tree it appears only in declaration nodes.  In C, it appears
+     only in `FIELD_DECL' nodes for structure fields defined with a
+     bit size.
+
+The machine description defines `Pmode' as a C macro which expands
+into the machine mode used for addresses.  Normally this is `SImode'.
+
+The only modes which a machine description must support are `QImode',
+`SImode', `SFmode' and `DFmode'.  The compiler will attempt to use
+`DImode' for two-word structures and unions, but this can be
+prevented by overriding the definition of `MAX_FIXED_MODE_SIZE'. 
+Likewise, you can arrange for the C type `short int' to avoid using
+`HImode'.  In the long term it might be desirable to make the set of
+available machine modes machine-dependent and eliminate all
+assumptions about specific machine modes or their uses from the
+machine-independent code of the compiler.
+
+To help begin this process, the machine modes are divided into mode
+classes.  These are represented by the enumeration type `enum
+mode_class' defined in `rtl.h'.  The possible mode classes are:
+
+`MODE_INT'
+     Integer modes.  By default these are `QImode', `HImode',
+     `SImode', `DImode', `TImode', and also `BImode'.
+
+`MODE_FLOAT'
+     Floating-point modes.  By default these are `QFmode', `HFmode',
+     `SFmode', `DFmode' and `TFmode', but the MC68881 also defines
+     `XFmode' to be an 80-bit extended-precision floating-point mode.
+
+`MODE_COMPLEX_INT'
+     Complex integer modes.  By default these are `CQImode',
+     `CHImode', `CSImode', `CDImode' and `CTImode'.
+
+`MODE_COMPLEX_FLOAT'
+     Complex floating-point modes.  By default these are `CQFmode',
+     `CHFmode', `CSFmode', `CDFmode' and `CTFmode',
+
+`MODE_FUNCTION'
+     Algol or Pascal function variables including a static chain. 
+     (These are not currently implemented).
+
+`MODE_RANDOM'
+     This is a catchall mode class for modes which don't fit into the
+     above classes.  Currently `VOIDmode', `BLKmode' and `EPmode' are
+     in `MODE_RANDOM'.
+
+Here are some C macros that relate to machine modes:
+
+`GET_MODE (X)'
+     Returns the machine mode of the RTX X.
+
+`PUT_MODE (X, NEWMODE)'
+     Alters the machine mode of the RTX X to be NEWMODE.
+
+`NUM_MACHINE_MODES'
+     Stands for the number of machine modes available on the target
+     machine.  This is one greater than the largest numeric value of
+     any machine mode.
+
+`GET_MODE_NAME (M)'
+     Returns the name of mode M as a string.
+
+`GET_MODE_CLASS (M)'
+     Returns the mode class of mode M.
+
+`GET_MODE_SIZE (M)'
+     Returns the size in bytes of a datum of mode M.
+
+`GET_MODE_BITSIZE (M)'
+     Returns the size in bits of a datum of mode M.
+
+`GET_MODE_UNIT_SIZE (M)'
+     Returns the size in bits of the subunits of a datum of mode M. 
+     This is the same as `GET_MODE_SIZE' except in the case of
+     complex modes and `EPmode'.  For them, the unit size is the size
+     of the real or imaginary part, or the size of the function
+     pointer or the context pointer.
+
+
+
+File: gcc.info,  Node: Constants,  Next: Regs and Memory,  Prev: Machine Modes,  Up: RTL
+
+Constant Expression Types
+=========================
+
+The simplest RTL expressions are those that represent constant values.
+
+`(const_int I)'
+     This type of expression represents the integer value I.  I is
+     customarily accessed with the macro `INTVAL' as in `INTVAL
+     (EXP)', which is equivalent to `XINT (EXP, 0)'.
+
+     There is only one expression object for the integer value zero;
+     it is the value of the variable `const0_rtx'.  Likewise, the
+     only expression for integer value one is found in `const1_rtx'. 
+     Any attempt to create an expression of code `const_int' and
+     value zero or one will return `const0_rtx' or `const1_rtx' as
+     appropriate.
+
+`(const_double:M I0 I1)'
+     Represents a 64-bit constant of mode M.  All floating point
+     constants are represented in this way, and so are 64-bit
+     `DImode' integer constants.
+
+     The two integers I0 and I1 together contain the bits of the
+     value.  If the constant is floating point (either single or
+     double precision), then they represent a `double'.  To convert
+     them to a `double', do
+
+          union { double d; int i[2];} u;
+          u.i[0] = XINT (x, 0);
+          u.i[1] = XINT (x, 1);
+
+     and then refer to `u.d'.
+
+     The global variables `dconst0_rtx' and `fconst0_rtx' hold
+     `const_double' expressions with value 0, in modes `DFmode' and
+     `SFmode', respectively.  The macro `CONST0_RTX (MODE)' refers to
+     a `const_double' expression with value 0 in mode MODE.  The mode
+     MODE must be of mode class `MODE_FLOAT'.
+
+`(symbol_ref SYMBOL)'
+     Represents the value of an assembler label for data.  SYMBOL is
+     a string that describes the name of the assembler label.  If it
+     starts with a `*', the label is the rest of SYMBOL not including
+     the `*'.  Otherwise, the label is SYMBOL, prefixed with `_'.
+
+`(label_ref LABEL)'
+     Represents the value of an assembler label for code.  It
+     contains one operand, an expression, which must be a
+     `code_label' that appears in the instruction sequence to
+     identify the place where the label should go.
+
+     The reason for using a distinct expression type for code label
+     references is so that jump optimization can distinguish them.
+
+`(const EXP)'
+     Represents a constant that is the result of an assembly-time
+     arithmetic computation.  The operand, EXP, is an expression that
+     contains only constants (`const_int', `symbol_ref' and
+     `label_ref' expressions) combined with `plus' and `minus'. 
+     However, not all combinations are valid, since the assembler
+     cannot do arbitrary arithmetic on relocatable symbols.
+
+
+
+File: gcc.info,  Node: Regs and Memory,  Next: Arithmetic,  Prev: Constants,  Up: RTL
+
+Registers and Memory
+====================
+
+Here are the RTL expression types for describing access to machine
+registers and to main memory.
+
+`(reg:M N)'
+     For small values of the integer N (less than
+     `FIRST_PSEUDO_REGISTER'), this stands for a reference to machine
+     register number N: a "hard register".  For larger values of N,
+     it stands for a temporary value or "pseudo register".  The
+     compiler's strategy is to generate code assuming an unlimited
+     number of such pseudo registers, and later convert them into
+     hard registers or into memory references.
+
+     The symbol `FIRST_PSEUDO_REGISTER' is defined by the machine
+     description, since the number of hard registers on the machine
+     is an invariant characteristic of the machine.  Note, however,
+     that not all of the machine registers must be general registers.
+     All the machine registers that can be used for storage of data
+     are given hard register numbers, even those that can be used
+     only in certain instructions or can hold only certain types of
+     data.
+
+     Each pseudo register number used in a function's RTL code is
+     represented by a unique `reg' expression.
+
+     M is the machine mode of the reference.  It is necessary because
+     machines can generally refer to each register in more than one
+     mode.  For example, a register may contain a full word but there
+     may be instructions to refer to it as a half word or as a single
+     byte, as well as instructions to refer to it as a floating point
+     number of various precisions.
+
+     Even for a register that the machine can access in only one
+     mode, the mode must always be specified.
+
+     A hard register may be accessed in various modes throughout one
+     function, but each pseudo register is given a natural mode and
+     is accessed only in that mode.  When it is necessary to describe
+     an access to a pseudo register using a nonnatural mode, a
+     `subreg' expression is used.
+
+     A `reg' expression with a machine mode that specifies more than
+     one word of data may actually stand for several consecutive
+     registers.  If in addition the register number specifies a
+     hardware register, then it actually represents several
+     consecutive hardware registers starting with the specified one.
+
+     Such multi-word hardware register `reg' expressions must not be
+     live across the boundary of a basic block.  The lifetime
+     analysis pass does not know how to record properly that several
+     consecutive registers are actually live there, and therefore
+     register allocation would be confused.  The CSE pass must go out
+     of its way to make sure the situation does not arise.
+
+`(subreg:M REG WORDNUM)'
+     `subreg' expressions are used to refer to a register in a
+     machine mode other than its natural one, or to refer to one
+     register of a multi-word `reg' that actually refers to several
+     registers.
+
+     Each pseudo-register has a natural mode.  If it is necessary to
+     operate on it in a different mode--for example, to perform a
+     fullword move instruction on a pseudo-register that contains a
+     single byte-- the pseudo-register must be enclosed in a
+     `subreg'.  In such a case, WORDNUM is zero.
+
+     The other use of `subreg' is to extract the individual registers
+     of a multi-register value.  Machine modes such as `DImode' and
+     `EPmode' indicate values longer than a word, values which
+     usually require two consecutive registers.  To access one of the
+     registers, use a `subreg' with mode `SImode' and a WORDNUM that
+     says which register.
+
+     The compilation parameter `WORDS_BIG_ENDIAN', if defined, says
+     that word number zero is the most significant part; otherwise,
+     it is the least significant part.
+
+     Between the combiner pass and the reload pass, it is possible to
+     have a `subreg' which contains a `mem' instead of a `reg' as its
+     first operand.  The reload pass eliminates these cases by
+     reloading the `mem' into a suitable register.
+
+     Note that it is not valid to access a `DFmode' value in `SFmode'
+     using a `subreg'.  On some machines the most significant part of
+     a `DFmode' value does not have the same format as a
+     single-precision floating value.
+
+`(cc0)'
+     This refers to the machine's condition code register.  It has no
+     operands and may not have a machine mode.  It may be validly
+     used in only two contexts: as the destination of an assignment
+     (in test and compare instructions) and in comparison operators
+     comparing against zero (`const_int' with value zero; that is to
+     say, `const0_rtx').
+
+     There is only one expression object of code `cc0'; it is the
+     value of the variable `cc0_rtx'.  Any attempt to create an
+     expression of code `cc0' will return `cc0_rtx'.
+
+     One special thing about the condition code register is that
+     instructions can set it implicitly.  On many machines, nearly
+     all instructions set the condition code based on the value that
+     they compute or store.  It is not necessary to record these
+     actions explicitly in the RTL because the machine description
+     includes a prescription for recognizing the instructions that do
+     so (by means of the macro `NOTICE_UPDATE_CC').  Only
+     instructions whose sole purpose is to set the condition code,
+     and instructions that use the condition code, need mention
+     `(cc0)'.
+
+`(pc)'
+     This represents the machine's program counter.  It has no
+     operands and may not have a machine mode.  `(pc)' may be validly
+     used only in certain specific contexts in jump instructions.
+
+     There is only one expression object of code `pc'; it is the
+     value of the variable `pc_rtx'.  Any attempt to create an
+     expression of code `pc' will return `pc_rtx'.
+
+     All instructions that do not jump alter the program counter
+     implicitly by incrementing it, but there is no need to mention
+     this in the RTL.
+
+`(mem:M ADDR)'
+     This RTX represents a reference to main memory at an address
+     represented by the expression ADDR.  M specifies how large a
+     unit of memory is accessed.
+
+
+
+File: gcc.info,  Node: Arithmetic,  Next: Comparisons,  Prev: Regs and Memory,  Up: RTL
+
+RTL Expressions for Arithmetic
+==============================
+
+`(plus:M X Y)'
+     Represents the sum of the values represented by X and Y carried
+     out in machine mode M.  This is valid only if X and Y both are
+     valid for mode M.
+
+`(minus:M X Y)'
+     Like `plus' but represents subtraction.
+
+`(compare X Y)'
+     Represents the result of subtracting Y from X for purposes of
+     comparison.  The absence of a machine mode in the `compare'
+     expression indicates that the result is computed without
+     overflow, as if with infinite precision.
+
+     Of course, machines can't really subtract with infinite precision.
+     However, they can pretend to do so when only the sign of the
+     result will be used, which is the case when the result is stored
+     in `(cc0)'.  And that is the only way this kind of expression
+     may validly be used: as a value to be stored in the condition
+     codes.
+
+`(neg:M X)'
+     Represents the negation (subtraction from zero) of the value
+     represented by X, carried out in mode M.  X must be valid for
+     mode M.
+
+`(mult:M X Y)'
+     Represents the signed product of the values represented by X and
+     Y carried out in machine mode M.  If X and Y are both valid for
+     mode M, this is ordinary size-preserving multiplication. 
+     Alternatively, both X and Y may be valid for a different,
+     narrower mode.  This represents the kind of multiplication that
+     generates a product wider than the operands.  Widening
+     multiplication and same-size multiplication are completely
+     distinct and supported by different machine instructions;
+     machines may support one but not the other.
+
+     `mult' may be used for floating point multiplication as well. 
+     Then M is a floating point machine mode.
+
+`(umult:M X Y)'
+     Like `mult' but represents unsigned multiplication.  It may be
+     used in both same-size and widening forms, like `mult'.  `umult'
+     is used only for fixed-point multiplication.
+
+`(div:M X Y)'
+     Represents the quotient in signed division of X by Y, carried
+     out in machine mode M.  If M is a floating-point mode, it
+     represents the exact quotient; otherwise, the integerized
+     quotient.  If X and Y are both valid for mode M, this is
+     ordinary size-preserving division.  Some machines have division
+     instructions in which the operands and quotient widths are not
+     all the same; such instructions are represented by `div'
+     expressions in which the machine modes are not all the same.
+
+`(udiv:M X Y)'
+     Like `div' but represents unsigned division.
+
+`(mod:M X Y)'
+`(umod:M X Y)'
+     Like `div' and `udiv' but represent the remainder instead of the
+     quotient.
+
+`(not:M X)'
+     Represents the bitwise complement of the value represented by X,
+     carried out in mode M, which must be a fixed-point machine mode.
+     x must be valid for mode M, which must be a fixed-point mode.
+
+`(and:M X Y)'
+     Represents the bitwise logical-and of the values represented by
+     X and Y, carried out in machine mode M.  This is valid only if X
+     and Y both are valid for mode M, which must be a fixed-point mode.
+
+`(ior:M X Y)'
+     Represents the bitwise inclusive-or of the values represented by
+     X and Y, carried out in machine mode M.  This is valid only if X
+     and Y both are valid for mode M, which must be a fixed-point mode.
+
+`(xor:M X Y)'
+     Represents the bitwise exclusive-or of the values represented by
+     X and Y, carried out in machine mode M.  This is valid only if X
+     and Y both are valid for mode M, which must be a fixed-point mode.
+
+`(lshift:M X C)'
+     Represents the result of logically shifting X left by C places. 
+     X must be valid for the mode M, a fixed-point machine mode.  C
+     must be valid for a fixed-point mode; which mode is determined
+     by the mode called for in the machine description entry for the
+     left-shift instruction.  For example, on the Vax, the mode of C
+     is `QImode' regardless of M.
+
+     On some machines, negative values of C may be meaningful; this
+     is why logical left shift and arithmetic left shift are
+     distinguished.  For example, Vaxes have no right-shift
+     instructions, and right shifts are represented as left-shift
+     instructions whose counts happen to be negative constants or
+     else computed (in a previous instruction) by negation.
+
+`(ashift:M X C)'
+     Like `lshift' but for arithmetic left shift.
+
+`(lshiftrt:M X C)'
+`(ashiftrt:M X C)'
+     Like `lshift' and `ashift' but for right shift.
+
+`(rotate:M X C)'
+`(rotatert:M X C)'
+     Similar but represent left and right rotate.
+
+`(abs:M X)'
+     Represents the absolute value of X, computed in mode M.  X must
+     be valid for M.
+
+`(sqrt:M X)'
+     Represents the square root of X, computed in mode M.  X must be
+     valid for M.  Most often M will be a floating point mode.
+
+`(ffs:M X)'
+     Represents the one plus the index of the least significant 1-bit
+     in X, represented as an integer of mode M.  (The value is zero
+     if X is zero.)  The mode of X need not be M; depending on the
+     target machine, various mode combinations may be valid.
+
+
+
+File: gcc.info,  Node: Comparisons,  Next: Bit Fields,  Prev: Arithmetic,  Up: RTL
+
+Comparison Operations
+=====================
+
+Comparison operators test a relation on two operands and are
+considered to represent the value 1 if the relation holds, or zero if
+it does not.  The mode of the comparison is determined by the
+operands; they must both be valid for a common machine mode.  A
+comparison with both operands constant would be invalid as the
+machine mode could not be deduced from it, but such a comparison
+should never exist in RTL due to constant folding.
+
+Inequality comparisons come in two flavors, signed and unsigned. 
+Thus, there are distinct expression codes `gt' and `gtu' for signed
+and unsigned greater-than.  These can produce different results for
+the same pair of integer values: for example, 1 is signed
+greater-than -1 but not unsigned greater-than, because -1 when
+regarded as unsigned is actually `0xffffffff' which is greater than 1.
+
+The signed comparisons are also used for floating point values. 
+Floating point comparisons are distinguished by the machine modes of
+the operands.
+
+The comparison operators may be used to compare the condition codes
+`(cc0)' against zero, as in `(eq (cc0) (const_int 0))'.  Such a
+construct actually refers to the result of the preceding instruction
+in which the condition codes were set.  The above example stands for
+1 if the condition codes were set to say ``zero'' or ``equal'', 0
+otherwise.  Although the same comparison operators are used for this
+as may be used in other contexts on actual data, no confusion can
+result since the machine description would never allow both kinds of
+uses in the same context.
+
+`(eq X Y)'
+     1 if the values represented by X and Y are equal, otherwise 0.
+
+`(ne X Y)'
+     1 if the values represented by X and Y are not equal, otherwise 0.
+
+`(gt X Y)'
+     1 if the X is greater than Y.  If they are fixed-point, the
+     comparison is done in a signed sense.
+
+`(gtu X Y)'
+     Like `gt' but does unsigned comparison, on fixed-point numbers
+     only.
+
+`(lt X Y)'
+`(ltu X Y)'
+     Like `gt' and `gtu' but test for ``less than''.
+
+`(ge X Y)'
+`(geu X Y)'
+     Like `gt' and `gtu' but test for ``greater than or equal''.
+
+`(le X Y)'
+`(leu X Y)'
+     Like `gt' and `gtu' but test for ``less than or equal''.
+
+`(if_then_else COND THEN ELSE)'
+     This is not a comparison operation but is listed here because it
+     is always used in conjunction with a comparison operation.  To
+     be precise, COND is a comparison expression.  This expression
+     represents a choice, according to COND, between the value
+     represented by THEN and the one represented by ELSE.
+
+     On most machines, `if_then_else' expressions are valid only to
+     express conditional jumps.
+
+
+
+File: gcc.info,  Node: Bit Fields,  Next: Conversions,  Prev: Comparisons,  Up: RTL
+
+Bit-fields
+==========
+
+Special expression codes exist to represent bit-field instructions. 
+These types of expressions are lvalues in RTL; they may appear on the
+left side of a assignment, indicating insertion of a value into the
+specified bit field.
+
+`(sign_extract:SI LOC SIZE POS)'
+     This represents a reference to a sign-extended bit-field
+     contained or starting in LOC (a memory or register reference). 
+     The bit field is SIZE bits wide and starts at bit POS.  The
+     compilation option `BITS_BIG_ENDIAN' says which end of the
+     memory unit POS counts from.
+
+     Which machine modes are valid for LOC depends on the machine,
+     but typically LOC should be a single byte when in memory or a
+     full word in a register.
+
+`(zero_extract:SI LOC SIZE POS)'
+     Like `sign_extract' but refers to an unsigned or zero-extended
+     bit field.  The same sequence of bits are extracted, but they
+     are filled to an entire word with zeros instead of by
+     sign-extension.
+
+
+
+File: gcc.info,  Node: Conversions,  Next: RTL Declarations,  Prev: Bit Fields,  Up: RTL
+
+Conversions
+===========
+
+All conversions between machine modes must be represented by explicit
+conversion operations.  For example, an expression which is the sum
+of a byte and a full word cannot be written as `(plus:SI (reg:QI 34)
+(reg:SI 80))' because the `plus' operation requires two operands of
+the same machine mode.  Therefore, the byte-sized operand is enclosed
+in a conversion operation, as in
+
+     (plus:SI (sign_extend:SI (reg:QI 34)) (reg:SI 80))
+
+The conversion operation is not a mere placeholder, because there may
+be more than one way of converting from a given starting mode to the
+desired final mode.  The conversion operation code says how to do it.
+
+`(sign_extend:M X)'
+     Represents the result of sign-extending the value X to machine
+     mode M.  M must be a fixed-point mode and X a fixed-point value
+     of a mode narrower than M.
+
+`(zero_extend:M X)'
+     Represents the result of zero-extending the value X to machine
+     mode M.  M must be a fixed-point mode and X a fixed-point value
+     of a mode narrower than M.
+
+`(float_extend:M X)'
+     Represents the result of extending the value X to machine mode
+     M.  M must be a floating point mode and X a floating point value
+     of a mode narrower than M.
+
+`(truncate:M X)'
+     Represents the result of truncating the value X to machine mode
+     M.  M must be a fixed-point mode and X a fixed-point value of a
+     mode wider than M.
+
+`(float_truncate:M X)'
+     Represents the result of truncating the value X to machine mode
+     M.  M must be a floating point mode and X a floating point value
+     of a mode wider than M.
+
+`(float:M X)'
+     Represents the result of converting fixed point value X,
+     regarded as signed, to floating point mode M.
+
+`(unsigned_float:M X)'
+     Represents the result of converting fixed point value X,
+     regarded as unsigned, to floating point mode M.
+
+`(fix:M X)'
+     When M is a fixed point mode, represents the result of
+     converting floating point value X to mode M, regarded as signed.
+     How rounding is done is not specified, so this operation may be
+     used validly in compiling C code only for integer-valued operands.
+
+`(unsigned_fix:M X)'
+     Represents the result of converting floating point value X to
+     fixed point mode M, regarded as unsigned.  How rounding is done
+     is not specified.
+
+`(fix:M X)'
+     When M is a floating point mode, represents the result of
+     converting floating point value X (valid for mode M) to an
+     integer, still represented in floating point mode M, by rounding
+     towards zero.
+
+
+
+File: gcc.info,  Node: RTL Declarations,  Next: Side Effects,  Prev: Conversions,  Up: RTL
+
+Declarations
+============
+
+Declaration expression codes do not represent arithmetic operations
+but rather state assertions about their operands.
+
+`(strict_low_part (subreg:M (reg:N R) 0))'
+     This expression code is used in only one context: operand 0 of a
+     `set' expression.  In addition, the operand of this expression
+     must be a `subreg' expression.
+
+     The presence of `strict_low_part' says that the part of the
+     register which is meaningful in mode N, but is not part of mode
+     M, is not to be altered.  Normally, an assignment to such a
+     subreg is allowed to have undefined effects on the rest of the
+     register when M is less than a word.
+
+
+
+File: gcc.info,  Node: Side Effects,  Next: Incdec,  Prev: RTL Declarations,  Up: RTL
+
+Side Effect Expressions
+=======================
+
+The expression codes described so far represent values, not actions. 
+But machine instructions never produce values; they are meaningful
+only for their side effects on the state of the machine.  Special
+expression codes are used to represent side effects.
+
+The body of an instruction is always one of these side effect codes;
+the codes described above, which represent values, appear only as the
+operands of these.
+
+`(set LVAL X)'
+     Represents the action of storing the value of X into the place
+     represented by LVAL.  LVAL must be an expression representing a
+     place that can be stored in: `reg' (or `subreg' or
+     `strict_low_part'), `mem', `pc' or `cc0'.
+
+     If LVAL is a `reg', `subreg' or `mem', it has a machine mode;
+     then X must be valid for that mode.
+
+     If LVAL is a `reg' whose machine mode is less than the full
+     width of the register, then it means that the part of the
+     register specified by the machine mode is given the specified
+     value and the rest of the register receives an undefined value. 
+     Likewise, if LVAL is a `subreg' whose machine mode is narrower
+     than `SImode', the rest of the register can be changed in an
+     undefined way.
+
+     If LVAL is a `strict_low_part' of a `subreg', then the part of
+     the register specified by the machine mode of the `subreg' is
+     given the value X and the rest of the register is not changed.
+
+     If LVAL is `(cc0)', it has no machine mode, and X may have any
+     mode.  This represents a ``test'' or ``compare'' instruction.
+
+     If LVAL is `(pc)', we have a jump instruction, and the
+     possibilities for X are very limited.  It may be a `label_ref'
+     expression (unconditional jump).  It may be an `if_then_else'
+     (conditional jump), in which case either the second or the third
+     operand must be `(pc)' (for the case which does not jump) and
+     the other of the two must be a `label_ref' (for the case which
+     does jump).  X may also be a `mem' or `(plus:SI (pc) Y)', where
+     Y may be a `reg' or a `mem'; these unusual patterns are used to
+     represent jumps through branch tables.
+
+`(return)'
+     Represents a return from the current function, on machines where
+     this can be done with one instruction, such as Vaxes.  On
+     machines where a multi-instruction ``epilogue'' must be executed
+     in order to return from the function, returning is done by
+     jumping to a label which precedes the epilogue, and the `return'
+     expression code is never used.
+
+`(call FUNCTION NARGS)'
+     Represents a function call.  FUNCTION is a `mem' expression
+     whose address is the address of the function to be called. 
+     NARGS is an expression which can be used for two purposes: on
+     some machines it represents the number of bytes of stack
+     argument; on others, it represents the number of argument
+     registers.
+
+     Each machine has a standard machine mode which FUNCTION must
+     have.  The machine description defines macro `FUNCTION_MODE' to
+     expand into the requisite mode name.  The purpose of this mode
+     is to specify what kind of addressing is allowed, on machines
+     where the allowed kinds of addressing depend on the machine mode
+     being addressed.
+
+`(clobber X)'
+     Represents the storing or possible storing of an unpredictable,
+     undescribed value into X, which must be a `reg' or `mem'
+     expression.
+
+     One place this is used is in string instructions that store
+     standard values into particular hard registers.  It may not be
+     worth the trouble to describe the values that are stored, but it
+     is essential to inform the compiler that the registers will be
+     altered, lest it attempt to keep data in them across the string
+     instruction.
+
+     X may also be null--a null C pointer, no expression at all. 
+     Such a `(clobber (null))' expression means that all memory
+     locations must be presumed clobbered.
+
+     Note that the machine description classifies certain hard
+     registers as ``call-clobbered''.  All function call instructions
+     are assumed by default to clobber these registers, so there is
+     no need to use `clobber' expressions to indicate this fact. 
+     Also, each function call is assumed to have the potential to
+     alter any memory location, unless the function is declared
+     `const'.
+
+     When a `clobber' expression for a register appears inside a
+     `parallel' with other side effects, GNU CC guarantees that the
+     register is unoccupied both before and after that insn. 
+     Therefore, it is safe for the assembler code produced by the
+     insn to use the register as a temporary.  You can clobber either
+     a specific hard register or a pseudo register; in the latter
+     case, GNU CC will allocate a hard register that is available
+     there for use as a temporary.
+
+`(use X)'
+     Represents the use of the value of X.  It indicates that the
+     value in X at this point in the program is needed, even though
+     it may not be apparent why this is so.  Therefore, the compiler
+     will not attempt to delete previous instructions whose only
+     effect is to store a value in X.  X must be a `reg' expression.
+
+`(parallel [X0 X1 ...])'
+     Represents several side effects performed in parallel.  The
+     square brackets stand for a vector; the operand of `parallel' is
+     a vector of expressions.  X0, X1 and so on are individual side
+     effect expressions--expressions of code `set', `call', `return',
+     `clobber' or `use'.
+
+     ``In parallel'' means that first all the values used in the
+     individual side-effects are computed, and second all the actual
+     side-effects are performed.  For example,
+
+          (parallel [(set (reg:SI 1) (mem:SI (reg:SI 1)))
+                     (set (mem:SI (reg:SI 1)) (reg:SI 1))])
+
+     says unambiguously that the values of hard register 1 and the
+     memory location addressed by it are interchanged.  In both
+     places where `(reg:SI 1)' appears as a memory address it refers
+     to the value in register 1 *before* the execution of the insn.
+
+     It follows that it is *incorrect* to use `parallel' and expect
+     the result of one `set' to be available for the next one.  For
+     example, people sometimes attempt to represent a jump-if-zero
+     instruction this way:
+
+          (parallel [(set (cc0) (reg:SI 34))
+          	   (set (pc) (if_then_else
+          			(eq (cc0) (const_int 0))
+          			(label_ref ...)
+          			(pc)))])
+
+     But this is incorrect, because it says that the jump condition
+     depends on the condition code value *before* this instruction,
+     not on the new value that is set by this instruction.
+
+     Peephole optimization, which takes place in together with final
+     assembly code output, can produce insns whose patterns consist
+     of a `parallel' whose elements are the operands needed to output
+     the resulting assembler code--often `reg', `mem' or constant
+     expressions.  This would not be well-formed RTL at any other
+     stage in compilation, but it is ok then because no further
+     optimization remains to be done.  However, the definition of the
+     macro `NOTICE_UPDATE_CC' must deal with such insns if you define
+     any peephole optimizations.
+
+`(sequence [INSNS ...])'
+     Represents a sequence of insns.  Each of the INSNS that appears
+     in the vector is suitable for appearing in the chain of insns,
+     so it must be an `insn', `jump_insn', `call_insn', `code_label',
+     `barrier' or `note'.
+
+     A `sequence' RTX never appears in an actual insn.  It represents
+     the sequence of insns that result from a `define_expand'
+     *before* those insns are passed to `emit_insn' to insert them in
+     the chain of insns.  When actually inserted, the individual
+     sub-insns are separated out and the `sequence' is forgotten.
+
+Three expression codes appear in place of a side effect, as the body
+of an insn, though strictly speaking they do not describe side
+effects as such:
+
+`(asm_input S)'
+     Represents literal assembler code as described by the string S.
+
+`(addr_vec:M [LR0 LR1 ...])'
+     Represents a table of jump addresses.  The vector elements LR0,
+     etc., are `label_ref' expressions.  The mode M specifies how
+     much space is given to each address; normally M would be `Pmode'.
+
+`(addr_diff_vec:M BASE [LR0 LR1 ...])'
+     Represents a table of jump addresses expressed as offsets from
+     BASE.  The vector elements LR0, etc., are `label_ref'
+     expressions and so is BASE.  The mode M specifies how much space
+     is given to each address-difference.
+
+
+
+File: gcc.info,  Node: Incdec,  Next: Assembler,  Prev: Side Effects,  Up: RTL
+
+Embedded Side-Effects on Addresses
+==================================
+
+Four special side-effect expression codes appear as memory addresses.
+
+`(pre_dec:M X)'
+     Represents the side effect of decrementing X by a standard
+     amount and represents also the value that X has after being
+     decremented.  X must be a `reg' or `mem', but most machines
+     allow only a `reg'.  M must be the machine mode for pointers on
+     the machine in use.  The amount X is decremented by is the
+     length in bytes of the machine mode of the containing memory
+     reference of which this expression serves as the address.  Here
+     is an example of its use:
+
+          (mem:DF (pre_dec:SI (reg:SI 39)))
+
+     This says to decrement pseudo register 39 by the length of a
+     `DFmode' value and use the result to address a `DFmode' value.
+
+`(pre_inc:M X)'
+     Similar, but specifies incrementing X instead of decrementing it.
+
+`(post_dec:M X)'
+     Represents the same side effect as `pre_decrement' but a
+     different value.  The value represented here is the value X has
+     before being decremented.
+
+`(post_inc:M X)'
+     Similar, but specifies incrementing X instead of decrementing it.
+
+These embedded side effect expressions must be used with care. 
+Instruction patterns may not use them.  Until the `flow' pass of the
+compiler, they may occur only to represent pushes onto the stack. 
+The `flow' pass finds cases where registers are incremented or
+decremented in one instruction and used as an address shortly before
+or after; these cases are then transformed to use pre- or
+post-increment or -decrement.
+
+Explicit popping of the stack could be represented with these
+embedded side effect operators, but that would not be safe; the
+instruction combination pass could move the popping past pushes, thus
+changing the meaning of the code.
+
+An instruction that can be represented with an embedded side effect
+could also be represented using `parallel' containing an additional
+`set' to describe how the address register is altered.  This is not
+done because machines that allow these operations at all typically
+allow them wherever a memory address is called for.  Describing them
+as additional parallel stores would require doubling the number of
+entries in the machine description.
+
+

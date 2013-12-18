@@ -1,0 +1,64 @@
+// Implements pseudo trap handler jacket. This allows kernel functions
+// to be called from within interrupt handlers.
+
+// PseudoTrap2(arg1, arg2, arg3, TRAPNUMBER)
+
+include ARM/trap.m
+include module.m
+include ARM/vy86pid.m
+
+	StartModule asm -1 0
+
+	-- Init chain code to export AsmHandler function
+	init
+	codetable _AsmHandler
+	global  _AsmHandler
+	patchinstr(patcharmdt, shift ( 3, modnum), ldr tmp, (mt, 4))
+	lea	r1, AsmHandler
+	str	r1, (tmp, 0)	-- will be offset 0
+	movs	pc, lr
+	
+	Function AsmHandler
+
+	-- reset interrupt
+	MOV     r1,0x00000080
+	MOV     tmp,0x02000000
+	STRB    r1,(tmp,0)
+
+	-- Call util library pseudo trap fn.
+	-- Optimally should be replaced with PseudoTrap macro.
+
+	mov	a4, TRAP_HardenedSignal & ~TRAP_STDHELIOS
+	patchinstr(patcharmdt, datamodule(_PseudoTrap),
+		LDR     r2,(mt,0))
+	patchinstr(patcharmdt, codesymb(_PseudoTrap),
+		LDR     r2,(r2,0))
+
+	mov	pc, r2
+
+
+
+_if _false [ -- @@@ tmp DBG 
+	-- TMP DBG version of pseudo trap handler
+	Function ['PseudoTrap]
+
+_if _false [ -- @@@ tmp DBG 
+		mvn	r2, (7 << 4)
+		ldr	r3,hw_PARALLEL_holder2	-- get the GPIO hardware address
+		strb	r2,(r3,hw_parallel.GPIO)-- and update the LED
+
+psst:
+		b	psst
+
+		hw_PARALLEL_holder2:
+			word	hw_PARALLEL
+]
+	mvn	tmp, TRAP_STDHELIOS
+	and	tmp, a4
+	ldr	pc, (r0, -r0)
+
+	-- returns directly to caller as we have not updated lr
+]
+
+
+	EndModule

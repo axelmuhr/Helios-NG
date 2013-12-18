@@ -1,0 +1,1 @@
+config/out-sparc.c

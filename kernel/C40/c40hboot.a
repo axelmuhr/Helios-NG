@@ -1,0 +1,573 @@
+-- File:	c40hboot.a
+-- Subsystem:	'C40 Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	Nov '91
+--
+-- Description: 'C40 Hema DSP-1 board specific initial boot code.
+--
+--		The Hema DSP-1 board is special in that it communicates
+--		with the host system via two *unidirectional* links.
+--		link 3: Host -> DSP-1, link 0: DSP-1 -> Host.
+--		Care must be taken never to read the outgoing link, or write
+--		to the incoming.
+--
+--		This code is downloaded using the on-chip 'C40 boot sequence.
+--		It is booted into internal RAM, where upon it initialises the
+--		'C40 and updates the ExecRoot with the contents of the ID-ROM.
+--		The nucleus load position is calculated, the execroot updated
+--		with this information and the nucleus is then downloaded.
+--		Finally a C PCS conformant world is set up and we jump into
+--		the kernel.
+--
+-- RcsId: $Id: c40hboot.a,v 1.8 1993/08/16 08:59:12 richardp Exp $
+--
+-- (C) Copyright 1991 Perihelion Software Ltd.
+
+
+include basic.m
+include c40.m
+include tim40.m
+include c40mmap.m
+include ../gexec.m
+include module.m
+include config.m
+
+
+	-----------------------------------------------------------------------
+	-- The linker will prefix this code with 3 words magic/flags and size.
+	-- The booting program should ignore these three words and only download
+	-- 'size' bytes, jumping to the first of these.
+
+	-- This boot code is downloaded into the second bank of on-chip RAM.
+startboot:
+	-- Upon entry the 'C40 will be in its reset state with interrupts
+	-- disabled and AR3 points to the cpcr of the link we were
+	-- booted down. This register must NOT be corrupted.
+
+	ldhi	0x10, ar2	-- address of link 0
+	or	0x40, ar2
+
+	-- Write Boot Acknowledge word to booter down output link
+	stik	0x1, *+ar2(2)
+
+	-- read Hardware Config word from booter
+	ldi	*+ar3(1), r9
+
+	-- The cache is sometimes disabled to get around C40 bugs.
+	-- On revision 1 (GFL) using two strobes of differing speeds on the
+	-- same address bus can cause problems with the cache enabled.
+	tstb	HW_CacheOff, r9
+	bnz	DontEnableCache
+	or	ST_CE, st		-- enable cache for fast boot
+DontEnableCache:
+
+	-- if we are replacing existing IDROM, then we should still go through
+	-- the motions of raising and lowering the module config line and
+	-- swapping out the IDROM from local memory.
+	tstb	HW_PseudoIDROM, r9
+	bnz	DontRaiseConfig
+	-- start of bootstrap so raise TIM-40 module config line
+	ldi	IIF_TYPE3 | IIF_FLAG3, r0
+	ldi	r0, iif
+
+	-- setup ar1 to control IDROM recall and mapping
+	ldaperi timer0_control ar1	-- control addr for TCLK0 pin.
+DontRaiseConfig:
+
+	-- If we are being sent a IDROM look-alike via the link
+	-- then get it in preference to loading a firmware version.
+	tstb	HW_PseudoIDROM | HW_ReplaceIDROM, r9
+	bz	ReadRealIDROM
+
+	-----------------------------------------------------------------------
+	-- Read pseudo/replacement IDROM
+ReadPseudoIDROM:
+	ldi	*+ar3(1), r1		-- read inclusive size of H/W Config
+	subi	2, r1, r0		-- init for // rpts
+
+	OnChipRAM ar4			-- Write to IDROM's std location
+
+	-- Download pseudo IDROM from booter into on-chip RAM bank 0.
+	-- initial size read into r1 is saved immediately
+	rpts	r0			-- loops r0 + 1
+		ldi	*+ar3(1), r1 || sti	r1, *ar4++
+	sti	r1, *ar4++		-- store final value
+
+	b	InitC40
+
+	-----------------------------------------------------------------------
+	-- Read Real IDROM
+ReadRealIDROM:
+	-- Copy ID-ROM contents to on chip RAM
+
+	ldhi	0x7000, ar2	-- start address to read IDROM contents from
+
+	-- Remember what type of IDROM is being used in r0
+	-- hi = 1bit, lo = 4bit serial IDROM's
+	ldi	*ar1, r0
+
+	-- Init sequence for IDROM load.
+	-- Enables the use of EEPROMS as their recall can be activated with
+	-- this sequence.
+	stik	tcr_io, *ar1		-- TCLK0 = output + output 0
+	ldi	2000, r1		-- 200uS delay on 50Mhz C40
+delay0:
+	subi	1, r1
+	bnz	delay0
+
+	stik	tcr_io|tcr_datout, *ar1	-- TCLK0 = output + output 1
+	ldi	2000, r1		-- 200uS delay on 50Mhz C40
+delay1:
+	subi	1, r1
+	bnz	delay1
+
+	stik	tcr_io, *ar1		-- TCLK0 = output + output 0
+	ldi	2000, r1		-- 200uS delay on 50Mhz C40
+delay2:
+	subi	1, r1
+	bnz	delay2
+
+	stik	tcr_io|tcr_datout, *ar1		-- TCLK0 = output + output 1
+
+	-- find out what type of IDROM is being used
+	and	tcr_datin, r0	-- Timer 0 DATAIN (TCLK0) bit
+	bz	fourbitread	-- TCLK0 hi = 1 bit ID ROM
+				--	 lo = 4 bit ID ROM
+
+	-----------------------------------------------------------------------
+	-- Read one bit IDROM
+onebitread:
+getidsize:
+	ldi	31, rc		-- load 32 bits at a time
+	rptb	endblock0
+	ldi	*ar2++, r2	-- get a bit
+	lsh	-1, r2		-- shift bit into carry
+endblock0:
+	rorc	r3		-- rotate r3 with input from carry
+
+	ldi	r3, r0		-- amount of ID ROM data to read
+	bz	InitC40		-- if size is zero end IDROM load sequence
+
+
+getdest:
+	ldi	31, rc		-- load 32 bits at a time
+	rptb	endblock1
+	ldi	*ar2++, r2	-- get a bit
+	lsh	-1, r2		-- shift bit into carry
+endblock1:
+	rorc	r3		-- rotate r3 with input from carry
+
+	ldi	r3, ar4		-- address to download data to
+
+
+dataloop:
+	ldi	31, rc		-- load 32 bits at a time
+	rptb	endblock2
+	ldi	*ar2++, r2	-- get a bit
+	lsh	-1, r2		-- shift bit into carry
+endblock2:
+	rorc	r3		-- rotate r3 with input from carry
+
+	sti	r3, *ar4++	-- store in internal memory
+
+	subi	1, r0		-- read fixed ID-ROM block size
+	bnz	dataloop
+
+	b	onebitread
+
+
+	-----------------------------------------------------------------------
+	-- Read four bit IDROM
+	-- @@@ Four bit IDROM code has never been tested as no H/W we have
+	-- come across has implemented it yet.
+fourbitread:
+get4idsize:
+	ldi	0, r1		-- initial shift position
+	ldi	32/4-1, rc	-- load 8 four bit chunks per word
+	rptb	end4block0
+	ldi	*ar2++, r2	-- get 4 bits
+	and	0xf, r2		-- might not actually have to do this, best safe
+	lsh	r1, r2
+	or	r2, r3		-- insert into correct pos in r3
+end4block0:
+	addi	4, r1
+
+	ldi	r3, r0		-- amount of ID ROM data to read
+	bz	InitC40		-- if size is zero end IDROM load sequence
+
+get4dest:
+	ldi	0, r1		-- initial shift position
+	ldi	32/4-1, rc	-- load 8 four bit chunks per word
+	rptb	endblock1
+	ldi	*ar2++, r2	-- get 4 bits
+	and	0xf, r2
+	lsh	r1, r2
+	or	r2, r3		-- insert into correct pos in r3
+end4block1:
+	addi	4, r1
+
+	ldi	r3, ar4		-- address to download data to
+
+data4loop:
+	ldi	0, r1		-- initial shift position
+	ldi	32/4-1, rc	-- load 8 four bit chunks per word
+	rptb	endblock2
+	ldi	*ar2++, r2	-- get 4 bits
+	and	0xf, r2
+	lsh	r1, r2
+	or	r2, r3		-- insert into correct pos in r3
+end4block2:
+	addi	4, r1
+
+	sti	r3, *ar4++	-- store in internal memory
+
+	subi	1, r0		-- read fixed ID-ROM block size
+	bnz	data4loop
+
+	b	fourbitread
+
+
+	-----------------------------------------------------------------------
+InitC40:
+	-- Init processor from contents of ID ROM
+	-- load base addr of internal periperal map
+	ldperimap ar0
+
+	OnChipRAM ar5		-- Std IDROM's always load first block here
+
+	-- global mem reg
+	ldi	*+ar5(IDROM.GBCR), r0
+	sti	r0, *+ar0(gmem_control)
+
+	-- local mem regB
+	ldi	*+ar5(IDROM.LBCR), r0
+	sti	r0, *+ar0(lmem_control)
+
+	-- setup timer 0 for a 1mS period, but do not start it
+	ldi	*+ar5(IDROM.TIMER0_PERIOD), r0
+	sti	r0, *+ar0(timer0_period)
+
+	-- setup timer 1 as this may be needed for DRAM refresh
+	ldi	*+ar5(IDROM.TIMER1_PERIOD), r0
+	sti	r0, *+ar0(timer1_period)
+
+	ldi	*+ar5(IDROM.TIMER1_CTRL.w_offset), r0
+	-- Timer1 actually in upper 16 bits of word
+	lsh	-IDROM.TIMER1_CTRL.shift, r0
+	-- set the timer to run on when a JTAG halt is in effect
+	-- this ensures that DRAM refresh continues.
+	ldhi	((tcr_dbgcont1 | tcr_dbgcont2) >> 16) & 0xffff, r1
+	or	r1, r0
+	sti	r0, *+ar0(timer1_control)
+
+	tstb	HW_PseudoIDROM, r9
+	bnz	NoTCLK0Reset
+	-- Allow normal accesses to Local RAM, not ID ROM.
+	stik	tcr_io, *ar1		-- TCLK0 = output + output 0
+NoTCLK0Reset:
+
+
+	ldi    *++ar5(IDROM.GBASE0),R0
+	ldi    4,R7                 --  4 memory chunks to investigate
+nextstrobe:
+	LDI    *ar5,AR1             --  Move Address into address register
+	LDI    *+ar5(1),R10         --  Set the artificial limit
+	CMPI   1,R7                 --  usually next entry,  but last one
+	BNE    notlast              --  is the first entry
+	LDI    *-ar5(3),R10         --  so get that instead
+notlast:
+	LDI    *+ar5(4),R0          --  Get size as specified in IDROM
+	Bne    dunstrobe            --  Check if size is zero
+	LDI    -1,r0                --  Check if address is ffffffff
+	CMPI   r0,AR1               --  by comparing to -1
+	Beq    dunstrobe            --  and do nothing on strobe if it is
+    --   Else we are going to size the memory ourselves
+    --   Main problem is to set a limit to where we look
+	LDI    0x1000,R1            --  set stride - 16384 bytes
+	LDI    0xc40,R2             --  set an arbitrary constant to R2
+	STI    R2,*AR1              --  and put that in the first word
+	STI    R1,*+AR1(1)
+	LDA    AR1,AR2              --  set pointer to current check area
+	CMPI   R2,*AR1
+        Bne    gotall
+lookmore:
+	ADDI   R1,AR2               --  point to one stride further up
+	LDI    AR2,R3               --  get the address to compute
+	ADDI   R2,R3                --  another arbitrary value from it
+	STI    R3,*AR2              --  and put that into new location
+	CMPI   R2,*AR1              --  check to see if first word still OK
+	Bne    gotall               --  and if not,  that is the lot!
+	CMPI   AR1,R10              --  have we got to limit value
+	Beq    gotall               --  yes - that's the lot
+	LDI    *AR2,R6              --  now re-get the current check value
+	CMPI   R3,R6                --  and check that is what we stored
+	Beq    lookmore             --  if equal,  look for more memory
+gotall:
+	SUBI3  AR1,AR2,R0           --  subtract original from failed
+	sti    R0,*+ar5(4)          --  put size into position
+dunstrobe:
+	LDI    *++ar5(1),R0         --  increment strobe pointer
+	SUBI   1,R7                 --  subtract 1 from the number to do
+	Bne    nextstrobe           --  repeat for next strobe if need be
+
+	OnChipRAM ar5		-- Std IDROM's always load first block here
+
+
+------------------------------------------------------------------------------
+-- Setup basic memory map.
+--
+--
+-- Global Bus:
+--
+--	Hi loaded Nucleus
+--	------------------
+
+-- Local Bus:
+--	     Hi addr.
+--
+--	------------------
+--	Trace Vector
+--	------------------
+--
+--	Poss. strobe 1 mem
+--
+--	------------------
+--	Poss. dummy block	Used to stitch together noncontigous strobe 0/1
+--	------------------
+--
+--	Main Memory Pool
+--
+--	------------------
+--	Config vector
+--	------------------
+--	Kernel Root
+--	------------------
+--
+--	Low loaded Nucleus
+--
+--	------------------
+--	Interrupt vectors       256 bytes (must be 2kb boundary aligned)
+--	------------------
+--	System Stack		1kb
+--	------------------
+--	ExecRoot		1kb
+--	------------------	< Base of local bus strobe 0/1
+--
+--	     Lo addr.
+
+	-- Find correct address for start of local bus.
+	-- Local bus is currently always used to hold the ExecRoot
+	-- system stack, interrupt vector table, kernel root, config
+	-- structure and C addressable user RAM. The nucleus may be
+	-- loaded on the global bus, or the local bus.
+
+	-- Force use of local bus strobe 1 instead of strobe 0?
+	tstb	HW_NucleusLocalS1, r9
+	bnz	UseLStrobe1
+
+	-- Default to using local bus strobe 0, but check its validity.
+	-- Use local bus strobe 1 if strobe 0 is invalid.
+	ldi	*+ar5(IDROM.LBASE0), ar1
+	addi	*+ar5(IDROM.LSIZE0), ar1, ar6
+	cmpi	-1, ar1
+	bne	ValidLStrobe
+UseLStrobe1:
+	ldi	*+ar5(IDROM.LBASE1), ar1
+	addi	*+ar5(IDROM.LSIZE1), ar1, ar6
+
+ValidLStrobe:
+	-- Setup address of ExecRoot.
+	-- This is held in the tvtp expansion register.
+	-- tvtp and ivtp must lie on a 512 word (2k) boundary.
+
+	-- Use the base memory address as the execroot pointer.
+	ldpe	ar1, tvtp	-- set trap vector table (execroot) position
+				-- GetExecRoot will load this address from tvtp
+
+	-- R_BASE (IR0) defines the base of RAM addressable by C (via byte
+	-- pointers). Normally this is set to the base of the strobe we
+	-- are using for C data, but if the strobe base + its size is in
+	-- the first quadrant of memory, then the address base is set to 0. 
+	-- This allows us to address the on-chip RAM and peripherals
+	-- directly from C.
+
+	ldi	ar1, R_BASE	-- default to base of strobe.
+	ldhi	0x4000, ar4
+	cmpi	ar4, ar6	-- compare with top of first quadrant
+	ldile	0, R_BASE	-- set to zero if in first quadrant
+	-- Save standard address base in nucleus.
+	sti	R_BASE,	*+ar1(ExecRoot.CAddressBase)
+
+	-- Save HW_Config sent to bootstrap in the ExecRoot.
+	-- This is used as the default when booting other processors.
+	sti	r9, *+ar1(ExecRoot.HWConfig)
+
+	-- Position system stack pointer directly after execroot.
+	-- Execroot and SSP are nominally 1kb in size each.
+	-- (system stack builds upwards)
+	-- .sizeof defined in terms of bytes.
+	ldi	ar1, R_SSP
+	addi	ExecRoot.sizeof / 4, R_SSP
+
+	-- Align interrupt vectors to 0x200 word boundary after execroot
+	-- and system stack.
+	ldi	R_SSP, ar2
+	addi	0x200-1, ar2
+	andn	0x200-1, ar2
+	ldpe	ar2, ivtp	-- set interrupt vector position
+
+	addi	0x40, ar2	-- add size of interrupt vector table
+				-- to give nucleus load position
+
+	-- Depending on HW_Config word, choose nucleus load location and
+	-- record it in ExecRoot.
+TestGlobalS0:
+	tstb	HW_NucleusGlobalS0, r9
+	bz	TestGlobalS1
+	ldi	*+ar5(IDROM.GBASE0), ar4
+	b	UseHighNuc
+
+TestGlobalS1:
+	tstb	HW_NucleusGlobalS1, r9
+	bz	LocalBusNucleus
+	ldi	*+ar5(IDROM.GBASE1), ar4
+UseHighNuc:
+	-- Load nucleus at base of global strobe 0/1.
+	-- ar2 = end of IVTP
+	-- ar4 = base address of chosen strobe.
+	-- ar1 = ExecRoot
+	-- Kernel root struct is therefore located directly after the
+	-- interrupt vector table.
+	ldi	ar2, r0
+	C40CAddress r0				-- Convert to BPTR.
+	sti	r0, *+ar1(ExecRoot.KernelRoot)	-- Save in execroot.
+
+	ldi	ar4, ar2			-- set nuc pos to base of strobe
+
+	b	SetNucAddress
+
+LocalBusNucleus:
+	-- ar2 = end of IVTP (base of low loaded nucleus).
+	-- ar1 = ExecRoot
+
+	-- Note that kernel root address still has to be set.
+	-- It will be located directly after the downloaded nucleus.
+	stik	0,  *+ar1(ExecRoot.KernelRoot)
+
+SetNucAddress:
+	-- Save computed address of nucleus into execroot.
+	-- Nucleus location is held as a word pointer on C40
+	-- ar2 = Nucleus load position
+	sti	ar2, *+ar1(ExecRoot.Nucleus)
+
+
+	-----------------------------------------------------------------------
+	-- Download Nucleus.
+	--
+	-- Expects simple boot protocol of SIZE in words,
+	-- followed by SIZE words of data.
+	-- @@@ extend protocol to add peek / poke / exec / boot / worm on cmd?
+
+	-- Download nucleus to RAM address pointed at by ar2
+	ldi	*+ar3(1), r0		-- read # bytes of image to download
+	ldi	ar2, ar4		-- ar2 points to nucleus load area
+
+	sti	r0, *ar4++		-- save size as part of image
+	lsh	-2, r0			-- / sizeof(word) - convert to # words
+	subi	3, r0			-- initialise for rpts
+					-- -1 size, -2 rpts and || correction
+
+	-- Download image
+	ldi	*+ar3(1), r1		-- initialise r1 for parallel loop
+	rpts	r0			-- loops r0 + 1
+		ldi	*+ar3(1), r1 || sti	r1, *ar4++
+	sti	r1, *ar4++		-- store final value
+
+
+	-- Copy IDROM into ExecRoot structure
+	-- ar5 points to base of IDROM in internal ram
+	-- ar1 points to ExecRoot base.
+
+	addi	ExecRoot.ID_ROM, ar1, ar4
+	ldi	*ar5, r0
+IDROM_save:
+	ldi	*ar5++, r1
+	sti	r1, *ar4++
+	subi	1, r0
+	bnz	IDROM_save
+
+	-----------------------------------------------------------------------
+	-- If ExecRoot->KernelRoot has not been set, then locate it directly
+	-- after the nucleus.
+	ldi	*+ar1(ExecRoot.KernelRoot), r0
+	cmpi	0, r0
+	bnz	CallKStart
+
+	-- In the case of a Low loaded nucleus, the kernel root address will not
+	-- yet have been set. The nucleus includes its own size at start, so
+	-- add this to its start address to get the next free address.
+	-- Place the kernel root there.
+	ldi	ar2, r0
+	C40CAddress r0
+	addi	*ar2, r0			-- calculate kernel root struct
+	sti	r0, *+ar1(ExecRoot.KernelRoot)	-- (BPTR) address and save in
+						-- execroot.
+
+	-----------------------------------------------------------------------
+	-- Initialise C PCS conformant world
+	--
+	-- kernal called thus:
+	-- 	void Kstart(Channel bootlink, word *nucbase)
+	--
+	-- On entry:
+	--	AR0 = peri map
+	--	AR1 = execroot
+	--	AR2 = nucleus address (WPTR)
+	--	AR3 = CPCR address of boot link
+
+CallKStart:
+	-- Setup initial C stack, this is a FALLING stack from top of
+	-- internal RAM.
+	ldhi	0x30, R_USP	-- 0x002f ffff
+	subi	1, R_USP
+
+	-- All registers set the flags.
+	or	ST_SET_COND, R_ST
+
+	-- Module table pointer not required by kernel.
+	
+	-- Setup arguments and root structure pointer.
+
+	-- Bootlink is now transfered as WPTR to bootlinks control reg.
+	ldi	ar3, R_A1			-- bootlink is arg 1
+
+	-- Nucleus is a word address.
+	ldi	ar2, R_A2			-- nuc base as arg 2
+
+	-- Jump to initial kernel module (kmodule)
+	-- jmp addr = *(GetNucBase() + 1) + (GetNucBase() + 1) + sizeof(Module)
+
+	-- Point at kernel slot.
+	addi	1, ar2
+
+	-- Convert kernel rptr to address of kernel.
+	ldi	*ar2, ar1	-- get kernel rptr - offset to kernel
+
+	lsh	-2, ar1		-- convert to number of words
+	addi	ar2, ar1	-- add in address of rptr
+
+	-- Step over module header (.sizeof in terms of bytes).
+	addi	Module.sizeof / 4, ar1
+
+	tstb	HW_PseudoIDROM, r9
+	bnz	NoDropConfig
+	-- End of bootstrap so drop TIM-40 module config line.
+	ldi	IIF_TYPE3, ar2
+	ldi	ar2, iif
+NoDropConfig:
+
+	-- Jump to startup code.
+	b	ar1
+
+
+-- End of c40boot.a

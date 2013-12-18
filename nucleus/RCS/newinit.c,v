@@ -1,0 +1,856 @@
+head	1.13;
+access;
+symbols
+	Helios_1_3_1:1.13
+	Helios_C40_1_3_Official_Release:1.13
+	Alenia_release:1.13
+	Helios1_3:1.13
+	C40_Field_Test_2:1.13
+	C40_Field_Test_R1:1.8
+	Helios13_beta:1.8
+	Helios1_2_2:1.6
+	Helios1_2_2Beta:1.6
+	Helios1_2_1:1.5
+	Helios1_2:1.4
+	V1_2Beta0:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.13
+date	92.10.05.09.05.03;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.09.29.10.02.49;	author bart;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.09.15.16.25.18;	author paul;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.09.04.09.45.10;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.07.21.11.18.12;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.04.16.00.42.53;	author paul;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.12.12.16.10.41;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.05.14.16.09.17;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.01.22.17.18.39;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.15.14.56.58;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.10.19.10.04.12;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.05.13.07.00;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.13.05.51;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@System initialisation program
+@
+
+
+1.13
+log
+@fixed compile time warning
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S   N U C L E U S                      --
+--                     ---------------------------                      --
+--                                                                      --
+--             Copyright (C) 1988, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- init.c								--
+--                                                                      --
+--	System initialiser, started by ProcMan if config flags say so.	--
+--                                                                      --
+--	Author:  NHG 15/3/89						--
+--									--
+------------------------------------------------------------------------*/
+/* SccsId: %W% %G% Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: newinit.c,v 1.12 1992/09/29 10:02:49 bart Exp nickc $ */
+
+#include <syslib.h>
+#include <string.h>
+#include <servlib.h>
+#include <task.h>
+#ifdef __ABC
+# include <abcARM/ABClib.h>
+#endif
+#undef Malloc
+
+#define FDBBUFMAX 	512
+#define LINEMAX		256
+#define ARGVMAX		32
+
+#define INITRC "/helios/etc/initrc"
+
+#ifdef __ABC
+/* In rom based systems, the init program runs through a script that loads */
+/* the basic servers. These servers can then be used to load the user */
+/* defined initrc. Separating the servers from the nucleus allows them to */
+/* be patched in Patch FlashEPROM systems. The /helios server will configure */
+/* itself to point at the relevant fs server that is defined in the system */
+/* microcontroller EEPROM */
+# define PREINITRC "/rom/sys/helios/etc/preinitrc"
+# define CANNEDINITRC "/rom/sys/helios/etc/initrc.shell" /* special default helios shell startup */
+#endif
+
+typedef struct FDB {
+	Stream	*stream;
+	int	pos;
+	int	upb;
+	char	buf[FDBBUFMAX];
+} FDB;
+
+int run(Object *w, string program, string *argv, bool wait);
+
+static FDB *fdbopen(string name);
+static void fdbclose(FDB *fdb);
+static void rdline(FDB *fdb, char *buf);
+static int rdch(FDB *fdb);
+static void parse(FDB *fdb);
+static void splitline(char *p, char **argv);
+
+static char **dorun(char **argv, word dummy);
+static char **autoserver(char **argv, word dummy);
+static char **waitfor(char **argv, word dummy);
+static char **ifabsent(char **argv, word dummy);
+static char **setconsole(char **argv, word dummy);
+
+struct keyentry { char *key; char **(*fn)(); word arg1; } keytab[] =
+{
+	{ "run",	dorun,		0	},
+	{ "ifabsent",	ifabsent,	0	},
+	{ "ifpresent",	ifabsent,	1	},	
+	{ "waitfor",	waitfor,	0	},
+	{ "console",	setconsole,	0	},
+	{ "auto",	autoserver,	0	},
+	{ 0, 		0, 		0 	}
+};
+
+Object *Console = NULL;
+Object *CServer = (Object *)MinInt;
+Object *Logger = NULL;
+Object *Root = NULL;
+
+void _stack_error()
+{
+	IOdebug("stack error in init");
+}
+
+#ifdef __ARM
+#pragma no_check_stack
+#else
+#pragma -s0
+#endif
+
+#ifdef __ABC
+int main(void)
+{
+	FDB *fdb = fdbopen(PREINITRC);
+	
+	Root = Locate(NULL,"/");
+
+	if( fdb == NULL ) {
+		IOdebug("init: warning cannot locate %s",PREINITRC);
+	}
+	else
+	{
+		parse(fdb);
+		fdbclose(fdb);
+	}
+
+	/* the /helios server should now point at the required fs server */
+	if (ReadEEPROM(EEPROM_ServerID) == EEPROM_ServerIndexShell || (ResetKeyState() & (1 << ShellBootKey)))
+	{
+		/* Special escape if case 'boot' key was held down during */
+		/* reset, boot to Helios shell */
+		fdb = fdbopen(CANNEDINITRC);
+
+		if( fdb == NULL ) { IOdebug("init: cannot locate %s",CANNEDINITRC); Exit(0); }
+	}
+	else
+	{
+		fdb = fdbopen(INITRC);
+
+		if( fdb == NULL ) { IOdebug("Init: cannot locate %s",INITRC); Exit(0); }
+	}
+
+	Logger = Console = Locate(NULL,"/logger");
+
+	parse(fdb);
+	fdbclose(fdb);
+
+	Exit(0);
+}
+#else
+int main(void)
+{
+	FDB *fdb = fdbopen(INITRC);
+	
+	if( fdb == NULL ) { IOdebug("init: cannot locate %s",INITRC); Exit(0); }
+
+	Root = Locate(NULL,"/");
+
+	Logger = Console = Locate(NULL,"/logger");
+	
+	parse(fdb);
+	
+	fdbclose(fdb);
+	
+	Exit(0);
+}
+#endif
+
+static void parse(FDB *fdb)
+{
+	char line[LINEMAX];
+	char *argvec[ARGVMAX];
+	
+	forever
+	{
+		char **argv = argvec;
+		struct keyentry *k;
+
+		rdline(fdb,line);
+		
+		if( line[0] == '#' || line[0] == '\n' ) continue;
+		
+		if( line[0] == 0x1a || line[0] == 0 ) break;
+		
+		splitline(line,argv);
+
+		if( argv[0] == NULL ) continue;
+		
+		while( argv != NULL )
+		{
+			for( k = keytab; k->key != 0; k++ )
+			{
+
+				if( strcmp(k->key,argv[0]) == 0 )
+				{
+					char **(*f)() = k->fn;
+					argv = f(argv,k->arg1);
+					break;
+				}
+			}
+		}
+	}
+}
+
+static char **dorun(char **argv, word dummy)
+{
+	bool wait = FALSE;
+	bool res;
+	bool sendenv = FALSE;
+
+	argv++;
+	
+	while( **argv == '-' )
+	{
+		char *arg = *argv++;
+		arg++;
+		switch( *arg++ )
+		{
+		case 'w': wait = TRUE; 	  break;
+		case 'e': sendenv = TRUE; break;
+		}
+	}
+
+	/* console must have been set if we are to send environment */
+	if( sendenv && Console == NULL )
+	{
+		IOdebug("init: Console not set");
+		return NULL;
+	}
+
+	/* now run either as a server (no env) or as a normal prog */
+	if( !sendenv ) res = run(NULL,*argv,NULL,wait);
+	else res = run(Console,*argv,argv+1,wait);
+
+	if( !res ) IOdebug("init: Failed to run %s",argv[0]);
+
+	return NULL;
+}
+
+static char **ifabsent(char **argv, bool invert)
+{
+	Object *o = Locate(NULL,argv[1]);
+	
+	if( o != NULL )
+	{
+		Close(o);
+		return invert?argv+2:NULL;
+	}
+
+	return invert?NULL:argv+2;
+}
+
+static char **autoserver(char **argv, word dummy)
+{
+	NameInfo info;
+
+	info.Port = NullPort;
+	info.Flags = Flags_StripName;
+	info.Matrix = DefDirMatrix;
+	info.LoadData = NULL;
+
+	Create(Root,argv[1]+1,Type_Name,sizeof(NameInfo),(byte *)&info);	
+	
+	return NULL;
+}
+
+static char **waitfor(char **argv, word dummy)
+{
+	Object *o = NULL;
+	
+	do
+	{
+		o = Locate(NULL,argv[1]);
+		if( o == NULL ) Delay(OneSec);
+	} while( o == NULL );
+
+	dummy = dummy;
+	
+	Close( o );
+	
+	return NULL;
+}
+
+static char **setconsole(char **argv, word dummy)
+{
+	Object *server = Locate(NULL,argv[1]);
+	
+	if( server == NULL )
+	{
+		IOdebug("init: cannot locate %s",argv[1]);
+		return 0;
+	}
+
+		/* Cope with console /logger */
+	if (argv[2] == NULL)
+	 { if (CServer != Null(Object)) Close(CServer);
+	   CServer = (Object *) MinInt;
+	   if (Console != Null(Object) && Console != Logger) Close(Console);
+	   Console = server;
+	   return(NULL);
+	 }
+	 
+	CServer = server;
+
+	if( Console != NULL && Console != Logger ) Close(Console);
+		
+	Console = Create(server,argv[2],Type_File,0,0);
+	
+	if( Console == NULL ) IOdebug("init: Failed to create console %s",argv[2]);
+	
+	dummy = dummy;
+	
+	return NULL;
+}
+
+static FDB *fdbopen(string name)
+{
+	Object *o = NULL;
+	Stream *s = NULL;
+	FDB *fdb = New(FDB);
+
+	if( fdb == NULL ) return NULL;
+
+	fdb->pos = 0;	
+	fdb->upb = 0;	
+	
+	o = Locate(NULL,name);
+	
+	if( o == NULL ) goto fail;
+	
+	s = Open(o,NULL,O_ReadOnly);
+
+	if( s == NULL ) goto fail;
+	
+	fdb->stream = s;
+	Close(o);
+	
+	return fdb;
+fail:
+	if( o != NULL ) Close(o);
+	if( s != NULL ) Close(s);
+	if( fdb != NULL ) Free(fdb);
+	return NULL;
+}
+
+static void fdbclose(FDB *fdb)
+{
+	Close(fdb->stream);
+	Free(fdb);
+}
+
+static void splitline(char *p, char **argv)
+{
+	int i = 0;
+	
+	forever
+	{
+		while( *p == ' ' || *p == '\t' ) p++;
+		if( *p == '\n' || *p == 0 ) break;
+		argv[i++] = p;
+		until( *p == ' ' || *p == '\t' || *p == '\n' || *p == 0) p++;
+		if( *p == 0 ) break;
+		*p++ = 0;
+	}
+	
+	argv[i] = NULL;
+}
+
+static void rdline(FDB *fdb, char *buf)
+{
+	forever
+	{
+		int c = rdch(fdb);
+		if( c == -1 )
+		{
+			break;
+		}
+		if( c == '\r' ) continue;
+		*buf++ = c;
+		if( c == '\n' ) break;	
+	}
+	*buf = 0;
+}
+
+static int rdch(FDB *fdb)
+{
+	if( fdb->upb == -1 ) return -1;
+	if( fdb->pos == fdb->upb )
+	{
+		int size = (int)Read(fdb->stream,fdb->buf,FDBBUFMAX,-1);
+		fdb->upb = size;
+		if( size == -1 ) 
+		{
+			return -1;
+		}
+		fdb->pos = 0;
+	}
+	return fdb->buf[fdb->pos++];
+}
+
+
+int run(Object *w, string program, string *argv, bool wait)
+{	
+	Object *code, *source;
+	Object *prog, *objv[OV_End+1];
+	Stream *s = NULL, *strv[5];
+        char   *envv[3];
+	word e;
+	Environ env;
+	
+	if ((source = Locate(NULL,program)) == NULL) {
+		IOdebug("init: Cannot locate %s",program);
+		return false;
+	}
+
+	if ((code = Load(NULL,source)) == NULL) {
+		IOdebug("init: Cannot load %s", program);
+		return false;
+	}
+
+	if ((prog = Execute(NULL,code)) == NULL) {
+		IOdebug("init: Cannot Execute %s", program);
+		return false;
+	}
+
+	if( w != NULL || argv != NULL )
+	{
+		s = Open(prog,NULL,O_ReadWrite);
+
+		if( s == Null(Stream) ) {
+			IOdebug("init: Prog Stream not opened");
+			return false;
+		}
+
+		objv[0] = Locate(NULL,"/helios");
+		objv[1] = prog;
+		objv[2] = code;
+		objv[3] = source;
+		objv[4] = (Object *)MinInt;
+		objv[5] = objv[0];
+		objv[6] = w;
+		objv[7] = CServer;
+		objv[8] = (Object *)MinInt;
+		objv[9] = (Object *)MinInt;
+		objv[10] = (Object *)MinInt;
+		objv[11] = Null(Object);
+
+		if( w != NULL )
+		{
+			strv[0] = Open(w,NULL,O_ReadOnly);
+			strv[1] = Open(w,NULL,O_WriteOnly);
+			strv[2] = strv[1];
+			strv[3] = Open(Logger,NULL,O_WriteOnly);
+			strv[4] = Null(Stream);
+		}
+		else strv[0] = NULL;
+
+		envv[0]	= "_UID=00000000";
+		envv[1] = "_GID=00000000";
+		envv[2] = NULL;
+
+		env.Argv = argv;
+		env.Envv = &envv[0]; 
+		env.Objv = &objv[0];
+		env.Strv = &strv[0];
+	
+		e = SendEnv(s->Server,&env);
+	}
+
+	if( wait )
+	{	if (s == NULL)
+			s = Open(prog, NULL, O_ReadWrite);
+	   	if (s == NULL) {
+			IOdebug("init: Prog Stream not opened");
+			return false;
+		}
+
+		if (InitProgramInfo(s, PS_Terminate) >= Err_Null)
+		 (void) GetProgramInfo(s, NULL, -1);
+	}
+
+	Close(source);
+	Close(code);
+	Close(prog);
+	if (s != NULL) Close(s);
+	Close(objv[0]);
+	Close(strv[0]);
+	Close(strv[1]);
+	Close(strv[3]);
+
+	return true;
+}
+@
+
+
+1.12
+log
+@The run -w option relied on the ancient way of detecting program
+termination rather than InitProgramInfo() and GetProgramInfo().
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.11 1992/09/15 16:25:18 paul Exp $ */
+d373 1
+a373 1
+		word size = Read(fdb->stream,fdb->buf,FDBBUFMAX,-1);
+@
+
+
+1.11
+log
+@fixed for new generic arm version
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.10 1992/09/04 09:45:10 nickc Exp $ */
+d411 1
+a411 1
+		s = Open(prog,NULL,O_WriteOnly);
+d454 6
+a459 2
+	{
+		MCB m;
+d461 2
+a462 3
+		InitMCB(&m,0,prog->Reply,NullPort,0);
+		m.Timeout = MaxInt;
+		while((e = GetMsg(&m)) == EK_Timeout);
+@
+
+
+1.10
+log
+@fixed compile time warnings
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.9 1992/07/21 11:18:12 bart Exp nickc $ */
+d23 1
+a23 1
+#ifdef __ARM
+d33 2
+a34 1
+#ifdef __ARM
+d94 1
+a94 1
+#ifdef __ARM
+@
+
+
+1.9
+log
+@All programs run from initrc with an environment now have a user id
+of root.
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.8 1992/04/16 00:42:53 paul Exp $ */
+d372 1
+a372 1
+		int size = Read(fdb->stream,fdb->buf,FDBBUFMAX,-1);
+d388 1
+a388 1
+	Stream *s, *strv[5];
+d464 1
+a464 1
+	Close(s);
+@
+
+
+1.8
+log
+@added better debugging
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.7 1991/12/12 16:10:41 paul Exp $ */
+d389 1
+a389 1
+        char   *dummy = Null(char);
+d440 4
+d445 1
+a445 1
+		env.Envv = &dummy; 
+@
+
+
+1.7
+log
+@HELIOSARM -> ARM
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.6 1991/05/14 16:09:17 bart Exp $ */
+d101 1
+a101 1
+		IOdebug("Warning: cannot locate %s",PREINITRC);
+d116 1
+a116 1
+		if( fdb == NULL ) { IOdebug("Error: cannot locate %s",CANNEDINITRC); Exit(0); }
+d122 1
+a122 1
+		if( fdb == NULL ) { IOdebug("Error: cannot locate %s",INITRC); Exit(0); }
+d137 1
+a137 1
+	if( fdb == NULL ) { IOdebug("cannot locate %s",INITRC); Exit(0); }
+d209 1
+a209 1
+		IOdebug("Console not set");
+d217 1
+a217 1
+	if( !res ) IOdebug("Failed to run %s",argv[0]);
+d272 1
+a272 1
+		IOdebug("cannot locate %s",argv[1]);
+d291 1
+a291 1
+	if( Console == NULL ) IOdebug("Failed to create console %s",argv[2]);
+a301 1
+
+d314 1
+a314 1
+	
+a317 1
+	
+d393 4
+a396 6
+#if 0
+	source = Locate(NULL,program);
+#else
+	if ((source = Locate(NULL,program)) == NULL)
+		IOdebug("Cannot locate %s",program);
+#endif
+d398 4
+a401 3
+	code = Load(NULL,source);
+
+	prog = Execute(NULL,code);
+d403 2
+a404 2
+	if( prog == NULL ) {
+		IOdebug("Prog not located");
+d413 1
+a413 1
+			IOdebug("Prog Stream not opened");
+@
+
+
+1.6
+log
+@The console command can now take one argument, e.g. /logger, as well
+as two arguments, e.g. /window console.
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.5 91/01/22 17:18:39 paul Exp $ */
+d87 1
+a87 1
+#ifdef __HELIOSARM
+d90 1
+a90 1
+#pragma -s
+@
+
+
+1.5
+log
+@added support in the arm version for different startup sequences.
+fixed (preinitrc) init file, followed by a std /helios/initrc file after
+the /helios server has been started. The case keys can also force a
+fixed known startup sequence that runs the helios shell.
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.4 90/11/15 14:56:58 nick Exp $ */
+d275 10
+a284 1
+	
+@
+
+
+1.4
+log
+@ifpresent command added (at Bart's request)
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.3 90/10/19 10:04:12 nick Exp $ */
+d23 3
+a25 1
+
+d33 10
+d93 1
+d96 39
+d149 1
+d386 1
+d388 4
+d394 1
+a394 1
+	
+d397 4
+a400 1
+	if( prog == NULL ) return false;
+d406 4
+a409 1
+		if( s == Null(Stream) ) return false;
+@
+
+
+1.3
+log
+@run limit removed
+@
+text
+@d17 1
+a17 1
+/* $Id: newinit.c,v 1.2 90/09/05 13:07:00 nick Exp Locker: nick $ */
+d58 1
+d169 1
+a169 1
+static char **ifabsent(char **argv, word dummy)
+d172 1
+a172 1
+
+d176 1
+a176 1
+		return NULL;
+d179 1
+a179 1
+	return argv+2;
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d17 1
+a17 1
+/* $Id$ */
+a29 2
+#define RUNLIMIT	10
+
+a67 1
+int nrun = 0;
+a138 6
+	if( nrun++ > RUNLIMIT ) 
+	{
+		IOdebug("Initialisation limit reached");
+		return NULL;
+	}
+	
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 5
+/* $Id$
+ *
+ * $Log$
+ *
+ */
+@

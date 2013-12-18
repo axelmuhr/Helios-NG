@@ -1,0 +1,349 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                     P O S I X    L I B R A R Y			--
+--                     --------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- posixasm.a								--
+--                                                                      --
+--	Assembler downcodes for posix library				--
+--                                                                      --
+--	Author:  NHG 08/05/88						--
+--                                                                      --
+--------------------------------------------------------------------------
+
+
+include basic.m
+include sem.m
+include module.m
+_test _defp 'helios.TRAN [
+	include procs.m
+][
+	include cpustate.m
+]
+_if _defp 'helios.arm [
+	include arm.m
+]
+_if _defp 'helios.C40 [
+	include c40.m
+]
+include structs.m
+include memory.m
+include tasks.m
+
+rcsid[ $Id: posixasm.a,v 1.7 1992/11/12 16:57:09 paul Exp $ ]
+
+-- name used by pipe() function
+--.pipename:
+--	_test _defp 'helios.arm
+--		[.asciz "/pipe/pipe."]
+--		[byte	"/pipe/pipe.",0]
+--	_test _defp 'helios.arm
+--		[.asciz "/fifo/pipe."]
+--		[byte	"/fifo/pipe.",0]
+
+	static
+	[
+		_test _defp 'helios.arm [
+			vec	40	_vfork_savearea
+		][
+			_test _defp 'helios.TRAN [
+				word	forkret
+				word	forkmodtab
+				word	forkwsp
+			][
+				vec	CPURegs.sizeof _vfork_savearea
+			]
+		]
+	]
+
+
+----------------------------------------------------------
+-- vfork						--
+--							--
+-- Virtual fork routine. This routine saves the return	--
+-- state of its caller and enters a C setup routine.	--
+-- Later _exit will cause the fork to return again.	--
+--							--
+----------------------------------------------------------
+
+_test _defp 'helios.arm [
+
+	Function vfork
+
+	stmfd sp!,{lr}	-- save link reg - because we do a bl
+
+	-- make a1 point at forklock semaphore
+	patchinstr(patcharmdt, datamodule(_forklock),	-- this module!
+		ldr	a1,(dp,#0))
+	patchinstr(patcharmdplsb, datasymb(_forklock),	-- first 8 bits of patch value
+		add	a1,a1,#0)
+	patchinstr(patcharmdprest, datasymb(_forklock),	-- first 8 bits of patch value
+		add	a1,a1,#0)	-- residue of previous dplsb patch
+
+
+--	-- get pointer to syslib Wait
+--	.patch_armdt [datamodule _Wait]
+--	ldr	ip,(dp,#0)
+--	.patch_armdt [datasymb _Wait]
+--	ldr	ip,(ip,#0)
+--	mov	lr,pc	-- save return addr
+--	mov	pc,ip   -- wait on forklock
+
+	-- use Wait() stub
+	patchinstr(patcharmjp, labelref(.Wait),
+		bl	0)
+
+-- Following code taken directly from setjmp KEEP IN STEP!
+-- get static save area
+	patchinstr(patcharmdt, datamodule(__vfork_savearea), -- this module!
+		ldr	ip,(dp,#0))
+	patchinstr(patcharmdplsb, datasymb(__vfork_savearea),
+		add	ip,ip,#0)
+	patchinstr(patcharmdprest, datasymb(__vfork_savearea),
+		add	ip,ip,#0)
+
+	ldmfd sp!,{lr}	-- restore link reg
+
+-- ip points at env save area
+	stmia	ip!, {v1-v5, sl, sp, dp, fp, lr}
+
+--_report ['FPE 'code 'in 'vfork 'has 'been 'left 'out]
+_if fpe
+[
+-- save floating point regs - is this correct - assumes FP emulator
+	stfe	f4,(ip),#12
+	stfe	f5,(ip),#12
+	stfe	f6,(ip),#12
+	stfe	f7,(ip),#12
+]
+	-- return to caller directly from vfork_start
+	patchinstr(patcharmjp, labelref(.vfork_start),
+		b	0)		-- look no link!
+
+	-- should never return
+
+-------------------------------------------------------------------------------
+
+	procsym _exit
+._exit:
+
+	-- called with a1 = exit status
+	-- get contents of _inchild into ip
+	patchinstr(patcharmdt, datamodule(_inchild),	-- this module!
+		ldr	ip,(dp,#0))
+	patchinstr(patcharmdt, datasymb(_inchild),
+		ldr	ip,(ip,#0))
+
+	teq	ip,#0	-- if inchild is non zero, then undo vfork
+	beq	..NormExit
+
+	-- called from vfork child so restore state of parent
+	-- get pointer to static save area into ip
+	patchinstr(patcharmdt, datamodule(__vfork_savearea), -- this module!
+		ldr	ip,(dp,#0))
+	patchinstr(patcharmdplsb, datasymb(__vfork_savearea),
+		add	ip,ip,#0)
+	patchinstr(patcharmdprest, datasymb(__vfork_savearea),
+		add	ip,ip,#0)
+
+	-- code taken from util longjmp KEEP IN STEP!
+	ldmia	ip!, {v1-v5, sl, sp, dp, fp, lr}
+
+_if fpe
+[
+-- should never need this in abc system
+-- DANGER: must increase vfork_savearea size if this is restored
+
+	ldfe	f4,(ip),#12 -- restore floating point regs
+	ldfe	f5,(ip),#12
+	ldfe	f6,(ip),#12
+	ldfe	f7,(ip),#12
+]
+	-- restored lr will cause return to parent
+
+
+..NormExit:
+	-- exit status is retained and passed as arg1
+	patchinstr(patcharmjp, labelref(.posix_exit),
+		b	0)
+
+	-- if vfork child posix_exit returns vfork child pid to parent
+	-- if not child we will never return
+][
+	---------------------------------------------------------------------
+
+	_test _defp 'helios.C40 [
+
+		Function vfork
+
+		sti	R_LR, *'-'-R_USP(1)	-- save link reg - because we do a branch
+
+		-- make a1 point at forklock semaphore
+		StaticDataAddress forklock R_A1
+
+		-- call: Wait(&forklock);
+		StubCallDelayed Wait
+			C40CAddress R_A1
+			nop
+
+		ldi	*R_USP'+'+(1), R_LR	-- restore link reg
+
+		-- get static save area
+		StaticDataAddress _vfork_savearea R_A1
+
+		-- SaveCPUState must not corrupt saved R_LR in R_TMP1
+		ldi	R_LR, R_TMP1
+
+		-- R_A1 points at env save area
+		-- Save state at this point
+		StubCallDelayed SaveCPUState
+			C40CAddress R_A1	-- convert WPTR to BPTR
+			nop
+
+		ldi	R_TMP1, R_LR		-- restore link reg
+
+		cmpi	0, R_A1
+		-- If R_A1 == FALSE then we are starting the vfork child.
+		-- To start the vfork we simply branch to the vfork C
+		-- initialisation vfork_start(). It will return to the caller
+		-- directly via a return with our original link register.
+		patchinstr(PATCHC40MASK16ADD,
+			shift(-2, labelref(.vfork_start)),
+			beq 0)			-- definitely not a LAJ!
+
+		-- if return via a RestoreCPUState (R_A1 == TRUE), then we
+		-- must call posix_exit() to undo the vfork. Branching directly
+		-- to this function causes it to use our link register and
+		-- return to the original parent. The status value to return
+		-- has been hived off by _exit() in R_A2, so we should move
+		-- this to R_A1result before returning.
+		ldi	R_A2, R_A1result	-- status to return
+		patchinstr(PATCHC40MASK24ADD,
+			shift(-2, labelref(.posix_exit)),
+			br	0)
+
+	---------------------------------------------------------------------
+
+		procsym _exit
+	._exit:
+
+		-- called with a1 = exit status
+
+		-- get contents of _inchild into R_ATMP
+		StaticDataAddress inchild R_ATMP
+
+		ldi	*R_ATMP, R_ATMP
+		-- if inchild is zero then exit normally as we are not a
+		-- vfork child - exit status is retained and passed as arg1
+		patchinstr(PATCHC40MASK16ADD,
+			shift(-2, labelref(.posix_exit)),
+			beq	0)
+
+		-- Otherwise restore state of parent, undo vfork
+		-- and return to parent.
+
+		ldi	R_A1, R_A2	-- save exit status in R_A2
+
+		-- get pointer to static save area into R_A1
+		StaticDataAddress _vfork_savearea R_ATMP
+
+		-- Restore CPU state pointed to by R_A1
+		-- This will cause a return to the vfork code
+		-- and then after a quick sojourn in .posix_exit back to the
+		-- parent that called vfork originally.
+
+		patchinstr(PATCHC40MASK24ADD,
+			shift(-2, labelref(.RestoreCPUState)),
+			brd 0)
+			-- convert reg state pointer to C pointer
+			C40CAddress R_ATMP, R_A1
+			-- save status value to pass to posix_exit() after restore
+			sti	R_A2,	*+R_ATMP(CPURegs.A2)
+
+
+	------------------------------------------------------------------------
+	][
+		-- Transputer asm functions
+		proc vfork
+		[
+			-- use empty argument slot for local
+			word		mymod		-- pointer to my module table
+		]
+		[]
+		[
+			ldl _ModTab
+			ldnl 0 ldnl modnum
+			store mymod
+
+	
+			call1 Wait [mymod ldnlp _forklock]		-- wait for access to fork code
+
+			ldl _Link
+			mymod stnl _forkret		-- save current return address
+
+			ldl _ModTab
+			mymod stnl _forkmodtab		-- and current descriptor pointer
+	
+			ldlp _Link
+			mymod	stnl _forkwsp		-- and workspace pointer
+	
+			ldl _ModTab
+			call	.vfork_start
+
+			-- return result of vfork_start
+		]
+
+		----------------------------------------------------------
+		-- _exit						--
+		--							--
+		-- Posix _exit routine. This either causes the Task to	--
+		-- Exit, or in the case of the child of a vfork, undoes	--
+		-- things so that it returns from vfork again.		--
+		----------------------------------------------------------
+
+		proc _exit
+		[
+			word		status
+		]
+		[
+			word		mymod		-- pointer to my module table
+			word		wsp		-- pointer to vfork wsp
+		]
+		[
+			ldl _ModTab
+			ldnl 0 ldnl modnum
+			store mymod
+
+			if[ cne0 [mymod ldnl _inchild] ]
+			[
+				-- undo a vfork
+				mymod ldnl _forkwsp store wsp
+				mymod ldnl _forkret wsp stnl 0
+				mymod ldnl _forkmodtab wsp stnl 1
+
+				status
+				wsp
+				gajw			-- switch to original workspace
+				rev			-- status on top
+				ldl 1			-- get descriptor
+
+				call .posix_exit	-- call into C to tidy up
+
+				ret			-- and return from vfork again
+			]
+
+			-- parent exit
+			status
+			ldl _ModTab
+			call .posix_exit	-- call into C to tidy up
+
+			-- in this case posix_exit should not return
+		]
+	]
+]
+
+
+-- End of posixasm.a

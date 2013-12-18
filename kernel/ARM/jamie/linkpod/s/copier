@@ -1,0 +1,611 @@
+        TTL     Define a simple memory system for the Executive > s.copier
+        ; ---------------------------------------------------------------------
+        ; Provide copy and execute function for the Executive loader
+        ; ---------------------------------------------------------------------
+        ; Environment setup:
+        ;       Executed objects should only use MEMC logical RAM
+        ;       All non-screen memory should be mapped from 0x00000000
+        ;
+        ; This will involve copying the loaded object and this
+        ; program into physical RAM and then re-mapping the CAM to give
+        ; the maximum amount of logical memory...
+        ;
+        ; 0x00000000 => 0x0???????      (???MB : logical system RAM)
+        ; 0x01FD8000 => 0x01FFFFFF      (160K  : screen, sound and cursor)
+        ;
+        ; This allows 32K for the sound and cursor buffers and 128K for
+        ; the screen (maximum: 1024x1024 1bpp)
+        ;
+        ; At the moment we define the screen to be 640x400 1bpp since this
+        ; will probably be the size of the LCD display in the real
+        ; Active Book. This limits the display to those systems with multi-sync
+        ; monitors.
+        ; ---------------------------------------------------------------------
+
+                GBLL    standalone
+standalone      SETL    {FALSE}         ; {TRUE} for testing
+
+                GBLL    cursor
+cursor          SETL    {TRUE}          ; initialise "Cinit" to (phys + 128K)
+
+        ; ---------------------------------------------------------------------
+
+a1      RN      0
+a2      RN      1
+a3      RN      2
+a4      RN      3
+v1      RN      4
+v2      RN      5
+v3      RN      6
+v4      RN      7
+v5      RN      8
+v6      RN      9
+sl      RN      10
+fp      RN      11
+ip      RN      12
+sp      RN      13
+lr      RN      14
+pc      RN      15
+
+        ; ---------------------------------------------------------------------
+
+null    *       &00
+lf      *       &0A
+cr      *       &0D
+
+OS_WriteC                       *       &000000     ; standard write character
+OS_WriteS                       *       &000001
+OS_Write0                       *       &000002
+OS_NewLine                      *       &000003
+OS_Exit                         *       &000011
+OS_EnterOS                      *       &000016
+OS_BinaryToDecimal              *       &000028
+OS_ConvertHex8                  *       &0000D4
+OS_ConvertInteger1              *       &0000D5
+OS_ConvertInteger4              *       &0000D8
+OS_ConvertSpacedCardinal1       *       &0000E1
+OS_ConvertSpacedCardinal4       *       &0000E4
+OS_WriteI                       *       &000100
+
+        ; --------------------------------------------------------------------
+
+pRAM_base       *       &02000000   ; physical RAM base address
+
+VIDC_base       *       &03400000   ; VIDC base address
+
+MEMC_base       *       &03600000   ; DMA address generators and MEMC control
+        ; MEMC control register
+        ;
+        ; 00000011011x111xxx0osvrrhhllppxx
+        ;       x  - don't care (should be zero for future compatibility)
+        ;       o  - OS mode
+        ;       s  - sound DMA control
+        ;       v  - video DMA control
+        ;       rr - DRAM refresh
+        ;               00 - none
+        ;               01 - during video flyback
+        ;               10 - none
+        ;               11 - continuous
+        ;       hh - high ROM access time
+        ;               00 - 450ns
+        ;               01 - 325ns
+        ;               10 - 200ns
+        ;               11 - undefined
+        ;       ll - low ROM access time
+        ;               00 - 450ns
+        ;               01 - 325ns
+        ;               10 - 200ns
+        ;               11 - undefined
+        ;       pp - page size
+        ;               00 - 4Kbytes
+        ;               01 - 8Kbytes
+        ;               10 - 16Kbytes
+        ;               11 - 32Kbytes
+        ;
+        ;               2_00000011011x111xxx0osvrrhhllppxx
+MEMC_cdef       *       2_00000011011011100000001100000000
+
+CAM_base        *       &03800000   ; CAM base address
+
+screenX         *       640
+screenY         *       400
+screensize      *       ((640 * 400) / 8)               ; number of bytes
+screenalloc     *       (160 * 1024)                    ; screen allocation
+scrsize4K       *       (screenalloc / (4 * 1024))      ; number of 4K chunks
+
+        ; ---------------------------------------------------------------------
+
+        AREA    |C$$code|,CODE,READONLY
+
+        ; ---------------------------------------------------------------------
+
+        IMPORT  |x$stack_overflow|
+        EXPORT  |copy_and_execute|
+
+copy_and_execute
+        ; a1 = source address
+        ; a2 = source length
+        ; a3 = destination address
+        ; a4 = page size and number of pages
+
+        [       (:LNOT: standalone)
+        SWI     OS_EnterOS
+        ; disable IRQs and FIQs
+        ORR     lr,a3,#&0C000003        ; remember start, I and F set, SVC mode
+        TEQP    lr,#&00000000
+        ]
+
+        ; nnnnnnnnnnnnnnnn000000000000pp00
+        ; n = number of pages
+        ; p = encoded page size
+        MOV     v1,a4,LSR #16           ; v1 = number of pages
+        MOV     a4,a4,LSL #16
+        MOV     a4,a4,LSR #16           ; a4 = page size
+        STR     a4,pagesize
+        STR     v1,numpages
+
+        ; ---------------------------------------------------------------------
+
+        [       (:LNOT: standalone)
+        LDR     v1,=MEMC_cdef   ; default MEMC control register value
+        ORR     v1,v1,a4        ; add in the page size
+        STR     v1,[v1,#&00]    ; and write to the register
+        ; sound and video DMA OFF; continous RAM refresh; slow ROMs
+        ]
+
+        ; ---------------------------------------------------------------------
+
+        [       (:LNOT: standalone)
+        ; we can use: a4,v1,v2,v3,v4,v5,v6,sl,fp,ip,sp
+        ADR     sp,physram_code         ; our code base address
+        ADR     ip,end_of_code          ; and our end address
+        MOV     fp,#pRAM_base           ; base of physical RAM
+        ; copy ourselves into physical RAM
+copy_code
+        LDR     sl,[sp],#&04           ; load code word
+        STR     sl,[fp],#&04           ; and store in physical RAM
+        CMP     sp,ip
+        BCC     copy_code
+
+        ; copy the data into physical RAM
+        MOV     sp,a1                   ; the original start address
+        MOV     a1,fp                   ; the new start address
+        MOV     ip,a2                   ; the length of the data
+copy_data_pram
+        ; this may copy upto 31 extra bytes of information
+        LDMIA   sp!,{a4,v1,v2,v3,v4,v5,v6,sl}
+        STMIA   fp!,{a4,v1,v2,v3,v4,v5,v6,sl}
+        SUBS    ip,ip,#(8 * &04)        ; number of regs * size of reg
+        CMP     ip,#&00000000
+        BPL     copy_data_pram
+
+        ; continue execution in physical RAM
+        MOV     fp,#pRAM_base
+        MOV     pc,fp                   ; enter the physical RAM code
+        ]       ; (:LNOT: standalone)
+
+        ; ---------------------------------------------------------------------
+
+physram_code
+        ; remap the CAM (as defined above)
+        LDR     sp,numpages             ; number of physical pages
+        MOV     fp,#0                   ; start at physical page 0
+
+        ; ---------------------------------------------------------------------
+        ; the first "n" physical pages are mapped to the last "n" logical pages
+        ; the remaining physical pages are then mapped from logical page 0
+
+        LDR     v2,pagesize             ; encode page size
+        MOV     v2,v2,LSR #2
+        ; v2 = encoded page size
+        ;       0 = 4K
+        ;       1 = 8K
+        ;       2 = 16K
+        ;       3 = 32K
+        MOV     ip,#scrsize4K           ; number of 4K chunks required
+        MOV     v3,ip,LSR v2            ; into page size chunks
+
+        CMP     v2,#&00
+        BEQ     logpages4K
+        CMP     v2,#&01
+        BEQ     logpages8K
+        CMP     v2,#&02
+        BEQ     logpages16K
+        ; v2 = &03
+logpages32K
+        MOV     ip,#1024                ; number of 32K logical pages
+        B       logpagesdone
+logpages16K
+        MOV     ip,#2048                ; number of 16K logical pages
+        B       logpagesdone
+logpages8K
+        MOV     ip,#4096                ; number of  8K logical pages
+        B       logpagesdone
+logpages4K
+        MOV     ip,#8192                ; number of  4K logical pages
+logpagesdone
+        SUB     ip,ip,v3                ; starting logical page
+        LDR     a4,numpages
+        SUB     a4,a4,v3                ; number of application pages
+        STR     a4,numpages
+
+next_screen_page
+        ; map physical page "fp" to logical page "ip"
+        CMP     v2,#&00         ; 4K
+        BEQ     map1_4K
+        CMP     v2,#&01         ; 8K
+        BEQ     map1_8K
+        CMP     v2,#&02         ; 16K
+        BEQ     map1_16K
+        ; v2 = &03
+        ; 32K
+map1_32K
+        MOV     a4,#CAM_base
+        ; base address
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        ; logical page number
+        AND     v1,ip,#2_00000000000000000000000011111111
+        ORR     a4,a4,v1,LSL #15
+        AND     v1,ip,#2_00000000000000000000001100000000
+        ORR     a4,a4,v1,LSL #2
+        ; physical page number
+        AND     v1,fp,#2_00000000000000000000000000001111
+        ORR     a4,a4,v1,LSL #3
+        AND     v1,fp,#2_00000000000000000000000000010000
+        ORR     a4,a4,v1,LSR #4
+        AND     v1,fp,#2_00000000000000000000000000100000
+        ORR     a4,a4,v1,LSR #3
+        AND     v1,fp,#2_00000000000000000000000001000000
+        ORR     a4,a4,v1,LSR #5
+        ; completed CAM entry
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+        B       map1_continue
+
+map1_16K
+        MOV     a4,#CAM_base
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        LDR     v1,=2_00000000000000000000000111111111
+        AND     v1,ip,v1
+        ORR     a4,a4,v1,LSL #14
+        AND     v1,ip,#2_00000000000000000000011000000000
+        ORR     a4,a4,v1,LSL #1
+        AND     v1,fp,#2_00000000000000000000000000011111
+        ORR     a4,a4,v1,LSL #2
+        AND     v1,fp,#2_00000000000000000000000001100000
+        ORR     a4,a4,v1,LSR #5
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+        B       map1_continue
+
+map1_8K
+        MOV     a4,#CAM_base
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        LDR     v1,=2_00000000000000000000001111111111
+        AND     v1,ip,v1
+        ORR     a4,a4,v1,LSL #13
+        AND     v1,ip,#2_00000000000000000000110000000000
+        ORR     a4,a4,v1
+        AND     v1,fp,#2_00000000000000000000000000111111
+        ORR     a4,a4,v1,LSL #1
+        AND     v1,fp,#2_00000000000000000000000001000000
+        ORR     a4,a4,v1,LSR #6
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+        B       map1_continue
+
+map1_4K
+        MOV     a4,#CAM_base
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        LDR     v1,=2_00000000000000000000011111111111
+        AND     v1,ip,v1
+        ORR     a4,a4,v1,LSL #12
+        AND     v1,ip,#2_00000000000000000001100000000000
+        ORR     a4,a4,v1,LSR #1
+        AND     v1,fp,#2_00000000000000000000000001111111
+        ORR     a4,a4,v1
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+map1_continue
+        ADD     ip,ip,#&01
+        ADD     fp,fp,#&01
+        CMP     fp,v3                   ; number of physical pages
+        BCC     next_screen_page
+
+        ; ---------------------------------------------------------------------
+        ; logical RAM pages from &00000000
+
+        MOV     ip,#0                   ; logical page number
+next_RAM_page
+        ; map physical page "fp" to logical page "ip"
+        CMP     v2,#&00         ; 4K
+        BEQ     map2_4K
+        CMP     v2,#&01         ; 8K
+        BEQ     map2_8K
+        CMP     v2,#&02         ; 16K
+        BEQ     map2_16K
+        ; v2 = &03
+        ; 32K
+map2_32K
+        MOV     a4,#CAM_base
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        AND     v1,ip,#2_00000000000000000000000011111111
+        ORR     a4,a4,v1,LSL #15
+        AND     v1,ip,#2_00000000000000000000001100000000
+        ORR     a4,a4,v1,LSL #2
+        AND     v1,fp,#2_00000000000000000000000000001111
+        ORR     a4,a4,v1,LSL #3
+        AND     v1,fp,#2_00000000000000000000000000010000
+        ORR     a4,a4,v1,LSR #4
+        AND     v1,fp,#2_00000000000000000000000000100000
+        ORR     a4,a4,v1,LSR #3
+        AND     v1,fp,#2_00000000000000000000000001000000
+        ORR     a4,a4,v1,LSR #5
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+        B       map2_continue
+
+map2_16K
+        MOV     a4,#CAM_base
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        LDR     v1,=2_00000000000000000000000111111111
+        AND     v1,ip,v1
+        ORR     a4,a4,v1,LSL #14
+        AND     v1,ip,#2_00000000000000000000011000000000
+        ORR     a4,a4,v1,LSL #1
+        AND     v1,fp,#2_00000000000000000000000000011111
+        ORR     a4,a4,v1,LSL #2
+        AND     v1,fp,#2_00000000000000000000000001100000
+        ORR     a4,a4,v1,LSR #5
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+        B       map2_continue
+
+map2_8K
+        MOV     a4,#CAM_base
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        LDR     v1,=2_00000000000000000000001111111111
+        AND     v1,ip,v1
+        ORR     a4,a4,v1,LSL #13
+        AND     v1,ip,#2_00000000000000000000110000000000
+        ORR     a4,a4,v1
+        AND     v1,fp,#2_00000000000000000000000000111111
+        ORR     a4,a4,v1,LSL #1
+        AND     v1,fp,#2_00000000000000000000000001000000
+        ORR     a4,a4,v1,LSR #6
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+        B       map2_continue
+
+map2_4K
+        MOV     a4,#CAM_base
+        ORR     a4,a4,#2_00000011100000000000000000000000
+        LDR     v1,=2_00000000000000000000011111111111
+        AND     v1,ip,v1
+        ORR     a4,a4,v1,LSL #12
+        AND     v1,ip,#2_00000000000000000001100000000000
+        ORR     a4,a4,v1,LSR #1
+        AND     v1,fp,#2_00000000000000000000000001111111
+        ORR     a4,a4,v1
+        [       (:LNOT: standalone)
+        STR     a4,[a4,#&00]
+        |
+        MOV     v1,lr
+        BL      display_value
+        MOV     lr,v1
+        ]
+
+map2_continue
+        ADD     ip,ip,#&01
+        ADD     fp,fp,#&01
+        CMP     fp,sp
+        BCC     next_RAM_page
+
+        ; ---------------------------------------------------------------------
+        ; a1 = physical RAM source address
+        ; a3 = logical RAM destination address
+        ; a2 = length in bytes
+        ; lr = code entry address
+        ; copy the data into logical RAM
+copy_data
+        [       (:LNOT: standalone)
+        ; this may copy upto 31 extra bytes of information
+        LDMIA   a1!,{a4,v1,v2,v3,v4,v5,v6,sl}
+        STMIA   a3!,{a4,v1,v2,v3,v4,v5,v6,sl}
+        SUBS    a2,a2,#(8 * &04)        ; number of regs * size of reg
+        CMP     a2,#&00000000
+        BPL     copy_data
+        ]
+
+        ; ---------------------------------------------------------------------
+        ; program our screen into VIDC
+
+        [       (:LNOT: standalone)
+        ADRL    a1,screenmode
+        MOV     a2,#VIDC_base
+programVIDCloop
+        LDR     a3,[a1],#&04
+        CMP     a3,#&FFFFFFFF
+        STRNE   a3,[a2,#&00]
+        BNE     programVIDCloop
+
+        ; Note: Address generators are programmed with the physical address
+        ;       divided by 16.
+        ; The screen is at the start of physical RAM
+        LDR     a2,=2_00000011011000000000000000000000  ; Vinit = 0
+        STR     a2,[a2,#&00]
+
+        LDR     a2,=2_00000011011000100000000000000000  ; Vstart = 0
+        STR     a2,[a2,#&00]
+
+        MOV     a1,#(screensize / 4)                    ; number of words
+        ; sizemask =2_00000000000000011111111111111100
+        LDR     a2,=2_00000011011001000000000000000000
+        ORR     a2,a2,a1                                ; Vend
+        STR     a2,[a2,#&00]
+
+        [       (cursor)
+        MOV     a1,#(128 :SHL: 10)                      ; cursor at phys+128K
+        ; sizemask =2_00000000000000011111111111111100
+        LDR     a2,=2_00000011011001100000000000000000
+        ORR     a2,a2,a1                                ; Cinit
+        ]
+
+        ; enable video DMA
+        ;             0000001101101110000osvrrhhllpp00
+        LDR     a2,=2_00000011011011100000010100000000
+        LDR     a1,pagesize
+        ORR     a2,a2,a1        ; add in the page size
+        STR     a2,[a2,#&00]
+        ]       ; (:LNOT: standalone)
+
+        ; ---------------------------------------------------------------------
+
+        ; "lr" already has I and F set and SVC mode selected
+        ; and call the code
+        LDR     a2,pagesize
+        MOV     a2,a2,LSR #2
+        MOV     a1,#(4 * 1024)  ; 4K smallest page
+        MOV     a2,a1,LSL a2    ; actual page size
+        LDR     a1,numpages
+        ; a1 = number of application pages
+        ; a2 = page size
+
+        [       (:LNOT: standalone)
+        MOVS    pc,lr
+        |
+        SWI     OS_Exit
+        ]
+
+        ; This does not return to the caller
+
+        ; ---------------------------------------------------------------------
+
+        [       (standalone)
+display_value
+        ; a4 = CAM value
+        ; ip = logical page
+        ; fp = physical page
+        ; v4 = temporary register
+        ADR     v4,sa_stack
+        STMFD   v4!,{a1,a2,a3,a4,lr}
+
+        SWI     OS_WriteS
+        =       "display ",null
+        ALIGN
+
+        MOV     a1,fp
+        ADR     a2,sa_worksp
+        MOV     a3,#&0A
+        SWI     OS_ConvertInteger4
+        SWI     OS_Write0
+
+        SWI     OS_WriteI + " "
+        MOV     a1,ip
+        ADR     a2,sa_worksp
+        MOV     a3,#&0A
+        SWI     OS_ConvertInteger4
+        SWI     OS_Write0
+
+        SWI     OS_WriteI + " "
+        SWI     OS_WriteI + "&"
+        MOV     a1,a4                   ; number
+        ADR     a2,sa_worksp            ; buffer
+        MOV     a3,#&0A                 ; 10bytes long
+        SWI     OS_ConvertHex8
+        SWI     OS_Write0
+        SWI     OS_NewLine
+
+        LDMFD   v4!,{a1,a2,a3,a4,pc}^
+        ]
+
+        ; ---------------------------------------------------------------------
+
+eight_nulls
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+
+        ; ---------------------------------------------------------------------
+
+screenmode      ; 640x400 1bpp (multisync) display
+        &       &806FC000       ; HCR
+        &       &8406C000       ; HSWR
+        &       &881DC000       ; HBSR
+        &       &8C1BC000       ; HDSR
+        &       &906BC000       ; HDER
+        &       &946E4000       ; HBER
+        &       &9C380000       ; HIR
+        &       &A0694000       ; VCR
+        &       &A4008000       ; VSWR
+        &       &A804C000       ; VBSR
+        &       &AC050000       ; VDSR
+        &       &B0690000       ; VDER
+        &       &B4694000       ; VBER
+        [       (cursor)
+        &       &980BC000       ; HCSR
+        &       &B818C000       ; VCSR
+        &       &BC1FC000       ; VCER
+        ]
+        ;       2_1110000000000000tt00000tciddbbpp
+        &       2_11100000000000000000000010110011      ; CR
+
+        &       &FFFFFFFF       ; terminator
+
+        ; ---------------------------------------------------------------------
+        ; make sure we take this data with us
+pagesize
+        &       &00000000       ; physical page size
+numpages
+        &       &00000000       ; number of physical pages
+
+        ; ---------------------------------------------------------------------
+
+        [       (standalone)
+sa_worksp
+        %       (32 * 4)
+sa_stack
+        ]
+
+ PH ˆ j1š1þÿë	øÿú
+S!$ÿ á á jþ4² m U@)  aþ 4 k S@  à j#  a  `P  €  €  ã j á€„a ƒ ƒS  ó ÆSÿÿã j  aÿÿaP  €  €þ4« k SA A' á	þ4 m UA'] c

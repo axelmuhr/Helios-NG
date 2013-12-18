@@ -1,0 +1,3761 @@
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create the files:
+#	misc/patch.1
+#	misc/patch.2
+#	misc/restore.active
+#	misc/sendnewsmail
+#	misc/shar
+#	misc/trimlib
+#	misc/unshar
+# This archive created: Wed Mar  1 10:49:40 1989
+export PATH; PATH=/bin:$PATH
+echo shar: extracting "'patch.1'" '(49613 characters)'
+if test -f 'patch.1'
+then
+	echo shar: will not over-write existing file "'patch.1'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'patch.1'
+	XPath: seismo!caip!clyde!cbatt!cbosgd!ukma!psuvm.bitnet!psuvax1!burdvax!sdcrdcf!lwall
+	XFrom: lwall@sdcrdcf.UUCP (Larry Wall)
+	XNewsgroups: net.sources
+	XSubject: patch version 1.5, kit 1 of 2
+	XMessage-ID: <2922@sdcrdcf.UUCP>
+	XDate: 2 Aug 86 04:13:32 GMT
+	XReply-To: lwall@sdcrdcf.UUCP (Larry Wall)
+	XOrganization: System Development Corporation R&D, Santa Monica
+	XLines: 2237
+	X
+	X#! /bin/sh
+	X
+	X# Here is the newest version of patch.  I'd like some of you to kinda beta
+	X# test it, and then I'll submit it to mod.sources, probably as version 2.0.
+	X
+	X# Larry
+	X
+	X# Make a new directory for the patch sources, cd to it, and run kits 1 thru 2
+	X# through sh.  When all 2 kits have been run, read README.
+	X
+	Xecho "This is patch kit 1 (of 2).  If kit 1 is complete, the line"
+	Xecho '"'"End of kit 1 (of 2)"'" will echo at the end.'
+	Xecho ""
+	Xexport PATH || (echo "You didn't use sh, you clunch." ; kill $$)
+	Xecho Extracting patch.c
+	Xcat >patch.c <<'!STUFFY!FUNK!'
+	X#ifndef lint
+	Xstatic char sccsid[] = "@(#)patch.c     5.3 (Berkeley) 8/16/85";
+	X#endif not lint
+	X
+	Xstatic char rcsid[] =
+	X        "$Header: patch.c,v 1.5 86/08/01 20:53:24 lwall Exp $";
+	X
+	X/* patch - a program to apply diffs to original files
+	X *
+	X * Copyright 1984, Larry Wall
+	X *
+	X * This program may be copied as long as you don't try to make any
+	X * money off of it, or pretend that you wrote it.
+	X *
+	X * $Log:        patch.c,v $
+	X * Revision 1.5  86/08/01  20:53:24  lwall
+	X * Changed some %d's to %ld's.
+	X * Linted.
+	X *
+	X * Revision 1.4  86/08/01  19:17:29  lwall
+	X * Fixes for machines that can't vararg.
+	X * Added fuzz factor.
+	X * Generalized -p.
+	X * General cleanup.
+	X *
+	X * 85/08/15 van%ucbmonet@berkeley
+	X * Changes for 4.3bsd diff -c.
+	X *
+	X * Revision 1.3  85/03/26  15:07:43  lwall
+	X * Frozen.
+	X *
+	X * Revision 1.2.1.9  85/03/12  17:03:35  lwall
+	X * Changed pfp->_file to fileno(pfp).
+	X *
+	X * Revision 1.2.1.8  85/03/12  16:30:43  lwall
+	X * Check i_ptr and i_womp to make sure they aren't null before freeing.
+	X * Also allow ed output to be suppressed.
+	X *
+	X * Revision 1.2.1.7  85/03/12  15:56:13  lwall
+	X * Added -p option from jromine@uci-750a.
+	X *
+	X * Revision 1.2.1.6  85/03/12  12:12:51  lwall
+	X * Now checks for normalness of file to patch.
+	X *
+	X * Revision 1.2.1.5  85/03/12  11:52:12  lwall
+	X * Added -D (#ifdef) option from joe@fluke.
+	X *
+	X * Revision 1.2.1.4  84/12/06  11:14:15  lwall
+	X * Made smarter about SCCS subdirectories.
+	X *
+	X * Revision 1.2.1.3  84/12/05  11:18:43  lwall
+	X * Added -l switch to do loose string comparison.
+	X *
+	X * Revision 1.2.1.2  84/12/04  09:47:13  lwall
+	X * Failed hunk count not reset on multiple patch file.
+	X *
+	X * Revision 1.2.1.1  84/12/04  09:42:37  lwall
+	X * Branch for sdcrdcf changes.
+	X *
+	X * Revision 1.2  84/11/29  13:29:51  lwall
+	X * Linted.  Identifiers uniqified.  Fixed i_ptr malloc() bug.  Fixed
+	X * multiple calls to mktemp().  Will now work on machines that can only
+	X * read 32767 chars.  Added -R option for diffs with new and old swapped.
+	X * Various cosmetic changes.
+	X *
+	X * Revision 1.1  84/11/09  17:03:58  lwall
+	X * Initial revision
+	X *
+	X */
+	X
+	X#define DEBUGGING
+	X
+	X#include "config.h"
+	X#include "patchlevel.h"
+	X
+	X/* shut lint up about the following when return value ignored */
+	X
+	X#define Signal (void)signal
+	X#define Unlink (void)unlink
+	X#define Lseek (void)lseek
+	X#define Fseek (void)fseek
+	X#define Fstat (void)fstat
+	X#define Pclose (void)pclose
+	X#define Close (void)close
+	X#define Fclose (void)fclose
+	X#define Fflush (void)fflush
+	X#define Sprintf (void)sprintf
+	X#define Mktemp (void)mktemp
+	X#define Strcpy (void)strcpy
+	X#define Strcat (void)strcat
+	X
+	X/* and for those machine that can't handle a variable argument list */
+	X
+	X#ifdef CANVARARG
+	X
+	X#define say1 say
+	X#define say2 say
+	X#define say3 say
+	X#define say4 say
+	X#define ask1 ask
+	X#define ask2 ask
+	X#define ask3 ask
+	X#define ask4 ask
+	X#define fatal1 fatal
+	X#define fatal2 fatal
+	X#define fatal3 fatal
+	X#define fatal4 fatal
+	X
+	X#else /* hope they allow multi-line macro actual arguments */
+	X
+	X/* if this doesn't work, try defining CANVARARG above */
+	X#define say1(a) say(a, Nullch, Nullch, Nullch)
+	X#define say2(a,b) say(a, b, Nullch, Nullch)
+	X#define say3(a,b,c) say(a, b, c, Nullch)
+	X#define say4 say
+	X#define ask1(a) ask(a, Nullch, Nullch, Nullch)
+	X#define ask2(a,b) ask(a, b, Nullch, Nullch)
+	X#define ask3(a,b,c) ask(a, b, c, Nullch)
+	X#define ask4 ask
+	X#define fatal1(a) fatal(a, Nullch, Nullch, Nullch)
+	X#define fatal2(a,b) fatal(a, b, Nullch, Nullch)
+	X#define fatal3(a,b,c) fatal(a, b, c, Nullch)
+	X#define fatal4 fatal
+	X
+	X#endif
+	X
+	X#include <stdio.h>
+	X#include <assert.h>
+	X#include <sys/types.h>
+	X#include <sys/stat.h>
+	X#include <ctype.h>
+	X#include <signal.h>
+	X
+	X/* constants */
+	X
+	X#define TRUE (1)
+	X#define FALSE (0)
+	X
+	X#define MAXHUNKSIZE 500
+	X#define MAXLINELEN 1024
+	X#define BUFFERSIZE 1024
+	X#define ORIGEXT ".orig"
+	X#define SCCSPREFIX "s."
+	X#define GET "get -e %s"
+	X#define RCSSUFFIX ",v"
+	X#define CHECKOUT "co -l %s"
+	X
+	X/* handy definitions */
+	X
+	X#define Null(t) ((t)0)
+	X#define Nullch Null(char *)
+	X#define Nullfp Null(FILE *)
+	X#define Nulline Null(LINENUM)
+	X
+	X#define Ctl(ch) ((ch) & 037)
+	X
+	X#define strNE(s1,s2) (strcmp(s1, s2))
+	X#define strEQ(s1,s2) (!strcmp(s1, s2))
+	X#define strnNE(s1,s2,l) (strncmp(s1, s2, l))
+	X#define strnEQ(s1,s2,l) (!strncmp(s1, s2, l))
+	X
+	X/* typedefs */
+	X
+	Xtypedef char bool;
+	Xtypedef long LINENUM;                   /* must be signed */
+	Xtypedef unsigned MEM;                   /* what to feed malloc */
+	X
+	X/* globals */
+	X
+	Xint Argc;                               /* guess */
+	Xchar **Argv;
+	X
+	Xstruct stat filestat;                   /* file statistics area */
+	Xint filemode = 0644;
+	X
+	Xchar serrbuf[BUFSIZ];                   /* buffer for stderr */
+	Xchar buf[MAXLINELEN];                   /* general purpose buffer */
+	XFILE *pfp = Nullfp;                     /* patch file pointer */
+	XFILE *ofp = Nullfp;                     /* output file pointer */
+	XFILE *rejfp = Nullfp;                   /* reject file pointer */
+	X
+	XLINENUM input_lines = 0;                /* how long is input file in lines */
+	XLINENUM last_frozen_line = 0;           /* how many input lines have been */
+	X                                        /* irretractibly output */
+	X
+	X#define MAXFILEC 2
+	Xint filec = 0;                          /* how many file arguments? */
+	Xchar *filearg[MAXFILEC];
+	Xbool ok_to_create_file = FALSE;
+	X
+	Xchar *outname = Nullch;
+	Xchar rejname[128];
+	X
+	Xchar *origext = Nullch;
+	X
+	Xchar TMPOUTNAME[] = "/tmp/patchoXXXXXX";
+	Xchar TMPINNAME[] = "/tmp/patchiXXXXXX"; /* you might want /usr/tmp here */
+	Xchar TMPREJNAME[] = "/tmp/patchrXXXXXX";
+	Xchar TMPPATNAME[] = "/tmp/patchpXXXXXX";
+	Xbool toutkeep = FALSE;
+	Xbool trejkeep = FALSE;
+	X
+	XLINENUM last_offset = 0;
+	X#ifdef DEBUGGING
+	Xint debug = 0;
+	X#endif
+	XLINENUM maxfuzz = 2;
+	Xbool force = FALSE;
+	Xbool verbose = TRUE;
+	Xbool reverse = FALSE;
+	Xint strippath = 957;
+	Xbool canonicalize = FALSE;
+	X
+	X#define CONTEXT_DIFF 1
+	X#define NORMAL_DIFF 2
+	X#define ED_DIFF 3
+	X#define NEW_CONTEXT_DIFF 4
+	Xint diff_type = 0;
+	X
+	Xbool do_defines = FALSE;                /* patch using ifdef, ifndef, etc. */
+	Xchar if_defined[128];                   /* #ifdef xyzzy */
+	Xchar not_defined[128];                  /* #ifndef xyzzy */
+	Xchar else_defined[] = "#else\n";        /* #else */
+	Xchar end_defined[128];                  /* #endif xyzzy */
+	X
+	Xchar *revision = Nullch;                /* prerequisite revision, if any */
+	X
+	X/* procedures */
+	X
+	XLINENUM locate_hunk();
+	Xbool patch_match();
+	Xbool similar();
+	Xchar *malloc();
+	Xchar *savestr();
+	Xchar *strcpy();
+	Xchar *strcat();
+	Xchar *sprintf();                /* usually */
+	Xint my_exit();
+	Xbool rev_in_string();
+	Xchar *fetchname();
+	Xlong atol();
+	Xlong lseek();
+	Xchar *mktemp();
+	X
+	X/* patch type */
+	X
+	Xbool there_is_another_patch();
+	Xbool another_hunk();
+	Xchar *pfetch();
+	Xint pch_line_len();
+	XLINENUM pch_first();
+	XLINENUM pch_ptrn_lines();
+	XLINENUM pch_newfirst();
+	XLINENUM pch_repl_lines();
+	XLINENUM pch_end();
+	XLINENUM pch_context();
+	XLINENUM pch_hunk_beg();
+	Xchar pch_char();
+	Xchar *pfetch();
+	Xchar *pgets();
+	X
+	X/* input file type */
+	X
+	Xchar *ifetch();
+	X
+	X/* apply a context patch to a named file */
+	X
+	Xmain(argc,argv)
+	Xint argc;
+	Xchar **argv;
+	X{
+	X    LINENUM where;
+	X    LINENUM newwhere;
+	X    LINENUM fuzz;
+	X    LINENUM mymaxfuzz;
+	X    int hunk = 0;
+	X    int failed = 0;
+	X    int i;
+	X
+	X    setbuf(stderr, serrbuf);
+	X    for (i = 0; i<MAXFILEC; i++)
+	X        filearg[i] = Nullch;
+	X    Mktemp(TMPOUTNAME);
+	X    Mktemp(TMPINNAME);
+	X    Mktemp(TMPREJNAME);
+	X    Mktemp(TMPPATNAME);
+	X
+	X    /* parse switches */
+	X    Argc = argc;
+	X    Argv = argv;
+	X    get_some_switches();
+	X     
+	X    /* make sure we clean up /tmp in case of disaster */
+	X    set_signals();
+	X
+	X    for (
+	X        open_patch_file(filearg[1]);
+	X        there_is_another_patch();
+	X        reinitialize_almost_everything()
+	X    ) {                                 /* for each patch in patch file */
+	X
+	X        if (outname == Nullch)
+	X            outname = savestr(filearg[0]);
+	X     
+	X        /* initialize the patched file */
+	X        init_output(TMPOUTNAME);
+	X     
+	X        /* for ed script just up and do it and exit */
+	X        if (diff_type == ED_DIFF) {
+	X            do_ed_script();
+	X            continue;
+	X        }
+	X     
+	X        /* initialize reject file */
+	X        init_reject(TMPREJNAME);
+	X     
+	X        /* find out where all the lines are */
+	X        scan_input(filearg[0]);
+	X     
+	X        /* from here on, open no standard i/o files, because malloc */
+	X        /* might misfire */
+	X     
+	X        /* apply each hunk of patch */
+	X        hunk = 0;
+	X        failed = 0;
+	X        while (another_hunk()) {
+	X            hunk++;
+	X            fuzz = Nulline;
+	X            mymaxfuzz = pch_context();
+	X            if (maxfuzz < mymaxfuzz)
+	X                mymaxfuzz = maxfuzz;
+	X            do {
+	X                where = locate_hunk(fuzz);
+	X                if (hunk == 1 && where == Nulline && !force) {
+	X                                            /* dwim for reversed patch? */
+	X                    pch_swap();
+	X                    reverse = !reverse;
+	X                    where = locate_hunk(fuzz);  /* try again */
+	X                    if (where == Nulline) {
+	X                        pch_swap();             /* no, put it back to normal */
+	X                        reverse = !reverse;
+	X                    }
+	X                    else {
+	X                        ask3("\
+	X    %seversed (or previously applied) patch detected!  %s -R? [y] ",
+	X                            reverse ? "R" : "Unr",
+	X                            reverse ? "Assume" : "Ignore");
+	X                        if (*buf == 'n') {
+	X                            ask1("Apply anyway? [n] ");
+	X                            if (*buf != 'y')
+	X                                fatal1("Aborted.\n");
+	X                            where = Nulline;
+	X                            reverse = !reverse;
+	X                            pch_swap();
+	X                        }
+	X                    }
+	X                }
+	X            } while (where == Nulline && ++fuzz <= mymaxfuzz);
+	X
+	X            newwhere = pch_newfirst() + last_offset;
+	X            if (where == Nulline) {
+	X                abort_hunk();
+	X                failed++;
+	X                if (verbose)
+	X                    say3("Hunk #%d failed at %ld.\n", hunk, newwhere);
+	X            }
+	X            else {
+	X                apply_hunk(where);
+	X                if (verbose) {
+	X                    say3("Hunk #%d succeeded at %ld", hunk, newwhere);
+	X                    if (fuzz)
+	X                        say2(" with fuzz %ld", fuzz);
+	X                    if (last_offset)
+	X                        say3(" (offset %ld line%s)",
+	X                            last_offset, last_offset==1L?"":"s");
+	X                    say1(".\n");
+	X                }
+	X            }
+	X        }
+	X     
+	X        assert(hunk);
+	X     
+	X        /* finish spewing out the new file */
+	X        spew_output();
+	X     
+	X        /* and put the output where desired */
+	X        ignore_signals();
+	X        if (move_file(TMPOUTNAME, outname) < 0) {
+	X            toutkeep = TRUE;
+	X            chmod(TMPOUTNAME, filemode);
+	X        }
+	X        else
+	X            chmod(outname, filemode);
+	X        Fclose(rejfp);
+	X        rejfp = Nullfp;
+	X        if (failed) {
+	X            if (!*rejname) {
+	X                Strcpy(rejname, outname);
+	X                Strcat(rejname, ".rej");
+	X            }
+	X            say4("%d out of %d hunks failed--saving rejects to %s\n",
+	X                failed, hunk, rejname);
+	X            if (move_file(TMPREJNAME, rejname) < 0)
+	X                trejkeep = TRUE;
+	X        }
+	X        set_signals();
+	X    }
+	X    my_exit(0);
+	X}
+	X
+	Xreinitialize_almost_everything()
+	X{
+	X    re_patch();
+	X    re_input();
+	X
+	X    input_lines = 0;
+	X    last_frozen_line = 0;
+	X
+	X    filec = 0;
+	X    if (filearg[0] != Nullch) {
+	X        free(filearg[0]);
+	X        filearg[0] = Nullch;
+	X    }
+	X
+	X    if (outname != Nullch) {
+	X        free(outname);
+	X        outname = Nullch;
+	X    }
+	X
+	X    last_offset = 0;
+	X
+	X    diff_type = 0;
+	X
+	X    if (revision != Nullch) {
+	X        free(revision);
+	X        revision = Nullch;
+	X    }
+	X
+	X    reverse = FALSE;
+	X
+	X    get_some_switches();
+	X
+	X    if (filec >= 2)
+	X        fatal1("You may not change to a different patch file.\n");
+	X}
+	X
+	Xget_some_switches()
+	X{
+	X    Reg1 char *s;
+	X
+	X    rejname[0] = '\0';
+	X    if (!Argc)
+	X        return;
+	X    for (Argc--,Argv++; Argc; Argc--,Argv++) {
+	X        s = Argv[0];
+	X        if (strEQ(s, "+")) {
+	X            return;                     /* + will be skipped by for loop */
+	X        }
+	X        if (*s != '-' || !s[1]) {
+	X            if (filec == MAXFILEC)
+	X                fatal1("Too many file arguments.\n");
+	X            filearg[filec++] = savestr(s);
+	X        }
+	X        else {
+	X            switch (*++s) {
+	X            case 'b':
+	X                origext = savestr(Argv[1]);
+	X                Argc--,Argv++;
+	X                break;
+	X            case 'c':
+	X                diff_type = CONTEXT_DIFF;
+	X                break;
+	X            case 'd':
+	X                if (chdir(Argv[1]) < 0)
+	X                    fatal2("Can't cd to %s.\n", Argv[1]);
+	X                Argc--,Argv++;
+	X                break;
+	X            case 'D':
+	X                do_defines = TRUE;
+	X                Sprintf(if_defined, "#ifdef %s\n", Argv[1]);
+	X                Sprintf(not_defined, "#ifndef %s\n", Argv[1]);
+	X                Sprintf(end_defined, "#endif %s\n", Argv[1]);
+	X                Argc--,Argv++;
+	X                break;
+	X            case 'e':
+	X                diff_type = ED_DIFF;
+	X                break;
+	X            case 'f':
+	X                force = TRUE;
+	X                break;
+	X            case 'F':
+	X                if (*s == '=')
+	X                    s++;
+	X                maxfuzz = atoi(s+1);
+	X                break;
+	X            case 'l':
+	X                canonicalize = TRUE;
+	X                break;
+	X            case 'n':
+	X                diff_type = NORMAL_DIFF;
+	X                break;
+	X            case 'o':
+	X                outname = savestr(Argv[1]);
+	X                Argc--,Argv++;
+	X                break;
+	X            case 'p':
+	X                if (*s == '=')
+	X                    s++;
+	X                strippath = atoi(s+1);
+	X                break;
+	X            case 'r':
+	X                Strcpy(rejname, Argv[1]);
+	X                Argc--,Argv++;
+	X                break;
+	X            case 'R':
+	X                reverse = TRUE;
+	X                break;
+	X            case 's':
+	X                verbose = FALSE;
+	X                break;
+	X            case 'v':
+	X                fatal3("%s\nPatch level: %d\n", rcsid, PATCHLEVEL);
+	X                break;
+	X#ifdef DEBUGGING
+	X            case 'x':
+	X                debug = atoi(s+1);
+	X                break;
+	X#endif
+	X            default:
+	X                fatal2("Unrecognized switch: %s\n", Argv[0]);
+	X            }
+	X        }
+	X    }
+	X}
+	X
+	XLINENUM
+	Xlocate_hunk(fuzz)
+	XLINENUM fuzz;
+	X{
+	X    Reg1 LINENUM first_guess = pch_first() + last_offset;
+	X    Reg2 LINENUM offset;
+	X    LINENUM pat_lines = pch_ptrn_lines();
+	X    Reg3 LINENUM max_pos_offset = input_lines - first_guess
+	X                                - pat_lines + 1;
+	X    Reg4 LINENUM max_neg_offset = first_guess - last_frozen_line - 1
+	X                                + pch_context();
+	X
+	X    if (!pat_lines)                     /* null range matches always */
+	X        return first_guess;
+	X    if (max_neg_offset >= first_guess)  /* do not try lines < 0 */
+	X        max_neg_offset = first_guess - 1;
+	X    if (first_guess <= input_lines && patch_match(first_guess, Nulline, fuzz))
+	X        return first_guess;
+	X    for (offset = 1; ; offset++) {
+	X        Reg5 bool check_after = (offset <= max_pos_offset);
+	X        Reg6 bool check_before = (offset <= max_pos_offset);
+	X
+	X        if (check_after && patch_match(first_guess, offset, fuzz)) {
+	X#ifdef DEBUGGING
+	X            if (debug & 1)
+	X                say3("Offset changing from %ld to %ld\n", last_offset, offset);
+	X#endif
+	X            last_offset = offset;
+	X            return first_guess+offset;
+	X        }
+	X        else if (check_before && patch_match(first_guess, -offset, fuzz)) {
+	X#ifdef DEBUGGING
+	X            if (debug & 1)
+	X                say3("Offset changing from %ld to %ld\n", last_offset, -offset);
+	X#endif
+	X            last_offset = -offset;
+	X            return first_guess-offset;
+	X        }
+	X        else if (!check_before && !check_after)
+	X            return Nulline;
+	X    }
+	X}
+	X
+	X/* we did not find the pattern, dump out the hunk so they can handle it */
+	X
+	Xabort_hunk()
+	X{
+	X    Reg1 LINENUM i;
+	X    Reg2 LINENUM pat_end = pch_end();
+	X    /* add in last_offset to guess the same as the previous successful hunk */
+	X    LINENUM oldfirst = pch_first() + last_offset;
+	X    LINENUM newfirst = pch_newfirst() + last_offset;
+	X    LINENUM oldlast = oldfirst + pch_ptrn_lines() - 1;
+	X    LINENUM newlast = newfirst + pch_repl_lines() - 1;
+	X    char *stars = (diff_type == NEW_CONTEXT_DIFF ? " ****" : "");
+	X    char *minuses = (diff_type == NEW_CONTEXT_DIFF ? " ----" : " -----");
+	X
+	X    fprintf(rejfp, "***************\n");
+	X    for (i=0; i<=pat_end; i++) {
+	X        switch (pch_char(i)) {
+	X        case '*':
+	X            if (oldlast < oldfirst)
+	X                fprintf(rejfp, "*** 0%s\n", stars);
+	X            else if (oldlast == oldfirst)
+	X                fprintf(rejfp, "*** %ld%s\n", oldfirst, stars);
+	X            else
+	X                fprintf(rejfp, "*** %ld,%ld%s\n", oldfirst, oldlast, stars);
+	X            break;
+	X        case '=':
+	X            if (newlast < newfirst)
+	X                fprintf(rejfp, "--- 0%s\n", minuses);
+	X            else if (newlast == newfirst)
+	X                fprintf(rejfp, "--- %ld%s\n", newfirst, minuses);
+	X            else
+	X                fprintf(rejfp, "--- %ld,%ld%s\n", newfirst, newlast, minuses);
+	X            break;
+	X        case '\n':
+	X            fprintf(rejfp, "%s", pfetch(i));
+	X            break;
+	X        case ' ': case '-': case '+': case '!':
+	X            fprintf(rejfp, "%c %s", pch_char(i), pfetch(i));
+	X            break;
+	X        default:
+	X            say1("Fatal internal error in abort_hunk().\n");
+	X            abort();
+	X        }
+	X    }
+	X}
+	X
+	X/* we found where to apply it (we hope), so do it */
+	X
+	Xapply_hunk(where)
+	XLINENUM where;
+	X{
+	X    Reg1 LINENUM old = 1;
+	X    Reg2 LINENUM lastline = pch_ptrn_lines();
+	X    Reg3 LINENUM new = lastline+1;
+	X#define OUTSIDE 0
+	X#define IN_IFNDEF 1
+	X#define IN_IFDEF 2
+	X#define IN_ELSE 3
+	X    Reg4 int def_state = OUTSIDE;
+	X    Reg5 bool R_do_defines = do_defines;
+	X
+	X    where--;
+	X    while (pch_char(new) == '=' || pch_char(new) == '\n')
+	X        new++;
+	X     
+	X    while (old <= lastline) {
+	X        if (pch_char(old) == '-') {
+	X            copy_till(where + old - 1);
+	X            if (R_do_defines) {
+	X                if (def_state == OUTSIDE) {
+	X                    fputs(not_defined, ofp);
+	X                    def_state = IN_IFNDEF;
+	X                }
+	X                else if (def_state == IN_IFDEF) {
+	X                    fputs(else_defined, ofp);
+	X                    def_state = IN_ELSE;
+	X                }
+	X                fputs(pfetch(old), ofp);
+	X            }
+	X            last_frozen_line++;
+	X            old++;
+	X        }
+	X        else if (pch_char(new) == '+') {
+	X            copy_till(where + old - 1);
+	X            if (R_do_defines) {
+	X                if (def_state == IN_IFNDEF) {
+	X                    fputs(else_defined, ofp);
+	X                    def_state = IN_ELSE;
+	X                }
+	X                else if (def_state == OUTSIDE) {
+	X                    fputs(if_defined, ofp);
+	X                    def_state = IN_IFDEF;
+	X                }
+	X            }
+	X            fputs(pfetch(new), ofp);
+	X            new++;
+	X        }
+	X        else {
+	X            if (pch_char(new) != pch_char(old)) {
+	X                say3("Out-of-sync patch, lines %ld,%ld\n",
+	X                    pch_hunk_beg() + old - 1,
+	X                    pch_hunk_beg() + new - 1);
+	X#ifdef DEBUGGING
+	X                say3("oldchar = '%c', newchar = '%c'\n",
+	X                    pch_char(old), pch_char(new));
+	X#endif
+	X                my_exit(1);
+	X            }
+	X            if (pch_char(new) == '!') {
+	X                copy_till(where + old - 1);
+	X                if (R_do_defines) {
+	X                   fputs(not_defined, ofp);
+	X                   def_state = IN_IFNDEF;
+	X                }
+	X                while (pch_char(old) == '!') {
+	X                    if (R_do_defines) {
+	X                        fputs(pfetch(old), ofp);
+	X                    }
+	X                    last_frozen_line++;
+	X                    old++;
+	X                }
+	X                if (R_do_defines) {
+	X                    fputs(else_defined, ofp);
+	X                    def_state = IN_ELSE;
+	X                }
+	X                while (pch_char(new) == '!') {
+	X                    fputs(pfetch(new), ofp);
+	X                    new++;
+	X                }
+	X                if (R_do_defines) {
+	X                    fputs(end_defined, ofp);
+	X                    def_state = OUTSIDE;
+	X                }
+	X            }
+	X            else {
+	X                assert(pch_char(new) == ' ');
+	X                old++;
+	X                new++;
+	X            }
+	X        }
+	X    }
+	X    if (new <= pch_end() && pch_char(new) == '+') {
+	X        copy_till(where + old - 1);
+	X        if (R_do_defines) {
+	X            if (def_state == OUTSIDE) {
+	X                fputs(if_defined, ofp);
+	X                def_state = IN_IFDEF;
+	X            }
+	X            else if (def_state == IN_IFNDEF) {
+	X                fputs(else_defined, ofp);
+	X                def_state = IN_ELSE;
+	X            }
+	X        }
+	X        while (new <= pch_end() && pch_char(new) == '+') {
+	X            fputs(pfetch(new), ofp);
+	X            new++;
+	X        }
+	X    }
+	X    if (R_do_defines && def_state != OUTSIDE) {
+	X        fputs(end_defined, ofp);
+	X    }
+	X}
+	X
+	Xdo_ed_script()
+	X{
+	X    Reg1 char *t;
+	X    Reg2 long beginning_of_this_line;
+	X    Reg3 bool this_line_is_command = FALSE;
+	X    Reg4 FILE *pipefp;
+	X    FILE *popen();
+	X
+	X    Unlink(TMPOUTNAME);
+	X    copy_file(filearg[0], TMPOUTNAME);
+	X    if (verbose)
+	X        Sprintf(buf, "/bin/ed %s", TMPOUTNAME);
+	X    else
+	X        Sprintf(buf, "/bin/ed - %s", TMPOUTNAME);
+	X    pipefp = popen(buf, "w");
+	X    for (;;) {
+	X        beginning_of_this_line = ftell(pfp);
+	X        if (pgets(buf, sizeof buf, pfp) == Nullch) {
+	X            next_intuit_at(beginning_of_this_line);
+	X            break;
+	X        }
+	X        for (t=buf; isdigit(*t) || *t == ','; t++) ;
+	X        this_line_is_command = (isdigit(*buf) &&
+	X          (*t == 'd' || *t == 'c' || *t == 'a') );
+	X        if (this_line_is_command) {
+	X            fputs(buf, pipefp);
+	X            if (*t != 'd') {
+	X                while (pgets(buf, sizeof buf, pfp) != Nullch) {
+	X                    fputs(buf, pipefp);
+	X                    if (strEQ(buf, ".\n"))
+	X                        break;
+	X                }
+	X            }
+	X        }
+	X        else {
+	X            next_intuit_at(beginning_of_this_line);
+	X            break;
+	X        }
+	X    }
+	X    fprintf(pipefp, "w\n");
+	X    fprintf(pipefp, "q\n");
+	X    Fflush(pipefp);
+	X    Pclose(pipefp);
+	X    ignore_signals();
+	X    if (move_file(TMPOUTNAME, outname) < 0) {
+	X        toutkeep = TRUE;
+	X        chmod(TMPOUTNAME, filemode);
+	X    }
+	X    else
+	X        chmod(outname, filemode);
+	X    set_signals();
+	X}
+	X
+	Xinit_output(name)
+	Xchar *name;
+	X{
+	X    ofp = fopen(name, "w");
+	X    if (ofp == Nullfp)
+	X        fatal2("patch: can't create %s.\n", name);
+	X}
+	X
+	Xinit_reject(name)
+	Xchar *name;
+	X{
+	X    rejfp = fopen(name, "w");
+	X    if (rejfp == Nullfp)
+	X        fatal2("patch: can't create %s.\n", name);
+	X}
+	X
+	Xint
+	Xmove_file(from,to)
+	Xchar *from, *to;
+	X{
+	X    char bakname[512];
+	X    Reg1 char *s;
+	X    Reg2 int i;
+	X    Reg3 int fromfd;
+	X
+	X    /* to stdout? */
+	X
+	X    if (strEQ(to, "-")) {
+	X#ifdef DEBUGGING
+	X        if (debug & 4)
+	X            say2("Moving %s to stdout.\n", from);
+	X#endif
+	X        fromfd = open(from, 0);
+	X        if (fromfd < 0)
+	X            fatal2("patch: internal error, can't reopen %s\n", from);
+	X        while ((i=read(fromfd, buf, sizeof buf)) > 0)
+	X            if (write(1, buf, i) != 1)
+	X                fatal1("patch: write failed\n");
+	X        Close(fromfd);
+	X        return 0;
+	X    }
+	X
+	X    Strcpy(bakname, to);
+	X    Strcat(bakname, origext?origext:ORIGEXT);
+	X    if (stat(to, &filestat) >= 0) {     /* output file exists */
+	X        dev_t to_device = filestat.st_dev;
+	X        ino_t to_inode  = filestat.st_ino;
+	X        char *simplename = bakname;
+	X     
+	X        for (s=bakname; *s; s++) {
+	X            if (*s == '/')
+	X                simplename = s+1;
+	X        }
+	X        /* find a backup name that is not the same file */
+	X        while (stat(bakname, &filestat) >= 0 &&
+	X                to_device == filestat.st_dev && to_inode == filestat.st_ino) {
+	X            for (s=simplename; *s && !islower(*s); s++) ;
+	X            if (*s)
+	X                *s = toupper(*s);
+	X            else
+	X                Strcpy(simplename, simplename+1);
+	X        }
+	X        while (unlink(bakname) >= 0) ;  /* while() is for benefit of Eunice */
+	X#ifdef DEBUGGING
+	X        if (debug & 4)
+	X            say3("Moving %s to %s.\n", to, bakname);
+	X#endif
+	X        if (link(to, bakname) < 0) {
+	X            say3("patch: can't backup %s, output is in %s\n",
+	X                to, from);
+	X            return -1;
+	X        }
+	X        while (unlink(to) >= 0) ;
+	X    }
+	X#ifdef DEBUGGING
+	X    if (debug & 4)
+	X        say3("Moving %s to %s.\n", from, to);
+	X#endif
+	X    if (link(from, to) < 0) {           /* different file system? */
+	X        Reg4 int tofd;
+	X     
+	X        tofd = creat(to, 0666);
+	X        if (tofd < 0) {
+	X            say3("patch: can't create %s, output is in %s.\n",
+	X              to, from);
+	X            return -1;
+	X        }
+	X        fromfd = open(from, 0);
+	X        if (fromfd < 0)
+	X            fatal2("patch: internal error, can't reopen %s\n", from);
+	X        while ((i=read(fromfd, buf, sizeof buf)) > 0)
+	X            if (write(tofd, buf, i) != i)
+	X                fatal1("patch: write failed\n");
+	X        Close(fromfd);
+	X        Close(tofd);
+	X    }
+	X    Unlink(from);
+	X    return 0;
+	X}
+	X
+	Xcopy_file(from,to)
+	Xchar *from, *to;
+	X{
+	X    Reg3 int tofd;
+	X    Reg2 int fromfd;
+	X    Reg1 int i;
+	X     
+	X    tofd = creat(to, 0666);
+	X    if (tofd < 0)
+	X        fatal2("patch: can't create %s.\n", to);
+	X    fromfd = open(from, 0);
+	X    if (fromfd < 0)
+	X        fatal2("patch: internal error, can't reopen %s\n", from);
+	X    while ((i=read(fromfd, buf, sizeof buf)) > 0)
+	X        if (write(tofd, buf, i) != i)
+	X            fatal2("patch: write (%s) failed\n", to);
+	X    Close(fromfd);
+	X    Close(tofd);
+	X}
+	X
+	Xcopy_till(lastline)
+	XReg1 LINENUM lastline;
+	X{
+	X    Reg2 LINENUM R_last_frozen_line = last_frozen_line;
+	X
+	X    if (R_last_frozen_line > lastline)
+	X        say1("patch: misordered hunks! output will be garbled.\n");
+	X    while (R_last_frozen_line < lastline) {
+	X        dump_line(++R_last_frozen_line);
+	X    }
+	X    last_frozen_line = R_last_frozen_line;
+	X}
+	X
+	Xspew_output()
+	X{
+	X    copy_till(input_lines);             /* dump remainder of file */
+	X    Fclose(ofp);
+	X    ofp = Nullfp;
+	X}
+	X
+	Xdump_line(line)
+	XLINENUM line;
+	X{
+	X    Reg1 char *s;
+	X    Reg2 char R_newline = '\n';
+	X
+	X    for (s=ifetch(line, 0); putc(*s, ofp) != R_newline; s++) ;
+	X}
+	X
+	X/* does the patch pattern match at line base+offset? */
+	X
+	Xbool
+	Xpatch_match(base, offset, fuzz)
+	XLINENUM base;
+	XLINENUM offset;
+	XLINENUM fuzz;
+	X{
+	X    Reg1 LINENUM pline = 1 + fuzz;
+	X    Reg2 LINENUM iline;
+	X    Reg3 LINENUM pat_lines = pch_ptrn_lines() - fuzz;
+	X
+	X    for (iline=base+offset; pline <= pat_lines; pline++,iline++) {
+	X        if (canonicalize) {
+	X            if (!similar(ifetch(iline, (offset >= 0)),
+	X                         pfetch(pline),
+	X                         pch_line_len(pline) ))
+	X                return FALSE;
+	X        }
+	X        else if (strnNE(ifetch(iline, (offset >= 0)),
+	X                   pfetch(pline),
+	X                   pch_line_len(pline) ))
+	X            return FALSE;
+	X    }
+	X    return TRUE;
+	X}
+	X
+	X/* match two lines with canonicalized white space */
+	X
+	Xbool
+	Xsimilar(a,b,len)
+	XReg1 char *a;
+	XReg2 char *b;
+	XReg3 int len;
+	X{
+	X    while (len) {
+	X        if (isspace(*b)) {              /* whitespace (or \n) to match? */
+	X            if (!isspace(*a))           /* no corresponding whitespace? */
+	X                return FALSE;
+	X            while (len && isspace(*b) && *b != '\n')
+	X                b++,len--;              /* skip pattern whitespace */
+	X            while (isspace(*a) && *a != '\n')
+	X                a++;                    /* skip target whitespace */
+	X            if (*a == '\n' || *b == '\n')
+	X                return (*a == *b);      /* should end in sync */
+	X        }
+	X        else if (*a++ != *b++)          /* match non-whitespace chars */
+	X            return FALSE;
+	X        else
+	X            len--;                      /* probably not necessary */
+	X    }
+	X    return TRUE;                        /* actually, this is not reached */
+	X                                        /* since there is always a \n */
+	X}
+	X
+	X/* input file with indexable lines abstract type */
+	X
+	Xbool using_plan_a = TRUE;
+	Xstatic long i_size;                     /* size of the input file */
+	Xstatic char *i_womp;                    /* plan a buffer for entire file */
+	Xstatic char **i_ptr;                    /* pointers to lines in i_womp */
+	X
+	Xstatic int tifd = -1;                   /* plan b virtual string array */
+	Xstatic char *tibuf[2];                  /* plan b buffers */
+	Xstatic LINENUM tiline[2] = {-1, -1};    /* 1st line in each buffer */
+	Xstatic LINENUM lines_per_buf;           /* how many lines per buffer */
+	Xstatic int tireclen;                    /* length of records in tmp file */
+	X
+	Xre_input()
+	X{
+	X    if (using_plan_a) {
+	X        i_size = 0;
+	X        /*NOSTRICT*/
+	X        if (i_ptr != Null(char**))
+	X            free((char *)i_ptr);
+	X        if (i_womp != Nullch)
+	X            free(i_womp);
+	X        i_womp = Nullch;
+	X        i_ptr = Null(char **);
+	X    }
+	X    else {
+	X        using_plan_a = TRUE;            /* maybe the next one is smaller */
+	X        Close(tifd);
+	X        tifd = -1;
+	X        free(tibuf[0]);
+	X        free(tibuf[1]);
+	X        tibuf[0] = tibuf[1] = Nullch;
+	X        tiline[0] = tiline[1] = -1;
+	X        tireclen = 0;
+	X    }
+	X}
+	X
+	Xscan_input(filename)
+	Xchar *filename;
+	X{
+	X    bool plan_a();
+	X
+	X    if (!plan_a(filename))
+	X        plan_b(filename);
+	X}
+	X
+	X/* try keeping everything in memory */
+	X
+	Xbool
+	Xplan_a(filename)
+	Xchar *filename;
+	X{
+	X    int ifd;
+	X    Reg1 char *s;
+	X    Reg2 LINENUM iline;
+	X
+	X    if (ok_to_create_file && stat(filename, &filestat) < 0) {
+	X        makedirs(filename, TRUE);
+	X        close(creat(filename, 0666));
+	X    }
+	X    if (stat(filename, &filestat) < 0) {
+	X        Sprintf(buf, "RCS/%s%s", filename, RCSSUFFIX);
+	X        if (stat(buf, &filestat) >= 0 || stat(buf+4, &filestat) >= 0) {
+	X            Sprintf(buf, CHECKOUT, filename);
+	X            if (verbose)
+	X                say2("Can't find %s--attempting to check it out from RCS.\n",
+	X                    filename);
+	X            if (system(buf) || stat(filename, &filestat))
+	X                fatal2("Can't check out %s.\n", filename);
+	X        }
+	X        else {
+	X            Sprintf(buf, "SCCS/%s%s", SCCSPREFIX, filename);
+	X            if (stat(buf, &filestat) >= 0 || stat(buf+5, &filestat) >= 0) {
+	X                Sprintf(buf, GET, filename);
+	X                if (verbose)
+	X                    say2("Can't find %s--attempting to get it from SCCS.\n",
+	X                        filename);
+	X                if (system(buf) || stat(filename, &filestat))
+	X                    fatal2("Can't get %s.\n", filename);
+	X            }
+	X            else
+	X                fatal2("Can't find %s.\n", filename);
+	X        }
+	X    }
+	X    filemode = filestat.st_mode;
+	X    if ((filemode & S_IFMT) & ~S_IFREG)
+	X        fatal2("%s is not a normal file--can't patch.\n", filename);
+	X    i_size = filestat.st_size;
+	X    /*NOSTRICT*/
+	X    i_womp = malloc((MEM)(i_size+2));
+	X    if (i_womp == Nullch)
+	X        return FALSE;
+	X    if ((ifd = open(filename, 0)) < 0)
+	X        fatal2("Can't open file %s\n", filename);
+	X    /*NOSTRICT*/
+	X    if (read(ifd, i_womp, (int)i_size) != i_size) {
+	X        Close(ifd);
+	X        free(i_womp);
+	X        return FALSE;
+	X    }
+	X    Close(ifd);
+	X    if (i_womp[i_size-1] != '\n')
+	X        i_womp[i_size++] = '\n';
+	X    i_womp[i_size] = '\0';
+	X
+	X    /* count the lines in the buffer so we know how many pointers we need */
+	X
+	X    iline = 0;
+	X    for (s=i_womp; *s; s++) {
+	X        if (*s == '\n')
+	X            iline++;
+	X    }
+	X    /*NOSTRICT*/
+	X    i_ptr = (char **)malloc((MEM)((iline + 2) * sizeof(char *)));
+	X    if (i_ptr == Null(char **)) {       /* shucks, it was a near thing */
+	X        free((char *)i_womp);
+	X        return FALSE;
+	X    }
+	X     
+	X    /* now scan the buffer and build pointer array */
+	X
+	X    iline = 1;
+	X    i_ptr[iline] = i_womp;
+	X    for (s=i_womp; *s; s++) {
+	X        if (*s == '\n')
+	X            i_ptr[++iline] = s+1;       /* these are NOT null terminated */
+	X    }
+	X    input_lines = iline - 1;
+	X
+	X    /* now check for revision, if any */
+	X
+	X    if (revision != Nullch) {
+	X        if (!rev_in_string(i_womp)) {
+	X            if (force) {
+	X                if (verbose)
+	X                    say2("\
+	XWarning: this file doesn't appear to be the %s version--patching anyway.\n",
+	X                        revision);
+	X            }
+	X            else {
+	X                ask2("\
+	XThis file doesn't appear to be the %s version--patch anyway? [n] ",
+	X                    revision);
+	X            if (*buf != 'y')
+	X                fatal1("Aborted.\n");
+	X            }
+	X        }
+	X        else if (verbose)
+	X            say2("Good.  This file appears to be the %s version.\n",
+	X                revision);
+	X    }
+	X    return TRUE;                        /* plan a will work */
+	X}
+	X
+	X/* keep (virtually) nothing in memory */
+	X
+	Xplan_b(filename)
+	Xchar *filename;
+	X{
+	X    Reg3 FILE *ifp;
+	X    Reg1 int i = 0;
+	X    Reg2 int maxlen = 1;
+	X    Reg4 bool found_revision = (revision == Nullch);
+	X
+	X    using_plan_a = FALSE;
+	X    if ((ifp = fopen(filename, "r")) == Nullfp)
+	X        fatal2("Can't open file %s\n", filename);
+	X    if ((tifd = creat(TMPINNAME, 0666)) < 0)
+	X        fatal2("Can't open file %s\n", TMPINNAME);
+	X    while (fgets(buf, sizeof buf, ifp) != Nullch) {
+	X        if (revision != Nullch && !found_revision && rev_in_string(buf))
+	X            found_revision = TRUE;
+	X        if ((i = strlen(buf)) > maxlen)
+	X            maxlen = i;                 /* find longest line */
+	X    }
+	X    if (revision != Nullch) {
+	X        if (!found_revision) {
+	X            if (force) {
+	X                if (verbose)
+	X                    say2("\
+	XWarning: this file doesn't appear to be the %s version--patching anyway.\n",
+	X                        revision);
+	X            }
+	X            else {
+	X                ask2("\
+	XThis file doesn't appear to be the %s version--patch anyway? [n] ",
+	X                    revision);
+	X                if (*buf != 'y')
+	X                    fatal1("Aborted.\n");
+	X            }
+	X        }
+	X        else if (verbose)
+	X            say2("Good.  This file appears to be the %s version.\n",
+	X                revision);
+	X    }
+	X    Fseek(ifp, 0L, 0);          /* rewind file */
+	X    lines_per_buf = BUFFERSIZE / maxlen;
+	X    tireclen = maxlen;
+	X    tibuf[0] = malloc((MEM)(BUFFERSIZE + 1));
+	X    tibuf[1] = malloc((MEM)(BUFFERSIZE + 1));
+	X    if (tibuf[1] == Nullch)
+	X        fatal1("Can't seem to get enough memory.\n");
+	X    for (i=1; ; i++) {
+	X        if (! (i % lines_per_buf))      /* new block */
+	X            if (write(tifd, tibuf[0], BUFFERSIZE) < BUFFERSIZE)
+	X                fatal1("patch: can't write temp file.\n");
+	X        if (fgets(tibuf[0] + maxlen * (i%lines_per_buf), maxlen + 1, ifp)
+	X          == Nullch) {
+	X            input_lines = i - 1;
+	X            if (i % lines_per_buf)
+	X                if (write(tifd, tibuf[0], BUFFERSIZE) < BUFFERSIZE)
+	X                    fatal1("patch: can't write temp file.\n");
+	X            break;
+	X        }
+	X    }
+	X    Fclose(ifp);
+	X    Close(tifd);
+	X    if ((tifd = open(TMPINNAME, 0)) < 0) {
+	X        fatal2("Can't reopen file %s\n", TMPINNAME);
+	X    }
+	X}
+	X
+	X/* fetch a line from the input file, \n terminated, not necessarily \0 */
+	Xchar *
+	Xifetch(line,whichbuf)
+	XReg1 LINENUM line;
+	Xint whichbuf;                           /* ignored when file in memory */
+	X{
+	X    if (line < 1 || line > input_lines)
+	X        return "";
+	X    if (using_plan_a)
+	X        return i_ptr[line];
+	X    else {
+	X        LINENUM offline = line % lines_per_buf;
+	X        LINENUM baseline = line - offline;
+	X
+	X        if (tiline[0] == baseline)
+	X            whichbuf = 0;
+	X        else if (tiline[1] == baseline)
+	X            whichbuf = 1;
+	X        else {
+	X            tiline[whichbuf] = baseline;
+	X            /*NOSTRICT*/
+	X            Lseek(tifd, (long)baseline / lines_per_buf * BUFFERSIZE, 0);
+	X            if (read(tifd, tibuf[whichbuf], BUFFERSIZE) < 0)
+	X                fatal2("Error reading tmp file %s.\n", TMPINNAME);
+	X        }
+	X        return tibuf[whichbuf] + (tireclen*offline);
+	X    }
+	X}
+	X
+	X/* patch abstract type */
+	X
+	Xstatic long p_filesize;                 /* size of the patch file */
+	Xstatic LINENUM p_first;                 /* 1st line number */
+	Xstatic LINENUM p_newfirst;              /* 1st line number of replacement */
+	Xstatic LINENUM p_ptrn_lines;            /* # lines in pattern */
+	Xstatic LINENUM p_repl_lines;            /* # lines in replacement text */
+	Xstatic LINENUM p_end = -1;              /* last line in hunk */
+	Xstatic LINENUM p_max;                   /* max allowed value of p_end */
+	Xstatic LINENUM p_context = 3;           /* # of context lines */
+	Xstatic LINENUM p_input_line = 0;        /* current line # from patch file */
+	Xstatic char *p_line[MAXHUNKSIZE];       /* the text of the hunk */
+	Xstatic char p_char[MAXHUNKSIZE];        /* +, -, and ! */
+	Xstatic int p_len[MAXHUNKSIZE];          /* length of each line */
+	Xstatic int p_indent;                    /* indent to patch */
+	Xstatic LINENUM p_base;                  /* where to intuit this time */
+	Xstatic LINENUM p_start;                 /* where intuit found a patch */
+	X
+	Xre_patch()
+	X{
+	X    p_first = Nulline;
+	X    p_newfirst = Nulline;
+	X    p_ptrn_lines = Nulline;
+	X    p_repl_lines = Nulline;
+	X    p_end = (LINENUM)-1;
+	X    p_max = Nulline;
+	X    p_indent = 0;
+	X}
+	X
+	Xopen_patch_file(filename)
+	Xchar *filename;
+	X{
+	X    if (filename == Nullch || !*filename || strEQ(filename, "-")) {
+	X        pfp = fopen(TMPPATNAME, "w");
+	X        if (pfp == Nullfp)
+	X            fatal2("patch: can't create %s.\n", TMPPATNAME);
+	X        while (fgets(buf, sizeof buf, stdin) != NULL)
+	X            fputs(buf, pfp);
+	X        Fclose(pfp);
+	X        filename = TMPPATNAME;
+	X    }
+	X    pfp = fopen(filename, "r");
+	X    if (pfp == Nullfp)
+	X        fatal2("patch file %s not found\n", filename);
+	X    Fstat(fileno(pfp), &filestat);
+	X    p_filesize = filestat.st_size;
+	X    next_intuit_at(0L);                 /* start at the beginning */
+	X}
+	X
+	Xbool
+	Xthere_is_another_patch()
+	X{
+	X    bool no_input_file = (filearg[0] == Nullch);
+	X     
+	X    if (p_base != 0L && p_base >= p_filesize) {
+	X        if (verbose)
+	X            say1("done\n");
+	X        return FALSE;
+	X    }
+	X    if (verbose)
+	X        say1("Hmm...");
+	X    diff_type = intuit_diff_type();
+	X    if (!diff_type) {
+	X        if (p_base != 0L) {
+	X            if (verbose)
+	X                say1("  Ignoring the trailing garbage.\ndone\n");
+	X        }
+	X        else
+	X            say1("  I can't seem to find a patch in there anywhere.\n");
+	X        return FALSE;
+	X    }
+	X    if (verbose)
+	X        say3("  %sooks like %s to me...\n",
+	X            (p_base == 0L ? "L" : "The next patch l"),
+	X            diff_type == CONTEXT_DIFF ? "a context diff" :
+	X            diff_type == NEW_CONTEXT_DIFF ? "a new-style context diff" :
+	X            diff_type == NORMAL_DIFF ? "a normal diff" :
+	X            "an ed script" );
+	X    if (p_indent && verbose)
+	X        say3("(Patch is indented %d space%s.)\n", p_indent, p_indent==1?"":"s");
+	X    skip_to(p_start);
+	X    if (no_input_file) {
+	X        if (filearg[0] == Nullch) {
+	X            if (force)
+	X                fatal1("No file to patch.  Aborted.\n");
+	X            ask1("File to patch: ");
+	X            filearg[0] = fetchname(buf, TRUE, FALSE);
+	X        }
+	X        else if (verbose) {
+	X            say2("Patching file %s...\n", filearg[0]);
+	X        }
+	X    }
+	X    return TRUE;
+	X}
+	X
+	Xintuit_diff_type()
+	X{
+	X    Reg4 long this_line = 0;
+	X    Reg5 long previous_line;
+	X    Reg6 long first_command_line = -1;
+	X    Reg7 bool last_line_was_command = FALSE;
+	X    Reg8 bool this_is_a_command = FALSE;
+	X    Reg9 bool stars_last_line = FALSE;
+	X    Reg10 bool stars_this_line = FALSE;
+	X    Reg3 int indent;
+	X    Reg1 char *s;
+	X    Reg2 char *t;
+	X    char *indtmp = Nullch;
+	X    char *oldtmp = Nullch;
+	X    char *newtmp = Nullch;
+	X    char *indname = Nullch;
+	X    char *oldname = Nullch;
+	X    char *newname = Nullch;
+	X    Reg11 int retval;
+	X    bool no_filearg = (filearg[0] == Nullch);
+	X
+	X    ok_to_create_file = FALSE;
+	X    Fseek(pfp, p_base, 0);
+	X    for (;;) {
+	X        previous_line = this_line;
+	X        last_line_was_command = this_is_a_command;
+	X        stars_last_line = stars_this_line;
+	X        this_line = ftell(pfp);
+	X        indent = 0;
+	X        if (fgets(buf, sizeof buf, pfp) == Nullch) {
+	X            if (first_command_line >= 0L) {
+	X                                        /* nothing but deletes!? */
+	X                p_start = first_command_line;
+	X                retval = ED_DIFF;
+	X                goto scan_exit;
+	X            }
+	X            else {
+	X                p_start = this_line;
+	X                retval = 0;
+	X                goto scan_exit;
+	X            }
+	X        }
+	X        for (s = buf; *s == ' ' || *s == '\t'; s++) {
+	X            if (*s == '\t')
+	X                indent += 8 - (indent % 8);
+	X            else
+	X                indent++;
+	X        }
+	X        for (t=s; isdigit(*t) || *t == ','; t++) ;
+	X        this_is_a_command = (isdigit(*s) &&
+	X          (*t == 'd' || *t == 'c' || *t == 'a') );
+	X        if (first_command_line < 0L && this_is_a_command) {
+	X            first_command_line = this_line;
+	X            p_indent = indent;          /* assume this for now */
+	X        }
+	X        if (!stars_last_line && strnEQ(s, "*** ", 4))
+	X            oldtmp = savestr(s+4);
+	X        else if (strnEQ(s, "--- ", 4))
+	X            newtmp = savestr(s+4);
+	X        else if (strnEQ(s, "Index:", 6))
+	X            indtmp = savestr(s+6);
+	X        else if (strnEQ(s, "Prereq:", 7)) {
+	X            for (t=s+7; isspace(*t); t++) ;
+	X            revision = savestr(t);
+	X            for (t=revision; *t && !isspace(*t); t++) ;
+	X            *t = '\0';
+	X            if (!*revision) {
+	X                free(revision);
+	X                revision = Nullch;
+	X            }
+	X        }
+	X        if ((!diff_type || diff_type == ED_DIFF) &&
+	X          first_command_line >= 0L &&
+	X          strEQ(s, ".\n") ) {
+	X            p_indent = indent;
+	X            p_start = first_command_line;
+	X            retval = ED_DIFF;
+	X            goto scan_exit;
+	X        }
+	X        stars_this_line = strnEQ(s, "********", 8);
+	X        if ((!diff_type || diff_type == CONTEXT_DIFF) && stars_last_line &&
+	X                 strnEQ(s, "*** ", 4)) {
+	X            if (!atol(s+4))
+	X                ok_to_create_file = TRUE;
+	X            /* if this is a new context diff the character just before */
+	X            /* the newline is a '*'. */
+	X            while (*s != '\n')
+	X                s++;
+	X            p_indent = indent;
+	X            p_start = previous_line;
+	X            retval = (*(s-1) == '*' ? NEW_CONTEXT_DIFF : CONTEXT_DIFF);
+	X            goto scan_exit;
+	X        }
+	X        if ((!diff_type || diff_type == NORMAL_DIFF) &&
+	X          last_line_was_command &&
+	X          (strnEQ(s, "< ", 2) || strnEQ(s, "> ", 2)) ) {
+	X            p_start = previous_line;
+	X            p_indent = indent;
+	X            retval = NORMAL_DIFF;
+	X            goto scan_exit;
+	X        }
+	X    }
+	X  scan_exit:
+	X    if (no_filearg) {
+	X        if (indtmp != Nullch)
+	X            indname = fetchname(indtmp, strippath, ok_to_create_file);
+	X        if (oldtmp != Nullch)
+	X            oldname = fetchname(oldtmp, strippath, ok_to_create_file);
+	X        if (newtmp != Nullch)
+	X            newname = fetchname(newtmp, strippath, ok_to_create_file);
+	X        if (oldname && newname) {
+	X            if (strlen(oldname) < strlen(newname))
+	X                filearg[0] = oldname;
+	X            else
+	X                filearg[0] = newname;
+	X        }
+	X        else if (oldname)
+	X            filearg[0] = oldname;
+	X        else if (newname)
+	X            filearg[0] = newname;
+	X        else
+	X            filearg[0] = indname;
+	X    }
+	X    if (indtmp != Nullch)
+	X        free(indtmp);
+	X    if (oldtmp != Nullch)
+	X        free(oldtmp);
+	X    if (newtmp != Nullch)
+	X        free(newtmp);
+	X    if (indname != Nullch)
+	X        free(indname);
+	X    if (oldname != Nullch)
+	X        free(oldname);
+	X    if (newname != Nullch)
+	X        free(newname);
+	X    return retval;
+	X}
+	X
+	Xchar *
+	Xfetchname(at,strip_leading,assume_exists)
+	Xchar *at;
+	Xint strip_leading;
+	Xint assume_exists;
+	X{
+	X    char *s = savestr(at);
+	X    char *name;
+	X    Reg1 char *t;
+	X    char tmpbuf[200];
+	X
+	X    for (t=s; isspace(*t); t++) ;
+	X    name = t;
+	X    if (strEQ(name, "/dev/null"))
+	X        return Nullch;
+	X    for (; *t && !isspace(*t); t++)
+	X        if (*t == '/')
+	X            if (--strip_leading >= 0)
+	X                name = t+1;
+	X    *t = '\0';
+	X    if (name != s && *s != '/') {
+	X        name[-1] = '\0';
+	X        if (stat(s, &filestat) && filestat.st_mode & S_IFDIR) {
+	X            name[-1] = '/';
+	X            name=s;
+	X        }
+	X    }
+	X    name = savestr(name);
+	X    Sprintf(tmpbuf, "RCS/%s", name);
+	X    free(s);
+	X    if (stat(name, &filestat) < 0 && !assume_exists) {
+	X        Strcat(tmpbuf, RCSSUFFIX);
+	X        if (stat(tmpbuf, &filestat) < 0 && stat(tmpbuf+4, &filestat) < 0) {
+	X            Sprintf(tmpbuf, "SCCS/%s%s", SCCSPREFIX, name);
+	X            if (stat(tmpbuf, &filestat) < 0 && stat(tmpbuf+5, &filestat) < 0) {
+	X                free(name);
+	X                name = Nullch;
+	X            }
+	X        }
+	X    }
+	X    return name;
+	X}
+	X
+	Xnext_intuit_at(file_pos)
+	Xlong file_pos;
+	X{
+	X    p_base = file_pos;
+	X}
+	X
+	Xskip_to(file_pos)
+	Xlong file_pos;
+	X{
+	X    char *ret;
+	X
+	X    assert(p_base <= file_pos);
+	X    if (verbose && p_base < file_pos) {
+	X        Fseek(pfp, p_base, 0);
+	X        say1("The text leading up to this was:\n--------------------------\n");
+	X        while (ftell(pfp) < file_pos) {
+	X            ret = fgets(buf, sizeof buf, pfp);
+	X            assert(ret != Nullch);
+	X            say2("|%s", buf);
+	X        }
+	X        say1("--------------------------\n");
+	X    }
+	X    else
+	X        Fseek(pfp, file_pos, 0);
+	X}
+	X
+	Xbool
+	Xanother_hunk()
+	X{
+	X    Reg1 char *s;
+	X    Reg8 char *ret;
+	X    Reg2 int context = 0;
+	X
+	X    while (p_end >= 0) {
+	X        free(p_line[p_end]);            /* Changed from postdecrement */
+	X        p_end--;                        /* by Keenan Ross for BSD2.9  */
+	X    }
+	X    assert(p_end == -1);
+	X
+	X    p_max = MAXHUNKSIZE;                /* gets reduced when --- found */
+	X    if (diff_type == CONTEXT_DIFF || diff_type == NEW_CONTEXT_DIFF) {
+	X        long line_beginning = ftell(pfp);
+	X                                        /* file pos of the current line */
+	X        LINENUM repl_beginning = 0;     /* index of --- line */
+	X        Reg4 LINENUM fillcnt = 0;       /* #lines of missing ptrn or repl */
+	X        Reg5 LINENUM fillsrc;           /* index of first line to copy */
+	X        Reg6 LINENUM filldst;           /* index of first missing line */
+	X        bool ptrn_spaces_eaten = FALSE; /* ptrn was slightly misformed */
+	X        Reg9 bool repl_could_be_missing = TRUE;
+	X                                        /* no + or ! lines in this hunk */
+	X        bool repl_missing = FALSE;      /* we are now backtracking */
+	X        long repl_backtrack_position = 0;
+	X                                        /* file pos of first repl line */
+	X        Reg7 LINENUM ptrn_copiable = 0;
+	X                                        /* # of copiable lines in ptrn */
+	X
+	X        ret = pgets(buf, sizeof buf, pfp);
+	X        if (ret == Nullch || strnNE(buf, "********", 8)) {
+	X            next_intuit_at(line_beginning);
+	X            return FALSE;
+	X        }
+	X        p_context = 100;
+	X        while (p_end < p_max) {
+	X            line_beginning = ftell(pfp);
+	X            ret = pgets(buf, sizeof buf, pfp);
+	X            if (ret == Nullch) {
+	X                if (p_max - p_end < 4)
+	X                    Strcpy(buf, "  \n");  /* assume blank lines got chopped */
+	X                else {
+	X                    if (repl_beginning && repl_could_be_missing) {
+	X                        repl_missing = TRUE;
+	X                        goto hunk_done;
+	X                    }
+	X                    fatal1("Unexpected end of file in patch.\n");
+	X                }
+	X            }
+	X            p_input_line++;
+	X            p_char[++p_end] = *buf;
+	X            p_line[p_end] = Nullch;
+	X            switch (*buf) {
+	X            case '*':
+	X                if (strnEQ(buf, "********", 8)) {
+	X                    if (repl_beginning && repl_could_be_missing) {
+	X                        repl_missing = TRUE;
+	X                        goto hunk_done;
+	X                    }
+	X                    else
+	X                        fatal2("Unexpected end of hunk at line %ld.\n",
+	X                            p_input_line);
+	X                }
+	X                if (p_end != 0) {
+	X                    if (repl_beginning && repl_could_be_missing) {
+	X                        repl_missing = TRUE;
+	X                        goto hunk_done;
+	X                    }
+	X                    fatal3("Unexpected *** at line %ld: %s", p_input_line, buf);
+	X                }
+	X                context = 0;
+	X                p_line[p_end] = savestr(buf);
+	X                for (s=buf; *s && !isdigit(*s); s++) ;
+	X                p_first = (LINENUM) atol(s);
+	X                while (isdigit(*s)) s++;
+	X                if (*s == ',') {
+	X                    for (; *s && !isdigit(*s); s++) ;
+	X                    p_ptrn_lines = ((LINENUM)atol(s)) - p_first + 1;
+	X                }
+	X                else if (p_first)
+	X                    p_ptrn_lines = 1;
+	X                else {
+	X     
+SHAR_EOF
+if test 49613 -ne "`wc -c < 'patch.1'`"
+then
+	echo shar: error transmitting "'patch.1'" '(should have been 49613 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'patch.2'" '(38328 characters)'
+if test -f 'patch.2'
+then
+	echo shar: will not over-write existing file "'patch.2'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'patch.2'
+	XPath: seismo!caip!clyde!burl!ulysses!bellcore!decvax!decwrl!pyramid!hplabs!felix!scgvaxd!trwrb!sdcrdcf!lwall
+	XFrom: lwall@sdcrdcf.UUCP
+	XNewsgroups: net.sources
+	XSubject: patch version 1.5, part 2 of 2
+	XMessage-ID: <2923@sdcrdcf.UUCP>
+	XDate: 2 Aug 86 04:15:57 GMT
+	XReply-To: lwall@sdcrdcf.UUCP (Larry Wall)
+	XOrganization: System Development Corporation R&D, Santa Monica
+	XLines: 1474
+	X
+	X#! /bin/sh
+	X
+	X# Make a new directory for the patch sources, cd to it, and run kits 1 thru 2 
+	X# through sh.  When all 2 kits have been run, read README.
+	X
+	Xecho "This is patch kit 2 (of 2).  If kit 2 is complete, the line"
+	Xecho '"'"End of kit 2 (of 2)"'" will echo at the end.'
+	Xecho ""
+	Xexport PATH || (echo "You didn't use sh, you clunch." ; kill $$)
+	Xecho Extracting Configure
+	Xsed >Configure <<'!STUFFY!FUNK!' -e 's/X//'
+	XX#! /bin/sh
+	XX#
+	XX# If these # comments don't work, trim them.  Don't worry about the other
+	XX# shell scripts, Configure will trim # comments from them for you.
+	XX#
+	XX# $Header: Configure,v 1.1 86/08/01 20:18:15 lwall Exp $
+	XX#
+	XX# $Log:	Configure,v $
+	XX# Revision 1.1  86/08/01  20:18:15  lwall
+	XX# Initial revision
+	XX# 
+	XX
+	XX# Yes, you may rip this off to use in other distribution packages.
+	XX
+	XXeunice=''
+	XXeunicefix=''
+	XXloclist=''
+	XXexpr=''
+	XXsed=''
+	XXecho=''
+	XXcat=''
+	XXrm=''
+	XXmv=''
+	XXcp=''
+	XXtail=''
+	XXtr=''
+	XXmkdir=''
+	XXsort=''
+	XXuniq=''
+	XXgrep=''
+	XXtrylist=''
+	XXtest=''
+	XXinews=''
+	XXegrep=''
+	XXmore=''
+	XXpg=''
+	XXMcc=''
+	XXvi=''
+	XXmore=''
+	XXbin=''
+	XXcc=''
+	XXcontains=''
+	XXcpp=''
+	XXiandd=''
+	XXlibc=''
+	XXmansrc=''
+	XXmanext=''
+	XXn=''
+	XXc=''
+	XXnovoid=''
+	XXregisters=''
+	XXreg1=''
+	XXreg2=''
+	XXreg3=''
+	XXreg4=''
+	XXreg5=''
+	XXreg6=''
+	XXreg7=''
+	XXreg8=''
+	XXreg9=''
+	XXreg10=''
+	XXreg11=''
+	XXreg12=''
+	XXreg13=''
+	XXreg14=''
+	XXreg15=''
+	XXreg16=''
+	XXregisters=''
+	XXspitshell=''
+	XXshsharp=''
+	XXsharpbang=''
+	XXstartsh=''
+	XXpackage=''
+	XXCONFIG=''
+	XX
+	XXpackage=patch
+	XX
+	XXecho "Beginning of configuration questions for $package kit."
+	XX: Eunice requires " " instead of "", can you believe it
+	XXecho " "
+	XX
+	XX: sanity checks
+	XXPATH='.:/bin:/usr/bin:/usr/local/bin:/usr/ucb:/usr/local:/usr/lbin:/etc'
+	XXexport PATH || (echo "OOPS, this isn't sh.  Desperation time.  I will feed myself to sh."; sh $0; kill $$)
+	XX
+	XXif test ! -t 0; then
+	XX    echo "Say 'sh Configure', not 'sh <Configure'"
+	XX    exit 1
+	XXfi
+	XX
+	XX: some greps do not return status, grrr.
+	XXecho "grimblepritz" >grimble
+	XXif grep blurfldyick grimble >/dev/null 2>&1 ; then
+	XX    contains=contains
+	XXelse
+	XX    if grep grimblepritz grimble >/dev/null 2>&1 ; then
+	XX	contains=grep
+	XX    else
+	XX	contains=contains
+	XX    fi
+	XXfi
+	XXrm grimble
+	XX: the following should work in any shell
+	XXcase $contains in
+	XXcontains*)
+	XX    echo " "
+	XX    echo "AGH!  Grep doesn't return a status.  Attempting remedial action."
+	XX    cat >contains <<'EOSS'
+	XXgrep "$1" "$2" >.greptmp && cat .greptmp && test -s .greptmp
+	XXEOSS
+	XXchmod 755 contains
+	XXesac
+	XX
+	XX: first determine how to suppress newline on echo command
+	XXecho "Checking echo to see how to suppress newlines..."
+	XX(echo "hi there\c" ; echo " ") >.echotmp
+	XXif $contains c .echotmp >/dev/null 2>&1 ; then
+	XX    echo "...using -n."
+	XX    n='-n'
+	XX    c=''
+	XXelse
+	XX    echo "...using \\\c."
+	XX    n=''
+	XX    c='\c'
+	XXfi
+	XXecho $n "Type carriage return to continue.  Your cursor should be here-->$c"
+	XXread ans
+	XXrm .echotmp
+	XX
+	XX: now set up to do reads with possible shell escape
+	XX: if this does not work on your machine, 1,$ s/. myread/read ans/
+	XXcat <<EOSC >myread
+	XXans='!'
+	XXwhile expr "X\$ans" : "X!" >/dev/null; do
+	XX    read ans
+	XX    case "\$ans" in
+	XX    !)
+	XX	sh
+	XX	echo " "
+	XX	echo $n "Your answer: $c"
+	XX	;;
+	XX    !*)
+	XX	set \`expr "X\$ans" : "X!\(.*\)\$"\`
+	XX	sh -c "\$*"
+	XX	echo " "
+	XX	echo $n "Your answer: $c"
+	XX	;;
+	XX    esac
+	XXdone
+	XXEOSC
+	XX
+	XX: general instructions
+	XXcat <<EOH
+	XX 
+	XXThis installation shell script will examine your system and ask you questions
+	XXto determine how $package and any auxiliary files should be installed.  If you
+	XXget stuck on a question, you may use a ! shell escape to start a subshell or
+	XXexecute a command.  Many of the questions will have default answers in
+	XXsquare brackets--typing carriage return will give you the default.
+	XX
+	XXOn some of the questions which ask for file or directory names you are
+	XXallowed to use the ~name construct to specify the login directory belonging
+	XXto "name", even if you don't have a shell which knows about that.  Questions
+	XXwhere this is allowed will be marked "(~name ok)".
+	XX
+	XXMuch effort has been expended to ensure that this shell script will run
+	XXon any Unix system.  If despite that it blows up on you, your best bet is
+	XXto edit Configure and run it again.  (Trying to install this package
+	XXwithout having run Configure may be well nigh impossible.)  Also, let me
+	XX(lwall@sdcrdcf.UUCP) know how I blew it.
+	XX
+	XXThis installation script affects things in two ways: 1) it may do direct
+	XXvariable substitutions on some of the files included in this kit, and
+	XX2) it builds a config.h file for inclusion in C programs.  You may edit
+	XXany of these files as the need arises after running this script.
+	XX
+	XXEOH
+	XXecho $n "[Type carriage return to continue] $c"
+	XX. myread
+	XX
+	XX: get old answers, if there is a config file out there
+	XXif test -f config.sh; then
+	XX    echo " "
+	XX    echo "(Fetching default answers from your old config.sh file...)"
+	XX    . config.sh
+	XXfi
+	XX
+	XX: get list of predefined functions in a handy place
+	XXecho " "
+	XXif test -f /lib/libc.a; then
+	XX    echo "Your C library is in /lib/libc.a.  You're normal."
+	XX    libc=/lib/libc.a
+	XXelse
+	XX    if test -f /usr/lib/libc.a; then
+	XX	echo "Your C library is in /usr/lib/libc.a, of all places."
+	XX	libc=/usr/lib/libc.a
+	XX    else
+	XX	if test -f "$libc"; then
+	XX	    echo "Your C library is in $libc, like you said before."
+	XX	else
+	XX	    cat <<'EOM'
+	XX 
+	XXI can't seem to find your C library.  I've looked for /lib/libc.a and
+	XX/usr/lib/libc.a, but neither of those are there.  What is the full name
+	XXEOM
+	XX	    echo $n "of your C library? $c"
+	XX	    . myread
+	XX	    libc="$ans"
+	XX	fi
+	XX    fi
+	XXfi
+	XXecho " "
+	XXecho $n "Extracting names from $libc for later perusal...$c"
+	XXif ar t $libc > libc.list; then
+	XX    echo "done"
+	XXelse
+	XX    echo " "
+	XX    echo "The archiver doesn't think $libc is a reasonable library."
+	XX    exit 1
+	XXfi
+	XX
+	XX: make some quick guesses about what we are up against
+	XXecho " "
+	XXecho $n "Hmm...  $c"
+	XXif $contains SIGTSTP /usr/include/signal.h >/dev/null 2>&1 ; then
+	XX    echo "Looks kind of like a BSD system, but we'll see..."
+	XX    echo exit 0 >bsd
+	XX    echo exit 1 >usg
+	XX    echo exit 1 >v7
+	XXelse
+	XX    if $contains fcntl.o libc.list >/dev/null 2>&1 ; then
+	XX	echo "Looks kind of like a USG system, but we'll see..."
+	XX	echo exit 1 >bsd
+	XX	echo exit 0 >usg
+	XX	echo exit 1 >v7
+	XX    else
+	XX	echo "Looks kind of like a version 7 system, but we'll see..."
+	XX	echo exit 1 >bsd
+	XX	echo exit 1 >usg
+	XX	echo exit 0 >v7
+	XX    fi
+	XXfi
+	XXif $contains vmssystem.o libc.list >/dev/null 2>&1 ; then
+	XX    cat <<'EOI'
+	XXThere is, however, a strange, musty smell in the air that reminds me of
+	XXsomething...hmm...yes...I've got it...there's a VMS nearby, or I'm a Blit.
+	XXEOI
+	XX    echo "exit 0" >eunice
+	XX    eunicefix=unixtovms
+	XX    eunice=define
+	XX: it so happens the Eunice I know will not run shell scripts in Unix format
+	XXelse
+	XX    echo " "
+	XX    echo "Congratulations.  You aren't running Eunice."
+	XX    eunicefix=':'
+	XX    eunice=undef
+	XX    echo "exit 1" >eunice
+	XXfi
+	XXchmod 755 bsd usg v7 eunice
+	XX$eunicefix bsd usg v7 eunice
+	XX
+	XX: see if sh knows # comments
+	XXecho " "
+	XXecho "Checking your sh to see if it knows about # comments..."
+	XXif sh -c '#' >/dev/null 2>&1 ; then
+	XX    echo "Your sh handles # comments correctly."
+	XX    shsharp=true
+	XX    spitshell=cat
+	XX    echo " "
+	XX    echo "Okay, let's see if #! works on this system..."
+	XX    echo "#!/bin/echo hi" > try
+	XX    $eunicefix try
+	XX    chmod 755 try
+	XX    try > today
+	XX    if test -s today; then
+	XX	echo "It does."
+	XX	sharpbang='#!'
+	XX    else
+	XX	echo "#! /bin/echo hi" > try
+	XX	$eunicefix try
+	XX	chmod 755 try
+	XX	try > today
+	XX	if test -s today; then
+	XX	    echo "It does."
+	XX	    sharpbang='#! '
+	XX	else
+	XX	    echo "It doesn't."
+	XX	    sharpbang=': use '
+	XX	fi
+	XX    fi
+	XXelse
+	XX    echo "Your sh doesn't grok # comments--I will strip them later on."
+	XX    shsharp=false
+	XX    echo "exec grep -v '^#'" >spitshell
+	XX    chmod 755 spitshell
+	XX    $eunicefix spitshell
+	XX    spitshell=`pwd`/spitshell
+	XX    echo "I presume that if # doesn't work, #! won't work either!"
+	XX    sharpbang=': use '
+	XXfi
+	XX
+	XX: figure out how to guarantee sh startup
+	XXecho " "
+	XXecho "Checking out how to guarantee sh startup..."
+	XXstartsh=$sharpbang'/bin/sh'
+	XXecho "Let's see if '$startsh' works..."
+	XXcat >try <<EOSS
+	XX$startsh
+	XXset abc
+	XXtest "$?abc" != 1
+	XXEOSS
+	XX
+	XXchmod 755 try
+	XX$eunicefix try
+	XXif try; then
+	XX    echo "Yup, it does."
+	XXelse
+	XX    echo "Nope.  You may have to fix up the shell scripts to make sure sh runs them."
+	XXfi
+	XXrm -f try today
+	XX
+	XX: find out where common programs are
+	XXecho " "
+	XXecho "Locating common programs..."
+	XXpth="/usr/ucb /bin /usr/bin /usr/local /usr/local/bin /usr/lbin /etc /usr/lib"
+	XXcat <<EOSC >loc
+	XX$startsh
+	XXthing=\$1
+	XXshift
+	XXdflt=\$1
+	XXshift
+	XXfor dir in \$*; do
+	XX    case "\$thing" in
+	XX    .)
+	XX	if test -d \$dir/\$thing; then
+	XX	    echo \$dir
+	XX	    exit 0
+	XX	fi
+	XX	;;
+	XX    *)
+	XX	if test -f \$dir/\$thing; then
+	XX	    echo \$dir/\$thing
+	XX	    exit 0
+	XX	fi
+	XX	;;
+	XX    esac
+	XXdone
+	XXecho \$dflt
+	XXexit 1
+	XXEOSC
+	XXchmod 755 loc
+	XX$eunicefix loc
+	XXloclist="
+	XXexpr
+	XXsed
+	XXecho
+	XXcat
+	XXrm
+	XXgrep
+	XX"
+	XXtrylist="
+	XXtest
+	XXMcc
+	XX"
+	XXfor file in $loclist; do
+	XX    xxx=`loc $file $file $pth`
+	XX    eval $file=$xxx
+	XX    case "$xxx" in
+	XX    /*)
+	XX	echo $file is in $xxx.
+	XX	;;
+	XX    *)
+	XX	echo "I don't know where $file is.  I hope it's in everyone's PATH."
+	XX	;;
+	XX    esac
+	XXdone
+	XXecho " "
+	XXecho "Don't worry if any of the following aren't found..."
+	XXfor file in $trylist; do
+	XX    xxx=`loc $file $file $pth`
+	XX    eval $file=$xxx
+	XX    case "$xxx" in
+	XX    /*)
+	XX	echo $file is in $xxx.
+	XX	;;
+	XX    *)
+	XX	echo "I don't see $file out there, offhand."
+	XX	;;
+	XX    esac
+	XXdone
+	XXcase $egrep in
+	XXegrep)
+	XX    echo "Substituting grep for egrep."
+	XX    egrep=$grep
+	XX    ;;
+	XXesac
+	XXcase $test in
+	XXtest)
+	XX    echo "Hopefully test is built into your sh."
+	XX    ;;
+	XX/bin/test)
+	XX    echo " "
+	XX    echo $n 'Is your "test" built into sh? [n] (OK to guess) '"$c"
+	XX    . myread
+	XX    case $ans in
+	XX    y*) test=test ;;
+	XX    esac
+	XX    ;;
+	XX*)
+	XX    test=test
+	XX    ;;
+	XXesac
+	XXcase $echo in
+	XXecho)
+	XX    echo "Hopefully echo is built into your sh."
+	XX    ;;
+	XX/bin/echo)
+	XX    echo " "
+	XX    echo "Checking compatibility between /bin/echo and builtin echo (if any)..."
+	XX    $echo $n "hi there$c" >foo1
+	XX    echo $n "hi there$c" >foo2
+	XX    if cmp foo1 foo2 >/dev/null 2>&1; then
+	XX	echo "They are compatible.  In fact, they may be identical."
+	XX    else
+	XX	echo "They are not compatible--the echo builtin will be used."
+	XX	echo=echo
+	XX    fi
+	XX    $rm -f foo1 foo2
+	XX    ;;
+	XX*)
+	XX    echo=echo
+	XX    ;;
+	XXesac
+	XX
+	XX: set up shell script to do ~ expansion
+	XXcat >filexp <<EOSS
+	XX$startsh
+	XX: expand filename
+	XXcase \$1 in
+	XX~/*|~)
+	XX    $echo \$1 | $sed "s|~|\${HOME-\$LOGDIR}|"
+	XX    ;;
+	XX~*)
+	XX    if $test -f /bin/csh; then
+	XX	/bin/csh -f -c "glob \$1"
+	XX	$echo ""
+	XX    else
+	XX	name=\`$expr x\$1 : '..\([^/]*\)'\`
+	XX	dir=\`$sed </etc/passwd -n -e "/^\${name}:/{s/^[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\([^:]*\).*"'\$'"/\1/" -e p -e q -e '}'\`
+	XX	if $test ! -d "\$dir"; then
+	XX	    me=\`basename \$0\`
+	XX	    $echo "\$me: can't locate home directory for: \$name" >&2
+	XX	    exit 1
+	XX	fi
+	XX	case \$1 in
+	XX	*/*)
+	XX	    $echo \$dir/\`$expr x\$1 : '..[^/]*/\(.*\)'\`
+	XX	    ;;
+	XX	*)
+	XX	    $echo \$dir
+	XX	    ;;
+	XX	esac
+	XX    fi
+	XX    ;;
+	XX*)
+	XX    $echo \$1
+	XX    ;;
+	XXesac
+	XXEOSS
+	XXchmod 755 filexp
+	XX$eunicefix filexp
+	XX
+	XX: determine where public executables go
+	XXcase "$bin" in
+	XX'')
+	XX    dflt=`loc . /bin /usr/local/bin /usr/lbin /usr/local /usr/bin`
+	XX    ;;
+	XX*)  dflt="$bin"
+	XX    ;;
+	XXesac
+	XXbin='blurfl/dyick'
+	XXwhile $test ! -d "$bin" ; do
+	XX    case $bin in
+	XX      blurfl*) ;;
+	XX      *) $echo "$bin does not appear to exist." ;;
+	XX    esac
+	XX    $echo " "
+	XX    $echo $n "Where do you want to put the public executables? [$dflt] $c"
+	XX    . myread
+	XX    bin="$ans"
+	XX    bin=`filexp $bin`
+	XX    case $bin in
+	XX      '') bin=$dflt ;;
+	XX    esac
+	XXdone
+	XX
+	XX: determine where manual pages go
+	XXcase "$mansrc" in
+	XX'')
+	XX    dflt=`loc . /usr/man/man1 /usr/man/mann /usr/man/local/man1 /usr/man/u_man/man1 /usr/man/man1`
+	XX    ;;
+	XX*)  dflt="$mansrc"
+	XX    ;;
+	XXesac
+	XXmansrc='blurfl/dyick'
+	XXwhile $test ! -d "$mansrc" ; do
+	XX    case $mansrc in
+	XX      blurfl*) ;;
+	XX      *) $echo "$mansrc does not appear to exist." ;;
+	XX    esac
+	XX    $echo " "
+	XX    $echo $n "Where do the manual pages (source) go? [$dflt] $c"
+	XX    . myread
+	XX    mansrc=`filexp "$ans"`
+	XX    case $mansrc in
+	XX      '') mansrc=$dflt ;;
+	XX    esac
+	XXdone
+	XXcase "$mansrc" in
+	XX*l)
+	XX    manext=l
+	XX    ;;
+	XX*n)
+	XX    manext=n
+	XX    ;;
+	XX*)
+	XX    manext=1
+	XX    ;;
+	XXesac
+	XX
+	XX: see if we need a special compiler
+	XX$echo " "
+	XXif usg; then
+	XX    case "$cc" in
+	XX    '')
+	XX	case "$Mcc" in
+	XX	/*) dflt='Mcc'
+	XX	    ;;
+	XX	*)
+	XX	    if $contains '\-M' $mansrc/cc.1 >/dev/null 2>&1 ; then
+	XX		dflt='cc -M'
+	XX	    else
+	XX		dflt='cc'
+	XX	    fi
+	XX	    ;;
+	XX	esac
+	XX	;;
+	XX    *)  dflt="$cc";;
+	XX    esac
+	XX    $cat <<'EOM'
+	XX 
+	XXOn some systems the default C compiler will not resolve multiple global
+	XXreferences that happen to have the same name.  On some such systems the
+	XX"Mcc" command may be used to force these to be resolved.  On other systems
+	XXa "cc -M" command is required.  What command will force resolution on
+	XXEOM
+	XX    $echo $n "this system? [$dflt] $c"
+	XX    . myread
+	XX    cc="$ans"
+	XX    case "$cc" in
+	XX	'') cc="$dflt" ;;
+	XX    esac
+	XXelse
+	XX    $echo "Not a USG system--assuming cc can resolve multiple definitions."
+	XX    cc=cc
+	XXfi
+	XX
+	XX: see how we invoke the C preprocessor
+	XXecho " "
+	XXecho "Checking to see how your C preprocessor is invoked..."
+	XXcat <<'EOT' >testcpp.c
+	XX#define ABC abc
+	XX#define XYZ xyz
+	XXABC.XYZ
+	XXEOT
+	XXecho 'Maybe "cc -E" will work...'
+	XXcc -E testcpp.c >testcpp.out 2>&1
+	XXif $contains 'abc.xyz' testcpp.out >/dev/null 2>&1 ; then
+	XX    echo "Yup, it does."
+	XX    cpp='cc -E'
+	XXelse
+	XX    echo 'Nope...maybe "cc -P" will work...'
+	XX    cc -P testcpp.c >testcpp.out 2>&1
+	XX    if $contains 'abc.xyz' testcpp.out >/dev/null 2>&1 ; then
+	XX	echo "Yup, that does."
+	XX	cpp='cc -P'
+	XX    else
+	XX	echo 'Nixed again...maybe "/lib/cpp" will work...'
+	XX	/lib/cpp testcpp.c >testcpp.out 2>&1
+	XX	if $contains 'abc.xyz' testcpp.out >/dev/null 2>&1 ; then
+	XX	    echo "Hooray, it works!  I was beginning to wonder."
+	XX	    cpp='/lib/cpp'
+	XX	else
+	XX	    echo 'Hmm...maybe you already told me...'
+	XX	    case "$cpp" in
+	XX	    '') ;;
+	XX	    *) $cpp testcpp.c >testcpp.out 2>&1;;
+	XX	    esac
+	XX	    if $contains 'abc.xyz' testcpp.out >/dev/null 2>&1 ; then
+	XX		echo "Hooray, you did!  I was beginning to wonder."
+	XX	    else
+	XX		echo $n "Nope. I can't find a C preprocessor.  Name one: $c"
+	XX		. myread
+	XX		cpp="$ans"
+	XX		$cpp testcpp.c >testcpp.out 2>&1
+	XX		if $contains 'abc.xyz' testcpp.out >/dev/null 2>&1 ; then
+	XX		    echo "OK, that will do."
+	XX		else
+	XX		    echo "Sorry, I can't get that to work.  Go find one."
+	XX		    exit 1
+	XX		fi
+	XX	    fi
+	XX	fi
+	XX    fi
+	XXfi
+	XXrm -f testcpp.c testcpp.out
+	XX
+	XX: check for pdp11
+	XXecho " "
+	XXif usg; then
+	XX    : pdp11 is already defined
+	XXelse
+	XX    cat <<'EOT' >pdp11.c
+	XX#ifdef pdp11
+	XXexit 0
+	XX#else
+	XXexit 1
+	XX#endif
+	XXEOT
+	XX    $cpp pdp11.c | grep exit >pdp11
+	XX    chmod 755 pdp11
+	XX    $eunicefix pdp11
+	XX    rm pdp11.c
+	XXfi
+	XXif pdp11; then
+	XX    echo "This looks like a pdp11 to me."
+	XXelse
+	XX    echo "This doesn't look like a pdp11 to me."
+	XXfi
+	XX
+	XX: see if we should throw a -i into the Makefile
+	XX$echo " "
+	XXif pdp11; then
+	XX    if $contains '\-i' $mansrc/cc.1 >/dev/null 2>&1 ; then
+	XX	$echo $n "Your system appears to have separate I and D space.  Is this true? [y] $c"
+	XX	. myread
+	XX	case $ans in
+	XX	    n*|f*) iandd='' ;;
+	XX	    *)     iandd='-i' ;;
+	XX	esac
+	XX    else
+	XX	$echo "Your system appears to NOT have separate I and D space."
+	XX	$echo $n "Is this correct? [y] $c"
+	XX	. myread
+	XX	case $ans in
+	XX	    n*|f*) iandd='-i' ;;
+	XX	    *)     iandd='' ;;
+	XX	esac
+	XX    fi
+	XXelse
+	XX    $echo "Not a pdp11--assuming no separate I and D."
+	XXfi
+	XX
+	XX: check for void type
+	XX$echo " "
+	XX$echo "Checking to see if your C compiler groks the void type..."
+	XX$cat >try.c <<'EOCP'
+	XXvoid main();
+	XXEOCP
+	XXif cc -c try.c >/dev/null 2>&1 ; then
+	XX    novoid='undef'
+	XX    $echo "Yup, it does."
+	XXelse
+	XX    novoid='define'
+	XX    $echo "Nope, it doesn't (boo hiss).  I will substitute int."
+	XXfi
+	XX$rm try.*
+	XX
+	XX: see how many registers declarations we want to use
+	XX$echo " "
+	XXcase "$registers" in
+	XX'')
+	XX    if pdp11; then
+	XX	dflt=3
+	XX    else
+	XX	dflt=6
+	XX    fi
+	XX    ;;
+	XX*)  dflt=$registers ;;
+	XXesac
+	XXcat <<EOM
+	XX 
+	XXDifferent C compilers on different machines pay attention to different
+	XXnumbers of register declarations.  How many register declarations in
+	XXEOM
+	XX$echo $n "each routine does your C compiler pay attention to? [$dflt] $c"
+	XX. myread
+	XXcase "$ans" in
+	XX'') ans=$dflt;;
+	XXesac
+	XXregisters=$ans
+	XXreg1=''
+	XXawk "END { for (i=1; i<=16; i++) printf \"reg%d=''\n\", i}" </dev/null >.foo
+	XX. .foo
+	XXawk "END { for (i=1; i<=$registers; i++) printf \"reg%d=register\n\", i}" \
+	XX	</dev/null >.foo
+	XX. .foo
+	XXrm -f .foo
+	XX
+	XX
+	XX$echo " "
+	XX$echo "End of configuration questions."
+	XX$echo " "
+	XX
+	XX: create config.sh file
+	XX$echo " "
+	XX$echo "Creating config.sh..."
+	XX$spitshell <<EOT >config.sh
+	XX$startsh
+	XX# config.sh
+	XX# This file was produced by running the Configure script.
+	XX
+	XXeunice='$eunice'
+	XXeunicefix='$eunicefix'
+	XXloclist='$loclist'
+	XXexpr='$expr'
+	XXsed='$sed'
+	XXecho='$echo'
+	XXcat='$cat'
+	XXrm='$rm'
+	XXmv='$mv'
+	XXcp='$cp'
+	XXtail='$tail'
+	XXtr='$tr'
+	XXmkdir='$mkdir'
+	XXsort='$sort'
+	XXuniq='$uniq'
+	XXgrep='$grep'
+	XXtrylist='$trylist'
+	XXtest='$test'
+	XXinews='$inews'
+	XXegrep='$egrep'
+	XXmore='$more'
+	XXpg='$pg'
+	XXMcc='$Mcc'
+	XXvi='$vi'
+	XXmore='$more'
+	XXbin='$bin'
+	XXcc='$cc'
+	XXcontains='$contains'
+	XXcpp='$cpp'
+	XXiandd='$iandd'
+	XXlibc='$libc'
+	XXmansrc='$mansrc'
+	XXmanext='$manext'
+	XXn='$n'
+	XXc='$c'
+	XXnovoid='$novoid'
+	XXregisters='$registers'
+	XXreg1='$reg1'
+	XXreg2='$reg2'
+	XXreg3='$reg3'
+	XXreg4='$reg4'
+	XXreg5='$reg5'
+	XXreg6='$reg6'
+	XXreg7='$reg7'
+	XXreg8='$reg8'
+	XXreg9='$reg9'
+	XXreg10='$reg10'
+	XXreg11='$reg11'
+	XXreg12='$reg12'
+	XXreg13='$reg13'
+	XXreg14='$reg14'
+	XXreg15='$reg15'
+	XXreg16='$reg16'
+	XXregisters='$registers'
+	XXspitshell='$spitshell'
+	XXshsharp='$shsharp'
+	XXsharpbang='$sharpbang'
+	XXstartsh='$startsh'
+	XXpackage='$package'
+	XXCONFIG=true
+	XXEOT
+	XX
+	XX: create config.h file
+	XX$echo " "
+	XX$echo "Creating config.h..."
+	XX$cat <<EOT >config.h
+	XX/* config.h
+	XX * This file was produced by running the Configure script.
+	XX * Feel free to modify any of this as the need arises.
+	XX */
+	XX
+	XX
+	XX/* How many register declarations are paid attention to? */
+	XX
+	XX#define Reg1 $reg1
+	XX#define Reg2 $reg2
+	XX#define Reg3 $reg3
+	XX#define Reg4 $reg4
+	XX#define Reg5 $reg5
+	XX#define Reg6 $reg6
+	XX#define Reg7 $reg7
+	XX#define Reg8 $reg8
+	XX#define Reg9 $reg9
+	XX#define Reg10 $reg10
+	XX#define Reg11 $reg11
+	XX#define Reg12 $reg12
+	XX#define Reg13 $reg13
+	XX#define Reg14 $reg14
+	XX#define Reg15 $reg15
+	XX#define Reg16 $reg16
+	XX
+	XX#$novoid	void int	/* is void to be avoided? */
+	XXEOT
+	XX
+	XXCONFIG=true
+	XX
+	XXif $contains '\.SH' MANIFEST >/dev/null 2>&1; then
+	XX    $echo " "
+	XX    $echo "Doing variable substitutions on various files..."
+	XX    $echo " "
+	XX    set `$grep <MANIFEST '\.SH' | awk '{print $1}'`
+	XX    for file in $*; do
+	XX	. $file
+	XX    done
+	XXfi
+	XX
+	XXif $contains '^depend:' Makefile >/dev/null 2>&1; then
+	XX    $echo " "
+	XX    $echo 'Now you need to generate make dependencies by running "make depend".'
+	XX    $echo 'You might prefer to run it in background: "make depend > makedepend.out &"'
+	XX    $echo $n "Would you like me to run it for you (it takes quite a while)? [n] $c" 
+	XX    . myread
+	XX    case "$ans" in
+	XX    y*) make depend;;
+	XX    esac
+	XXfi
+	XX
+	XX$rm -f libc.list kit*isdone
+	XX
+	XXif test -f Makefile; then
+	XX    $echo "Now you must run a make."
+	XXelse
+	XX    $echo "Done."
+	XXfi
+	XX: end of Configure
+	X!STUFFY!FUNK!
+	Xecho Extracting patch.man
+	Xcat >patch.man <<'!STUFFY!FUNK!'
+	X''' $Header: patch.man,v 1.4 86/08/01 19:23:22 lwall Exp $
+	X''' 
+	X''' $Log:	patch.man,v $
+	X''' Revision 1.4  86/08/01  19:23:22  lwall
+	X''' Documented -v, -p, -F.
+	X''' Added notes to patch senders.
+	X''' 
+	X''' Revision 1.3  85/03/26  15:11:06  lwall
+	X''' Frozen.
+	X''' 
+	X''' Revision 1.2.1.4  85/03/12  16:14:27  lwall
+	X''' Documented -p.
+	X''' 
+	X''' Revision 1.2.1.3  85/03/12  16:09:41  lwall
+	X''' Documented -D.
+	X''' 
+	X''' Revision 1.2.1.2  84/12/05  11:06:55  lwall
+	X''' Added -l switch, and noted bistability bug.
+	X''' 
+	X''' Revision 1.2.1.1  84/12/04  17:23:39  lwall
+	X''' Branch for sdcrdcf changes.
+	X''' 
+	X''' Revision 1.2  84/12/04  17:22:02  lwall
+	X''' Baseline version.
+	X''' 
+	X.de Sh
+	X.br
+	X.ne 5
+	X.PP
+	X\fB\\$1\fR
+	X.PP
+	X..
+	X.de Sp
+	X.if t .sp .5v
+	X.if n .sp
+	X..
+	X'''
+	X'''     Set up \*(-- to give an unbreakable dash;
+	X'''     string Tr holds user defined translation string.
+	X'''     Bell System Logo is used as a dummy character.
+	X'''
+	X.ie n \{\
+	X.tr \(bs-\*(Tr
+	X.ds -- \(bs-
+	X.if (\n(.H=4u)&(1m=24u) .ds -- \(bs\h'-12u'\(bs\h'-12u'-\" diablo 10 pitch
+	X.if (\n(.H=4u)&(1m=20u) .ds -- \(bs\h'-12u'\(bs\h'-8u'-\" diablo 12 pitch
+	X.ds L" ""
+	X.ds R" ""
+	X.ds L' '
+	X.ds R' '
+	X'br\}
+	X.el\{\
+	X.ds -- \(em\|
+	X.tr \*(Tr
+	X.ds L" ``
+	X.ds R" ''
+	X.ds L' `
+	X.ds R' '
+	X'br\}
+	X.TH PATCH 1 LOCAL
+	X.SH NAME
+	Xpatch - a program for applying a diff file to an original
+	X.SH SYNOPSIS
+	X.B patch
+	X[options] orig patchfile [+ [options] orig]
+	X.sp
+	Xbut usually just
+	X.sp
+	X.B patch
+	X<patchfile
+	X.SH DESCRIPTION
+	X.I Patch
+	Xwill take a patch file containing any of the three forms of difference
+	Xlisting produced by the
+	X.I diff
+	Xprogram and apply those differences to an original file, producing a patched
+	Xversion.
+	XBy default, the patched version is put in place of the original, with
+	Xthe original file backed up to the same name with the
+	Xextension \*(L".orig\*(R", or as specified by the
+	X.B -b
+	Xswitch.
+	XYou may also specify where you want the output to go with a
+	X.B -o
+	Xswitch.
+	XIf
+	X.I patchfile
+	Xis omitted, or is a hyphen, the patch will be read from standard input.
+	X.PP
+	XUpon startup, patch will attempt to determine the type of the diff listing,
+	Xunless over-ruled by a
+	X.BR -c ,
+	X.BR -e ,
+	Xor
+	X.B -n
+	Xswitch.
+	XContext diffs and normal diffs are applied by the
+	X.I patch
+	Xprogram itself, while ed diffs are simply fed to the
+	X.I ed
+	Xeditor via a pipe.
+	X.PP
+	X.I Patch
+	Xwill try to skip any leading garbage, apply the diff,
+	Xand then skip any trailing garbage.
+	XThus you could feed an article or message containing a
+	Xdiff listing to
+	X.IR patch ,
+	Xand it should work.
+	XIf the entire diff is indented by a consistent amount,
+	Xthis will be taken into account.
+	X.PP
+	XWith context diffs, and to a lesser extent with normal diffs,
+	X.I patch
+	Xcan detect when the line numbers mentioned in the patch are incorrect,
+	Xand will attempt to find the correct place to apply each hunk of the patch.
+	XAs a first guess, it takes the line number mentioned for the hunk, plus or
+	Xminus any offset used in applying the previous hunk.
+	XIf that is not the correct place,
+	X.I patch
+	Xwill scan both forwards and backwards for a set of lines matching the context
+	Xgiven in the hunk.
+	XFirst
+	X.I patch
+	Xlooks for a place where all lines of the context match.
+	XIf no such place is found, and it's a context diff, and the maximum fuzz factor
+	Xis set to 1 or more, then another scan takes place ignoring the first and last
+	Xline of context.
+	XIf that fails, and the maximum fuzz factor is set to 2 or more,
+	Xthe first two and last two lines of context are ignored,
+	Xand another scan is made.
+	X(The default maximum fuzz factor is 2.)
+	XIf
+	X.I patch
+	Xcannot find a place to install that hunk of the patch, it will put the
+	Xhunk out to a reject file, which normally is the name of the output file
+	Xplus \*(L".rej\*(R".
+	X(Note that the rejected hunk will come out in context diff form whether the
+	Xinput patch was a context diff or a normal diff.
+	XIf the input was a normal diff, many of the contexts will simply be null.)
+	XThe line numbers on the hunks in the reject file may be different than
+	Xin the patch file: they reflect the approximate location patch thinks the
+	Xfailed hunks belong in the new file rather than the old one.
+	X.PP
+	XAs each hunk is completed, you will be told whether the hunk succeeded or
+	Xfailed, and which line (in the new file)
+	X.I patch
+	Xthought the hunk should go on.
+	XIf this is different from the line number specified in the diff you will
+	Xbe told the offset.
+	XA single large offset MAY be an indication that a hunk was installed in the
+	Xwrong place.
+	XYou will also be told if a fuzz factor was used to make the match, in which
+	Xcase you should also be slightly suspicious.
+	X.PP
+	XIf no original file is specified on the command line,
+	X.I patch
+	Xwill try to figure out from the leading garbage what the name of the file
+	Xto edit is.
+	XIn the header of a context diff, the filename is found from lines beginning
+	Xwith \*(L"***\*(R" or \*(L"---\*(R", with the shortest name of an existing
+	Xfile winning.
+	XOnly context diffs have lines like that, but if there is an \*(L"Index:\*(R"
+	Xline in the leading garbage,
+	X.I patch
+	Xwill try to use the filename from that line.
+	XThe context diff header takes precedence over an Index line.
+	XIf no filename can be intuited from the leading garbage, you will be asked
+	Xfor the name of the file to patch.
+	X.PP
+	X(If the original file cannot be found, but a suitable SCCS or RCS file is
+	Xhandy,
+	X.I patch
+	Xwill attempt to get or check out the file.)
+	X.PP
+	XAdditionally, if the leading garbage contains a \*(L"Prereq: \*(R" line,
+	X.I patch
+	Xwill take the first word from the prerequisites line (normally a version
+	Xnumber) and check the input file to see if that word can be found.
+	XIf not,
+	X.I patch
+	Xwill ask for confirmation before proceeding.
+	X.PP
+	XThe upshot of all this is that you should be able to say, while in a news
+	Xinterface, the following:
+	X.Sp
+	X	| patch -d /usr/src/local/blurfl
+	X.Sp
+	Xand patch a file in the blurfl directory directly from the article containing
+	Xthe patch.
+	X.PP
+	XIf the patch file contains more than one patch,
+	X.I patch
+	Xwill try to apply each of them as if they came from separate patch files.
+	XThis means, among other things, that it is assumed that the name of the file
+	Xto patch must be determined for each diff listing,
+	Xand that the garbage before each diff listing will
+	Xbe examined for interesting things such as filenames and revision level, as
+	Xmentioned previously.
+	XYou can give switches (and another original file name) for the second and
+	Xsubsequent patches by separating the corresponding argument lists
+	Xby a \*(L'+\*(R'.
+	X(The argument list for a second or subsequent patch may not specify a new
+	Xpatch file, however.)
+	X.PP
+	X.I Patch
+	Xrecognizes the following switches:
+	X.TP 5
+	X.B \-b
+	Xcauses the next argument to be interpreted as the backup extension, to be
+	Xused in place of \*(L".orig\*(R".
+	X.TP 5
+	X.B \-c
+	Xforces
+	X.I patch
+	Xto interpret the patch file as a context diff.
+	X.TP 5
+	X.B \-d
+	Xcauses
+	X.I patch
+	Xto interpret the next argument as a directory, and cd to it before doing
+	Xanything else.
+	X.TP 5
+	X.B \-D
+	Xcauses
+	X.I patch
+	Xto use the "#ifdef...#endif" construct to mark changes.
+	XThe argument following will be used as the differentiating symbol.
+	XNote that, unlike the C compiler, there must be a space between the
+	X.B \-D
+	Xand the argument.
+	X.TP 5
+	X.B \-e
+	Xforces
+	X.I patch
+	Xto interpret the patch file as an ed script.
+	X.TP 5
+	X.B \-f
+	Xforces
+	X.I patch
+	Xto assume that the user knows exactly what he or she is doing, and to not
+	Xask any questions.
+	XIt does not suppress commentary, however.
+	XUse
+	X.B \-s
+	Xfor that.
+	X.TP 5
+	X.B \-F<number>
+	Xsets the maximum fuzz factor.
+	XThis switch only applied to context diffs, and causes
+	X.I patch
+	Xto ignore up to that many lines in looking for places to install a hunk.
+	XNote that a larger fuzz factor increases the odds of a faulty patch.
+	XThe default fuzz factor is 2, and it may not be set to more than
+	Xthe number of lines of context in the context diff, ordinarily 3.
+	X.TP 5
+	X.B \-l
+	Xcauses the pattern matching to be done loosely, in case the tabs and
+	Xspaces have been munged in your input file.
+	XAny sequence of whitespace in the pattern line will match any sequence
+	Xin the input file.
+	XNormal characters must still match exactly.
+	XEach line of the context must still match a line in the input file.
+	X.TP 5
+	X.B \-n
+	Xforces
+	X.I patch
+	Xto interpret the patch file as a normal diff.
+	X.TP 5
+	X.B \-o
+	Xcauses the next argument to be interpreted as the output file name.
+	X.TP 5
+	X.B \-p<number>
+	Xsets the pathname strip count,
+	Xwhich controls how pathnames found in the patch file are treated, in case
+	Xthe you keep your files in a different directory than the person who sent
+	Xout the patch.
+	XThe strip count specifies how many backslashes are to be stripped from
+	Xthe front of the pathname.
+	X(Any intervening directory names also go away.)
+	XFor example, supposing the filename in the patch file was
+	X.sp
+	X	/u/howard/src/blurfl/blurfl.c
+	X.sp
+	Xsetting
+	X.B \-p
+	Xor
+	X.B \-p0
+	Xgives the entire pathname unmodified,
+	X.B \-p1
+	Xgives
+	X.sp
+	X	u/howard/src/blurfl/blurfl.c
+	X.sp
+	Xwithout the leading slash,
+	X.B \-p4
+	Xgives
+	X.sp
+	X	blurfl/blurfl.c
+	X.sp
+	Xand not specifying
+	X.B \-p
+	Xat all just gives you "blurfl.c".
+	XWhatever you end up with is looked for either in the current directory,
+	Xor the directory specified by the
+	X.B \-d
+	Xswitch.
+	X.TP 5
+	X.B \-r
+	Xcauses the next argument to be interpreted as the reject file name.
+	X.TP 5
+	X.B \-R
+	Xtells
+	X.I patch
+	Xthat this patch was created with the old and new files swapped.
+	X(Yes, I'm afraid that does happen occasionally, human nature being what it
+	Xis.)
+	X.I Patch
+	Xwill attempt to swap each hunk around before applying it.
+	XRejects will come out in the swapped format.
+	XThe
+	X.B \-R
+	Xswitch will not work with ed diff scripts because there is too little
+	Xinformation to reconstruct the reverse operation.
+	X.Sp
+	XIf the first hunk of a patch fails,
+	X.I patch
+	Xwill reverse the hunk to see if it can be applied that way.
+	XIf it can, you will be asked if you want to have the
+	X.B \-R
+	Xswitch set.
+	XIf it can't, the patch will continue to be applied normally.
+	X(Note: this method cannot detect a reversed patch if it is a normal diff
+	Xand if the first command is an append (i.e. it should have been a delete)
+	Xsince appends always succeed, due to the fact that a null context will match
+	Xanywhere.
+	XLuckily, most patches add or change lines rather than delete them, so most
+	Xreversed normal diffs will begin with a delete, which will fail, triggering
+	Xthe heuristic.)
+	X.TP 5
+	X.B \-s
+	Xmakes
+	X.I patch
+	Xdo its work silently, unless an error occurs.
+	X.TP 5
+	X.B \-v
+	Xcauses
+	X.I patch
+	Xto print out it's revision header and patch level.
+	X.TP 5
+	X.B \-x<number>
+	Xsets internal debugging flags, and is of interest only to
+	X.I patch
+	Xpatchers.
+	X.SH ENVIRONMENT
+	XNo environment variables are used by
+	X.IR patch .
+	X.SH FILES
+	X/tmp/patch*
+	X.SH SEE ALSO
+	Xdiff(1)
+	X.SH NOTES FOR PATCH SENDERS
+	XThere are several things you should bear in mind if you are going to
+	Xbe sending out patches.
+	XFirst, you can save people a lot of grief by keeping a patchlevel.h file
+	Xwhich is patched to increment the patch level as the first diff in the
+	Xpatch file you send out.
+	XIf you put a Prereq: line in with the patch, it won't let them apply
+	Xpatches out of order without some warning.
+	XSecond, make sure you've specified the filenames right, either in a
+	Xcontext diff header, or with an Index: line.
+	XIf you are patching something in a subdirectory, be sure to tell the patch
+	Xuser to specify a 
+	X.B \-p
+	Xswitch as needed.
+	XThird, you can create a file by sending out a diff that compares a
+	Xnull file to the file you want to create.
+	XThis will only work if the file you want to create doesn't exist already in
+	Xthe target directory.
+	XFourth, take care not to send out reversed patches, since it makes people wonder
+	Xwhether they already applied the patch.
+	XFifth, while you may be able to get away with putting 582 diff listings into
+	Xone file, it is probably wiser to group related patches into separate files in
+	Xcase something goes haywire.
+	X.SH DIAGNOSTICS
+	XToo many to list here, but generally indicative that
+	X.I patch
+	Xcouldn't parse your patch file.
+	X.PP
+	XThe message \*(L"Hmm...\*(R" indicates that there is unprocessed text in
+	Xthe patch file and that
+	X.I patch
+	Xis attempting to intuit whether there is a patch in that text and, if so,
+	Xwhat kind of patch it is.
+	X.SH CAVEATS
+	X.I Patch
+	Xcannot tell if the line numbers are off in an ed script, and can only detect
+	Xbad line numbers in a normal diff when it finds a \*(L"change\*(R" or
+	Xa \*(L"delete\*(R" command.
+	XA context diff using fuzz factor 3 may have the same problem.
+	XUntil a suitable interactive interface is added, you should probably do
+	Xa context diff in these cases to see if the changes made sense.
+	XOf course, compiling without errors is a pretty good indication that the patch
+	Xworked, but not always.
+	X.PP
+	X.I Patch
+	Xusually produces the correct results, even when it has to do a lot of
+	Xguessing.
+	XHowever, the results are guaranteed to be correct only when the patch is
+	Xapplied to exactly the same version of the file that the patch was
+	Xgenerated from.
+	X.SH BUGS
+	XCould be smarter about partial matches, excessively \&deviant offsets and
+	Xswapped code, but that would take an extra pass.
+	X.PP
+	XIf code has been duplicated (for instance with #ifdef OLDCODE ... #else ...
+	X#endif),
+	X.I patch
+	Xis incapable of patching both versions, and, if it works at all, will likely
+	Xpatch the wrong one, and tell you that it succeeded to boot.
+	X.PP
+	XIf you apply a patch you've already applied,
+	X.I patch
+	Xwill think it is a reversed patch, and offer to un-apply the patch.
+	XThis could be construed as a feature.
+	X!STUFFY!FUNK!
+	Xecho Extracting README
+	Xcat >README <<'!STUFFY!FUNK!'
+	X			Patch Kit, Version 1.5
+	X
+	X		    Copyright (c) 1985, Larry Wall
+	X
+	XYou may copy the patch kit in whole or in part as long as you don't try to
+	Xmake money off it, or pretend that you wrote it.
+	X--------------------------------------------------------------------------
+	X
+	XPlease read all the directions below before you proceed any further, and
+	Xthen follow them carefully.  Failure to do so may void your warranty. :-)
+	X
+	XAfter you have unpacked your kit, you should have all the files listed
+	Xin MANIFEST.
+	X
+	XInstallation
+	X
+	X1)  Run Configure.  This will figure out various things about your system.
+	X    Some things Configure will figure out for itself, other things it will
+	X    ask you about.  It will then proceed to make config.h, config.sh, and
+	X    Makefile.
+	X
+	X    You might possibly have to trim # comments from the front of Configure
+	X    if your sh doesn't handle them, but all other # comments will be taken
+	X    care of.
+	X
+	X2)  Glance through config.h and common.h to make sure system dependencies
+	X    are correct.  Most of them should have been taken care of by running
+	X    the Configure script.
+	X
+	X    If you have any additional changes to make to the C definitions, they
+	X    can be done in the Makefile, or in config.h.
+	X
+	X3)  make
+	X
+	X    This will attempt to make patch in the current directory.
+	X
+	X4)  make install
+	X
+	X    This will put patch into a public directory (normally /usr/local/bin).
+	X    It will also try to put the man pages in a reasonable place.
+	X
+	X5)  Read the manual entry before running patch.
+	X
+	X6)  IMPORTANT!  Help save the world!  Communicate any problems and
+	X    suggested patches to me, lwall@sdcrdcf.UUCP (Larry Wall), so we can
+	X    keep the world in sync.  If you have a problem, there's someone else
+	X    out there who either has had or will have the same problem.
+	X
+	X    If possible, send in patches such that the patch program will apply them.
+	X    Context diffs are the best, then normal diffs.  Don't send ed scripts--
+	X    I've probably changed my copy since the version you have.
+	X
+	X    Watch for patch patches in net.sources.bugs or net.news.b.  Patches
+	X    will generally be appliable (is that a word?) by the patch program.  If
+	X    you are just now bringing up patch and aren't sure how many patches
+	X    there are, write to me and I'll send any you don't have.
+	X
+	X
+	XNEW FEATURES IN THIS RELEASE
+	X
+	X(Correct) support for 4.3-style context diffs.
+	XFiles can be created from scratch.
+	XYou can specify a fuzz-factor for context matching.
+	XYou can force patch to ask no questions.
+	XYou can specify how much of the leading pathname to strip off filenames.
+	XUses a Configure script for greater portability.
+	XYou are now asked if you want to apply a reversed patch.
+	X!STUFFY!FUNK!
+	Xecho Extracting Makefile.SH
+	Xcat >Makefile.SH <<'!STUFFY!FUNK!'
+	Xcase $CONFIG in
+	X    '') . config.sh ;;
+	Xesac
+	Xecho "Extracting Makefile (with variable substitutions)"
+	Xcat >Makefile <<!GROK!THIS!
+	X# $Header: Makefile.SH,v 1.1 86/08/01 20:18:35 lwall Exp $
+	X#
+	X# $Log:	Makefile.SH,v $
+	XRevision 1.1  86/08/01  20:18:35  lwall
+	XInitial revision
+	X
+	X
+	XCC = $cc
+	Xbin = $bin
+	Xmansrc = $mansrc
+	Xmanext = $manext
+	XCFLAGS = $iandd -O
+	XLDFLAGS = $iandd
+	X
+	X!GROK!THIS!
+	Xcat >>Makefile <<'!NO!SUBS!'
+	X
+	Xpublic = patch
+	Xprivate = 
+	Xmanpages = patch.man
+	Xutil = Makefile
+	X
+	Xc = patch.c
+	X
+	Xobj = patch.o
+	X
+	Xlintflags = -phbvxac
+	X
+	Xaddedbyconf = Makefile.old bsd config.h config.sh eunice loc pdp11 usg v7
+	X
+	X# grrr
+	XSHELL = /bin/sh
+	X
+	X.c.o:
+	X	$(CC) -c $(CFLAGS) $*.c
+	X
+	Xall: $(public) $(private) $(util)
+	X	touch all
+	X
+	Xpatch: $(obj)
+	X	$(CC) $(LDFLAGS) $(obj) $(libs) -o patch
+	X
+	X# won't work with csh
+	Xinstall: patch
+	X	export PATH || exit 1
+	X	- mv $(bin)/patch $(bin)/patch.old
+	X	- if test `pwd` != $(bin); then cp $(public) $(bin); fi
+	X	cd $(bin); chmod 755 $(public)
+	X	- if test `pwd` != $(mansrc); then \
+	Xfor page in $(manpages); do \
+	Xcp $$page $(mansrc)/`basename $$page .man`.$(manext); \
+	Xdone; \
+	Xfi
+	X
+	Xclean:
+	X	rm -f *.o
+	X
+	Xrealclean:
+	X	rm -f patch *.o core $(addedbyconf)
+	X
+	X# The following lint has practically everything turned on.  Unfortunately,
+	X# you have to wade through a lot of mumbo jumbo that can't be suppressed.
+	X# If the source file has a /*NOSTRICT*/ somewhere, ignore the lint message
+	X# for that spot.
+	X
+	Xlint:
+	X	lint $(lintflags) $(defs) $(c) > patch.fuzz
+	X
+	X!NO!SUBS!
+	X$eunicefix Makefile
+	X!STUFFY!FUNK!
+	Xecho Extracting MANIFEST
+	Xcat >MANIFEST <<'!STUFFY!FUNK!'
+	XAfter all the patch kits are run you should have the following files:
+	X
+	XFilename		Kit Description
+	X--------		--- -----------
+	XConfigure                2  A shell script that installs everything system dependent.
+	XMANIFEST                 2  This list of files.
+	XMakefile.SH              2  The makefile.
+	XREADME                   2  Installation instructions.
+	Xpatch.c                  1  The patch program.
+	Xpatch.man                2  Manual page for patch.
+	Xpatchlevel.h             2  The patch level of the patch program.
+	X!STUFFY!FUNK!
+	Xecho Extracting patchlevel.h
+	Xcat >patchlevel.h <<'!STUFFY!FUNK!'
+	X#define PATCHLEVEL 0
+	X
+	X!STUFFY!FUNK!
+	Xecho ""
+	Xecho "End of kit 2 (of 2)"
+	Xcat /dev/null >kit2isdone
+	Xconfig=true
+	Xfor iskit in 1 2; do
+	X    if test -f kit${iskit}isdone; then
+	X	echo "You have run kit ${iskit}."
+	X    else
+	X	echo "You still need to run kit ${iskit}."
+	X	config=false
+	X    fi
+	Xdone
+	Xcase $config in
+	X    true)
+	X	echo "You have run all your kits.  Please read README and then type Configure."
+	X	chmod 755 Configure
+	X	;;
+	Xesac
+	X: I do not append .signature, but someone might mail this.
+	Xexit
+SHAR_EOF
+if test 38328 -ne "`wc -c < 'patch.2'`"
+then
+	echo shar: error transmitting "'patch.2'" '(should have been 38328 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'restore.active'" '(627 characters)'
+if test -f 'restore.active'
+then
+	echo shar: will not over-write existing file "'restore.active'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'restore.active'
+	X: recreate the active file from readers .newsrc files
+	X: and from the existing articles
+	X
+	Xlib=${1-/usr/lib/news}
+	Xtmp=/tmp/$$
+	X: Find the highest numbered articles from the .newsrcs
+	Xcat `sed 's/[^:]*:[^:]*:[^:]*:[^:]*:[^:]*://
+	Xs/:.*//' /etc/passwd | sort -u | sed 's;$;/.newsrc;' ` 2>/dev/null  | 
+	Xsed '/:/!d
+	Xs/:.*[,-]/ /
+	Xs/: */ /'  >$tmp
+	X: in case there are groups no-one reads, look in the list of newsgroups
+	Xsed 's/[ 	].*/ 1/' $lib/newsgroups >>$tmp
+	Xsort  +0 -1 +1nr  $tmp | sort -m +0u -1 | sed 's/$/ 00001 y/
+	X/^fa/s/y$/n/' >$lib/active
+	X: finally, scan the spool directory and fix up the active file.
+	X$lib/expire -u
+	Xrm -f $tmp
+SHAR_EOF
+if test 627 -ne "`wc -c < 'restore.active'`"
+then
+	echo shar: error transmitting "'restore.active'" '(should have been 627 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'sendnewsmail'" '(3109 characters)'
+if test -f 'sendnewsmail'
+then
+	echo shar: will not over-write existing file "'sendnewsmail'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'sendnewsmail'
+	XFrom cbosg!ucbvax!decvax!ittvax!swatt Thu Mar 25 07:06:53 1982
+	XDate: Wed Mar 24 20:29:56 1982
+	XFrom: cbosg!ucbvax!decvax!ittvax!swatt
+	XSubject: sendnewsmail script
+	XVia: cbosgd.uucp (V3.73 [1/5/82]); 25-Mar-82 07:06:53-EST (Thu)
+	XMail-From: cbosg received by cbosgd at 25-Mar-82 07:06:51-EST (Thu)
+	XTo: cbosgd!mark
+	XStatus: R
+	X
+	X
+	XMark:
+	X
+	XI find the following handy as a mail interface to news; you don't have
+	Xto remake the aliases database everytime a new newsgroup gets formed.
+	X
+	X	- Alan
+	X=======================================================================
+	X#! /bin/sh
+	X: '/*********************************************************************
+	X   program:	sendnewsmail
+	X   description:	Send news items from mail
+	X   programmer:	Alan S. Watt
+	X		(ittvax!swatt)
+	X   
+	X   Sccsid=@W@
+	X
+	X   usage:
+	X	Not invoked by user: called as program mail alias
+	X	News item title and newsgroup(s) are specified on the
+	X	mail subject line by:
+	X
+	X	Subj: <news item title> : <newsgroup> ...
+	X
+	X	Several (blank separated) newsgroups may be specified;
+	X	the news article will be submitted to each.  There is
+	X	no way to embed a colon character in the title, so there
+	X	can only be one colon on the subject line.
+	X
+	X   arguments:
+	X	None
+	X   
+	X   notes:
+	X	To install this, put it someplace safe from system updates
+	X	(I use /usr/lib/news), and put an alias in the system
+	X	mail alias file (/usr/lib/aliases) that names this program
+	X	as the alias for the use "news":
+	X
+	X		news:"|/usr/lib/news/sendnewsmail"
+	X
+	X   history:
+	X	11/11/81	original version
+	X	11/19/81	fixed to properly handle default newsgroup
+	X	03/13/82	changes to work with "B" netnews
+	X	03/35/82	Modest documentation changes
+	X   *********************************************************************/'
+	X
+	XPROGRAM_NAME='sendnewsmail'
+	XVERSION_NUMBER='@I@'
+	XTOOL_LOG='/usr/advanced/logs/testlog'
+	XUSAGE='mail news'
+	X
+	X
+	X: 'mail alias program to send news items through mail(1)'
+	X: 'need to get newsgroup and title from subject line'
+	X
+	Xtempf=/tmp/news$$.tmp
+	Xerrorf=/tmp/news$$.err
+	X
+	X: 'copy standard input to a temporary file'
+	Xcat >$tempf
+	X
+	X: 'read the message and grab title and newsgroups from the
+	X   Subject line. Grab the sender from the From line.
+	X   Header ends on first blank line (/^$/).
+	X  '
+	Xeval `sed -n '
+	X/^Subj/	{
+	X	s/^Subj[^ :]*[ :] *\([^:]*\):\(.*\)/title="\1";newsgroup="\2"/p
+	X	s/^Subj[^ :]*[ :] *\([^:]*\)$/title="\1"/p
+	X}
+	X/^From/ {
+	X	s/^[fF]rom[: ] *\([^ ]*\).*/sender="\1"/p
+	X}
+	X/^$/	{
+	X	b done
+	X}
+	X: done
+	X' $tempf`
+	X
+	X: 'default newsgroup to "general" if unspecified'
+	Xcase $newsgroup in
+	X'')	newsgroup=general ;;
+	Xesac
+	X
+	X: 'make up something if the title unspecified'
+	Xcase $title in
+	X'')	title="News from mail" ;;
+	Xesac
+	X
+	X: 'Submit the article to news'
+	Xif sed "1,/^$/d" $tempf | inews -t "$title" -n $newsgroup >$errorf 2>&1
+	Xthen
+	X	: 'OK exit, do nothing'
+	Xelse
+	X	: 'On errors, return article together with error messages to user'
+	X	: 'Change this line if your mailer does not have a -s flag'
+	X	mail -s 'Rejected News Article' $sender <<!EOF
+	X
+	XThe news article you submitted could not be accepted for the reasons:
+	X`cat $errorf`
+	X
+	XThe text of the article you submitted was:
+	X`cat $tempf`
+	X!EOF
+	X
+	Xfi
+	X
+	X: 'clean up'
+	Xrm -f $tempf $errorf
+	X
+	X
+	X
+	X
+	X
+SHAR_EOF
+if test 3109 -ne "`wc -c < 'sendnewsmail'`"
+then
+	echo shar: error transmitting "'sendnewsmail'" '(should have been 3109 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'shar'" '(134 characters)'
+if test -f 'shar'
+then
+	echo shar: will not over-write existing file "'shar'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'shar'
+	Xfor i
+	Xdo
+	X	echo "echo x - $i"
+	X	echo "sed 's/^X//' >$i <<'*-*-END-of-$i-*-*'"
+	X	sed 's/^/X/' $i
+	X	echo "*-*-END-of-$i-*-*"
+	Xdone
+	Xecho exit
+SHAR_EOF
+if test 134 -ne "`wc -c < 'shar'`"
+then
+	echo shar: error transmitting "'shar'" '(should have been 134 characters)'
+fi
+chmod +x 'shar'
+fi # end of overwriting check
+echo shar: extracting "'trimlib'" '(334 characters)'
+if test -f 'trimlib'
+then
+	echo shar: will not over-write existing file "'trimlib'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'trimlib'
+	X: if this is run once per day, it will save the last
+	X: weeks worth of news log files. You can, of course, comment
+	X: out some of the lines to save less
+	Xcd /usr/lib/news
+	Xmv news.5 news.6
+	Xmv news.4 news.5
+	Xmv news.3 news.4
+	Xmv news.2 news.3
+	Xmv news.1 news.2
+	Xmv news.0 news.1
+	Xmv news news.0
+	Xcp /dev/null news
+	X/etc/chown news news* history*
+SHAR_EOF
+if test 334 -ne "`wc -c < 'trimlib'`"
+then
+	echo shar: error transmitting "'trimlib'" '(should have been 334 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'unshar'" '(6909 characters)'
+if test -f 'unshar'
+then
+	echo shar: will not over-write existing file "'unshar'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'unshar'
+	XFrom lee@unmvax.UUCP Sun Oct 28 16:56:42 1984
+	XRelay-Version: version B 2.10.2 10/19/84; site seismo.UUCP
+	XPosting-Version: version B 2.10.2 9/5/84; site unmvax.UUCP
+	XPath: seismo!cmcl2!lanl!unm-cvax!unmvax!lee
+	XFrom: lee@unmvax.UUCP
+	XNewsgroups: net.sources
+	XSubject: Program to un-shar netmaps without using a shell..
+	XMessage-ID: <473@unmvax.UUCP>
+	XDate: 28 Oct 84 21:56:42 GMT
+	XDate-Received: 29 Oct 84 11:14:42 GMT
+	XDistribution: net
+	XOrganization: Univ. of New Mexico, Albuquerque
+	XLines: 336
+	X
+	X#ifndef	lint
+	Xchar	*Rcsid = "$Header: getmaps.c,v 1.4 84/10/13 18:19:13 lee Exp $";
+	X#endif
+	X
+	X/*
+	X * getmaps
+	X *
+	X * Get the net maps from USENET as published by Karen and Mark Horton, in
+	X * "shar" format. Because of paranoia the sh is not used but instead a DFA
+	X * recognizing the appropriate commands.
+	X *
+	X * lee Ward		10/13/84
+	X */
+	X
+	X#include <stdio.h>
+	X#include <ctype.h>
+	X#include <sys/types.h>
+	X#include <sys/stat.h>
+	X#include <sys/dir.h>
+	X
+	Xchar	*mapgrp = "/usr/spool/news/net/news/map";
+	Xchar	*mapdir = "/usr/lee/netmap/maps";
+	Xchar	*seqfil = "/usr/lee/netmap/.seq";
+	Xchar	*logfil = "/usr/lee/netmap/log";
+	X
+	Xchar	*usestr = "[-l logfil] [-g group] [-s seqfile] [-a archiv-dir]";
+	X
+	XFILE	*logsd = NULL;
+	X
+	Xvoid	domaps(), myabort(), log(), mkmaps(), getwrd(), logtime();
+	X
+	Xmain(argc, argv)
+	X	int	argc;
+	X	char	*argv[];
+	X{
+	X	int	x;
+	X	FILE	*seqsd;
+	X	char	seqbuf[BUFSIZ];
+	X
+	X	for (x = 1; x < argc; x++) {
+	X		if (*argv[x]++ != '-') {
+	X			fprintf(stderr, "Bad usage\n");
+	X			fprintf(stderr, "Usage: %s %s\n", argv[0], usestr);
+	X			exit(-1);
+	X		}
+	X		switch (*argv[x]) {
+	X
+	X		case 'l':
+	X			logfil = argv[++x];
+	X			break;
+	X		case 'g':
+	X			mapgrp = argv[++x];
+	X			break;
+	X		case 's':
+	X			seqfil = argv[++x];
+	X			break;
+	X		case 'a':
+	X			mapdir = argv[++x];
+	X			break;
+	X		default:
+	X			fprintf(stderr, "Bad switch\n");
+	X			fprintf(stderr, "Usage: %s %s\n", argv[0], usestr);
+	X			exit(-1);
+	X		}
+	X	}
+	X
+	X	logsd = fopen(logfil, "a");
+	X
+	X	logtime("Start");
+	X
+	X	if (chdir(mapdir) != 0)
+	X		myabort("Could not change directory to %s", mapdir);
+	X
+	X	seqbuf[0] = NULL;
+	X	if ((seqsd = fopen(seqfil, "r")) != NULL) {
+	X		if ((x = fread(seqbuf, sizeof(char), sizeof(seqbuf),
+	X		    seqsd)) != 0)
+	X			seqbuf[x - 1] = NULL;
+	X		(void )fclose(seqsd);
+	X	}
+	X	if ((seqsd = fopen(seqfil, "a")) == NULL)
+	X		myabort("Could not open seq file for writing");
+	X	(void )fseek(seqsd, 0L, 0);
+	X
+	X	domaps(mapgrp, seqbuf, seqsd);
+	X	(void )fclose(seqsd);
+	X
+	X	logtime("End");
+	X}
+	X
+	Xvoid
+	Xdomaps(grp, seqbuf, seqsd)
+	X	char	*grp, *seqbuf;
+	X	FILE	*seqsd;
+	X{
+	X	char	nbuf[BUFSIZ], *nptr, *tptr;
+	X	struct direct **filst;
+	X	int	nfils, x;
+	X	struct stat stbuf;
+	X	extern int scandir(), alphasort();
+	X	extern char *strcpy(), *strncat();
+	X
+	X	if ((nfils = scandir(grp, &filst, (int (*)())NULL, alphasort)) == -1)
+	X		myabort("scandir failed");
+	X
+	X	(void )strcpy(nbuf, grp);
+	X	nptr = nbuf + strlen(nbuf);
+	X	*nptr++ = '/';
+	X	*nptr = NULL;
+	X	nbuf[BUFSIZ] = NULL;
+	X
+	X	for (x = 0; x < nfils; x++) {
+	X		if (strcmp(".", filst[x]->d_name) == 0 ||
+	X		    strcmp("..", filst[x]->d_name) == 0)
+	X			continue;
+	X		tptr = filst[x]->d_name;
+	X		while(*tptr && isdigit(*tptr))
+	X			tptr++;
+	X		if (*tptr != NULL)
+	X			continue;
+	X		*nptr = NULL;
+	X		(void )strncat(nptr, filst[x]->d_name,
+	X		    BUFSIZ - (nptr - nbuf) - 1);
+	X		if (stat(nbuf, &stbuf) != 0) {
+	X			log("Could not stat %s", nbuf);
+	X			continue;
+	X		}
+	X		if ((stbuf.st_mode & S_IFMT) == S_IFDIR)
+	X			continue;
+	X		if (strcmp(seqbuf, filst[x]->d_name) >= 0)
+	X			continue;
+	X
+	X		mkmaps(nbuf);
+	X		(void )fseek(seqsd, 0L, 0);
+	X		(void )fwrite(filst[x]->d_name, sizeof(char),
+	X		    strlen(filst[x]->d_name), seqsd);
+	X		(void )fputc('\n', seqsd);
+	X		(void )fflush(seqsd);
+	X	}
+	X}
+	X
+	Xvoid
+	Xmkmaps(file)
+	X	char	*file;
+	X{
+	X	char	buf[BUFSIZ], tofil[BUFSIZ], delim[BUFSIZ];
+	X	int	state, sizdel;
+	X	FILE	*isd, *osd;
+	X	extern FILE *fopen();
+	X
+	X#define	SEARCH		1
+	X#define	INAMAP		2
+	X#define	SKIPPING	3
+	X
+	X	if ((isd = fopen(file, "r")) == NULL) {
+	X		log("Could not open %s. Skipping...", file);
+	X		return;
+	X	}
+	X	log("Unarchive %s", file);
+	X
+	X	state = SEARCH;
+	X	while (fgets(buf, sizeof(buf) - 1, isd) != NULL) {
+	X		buf[sizeof(buf)] = NULL;
+	X		if (state == SEARCH) {
+	X			if (gotcat(buf, tofil, BUFSIZ, delim, BUFSIZ)) {
+	X				state = INAMAP;
+	X				sizdel = strlen(delim);
+	X				if ((osd = fopen(tofil, "w")) == NULL) {
+	X					log("Could not open %s", tofil);
+	X					state = SKIPPING;
+	X				}
+	X			}
+	X			continue;
+	X		}
+	X		if (strncmp(buf, delim, sizdel) == 0) {
+	X			state = SEARCH;
+	X			if (osd != NULL)
+	X				(void )fclose(osd);
+	X			continue;
+	X		}
+	X		if (state == SKIPPING)
+	X			continue;
+	X		fputs(buf, osd);
+	X	}
+	X	if (state != SEARCH)
+	X		log("Read/sync error on %s", file);
+	X	(void )fclose(isd);
+	X
+	X#undef	SEARCH
+	X#undef	INAMAP
+	X#undef	SKIPPING
+	X}
+	X
+	X/*
+	X * gotcat
+	X *
+	X * Use a DFA to recognize
+	X *	cat << DELIM > OUT
+	X * or
+	X *	cat > OUT << DELIM
+	X *
+	X */
+	X
+	X/* Transition table for the DFA */
+	Xint	ttbl[9][4] = {
+	X		1,-1,-1,-1,
+	X		-1,6,2,-1,
+	X		-1,-1,-1,3,
+	X		-1,4,-1,-1,
+	X		-1,-1,-1,5,
+	X		-1,-1,-1,-1,
+	X		-1,-1,-1,7,
+	X		-1,-1,8,-1,
+	X		-1,-1,-1,5,
+	X	};
+	X
+	Xgotcat(buf, tofil, tofilln, delim, delimln)
+	X	char	*buf,
+	X		*tofil,
+	X		*delim;
+	X	int	tofilln,
+	X		delimln;
+	X{
+	X	int	state;
+	X	char	*ptr;
+	X
+	X	state = 0;			/* Start state */
+	X	while (state != -1 && state != 5) {
+	X		/* Eat up white */
+	X		while (*buf != '\n' && (*buf == ' ' || *buf == '\t'))
+	X			buf++;
+	X		if (*buf == '>') {
+	X			buf++;
+	X			state = ttbl[state][1];
+	X			continue;
+	X		}
+	X		if (*buf == '<' && *(buf + 1) == '<') {
+	X			buf += 2;
+	X			state = ttbl[state][2];
+	X			continue;
+	X		}
+	X		if (*buf == 'c' && *(buf + 1) == 'a' && *(buf + 2) == 't') {
+	X			buf += 3;
+	X			state = ttbl[state][0];
+	X			continue;
+	X		}
+	X		ptr = buf;
+	X		while (*buf != '\n' && *buf != ' ' && *buf != '\t')
+	X			buf++;
+	X		if (state == 2 || state == 8)
+	X			getwrd(ptr, buf, delim, delimln);
+	X		else if (state == 6 || state == 4)
+	X			getwrd(ptr, buf, tofil, tofilln);
+	X		state = ttbl[state][3];
+	X	}
+	X
+	X	if (state == 5)
+	X		return(1);
+	X	return(0);
+	X}
+	X
+	Xvoid
+	Xgetwrd(fc, lc, buf, maxlen)
+	X	char	*fc,
+	X		*lc,
+	X		*buf;
+	X	int	maxlen;
+	X{
+	X	char	*ptr, *t1ptr, *t2ptr;
+	X
+	X	maxlen--;
+	X	maxlen = lc - fc > maxlen ? maxlen : lc - fc;
+	X	ptr = buf;
+	X	t1ptr = fc;
+	X	while (maxlen-- != 0)
+	X		*ptr++ = *t1ptr++;
+	X	*ptr = NULL;
+	X
+	X	/* Strip quotes */
+	X	ptr = buf;
+	X	while (*ptr != NULL) {
+	X		if (*ptr == '\\' && (*(ptr + 1) == '\'' || *(ptr + 1) == '"'))
+	X			ptr += 2;
+	X		else if (*ptr == '\'' || *ptr == '"') {
+	X			t1ptr = ptr;
+	X			t2ptr = ptr + 1;
+	X			while ((*t1ptr++ = *t2ptr++) != NULL)
+	X				;
+	X		} else
+	X			ptr++;
+	X	}
+	X}
+	X/*VARARGS1*/
+	Xvoid
+	Xmyabort(s, a, b, c, d, e, f, g, h, i, j, k, l)
+	X	char	*s;
+	X{
+	X
+	X	if (logsd != NULL) {
+	X		fputs("ABORT - ", logsd);
+	X		fprintf(logsd, s, a, b, c, d, e, f, g, h, i, j, k, l);
+	X		(void )fputc('\n', logsd);
+	X		logtime("End");
+	X	}
+	X	exit(-1);
+	X}
+	X
+	X/*VARARGS1*/
+	Xvoid
+	Xlog(s, a, b, c, d, e, f, g, h, i, j, k, l)
+	X	char	*s;
+	X{
+	X
+	X	if (logsd == NULL)
+	X		return;
+	X	fprintf(logsd, s, a, b, c, d, e, f, g, h, i, j, k, l);
+	X	(void )fputc('\n', logsd);
+	X	(void )fflush(logsd);
+	X}
+	X
+	Xvoid
+	Xlogtime(s)
+	X	char	*s;
+	X{
+	X	time_t	clock;
+	X	extern char *ctime();
+	X
+	X	if (logsd == NULL)
+	X		return;
+	X	(void )time(&clock);
+	X	fprintf(logsd, "%s %s", s, ctime(&clock));
+	X	(void )fflush(logsd);
+	X}
+	X-- 
+	X			--Lee (Ward)
+	X			{ucbvax,convex,gatech,pur-ee}!unmvax!lee
+	X
+	X
+SHAR_EOF
+if test 6909 -ne "`wc -c < 'unshar'`"
+then
+	echo shar: error transmitting "'unshar'" '(should have been 6909 characters)'
+fi
+fi # end of overwriting check
+#	End of shell archive
+exit 0

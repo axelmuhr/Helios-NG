@@ -1,0 +1,267 @@
+\chapter{Upgrade}\label{chap:upgrade}\index{upgrade|(}\index{update|(}
+
+This chapter covers the hardware changes and software upgrade to use PFS v2.1.
+It has only to be read by former users of an old MSC board, the Helios File
+System v1.x, and the Parsytec File System v2.0.x. You will find a step by step
+guideline for a proper update to the PFS v2.1.
+
+\section{Backups}
+If you follow the instructions in this chapter, you should find a perfectly 
+working PFS afterwards. But:
+\begin{verse}\index{Murphy}
+{\large \sf If anything can go wrong, it will.} \\
+\end{verse}
+
+With this in mind, it's urgently recommended to backup your data to your host
+system before installing the new PFS.
+
+\section{Hardware update}  \label{sec:hwupdate}
+This section has to be read by all users performing an update.
+
+There are several requirements for proper operation of the MSC Device Driver
+(Jumper and EPROM placement is shown in figure \ref{pic:msc}):
+
+\begin{itemize}
+
+  \item Xilinx EPROM\index{xinlinxeprom@Xilinx EPROM}\index{EPROM} \\
+        The EPROM for Xilinx initialisation has to be updated to Revision 6
+        (at least). Only these revisions support event generation as necessary
+        for the driver. The EPROM has to be placed as shown in figure
+        \ref{pic:eprom}. Please check which version is installed on your MSC.
+
+        \input{eprom}
+
+  \item Jumper\index{jumper} settings \\
+        Some jumpers have to be adjusted to ensure suitable event generation:
+
+        \begin{itemize}
+
+          \item The ERROR PAL (U52) activates the ERRORIN\index{ERRORIN} input
+                of the transputer when the data transfer controller or the
+                extension board requests an event. J0 enables or disables the
+                activation of the ERRORIN input in by the error PAL cause of 
+                an error condition: program error, address error or parity 
+                error. It has to be placed in 1-2 position as shown in figure
+                \ref{pic:jumper0}.
+
+                \input{jumper0}
+
+          \item J9 makes connection between the ERRORIN pin and the
+                EVENTREQ\index{EVENTREQ} pin of the transputer. So if this
+                jumper is inserted as shown in figure \ref{pic:jumper9} an
+                activation of ERRORIN of the ERROR PAL U52 also generates an
+                event.
+
+                \input{jumper9}
+
+        \end{itemize}
+
+\end{itemize}
+
+Figure \ref{pic:msc} shows the exact location of the EPROM and the two jumpers.
+
+\input{mscboard}
+
+If these requirements are not met, the device driver will not start up.
+Instead it will send a message to the server window, complaining about 
+missing events from the hardware.
+
+It's not too difficult to carry out the necessary changes on your own, but if
+you are thumb-fingered or want to prevent loss of warranty of your MSC board,
+please send the board to Parsytec. We will perform the update (including
+tests) for you.
+
+
+\section{Software upgrade}
+
+The general installation procedure is described in chapter
+\ref{chap:install}. Refer to that and install the PFS before you proceed. The
+next sections go into detail about changes of your \DIS. In addition to that,
+the declaration of your MSC in your resource map has changed. For more
+details see section \ref{sec:runpfs}.
+
+\subsection{\DI\  file, coming from PFS v2.0.x}
+\index{devinfo@\DI}\index{pfs20x@PFS v2.0.x}
+This section is only for users who have worked with PFS v2.0.x up to now. It
+is assumed that you have worked through the device configuration example in
+the PFS v2.0 manual. Therefore, only the differences to the original
+{\tt bible.src} file are outlined here.
+
+For each drive, the {\it type} and {\it id} specifications have to be changed.
+The {\it type} entry now refers to the position of the device declaration in
+the \SIS\ file (which is the configuration file for the MSC device driver, see
+chapter \ref{chap:msc}), and {\it id} values are now given as hexadecimal
+numbers to allow the specification of different Logical Unit Numbers within a
+single device (0x31 refers to SCSI address 3, LUN 1).
+
+The entry for the Wren VI drive will now look as follows:
+
+\begin{listing}
+  \begin{verbatim}
+drive        # Wren VI
+{
+  id   0x30  # SCSI address 3, LUN 0
+  type 0     # first entry in scsiinfo
+}
+  \end{verbatim}
+\end{listing}
+
+The description of partitions has not been changed, but the {\it controller}
+specification of the {\it discdevice} block. It's now given in hexadecimal
+notation, too. Thus, your {\it discdevice} entry for the MSC should be:
+
+\begin{listing}
+  \begin{verbatim}
+discdevice msc21          # MSC driver for PFS v2.1
+{
+  name        msc21.dev   # refers to /helios/lib/msc21.dev
+  controller  0x70        # uses Address 7, LUN 0
+  addressing  1024        # use 1 KByte blocks
+
+  partition               # number 0
+  {
+    :
+  }
+
+  :
+  :
+
+  drive                   # number 0
+  {
+    :
+  }
+}                         # end of discdevice
+  \end{verbatim}
+\end{listing}
+
+After modifying the \DIS\ file, compile it to binary form with
+
+\fbox{{\tt \% gdi} \DIS\ \HEDI}
+
+\subsection{\DI\ file, coming from HFS v1.x}
+\index{devinfo@\DI}\index{hfs1x@HFS v1.x}
+This section is only for users who have worked with HFS v1.x up to now.
+
+\begin{caution}
+  This is a mini example for those users who work with only one MSC connected
+  to one harddisc.
+\end{caution}
+
+\begin{enumerate}
+
+  \item Create a new file {\tt upgrade.src}\index{upgradesrc@{\tt upgrade.src}}
+        in the directory \HE\ (based on {\tt /helios\slash info.src\slash
+        hfs2pfs.src}):
+
+\begin{listing}
+  \begin{verbatim}
+fileserver msc21
+{
+  device       msc21
+  blocksize    4096
+
+  smallpkt     1
+  mediumpkt    4
+  hugepkt      16
+
+  smallcount   20
+  mediumcount  8
+  hugecount    28
+
+  volume
+  {
+    name      <Old>  # The file server doesn't care about your
+                     # volume's name and you could change it any
+                     # time, but with respect to consistency of
+                     # shell scripts, makefiles, and user programs
+                     # it's recommended to use the old name
+    partition 0
+    cgsize    <Old>  # This value MUST be taken from the old
+                     # devinfo.src, as well as
+    ncg       <Old>  # this one.
+  }
+}
+
+discdevice msc21
+{
+  name        msc21.dev
+  controller  0x70
+  addressing  1024
+
+  partition
+  {
+    drive 0
+  }
+
+  drive
+  {
+    id    0x00  # Usually, only one harddisc is connected to the
+                # MSC and occupies SCSI address 0 (1st nibble),
+                # Logical Unit Number 0 (second nibble).
+    type  0     # This refers to a device description number in
+                # the scsiinfo.src file. Probably you have a WREN
+                # harddisc, it's description is at position number 0.
+  }
+}
+  \end{verbatim}
+\end{listing}
+
+  \item Translation: \\
+
+          \fbox{\tt \% gdi /helios/etc/upgrade.src /helios/etc/upgrade.di}
+
+  \item Starting the file server, loading the only volume (prepared for
+        {\tt mksuper}): \\
+
+          {\tt
+            \begin{tabular}{|l|}
+              \hline
+              \% remote -d MSC fs upgrade.di msc21 \\
+              \% load -m /<VolumeName>             \\
+              \hline
+            \end{tabular}
+          }
+
+  \item  Now, the file server tries to find out the correct disc parameters,
+         following this description (decreasing priority):
+
+         \begin{enumerate}
+
+           \item Reading the superblock from the harddisc \\
+                 The HFS has stored the values for {\it cgsize} and {\it ncg} in
+                 this block.
+
+           \item Evaluating the configuration file, \\
+                 which is \HE{\tt\slash upgrade.di} in this case. If the
+                 devinfo-parameter was not given at file server's startup
+                 time, \HEDI\ is used by default.
+
+                 \begin{caution}
+                   If the superblock is damaged, the priority is given to the
+                   values in the configuration file. For that reason,
+                   {\it cgsize} and {\it ncg} in {\tt upgrade.src} {\bf must}
+                   be given the same values as in your old \DIS.
+                 \end{caution}
+
+         \end{enumerate}
+
+  \item Write parameters to disc \\
+        Now, the correct PFS parameters have to be written to the superblock
+        by executing:
+
+        \fbox{\tt \% mksuper /<VolumeName>}
+
+        In some cases there may be problems: you have discovered the values 
+        for {\it cgsize} and {\it ncg} and have written them down to \DI, but
+        the {\tt mksuper} command couldn't be executed successfully. This
+        behaviour occurs if the product of {\it ncg} and {\it cgsize} exceeds
+        the size of your harddisc. This error was not checked by the HFS and
+        the wrong parameters were written to disc. To solve this problem,
+        decrease {\it ncg} in {\tt upgrade.src}, compile it, and restart the
+        file server until {\tt mksuper} is performed succesfully. {\bf By
+        doing this, some data may get lost, of course.} So {\bf do} backup
+        your file system now at the latest (use your old \DI) to rescue as
+        many data as possible.
+
+\end{enumerate}
+\index{upgrade|)}\index{update|)}

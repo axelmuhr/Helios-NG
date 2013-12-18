@@ -1,0 +1,2749 @@
+head	1.9;
+access;
+symbols
+	Helios_1_3_1:1.6
+	Helios_C40_1_3_Official_Release:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.9
+date	94.06.06.15.45.50;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	94.05.12.11.44.05;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	93.11.26.12.03.24;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.08.22.12.48.33;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	93.08.22.12.17.48;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	93.08.18.14.14.34;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.08.16.09.04.46;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	93.05.12.10.43.15;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	93.05.11.10.57.35;	author nickc;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@fixed to cope with lack of NEW_SYSTEM define
+@
+text
+@/**************************************************************
+ * mslights.c                                                 *
+ * Perihelion Software Ltd                                    *
+ * Charlton Rd. Shepton Mallet, Somerset UK BA4 5QE           *
+ *                                                            *
+ * This source code is copyright free and may be adapted or   *
+ * distributed without notice to the authors.                 *
+ * Any improvements would be welcome by the authors.          *
+ *                                                            *
+ * This is a conversion of xlights.c which works in the X     *
+ * windows environment, so that it runs in the MS-windows     *
+ * I/O server environment (graphics environment v2.0).        *
+ **************************************************************/
+#ifdef __C40
+#pragma no_stack_checks
+#pragma fast_fp
+#pragma little_data
+#endif
+
+#include <stdio.h>
+#include <syslib.h>
+#include <root.h>
+#ifdef __TRAN
+#include <process.h>
+#else
+#include <thread.h>
+#endif
+#include <string.h>
+#include <stdlib.h>
+#include <queue.h>
+#include <rmlib.h>
+#include <nonansi.h>
+#include <gsp.h>
+#include <windows.h>
+
+#include "mslights.h"
+
+int	panel_xstart;
+int	panel_xend;
+int    	panel_height;
+int    	panel_width;
+int	bar_length;
+int	bar_x;
+
+int  	nprocs	= 0;			/* number of processors tracked */
+int  	maxw	= 0;			/* maximum string size of processor labels */
+int 	MaxProcLoad = 1000;		/* maximum processor load to date */
+int 	MaxLinkLoad = 20000;		/* maximum link load to date */
+
+HFONT	hFont;
+HBRUSH	brGrey;
+HPEN    penwhite;
+HPEN    pengrey;
+HPEN	penLoad;
+HPEN	penLink;
+HPEN	penMem;
+HPEN	penBG;
+HWND	hMainWnd;
+
+word	grey       = RGB(128, 128, 128);
+word	ltgrey     = RGB(200, 200, 200);
+word    white	   = RGB(255, 255, 255);
+word	crLoadBar  = RGB(255,   0,   0);
+word	crLinkBar  = RGB(  0, 255,   0);
+word	crMemBar   = RGB(  0,   0, 255);
+
+Semaphore 	one_access;		/* exclusion semaphore to graphics device */
+Proc_Info       *info = NULL;
+static	byte	DataBuffer[IOCDataMax]; 
+
+/* This routine return the top left position of the load display rectangle */
+int    panel_y(int i) 
+{ 
+   return ((i)*( panel_height + border ) + border); 
+}
+
+/* This routine is called for every processor in the network.   */
+static  void    NetworkCount(RmProcessor Processor, ...)
+{
+  if (RmGetProcessorPurpose(Processor) == RmP_Helios)
+     nprocs++;
+}
+
+
+void draw_bars(int proc_offset)
+{
+   int l;
+   int _new;
+   int linkload = 0;
+   NewProcStats  *NewInfo, *OldInfo;                	/* place for new stat info      */
+   Proc_Info *ii;
+   HDC  hDC = GetDC(hMainWnd);
+
+   ii = &(info[proc_offset]);
+
+   ServerInfo(ii->Proc, DataBuffer);			/* get processor stats */
+   NewInfo = (NewProcStats *)DataBuffer;
+   OldInfo = (NewProcStats *)ii->OldInfo;
+
+   /* draw processor load */
+   if (NewInfo->Load > MaxProcLoad)
+      MaxProcLoad = (int) NewInfo->Load;
+   _new = newbar((int)NewInfo->Load,MaxProcLoad);
+
+   if( _new != ii->LoadBar )
+   {
+      bar(hDC, _new,ii->LoadBar, penLoad, bar_x, panel_y(proc_offset)+loadbar_y);
+      ii->LoadBar = _new;
+   }
+
+   /* draw link load */
+   for( l = 0; l < NewInfo->NLinks; l++ )
+      linkload += (int)(NewInfo->Link[l].In - OldInfo->Link[l].In + NewInfo->Link[l].Out - OldInfo->Link[l].Out);
+   linkload = linkload / (int) NewInfo->NLinks;	/* average load on all links */
+   if (linkload > MaxLinkLoad) 
+      MaxLinkLoad = linkload;
+   _new = newbar( linkload, MaxLinkLoad);
+   if( _new != ii->LinkBar )
+   {
+      bar(hDC, _new, ii->LinkBar, penLink, bar_x, panel_y(proc_offset)+linkbar_y);
+      ii->LinkBar = _new;
+   }
+
+   /* draw memory load */   
+   _new = newbar( (int)(NewInfo->MemMax-NewInfo->MemFree), (int)NewInfo->MemMax);
+   if( _new != ii->MemBar )
+   {
+      bar(hDC, _new, ii->MemBar, penMem, bar_x, panel_y(proc_offset)+membar_y);
+      ii->MemBar = _new;
+   }
+   *OldInfo = *NewInfo;
+
+   ReleaseDC(hMainWnd, hDC);
+}
+
+void bar( HDC hDC, int _new, int old, HPEN hPen, int x, int y )
+{
+   if( old < 0)
+   { /* restore old line as it may not be a complete line due to redraw event */
+      old = -old;
+      SelectObject(hDC, hPen);
+      MoveTo(hDC, (int)(x), (int)y);
+      LineTo(hDC, (int)(x+old), (int)y);
+   } 
+
+   if( _new > old )
+   {  /* extend bar */
+      SelectObject(hDC, hPen);
+      MoveTo(hDC, x + old, y);
+      LineTo(hDC, x + _new, y);
+   }
+   else
+   {  /* shorten bar */
+      SelectObject(hDC, penBG);
+      MoveTo(hDC, (int)(x+_new), (int)y);
+      LineTo(hDC, (int)(x+old), (int)y);
+   }
+}
+
+
+/*{{{  newbar function */
+int newbar( int value, int max )
+{
+   if ( value >= max )
+      value = max - 1;
+
+   if ( value == 0 ) 
+      return 0;
+		
+   return (value * bar_length) / max;
+}
+
+/*}}}*/
+
+/* This routine is called for every processor in the network.   */
+static  int     NetworkWalk(RmProcessor Processor, ...)
+{
+   if (RmGetProcessorPurpose(Processor) == RmP_Helios)
+   {  char *arg;
+      arg = (char *)RmGetProcessorId(Processor);
+      if(InitProcTable(nprocs, arg))
+         nprocs++;
+   }
+   return 0;
+}
+
+Proc_Info* CreateProcTable( int no_processors)
+{  Proc_Info * processor_info;
+   processor_info = (Proc_Info *)malloc(sizeof(Proc_Info)*no_processors);
+   if( processor_info == NULL )
+     return NULL;
+   memset(processor_info,0,sizeof(Proc_Info)*no_processors);
+   return processor_info;
+}
+
+int InitProcTable(int position, char * proc_name)
+{  int  w;
+   char temp_name[100];
+
+   w = strlen(proc_name);
+   strcpy(temp_name, "/");
+   strcat(temp_name, proc_name);
+   strcat(temp_name, "/tasks");
+
+   info[position].Proc = Locate(NULL,temp_name);
+   info[position].Name = proc_name;
+
+   if( info[position].Proc == NULL ) 
+   {  fprintf(stderr,"mslights: failed to find %s\n\n",proc_name);
+      return 0;
+   }
+   if( w > maxw ) 
+      maxw = w;
+   return 1;
+}
+
+void update_bars(void)
+{
+   int i;
+
+   SetPriority(ServerPri);	/* ensure we keep the display active */ 
+
+   for( i = 0; i < nprocs; i++ )
+      ServerInfo(info[i].Proc, info[i].OldInfo);
+
+   while (1)
+   {  Delay(OneSec/4);
+      Wait(&one_access);
+      for( i = 0; i < nprocs; i++)
+	 draw_bars(i);
+      Signal(&one_access);
+   }
+}
+
+
+long WINAPI MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+   switch (msg)
+   {
+      case WM_CREATE:
+      {
+	 brGrey		= CreateSolidBrush(ltgrey);
+	 penBG 		= CreatePen(PS_SOLID, bar_height, ltgrey);
+         penwhite	= CreatePen(PS_SOLID, 1, white);
+         pengrey	= CreatePen(PS_SOLID, 1, grey);
+	 penLoad 	= CreatePen(PS_SOLID, bar_height, crLoadBar);
+	 penLink 	= CreatePen(PS_SOLID, bar_height, crLinkBar);
+	 penMem 	= CreatePen(PS_SOLID, bar_height, crMemBar);
+         
+	 break;
+      }
+      case WM_PAINT:
+      {
+	 RECT rect;
+	 int  i;
+	 PAINTSTRUCT ps;
+
+	 BeginPaint(hWnd, &ps);
+	 SelectObject(ps.hdc, hFont);
+         SetBkMode(ps.hdc,TRANSPARENT);
+	 
+	 rect.left 	= (int)panel_xstart;
+	 rect.right 	= (int)panel_xend;
+
+	 Wait(&one_access);
+	 for(i = 0; i < nprocs; i++ )
+	 {
+	    rect.top = (int)panel_y(i);
+	    rect.bottom = (int)panel_y(i) + (int)panel_height;
+	    FillRect( ps.hdc, &rect, GetStockObject(LTGRAY_BRUSH));
+
+            SelectObject(ps.hdc,penwhite);
+            MoveTo(ps.hdc, rect.left, rect.top);
+            LineTo(ps.hdc, rect.right,rect.top);
+            MoveTo(ps.hdc, rect.left, rect.top);
+            LineTo(ps.hdc, rect.left,rect.bottom);
+            SelectObject(ps.hdc,pengrey);
+            MoveTo(ps.hdc, rect.left+1, rect.bottom);
+            LineTo(ps.hdc, rect.right,rect.bottom);
+            MoveTo(ps.hdc, rect.right, rect.top+1);
+            LineTo(ps.hdc, rect.right,rect.bottom);
+
+	    info[i].LoadBar    = -info[i].LoadBar;	/* invalidate the whole line */
+	    info[i].LinkBar    = -info[i].LinkBar;
+	    info[i].MemBar     = -info[i].MemBar;
+
+	 }
+
+	 for(i = 0; i < nprocs; i++ )
+	 {
+	    TextOut(ps.hdc, border, panel_y(i), info[i].Name, strlen(info[i].Name));
+	 } 
+	 EndPaint(hWnd, &ps);
+	 Signal(&one_access);
+	 break;
+      }
+
+      case WM_CHAR:
+	 if (((char)wParam == 'q') || ((char)wParam == 'Q'))
+	 {
+	    msg = WM_CLOSE;
+	    wParam = 0;
+	    lParam = 0L;
+	 }
+	 /* fall through to close the window */
+
+      case WM_CLOSE:
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+
+      case WM_DESTROY:
+	 DeleteObject(brGrey);
+	 DeleteObject(penLoad);
+	 DeleteObject(penLink);
+	 DeleteObject(penMem);
+	 DeleteObject(penBG);
+	 PostQuitMessage(0);
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+
+      default:
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+   }
+
+   return 0L;
+}
+
+
+int PASCAL WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR lpszCmdLine, int nShow)
+{  int	width, height;                  /* width and height of the window */
+   int screen_height;
+   int  i;
+   int  name_width;
+   int 	font_height;
+   WNDCLASS wc;
+   MSG 	msg;
+   HDC 	hDC;
+   TEXTMETRIC tm;
+   int 	argc;
+   char **argv;
+   RECT rect;
+
+   InitSemaphore(&one_access, 1);
+   GetArgcArgv(&argc, &argv);   /* we prefer using this to lpszCmdLine */
+   
+   if( argc <= 1 )
+   {  
+      RmNetwork Network;
+
+      /* Get details of the current network into local memory */
+      Network = RmGetNetwork();
+      if (Network == (RmNetwork) NULL)
+      {  
+	 fprintf(stderr, "mslights: failed to get network details.\n");
+	 fprintf(stderr, "        : %s\n", RmMapErrorToString(RmErrno));
+	 exit(EXIT_FAILURE);
+      }
+
+      /* Walk down the current network examining every processor        */
+      (void) RmApplyProcessors(Network, (int (*)(RmProcessor,...))&NetworkCount);
+      info = CreateProcTable( nprocs);
+      if( info == NULL )
+      {  fprintf(stderr, "failed to get info\n\n");
+	 exit(EXIT_FAILURE);
+      }
+      nprocs = 0;
+      (void) RmApplyProcessors(Network, &NetworkWalk);
+   }
+   else
+   {  
+      info = CreateProcTable( argc -1);
+      if( info == NULL )
+      {  fprintf(stderr,"failed to get info\n\n");
+	 exit(EXIT_FAILURE);
+      }
+
+      for( i = 1; i < argc; i++ )
+      {
+         if(InitProcTable(nprocs, argv[i]))
+	    nprocs++;
+      } 
+   }
+
+   wc.style 		= CS_HREDRAW | CS_VREDRAW;
+   wc.lpfnWndProc 	= MainWndProc;
+   wc.hInstance 	= hInst;
+   wc.cbClsExtra 	= 0;
+   wc.cbWndExtra 	= 0;
+   wc.hIcon 		= NULL;
+   wc.hCursor 		= LoadCursor(NULL, IDC_CROSS);
+   wc.hbrBackground 	= GetStockObject(LTGRAY_BRUSH);
+   wc.lpszMenuName 	= NULL;
+   wc.lpszClassName 	= WNAME;
+   if (!RegisterClass(&wc))
+      return 255;           /* program ends */
+
+   hMainWnd = CreateWindow(WNAME, "MS Lights",
+			WSTYLE,
+			0, 0, 5, 5, NULL, NULL, hInst, NULL);
+      
+
+   hDC 		= GetDC(hMainWnd);
+   hFont 	= GetStockObject(ANSI_VAR_FONT);
+
+   SelectObject(hDC, hFont);
+   GetTextMetrics(hDC, &tm);      
+   ReleaseDC(hMainWnd, hDC);
+
+   name_width 	= maxw * tm.tmAveCharWidth + border;
+   panel_width 	= (tm.tmHeight + tm.tmExternalLeading)*6 + 4*border + name_width;
+
+   font_height 	= tm.tmHeight + tm.tmExternalLeading;
+
+   if ((7*border) < font_height)
+      panel_height = font_height;
+   else
+      panel_height = 7*border;
+
+   screen_height = GetSystemMetrics(SM_CYSCREEN) - GetSystemMetrics(SM_CYCAPTION);
+   if (panel_y(nprocs + 1) > screen_height)
+   {
+      nprocs = screen_height / (panel_y(1) - (border));
+      fprintf(stderr,"mslights: Limiting processors monitored to %d\n",nprocs);
+   }
+
+
+   panel_xstart = name_width + border*2;
+   panel_xend 	= panel_xstart + panel_width;
+
+   bar_x 	= name_width + 3*border;
+   bar_length 	= panel_width - 2*border;
+
+	
+   rect.left 	= 0;
+   rect.top 	= 0;
+
+   rect.right 	= (int)(panel_width + name_width + 3*border);
+   rect.bottom 	= (int)((panel_height+border)*nprocs + border);
+
+   /* adjust the window size to allow for the correct client area */
+   AdjustWindowRect(&rect, WSTYLE, FALSE);
+   width 	= rect.right + abs(rect.left);
+   height 	= rect.bottom + abs(rect.top);
+
+   /* now we resize the window */
+   MoveWindow(hMainWnd, 0, 0, width, height, FALSE);
+
+   /* show the window on the screen */
+   ShowWindow(hMainWnd, SW_SHOWNOACTIVATE);
+
+
+   /* spawn a parallel task that updates the bars */
+   if (Fork(10000, update_bars, 0)) 
+      /* enter the standard windows message loop */
+      while (GetMessage(&msg, NULL, NULL, NULL))
+      {
+	  TranslateMessage(&msg);   /* does nothing but included */
+	  DispatchMessage(&msg);
+      }
+
+   /* the application has terminated so unregister class */
+   UnregisterClass(WNAME, hInst);
+	      
+   return msg.wParam;
+} /* WinMain */
+
+
+
+@
+
+
+1.8
+log
+@fixed (most) compile time warnings for ARM world
+@
+text
+@d23 3
+a25 1
+#ifdef NEW_SYSTEM
+a26 2
+#else
+#include <process.h>
+@
+
+
+1.7
+log
+@General rewrite
+@
+text
+@d23 3
+d27 1
+d88 1
+a88 1
+   int new;
+d103 1
+a103 1
+   new = newbar((int)NewInfo->Load,MaxProcLoad);
+d105 1
+a105 1
+   if( new != ii->LoadBar )
+d107 2
+a108 2
+      bar(hDC, new,ii->LoadBar, penLoad, bar_x, panel_y(proc_offset)+loadbar_y);
+      ii->LoadBar = new;
+d117 2
+a118 2
+   new = newbar( linkload, MaxLinkLoad);
+   if( new != ii->LinkBar )
+d120 2
+a121 2
+      bar(hDC, new, ii->LinkBar, penLink, bar_x, panel_y(proc_offset)+linkbar_y);
+      ii->LinkBar = new;
+d125 2
+a126 2
+   new = newbar( (int)(NewInfo->MemMax-NewInfo->MemFree), (int)NewInfo->MemMax);
+   if( new != ii->MemBar )
+d128 2
+a129 2
+      bar(hDC, new, ii->MemBar, penMem, bar_x, panel_y(proc_offset)+membar_y);
+      ii->MemBar = new;
+d136 1
+a136 1
+void bar( HDC hDC, int new, int old, HPEN hPen, int x, int y )
+d146 1
+a146 1
+   if( new > old )
+d150 1
+a150 1
+      LineTo(hDC, x + new, y);
+d155 1
+a155 1
+      MoveTo(hDC, (int)(x+new), (int)y);
+@
+
+
+1.6
+log
+@Previous version did not compile for C40
+@
+text
+@d14 5
+d20 1
+a20 1
+ #include <stdio.h>
+d23 1
+d29 2
+a30 2
+
+#include <windows.h>      /* include the I/O server graphics code */
+d32 1
+a32 5
+#ifdef __C40
+#define NLINKS 6
+#else
+#define NLINKS 4
+#endif
+d34 28
+a61 69
+#define WNAME "MsLights"
+#define WSTYLE (WS_OVERLAPPED | WS_BORDER | WS_CAPTION | WS_SYSMENU)
+#define DisplayFont ANSI_VAR
+
+void  bar( HDC, word, word, HPEN, word, word);
+word  newbar( word, word);
+
+void  init_info( void );
+void  draw_bars(word i);
+
+word  border;
+word  name_width;
+word  panel_width;
+word  panel_height;
+word  panel_xstart;
+word  panel_xend;
+
+word  bar_height;
+word  bar_length;
+word  bar_x;
+
+word  loadbar_y;
+word  membar_y;
+word  linkbar_y;
+
+HFONT  hFont;
+
+HBRUSH brGrey;
+HPEN   penLoad;
+HPEN   penLink;
+HPEN   penMem;
+HPEN   penBG;
+
+HWND   hMainWnd;
+
+static  int     NetworkWalk(RmProcessor Processor, ...);
+static  int     NetworkCount(RmProcessor Processor, ...);
+
+word  panel_y(word i) { return ((i)*(panel_height+border)+border); }
+
+word grey       = RGB(128, 128, 128);
+word crLoadBar  = RGB(  0, 255, 255);
+word crLinkBar  = RGB(255, 255,   0);
+word crMemBar   = RGB(255,   0,   0);
+
+Semaphore running;
+Semaphore one_access;
+word nprocs     = 0;                    /* number of processors tracked */
+word pcount     = 0;
+char pname[100];                        /* processor name */
+word maxw       = 0;                    /* maximum string size of processor labels */
+char *maxname;                          /* the largest processor label - text */
+
+word MAXLINKLOAD = 10000;
+word AVELINKLOAD = 0;
+word MAXLOAD     = 1000;
+bool valid_data  = FALSE;
+
+typedef struct Proc_Info {
+        char            *Name;
+        Object          *Proc;
+        word            LoadBar;
+        word            LinkBar;
+        word            MemBar;
+        word            LoadLight;
+        word            LinkLight[NLINKS];
+        word            LocalLight;
+        ProcStats       OldInfo;
+} Proc_Info;
+d63 1
+d65 1
+d67 5
+a71 2
+ProcStats       NewInfo;                /* place for new stat info      */
+char            name[100];              /* buffer for name              */
+d74 1
+a74 1
+static  int    NetworkCount(RmProcessor Processor, ...)
+d81 1
+a81 1
+void draw_bars(word i)
+d83 5
+a87 4
+   Proc_Info *ii = info+i;
+   word l;
+   word new;
+   word linkload = 0;
+d90 1
+a90 6
+   ServerInfo(ii->Proc, (byte *)&NewInfo);
+
+   if(NewInfo.Load > MAXLOAD)
+   {
+      MAXLOAD = NewInfo.Load;
+   }
+d92 8
+a99 1
+   new = newbar(NewInfo.Load, MAXLOAD);
+d103 1
+a103 3
+      bar(hDC, new,ii->LoadBar, penLoad,
+          bar_x, panel_y(i)+loadbar_y);
+
+d107 7
+a113 26
+   for( l = 0; l < NLINKS; l++ )
+   {
+      int ll;
+
+      ll =
+                   NewInfo.Link[l].In
+                  -ii->OldInfo.Link[l].In
+                  +NewInfo.Link[l].Out
+                  -ii->OldInfo.Link[l].Out;
+      
+      linkload += ll;
+   }
+
+   AVELINKLOAD = linkload / NLINKS;
+   if (MAXLINKLOAD < AVELINKLOAD)
+   {
+      if(valid_data)
+      {
+         MAXLINKLOAD = AVELINKLOAD;
+      }
+   }
+
+   valid_data = TRUE;
+
+   new = newbar( linkload, MAXLINKLOAD * NLINKS);
+
+d116 1
+a116 3
+      bar(hDC, new, ii->LinkBar, penLink,
+          bar_x, panel_y(i)+linkbar_y);
+
+d120 2
+a121 3
+   new = newbar( NewInfo.MemMax-NewInfo.MemFree,
+                 NewInfo.MemMax);
+
+d124 1
+a124 3
+      bar(hDC, new, ii->MemBar, penMem,
+          bar_x, panel_y(i)+membar_y);
+
+d127 1
+a127 2
+
+   ii->OldInfo = NewInfo;
+d132 1
+a132 1
+void bar( HDC hDC, word new, word old, HPEN hPen, word x, word y )
+d134 20
+a153 17
+        if (new == 0)
+            new = 1;
+        
+        if( new > old )
+        {
+                /* extend bar */
+                SelectObject(hDC, hPen);
+                MoveTo(hDC, (int)(x), (int)y);
+                LineTo(hDC, (int)(x+new), (int)y);
+        }
+        else
+        {
+                /* shorten bar */
+                SelectObject(hDC, penBG);
+                MoveTo(hDC, (int)(x+new), (int)y);
+                LineTo(hDC, (int)(x+old), (int)y);
+        }
+d158 1
+a158 1
+word newbar( word value, word max )
+d160 2
+a161 4
+        if ( value >= max )
+        {
+                value = max - 1;
+        }
+d163 4
+a166 3
+        if ( value == 0 ) return 0;
+
+        return (value * bar_length) / max;
+a173 1
+
+d175 1
+a175 4
+   {
+      char *arg;
+      word w;
+
+d177 5
+a181 4
+      w = strlen(arg);
+      strcpy(pname,"/");
+      strcat(pname,arg);
+      strcat(pname,"/tasks");
+d183 8
+a190 11
+      info[pcount].Proc = Locate(NULL,pname);
+      info[pcount].Name = arg;
+
+      if( info[pcount].Proc == NULL )
+      {
+         printf("failed to find %s\n\n",arg);
+         exit(EXIT_FAILURE);
+      }
+
+      if( w > maxw )
+         maxw = w,maxname = arg;
+d192 19
+a210 3
+      pcount++;
+   }
+   return(0);
+a212 1
+
+d217 4
+a220 5
+   while (!TestSemaphore(&running))
+   {
+      Delay(OneSec/4);
+      if (TestSemaphore(&running))
+         break;
+d222 2
+d225 2
+a226 2
+      for( i = 0; i < nprocs; i++ )
+         draw_bars(i);
+d238 9
+a246 6
+         brGrey = CreateSolidBrush(grey);
+         penLoad = CreatePen(PS_SOLID, (int)bar_height, crLoadBar);
+         penLink = CreatePen(PS_SOLID, (int)bar_height, crLinkBar);
+         penMem = CreatePen(PS_SOLID, (int)bar_height, crMemBar);
+         penBG = CreatePen(PS_SOLID, (int)bar_height, grey);
+         break;
+a247 1
+
+d250 42
+a291 34
+         RECT rect;
+         int i;
+         PAINTSTRUCT ps;
+
+         BeginPaint(hWnd, &ps);
+         SelectObject(ps.hdc, hFont);
+
+         rect.left = (int)panel_xstart;
+         rect.right = (int)panel_xend;
+
+         Wait(&one_access);
+         for(i = 0; i < nprocs; i++ )
+         {
+            rect.top = (int)panel_y(i);
+            rect.bottom = (int)panel_y(i) + (int)panel_height;
+            FillRect( ps.hdc, &rect, brGrey);
+
+            info[i].LoadBar = 0;
+            info[i].LinkBar = 0;
+            info[i].MemBar = 0;
+            info[i].LoadLight = -1;
+            info[i].LinkLight[0] = -1;
+            info[i].LinkLight[1] = -1;
+            info[i].LinkLight[2] = -1;
+            info[i].LinkLight[3] = -1;
+            info[i].LocalLight = -1;
+         }
+         Signal(&one_access);
+
+         for(i = 0; i < nprocs; i++ )
+            TextOut(ps.hdc, (int)border, (int)panel_y(i), info[i].Name, strlen(info[i].Name));
+
+         EndPaint(hWnd, &ps);
+         break;
+d295 7
+a301 7
+         if (((char)wParam == 'q') || ((char)wParam == 'Q'))
+         {
+            msg = WM_CLOSE;
+            wParam = 0;
+            lParam = 0L;
+         }
+         /* fall through to close the window */
+d304 1
+a304 2
+         Signal(&running);
+         return DefWindowProc(hWnd, msg, wParam, lParam);
+d307 7
+a313 7
+         DeleteObject(brGrey);
+         DeleteObject(penLoad);
+         DeleteObject(penLink);
+         DeleteObject(penMem);
+         DeleteObject(penBG);
+         PostQuitMessage(0);
+         return DefWindowProc(hWnd, msg, wParam, lParam);
+d316 1
+a316 1
+         return DefWindowProc(hWnd, msg, wParam, lParam);
+d324 5
+a328 3
+{  int width, height;                  /* width and height of the window */
+   int x,y;                            /* top-left position of the window */
+   word i;
+d330 2
+a331 2
+   MSG msg;
+   HDC hDC;
+d333 1
+a333 1
+   int argc;
+a335 1
+   word font_height;
+a336 1
+   InitSemaphore(&running,0);
+a337 1
+
+d339 1
+a339 1
+
+d341 1
+a341 1
+   {
+d347 4
+a350 4
+      {
+         fprintf(stderr, "mslights: failed to get network details.\n");
+         fprintf(stderr, "        : %s\n", RmMapErrorToString(RmErrno));
+         exit(EXIT_FAILURE);
+d354 2
+a355 4
+      (void) RmApplyProcessors(Network, &NetworkCount);
+
+      info = (Proc_Info *)malloc(sizeof(Proc_Info) * (int)nprocs);
+
+d357 2
+a358 3
+      {
+         printf("failed to get info\n\n");
+         exit(EXIT_FAILURE);
+d360 1
+a360 3
+
+      memset(info,0,sizeof(Proc_Info) * (int)nprocs);
+
+a361 2
+
+
+d364 2
+a365 2
+   {
+      info = (Proc_Info *)malloc(sizeof(Proc_Info)*argc-1);
+d367 2
+a368 3
+      {
+         printf("failed to get info\n\n");
+         exit(EXIT_FAILURE);
+a370 2
+      memset(info,0,sizeof(Proc_Info)*argc-1);
+
+d373 3
+a375 21
+         char *arg = argv[i];
+         word w;
+
+         w = strlen(arg);
+         strcpy(pname,"/");
+         strcat(pname,arg);
+         strcat(pname,"/tasks");
+
+         info[nprocs].Proc = Locate(NULL,pname);
+         info[nprocs].Name = arg;
+
+         if( info[nprocs].Proc == NULL )
+         {
+            printf("failed to find %s\n\n",arg);
+            exit(EXIT_FAILURE);
+         }
+
+            if( w > maxw ) maxw = w,maxname = arg;
+
+            nprocs++;
+      }
+d378 10
+a387 11
+   /* Rather than InitGraphics, we now register the window class */
+   wc.style = CS_HREDRAW | CS_VREDRAW;
+   wc.lpfnWndProc = MainWndProc;
+   wc.hInstance = hInst;
+   wc.cbClsExtra = 0;
+   wc.cbWndExtra = 0;
+   wc.hIcon = NULL;
+   wc.hCursor = LoadCursor(NULL, IDC_CROSS);
+   wc.hbrBackground = GetStockObject(WHITE_BRUSH);
+   wc.lpszMenuName = NULL;
+   wc.lpszClassName = WNAME;
+d392 3
+a394 2
+                        WSTYLE,
+                        0, 0, 5, 5, NULL, NULL, hInst, NULL);
+d396 2
+a398 2
+   hDC = GetDC(hMainWnd);
+   hFont = GetStockObject(ANSI_VAR_FONT);
+d400 1
+a400 1
+   GetTextMetrics(hDC, &tm);
+d403 2
+a404 4
+   border = 2;
+   name_width = maxw * tm.tmAveCharWidth + border;
+   panel_width = ((word)tm.tmHeight+(word)tm.tmExternalLeading)*6 +
+                  4*border + name_width;
+d406 1
+a406 1
+   font_height = (word)tm.tmHeight + (word)tm.tmExternalLeading;
+d413 8
+d422 1
+a422 5
+   panel_xend = panel_xstart + panel_width;
+
+   bar_height = border;
+   bar_x = name_width + 3*border;
+   bar_length = panel_width - 2*border;
+d424 2
+a425 3
+   loadbar_y = border + bar_height/2;
+   linkbar_y = loadbar_y + bar_height + border;
+   membar_y = linkbar_y + bar_height + border;
+d427 3
+a429 2
+   rect.left = 0;
+   rect.top = 0;
+d431 2
+a432 2
+   rect.right = (int)(panel_width + name_width + 3*border);
+   rect.bottom = (int)((panel_height+border)*nprocs + border);
+d436 2
+a437 4
+   x = 0;
+   y = 0;
+   width = rect.right + abs(rect.left);
+   height = rect.bottom + abs(rect.top);
+d440 1
+a440 1
+   MoveWindow(hMainWnd, x, y, width, height, FALSE);
+d445 1
+d447 1
+a447 1
+   if (Fork(2000, update_bars, 0))
+d451 2
+a452 2
+          TranslateMessage(&msg);   /* does nothing but included */
+          DispatchMessage(&msg);
+d457 1
+a457 1
+
+d460 2
+@
+
+
+1.5
+log
+@More changes by Mike Gunning
+@
+text
+@d15 1
+a15 3
+#define _BSD
+
+#include <stdio.h>
+@
+
+
+1.4
+log
+@Changed #include from "windows.h" to <windows.h>
+@
+text
+@d15 2
+d28 6
+d70 1
+d87 5
+d93 9
+a101 9
+	char            *Name;
+	Object          *Proc;
+	word            LoadBar;
+	word            LinkBar;
+	word            MemBar;
+	word            LoadLight;
+	word            LinkLight[4];
+	word            LocalLight;
+	ProcStats       OldInfo;
+d110 1
+a110 1
+static  void    NetworkCount(RmProcessor Processor, ...)
+d126 8
+a133 3
+				
+   new = newbar(NewInfo.Load,1000);
+				
+d137 1
+a137 1
+	  bar_x, panel_y(i)+loadbar_y);
+d142 15
+a156 1
+   for( l = 0; l < 4; l++ )
+d158 10
+a167 11
+      linkload += 
+		   NewInfo.Link[l].In
+		  -ii->OldInfo.Link[l].In
+		  +NewInfo.Link[l].Out
+		  -ii->OldInfo.Link[l].Out;
+   }
+   linkload += (NewInfo.LocalTraffic
+	      -ii->OldInfo.LocalTraffic)/10;
+		
+   new = newbar( linkload, 20000);
+					      
+d171 2
+a172 2
+	  bar_x, panel_y(i)+linkbar_y);
+      
+d177 1
+a177 1
+		 NewInfo.MemMax);
+d181 3
+a183 3
+      bar(hDC, new, ii->MemBar, penMem, 
+	  bar_x, panel_y(i)+membar_y);
+      
+d186 1
+a186 1
+   
+d194 17
+a210 16
+	
+	if( new > old )
+	{       
+		/* extend bar */
+		SelectObject(hDC, hPen);
+		MoveTo(hDC, (int)(x+old), (int)y);
+		LineTo(hDC, (int)(x+new), (int)y);
+	}
+	else
+	{       
+		/* shorten bar */
+		SelectObject(hDC, penBG);
+		MoveTo(hDC, (int)(x+new), (int)y);
+		LineTo(hDC, (int)(x+old), (int)y);
+	}
+	
+d217 8
+a224 8
+	if ( value >= max )
+	{
+		value = max - 1;
+	}
+
+	if ( value == 0 ) return 0;
+		
+	return (value * bar_length) / max;
+d234 1
+a234 1
+   {  
+d247 4
+a250 4
+      if( info[pcount].Proc == NULL ) 
+      {  
+	 printf("failed to find %s\n\n",arg);
+	 exit(EXIT_FAILURE);
+d253 2
+a254 2
+      if( w > maxw ) 
+	 maxw = w,maxname = arg;
+d270 1
+a270 1
+	 break;
+d274 1
+a274 1
+	 draw_bars(i);
+d286 6
+a291 6
+	 brGrey = CreateSolidBrush(grey);
+	 penLoad = CreatePen(PS_SOLID, (int)bar_height, crLoadBar);
+	 penLink = CreatePen(PS_SOLID, (int)bar_height, crLinkBar);
+	 penMem = CreatePen(PS_SOLID, (int)bar_height, crMemBar);
+	 penBG = CreatePen(PS_SOLID, (int)bar_height, grey);
+	 break;
+d296 34
+a329 34
+	 RECT rect;
+	 int i;
+	 PAINTSTRUCT ps;
+
+	 BeginPaint(hWnd, &ps);
+	 SelectObject(ps.hdc, hFont);
+	 
+	 rect.left = (int)panel_xstart;
+	 rect.right = (int)panel_xend;
+
+	 Wait(&one_access);
+	 for(i = 0; i < nprocs; i++ )
+	 {
+	    rect.top = (int)panel_y(i);
+	    rect.bottom = (int)panel_y(i) + (int)panel_height;
+	    FillRect( ps.hdc, &rect, brGrey);
+	    
+	    info[i].LoadBar = 0;
+	    info[i].LinkBar = 0;
+	    info[i].MemBar = 0;
+	    info[i].LoadLight = -1;
+	    info[i].LinkLight[0] = -1;
+	    info[i].LinkLight[1] = -1;
+	    info[i].LinkLight[2] = -1;
+	    info[i].LinkLight[3] = -1;
+	    info[i].LocalLight = -1;
+	 }
+	 Signal(&one_access);
+
+	 for(i = 0; i < nprocs; i++ )
+	    TextOut(ps.hdc, (int)border, (int)panel_y(i), info[i].Name, strlen(info[i].Name));
+	 
+	 EndPaint(hWnd, &ps);
+	 break;
+d333 7
+a339 7
+	 if (((char)wParam == 'q') || ((char)wParam == 'Q'))
+	 {
+	    msg = WM_CLOSE;
+	    wParam = 0;
+	    lParam = 0L;
+	 }
+	 /* fall through to close the window */
+d342 2
+a343 2
+	 Signal(&running);
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+d346 7
+a352 7
+	 DeleteObject(brGrey);
+	 DeleteObject(penLoad);
+	 DeleteObject(penLink);
+	 DeleteObject(penMem);
+	 DeleteObject(penBG);
+	 PostQuitMessage(0);
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+d355 1
+a355 1
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+d377 1
+a377 1
+   
+d379 1
+a379 1
+   
+d381 1
+a381 1
+   {  
+d387 4
+a390 4
+      {  
+	 fprintf(stderr, "mslights: failed to get network details.\n");
+	 fprintf(stderr, "        : %s\n", RmMapErrorToString(RmErrno));
+	 exit(EXIT_FAILURE);
+d394 1
+a394 1
+      (void) RmApplyProcessors(Network, (int (*)(RmProcessor,...))&NetworkCount);
+d399 3
+a401 3
+      {  
+	 printf("failed to get info\n\n");
+	 exit(EXIT_FAILURE);
+d411 1
+a411 1
+   {  
+d414 3
+a416 3
+      {  
+	 printf("failed to get info\n\n");
+	 exit(EXIT_FAILURE);
+d422 3
+a424 17
+      {  
+	 char *arg = argv[i];
+	 word w;
+
+	 w = strlen(arg);
+	 strcpy(pname,"/");
+	 strcat(pname,arg);
+	 strcat(pname,"/tasks");
+
+	 info[nprocs].Proc = Locate(NULL,pname);
+	 info[nprocs].Name = arg;
+
+	 if( info[nprocs].Proc == NULL ) 
+	 {  
+	    printf("failed to find %s\n\n",arg);
+	    exit(EXIT_FAILURE);
+	 }
+d426 13
+a438 1
+	    if( w > maxw ) maxw = w,maxname = arg;
+d440 3
+a442 1
+	    nprocs++;
+d461 3
+a463 3
+			WSTYLE,
+			0, 0, 5, 5, NULL, NULL, hInst, NULL);
+      
+d468 1
+a468 1
+   GetTextMetrics(hDC, &tm);      
+d473 2
+a474 2
+   panel_width = ((word)tm.tmHeight+(word)tm.tmExternalLeading)*6 + 
+		  4*border + name_width;
+d493 1
+a493 1
+	
+d514 1
+a514 1
+   if (Fork(2000, update_bars, 0)) 
+d518 2
+a519 2
+	  TranslateMessage(&msg);   /* does nothing but included */
+	  DispatchMessage(&msg);
+d524 1
+a524 1
+	      
+@
+
+
+1.3
+log
+@Modified by Mike Gunning for new Windows library
+@
+text
+@d1 494
+a494 494
+/**************************************************************
+ * mslights.c                                                 *
+ * Perihelion Software Ltd                                    *
+ * Charlton Rd. Shepton Mallet, Somerset UK BA4 5QE           *
+ *                                                            *
+ * This source code is copyright free and may be adapted or   *
+ * distributed without notice to the authors.                 *
+ * Any improvements would be welcome by the authors.          *
+ *                                                            *
+ * This is a conversion of xlights.c which works in the X     *
+ * windows environment, so that it runs in the MS-windows     *
+ * I/O server environment (graphics environment v2.0).        *
+ **************************************************************/
+
+#include <stdio.h>
+#include <syslib.h>
+#include <root.h>
+#include <string.h>
+#include <stdlib.h>
+#include <queue.h>
+#include <rmlib.h>
+#include <nonansi.h>
+
+#include "windows.h"      /* include the I/O server graphics code */
+
+#define WNAME "MsLights"
+#define WSTYLE (WS_OVERLAPPED | WS_BORDER | WS_CAPTION | WS_SYSMENU)
+#define DisplayFont ANSI_VAR
+
+void  bar( HDC, word, word, HPEN, word, word);
+word  newbar( word, word);
+
+void  init_info( void );
+void  draw_bars(word i);
+
+word  border;
+word  name_width;
+word  panel_width;
+word  panel_height;
+word  panel_xstart;
+word  panel_xend;
+
+word  bar_height;
+word  bar_length;
+word  bar_x;
+
+word  loadbar_y;
+word  membar_y;
+word  linkbar_y;
+
+HFONT  hFont;
+
+HBRUSH brGrey;
+HPEN   penLoad;
+HPEN   penLink;
+HPEN   penMem;
+HPEN   penBG;
+
+HWND   hMainWnd;
+
+static  int     NetworkWalk(RmProcessor Processor, ...);
+
+word  panel_y(word i) { return ((i)*(panel_height+border)+border); }
+
+word grey       = RGB(128, 128, 128);
+word crLoadBar  = RGB(  0, 255, 255);
+word crLinkBar  = RGB(255, 255,   0);
+word crMemBar   = RGB(255,   0,   0);
+
+Semaphore running;
+Semaphore one_access;
+word nprocs     = 0;                    /* number of processors tracked */
+word pcount     = 0;
+char pname[100];                        /* processor name */
+word maxw       = 0;                    /* maximum string size of processor labels */
+char *maxname;                          /* the largest processor label - text */
+
+typedef struct Proc_Info {
+	char            *Name;
+	Object          *Proc;
+	word            LoadBar;
+	word            LinkBar;
+	word            MemBar;
+	word            LoadLight;
+	word            LinkLight[4];
+	word            LocalLight;
+	ProcStats       OldInfo;
+} Proc_Info;
+
+Proc_Info       *info = NULL;
+
+ProcStats       NewInfo;                /* place for new stat info      */
+char            name[100];              /* buffer for name              */
+
+/* This routine is called for every processor in the network.   */
+static  void    NetworkCount(RmProcessor Processor, ...)
+{
+  if (RmGetProcessorPurpose(Processor) == RmP_Helios)
+     nprocs++;
+}
+
+
+void draw_bars(word i)
+{
+   Proc_Info *ii = info+i;
+   word l;
+   word new;
+   word linkload = 0;
+   HDC  hDC = GetDC(hMainWnd);
+
+   ServerInfo(ii->Proc, (byte *)&NewInfo);
+				
+   new = newbar(NewInfo.Load,1000);
+				
+   if( new != ii->LoadBar )
+   {
+      bar(hDC, new,ii->LoadBar, penLoad,
+	  bar_x, panel_y(i)+loadbar_y);
+
+      ii->LoadBar = new;
+   }
+
+   for( l = 0; l < 4; l++ )
+   {
+      linkload += 
+		   NewInfo.Link[l].In
+		  -ii->OldInfo.Link[l].In
+		  +NewInfo.Link[l].Out
+		  -ii->OldInfo.Link[l].Out;
+   }
+   linkload += (NewInfo.LocalTraffic
+	      -ii->OldInfo.LocalTraffic)/10;
+		
+   new = newbar( linkload, 20000);
+					      
+   if( new != ii->LinkBar )
+   {
+      bar(hDC, new, ii->LinkBar, penLink,
+	  bar_x, panel_y(i)+linkbar_y);
+      
+      ii->LinkBar = new;
+   }
+
+   new = newbar( NewInfo.MemMax-NewInfo.MemFree,
+		 NewInfo.MemMax);
+
+   if( new != ii->MemBar )
+   {
+      bar(hDC, new, ii->MemBar, penMem, 
+	  bar_x, panel_y(i)+membar_y);
+      
+      ii->MemBar = new;
+   }
+   
+   ii->OldInfo = NewInfo;
+
+   ReleaseDC(hMainWnd, hDC);
+}
+
+void bar( HDC hDC, word new, word old, HPEN hPen, word x, word y )
+{
+	
+	if( new > old )
+	{       
+		/* extend bar */
+		SelectObject(hDC, hPen);
+		MoveTo(hDC, (int)(x+old), (int)y);
+		LineTo(hDC, (int)(x+new), (int)y);
+	}
+	else
+	{       
+		/* shorten bar */
+		SelectObject(hDC, penBG);
+		MoveTo(hDC, (int)(x+new), (int)y);
+		LineTo(hDC, (int)(x+old), (int)y);
+	}
+	
+}
+
+
+/*{{{  newbar function */
+word newbar( word value, word max )
+{
+	if ( value >= max )
+	{
+		value = max - 1;
+	}
+
+	if ( value == 0 ) return 0;
+		
+	return (value * bar_length) / max;
+}
+
+/*}}}*/
+
+/* This routine is called for every processor in the network.   */
+static  int     NetworkWalk(RmProcessor Processor, ...)
+{
+
+   if (RmGetProcessorPurpose(Processor) == RmP_Helios)
+   {  
+      char *arg;
+      word w;
+
+      arg = (char *)RmGetProcessorId(Processor);
+      w = strlen(arg);
+      strcpy(pname,"/");
+      strcat(pname,arg);
+      strcat(pname,"/tasks");
+
+      info[pcount].Proc = Locate(NULL,pname);
+      info[pcount].Name = arg;
+
+      if( info[pcount].Proc == NULL ) 
+      {  
+	 printf("failed to find %s\n\n",arg);
+	 exit(EXIT_FAILURE);
+      }
+
+      if( w > maxw ) 
+	 maxw = w,maxname = arg;
+
+      pcount++;
+   }
+   return(0);
+}
+
+
+void update_bars(void)
+{
+   int i;
+
+   while (!TestSemaphore(&running))
+   {
+      Delay(OneSec/4);
+      if (TestSemaphore(&running))
+	 break;
+
+      Wait(&one_access);
+      for( i = 0; i < nprocs; i++ )
+	 draw_bars(i);
+      Signal(&one_access);
+   }
+}
+
+
+long WINAPI MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+   switch (msg)
+   {
+      case WM_CREATE:
+      {
+	 brGrey = CreateSolidBrush(grey);
+	 penLoad = CreatePen(PS_SOLID, (int)bar_height, crLoadBar);
+	 penLink = CreatePen(PS_SOLID, (int)bar_height, crLinkBar);
+	 penMem = CreatePen(PS_SOLID, (int)bar_height, crMemBar);
+	 penBG = CreatePen(PS_SOLID, (int)bar_height, grey);
+	 break;
+      }
+
+      case WM_PAINT:
+      {
+	 RECT rect;
+	 int i;
+	 PAINTSTRUCT ps;
+
+	 BeginPaint(hWnd, &ps);
+	 SelectObject(ps.hdc, hFont);
+	 
+	 rect.left = (int)panel_xstart;
+	 rect.right = (int)panel_xend;
+
+	 Wait(&one_access);
+	 for(i = 0; i < nprocs; i++ )
+	 {
+	    rect.top = (int)panel_y(i);
+	    rect.bottom = (int)panel_y(i) + (int)panel_height;
+	    FillRect( ps.hdc, &rect, brGrey);
+	    
+	    info[i].LoadBar = 0;
+	    info[i].LinkBar = 0;
+	    info[i].MemBar = 0;
+	    info[i].LoadLight = -1;
+	    info[i].LinkLight[0] = -1;
+	    info[i].LinkLight[1] = -1;
+	    info[i].LinkLight[2] = -1;
+	    info[i].LinkLight[3] = -1;
+	    info[i].LocalLight = -1;
+	 }
+	 Signal(&one_access);
+
+	 for(i = 0; i < nprocs; i++ )
+	    TextOut(ps.hdc, (int)border, (int)panel_y(i), info[i].Name, strlen(info[i].Name));
+	 
+	 EndPaint(hWnd, &ps);
+	 break;
+      }
+
+      case WM_CHAR:
+	 if (((char)wParam == 'q') || ((char)wParam == 'Q'))
+	 {
+	    msg = WM_CLOSE;
+	    wParam = 0;
+	    lParam = 0L;
+	 }
+	 /* fall through to close the window */
+
+      case WM_CLOSE:
+	 Signal(&running);
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+
+      case WM_DESTROY:
+	 DeleteObject(brGrey);
+	 DeleteObject(penLoad);
+	 DeleteObject(penLink);
+	 DeleteObject(penMem);
+	 DeleteObject(penBG);
+	 PostQuitMessage(0);
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+
+      default:
+	 return DefWindowProc(hWnd, msg, wParam, lParam);
+   }
+
+   return 0L;
+}
+
+
+int PASCAL WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR lpszCmdLine, int nShow)
+{  int width, height;                  /* width and height of the window */
+   int x,y;                            /* top-left position of the window */
+   word i;
+   WNDCLASS wc;
+   MSG msg;
+   HDC hDC;
+   TEXTMETRIC tm;
+   int argc;
+   char **argv;
+   RECT rect;
+   word font_height;
+
+   InitSemaphore(&running,0);
+   InitSemaphore(&one_access, 1);
+   
+   GetArgcArgv(&argc, &argv);   /* we prefer using this to lpszCmdLine */
+   
+   if( argc <= 1 )
+   {  
+      RmNetwork Network;
+
+      /* Get details of the current network into local memory */
+      Network = RmGetNetwork();
+      if (Network == (RmNetwork) NULL)
+      {  
+	 fprintf(stderr, "mslights: failed to get network details.\n");
+	 fprintf(stderr, "        : %s\n", RmMapErrorToString(RmErrno));
+	 exit(EXIT_FAILURE);
+      }
+
+      /* Walk down the current network examining every processor        */
+      (void) RmApplyProcessors(Network, (int (*)(RmProcessor,...))&NetworkCount);
+
+      info = (Proc_Info *)malloc(sizeof(Proc_Info) * (int)nprocs);
+
+      if( info == NULL )
+      {  
+	 printf("failed to get info\n\n");
+	 exit(EXIT_FAILURE);
+      }
+
+      memset(info,0,sizeof(Proc_Info) * (int)nprocs);
+
+      (void) RmApplyProcessors(Network, &NetworkWalk);
+
+
+   }
+   else
+   {  
+      info = (Proc_Info *)malloc(sizeof(Proc_Info)*argc-1);
+      if( info == NULL )
+      {  
+	 printf("failed to get info\n\n");
+	 exit(EXIT_FAILURE);
+      }
+
+      memset(info,0,sizeof(Proc_Info)*argc-1);
+
+      for( i = 1; i < argc; i++ )
+      {  
+	 char *arg = argv[i];
+	 word w;
+
+	 w = strlen(arg);
+	 strcpy(pname,"/");
+	 strcat(pname,arg);
+	 strcat(pname,"/tasks");
+
+	 info[nprocs].Proc = Locate(NULL,pname);
+	 info[nprocs].Name = arg;
+
+	 if( info[nprocs].Proc == NULL ) 
+	 {  
+	    printf("failed to find %s\n\n",arg);
+	    exit(EXIT_FAILURE);
+	 }
+
+	    if( w > maxw ) maxw = w,maxname = arg;
+
+	    nprocs++;
+      }
+   }
+
+   /* Rather than InitGraphics, we now register the window class */
+   wc.style = CS_HREDRAW | CS_VREDRAW;
+   wc.lpfnWndProc = MainWndProc;
+   wc.hInstance = hInst;
+   wc.cbClsExtra = 0;
+   wc.cbWndExtra = 0;
+   wc.hIcon = NULL;
+   wc.hCursor = LoadCursor(NULL, IDC_CROSS);
+   wc.hbrBackground = GetStockObject(WHITE_BRUSH);
+   wc.lpszMenuName = NULL;
+   wc.lpszClassName = WNAME;
+   if (!RegisterClass(&wc))
+      return 255;           /* program ends */
+
+   hMainWnd = CreateWindow(WNAME, "MS Lights",
+			WSTYLE,
+			0, 0, 5, 5, NULL, NULL, hInst, NULL);
+      
+
+   hDC = GetDC(hMainWnd);
+   hFont = GetStockObject(ANSI_VAR_FONT);
+   SelectObject(hDC, hFont);
+   GetTextMetrics(hDC, &tm);      
+   ReleaseDC(hMainWnd, hDC);
+
+   border = 2;
+   name_width = maxw * tm.tmAveCharWidth + border;
+   panel_width = ((word)tm.tmHeight+(word)tm.tmExternalLeading)*6 + 
+		  4*border + name_width;
+
+   font_height = (word)tm.tmHeight + (word)tm.tmExternalLeading;
+
+   if ((7*border) < font_height)
+      panel_height = font_height;
+   else
+      panel_height = 7*border;
+
+   panel_xstart = name_width + border*2;
+   panel_xend = panel_xstart + panel_width;
+
+   bar_height = border;
+   bar_x = name_width + 3*border;
+   bar_length = panel_width - 2*border;
+
+   loadbar_y = border + bar_height/2;
+   linkbar_y = loadbar_y + bar_height + border;
+   membar_y = linkbar_y + bar_height + border;
+	
+   rect.left = 0;
+   rect.top = 0;
+
+   rect.right = (int)(panel_width + name_width + 3*border);
+   rect.bottom = (int)((panel_height+border)*nprocs + border);
+
+   /* adjust the window size to allow for the correct client area */
+   AdjustWindowRect(&rect, WSTYLE, FALSE);
+   x = 0;
+   y = 0;
+   width = rect.right + abs(rect.left);
+   height = rect.bottom + abs(rect.top);
+
+   /* now we resize the window */
+   MoveWindow(hMainWnd, x, y, width, height, FALSE);
+
+   /* show the window on the screen */
+   ShowWindow(hMainWnd, SW_SHOWNOACTIVATE);
+
+   /* spawn a parallel task that updates the bars */
+   if (Fork(2000, update_bars, 0)) 
+      /* enter the standard windows message loop */
+      while (GetMessage(&msg, NULL, NULL, NULL))
+      {
+	  TranslateMessage(&msg);   /* does nothing but included */
+	  DispatchMessage(&msg);
+      }
+
+   /* the application has terminated so unregister class */
+   UnregisterClass(WNAME, hInst);
+	      
+   return msg.wParam;
+} /* WinMain */
+
+@
+
+
+1.2
+log
+@greatly improved by JP - now uses resource manager
+@
+text
+@d1 494
+a494 415
+/**************************************************************
+ * mslights.c                                                 *
+ * Perihelion Software Ltd				      *
+ * Charlton Rd. Shepton Mallet, Somerset UK BA4 5QE           *
+ *                                                            *
+ * This source code is copyright free and may be adapted or   *
+ * distributed without notice to the authors.                 *
+ * Any improvements would be welcome by the authors.           *
+ *                                                            *
+ * This is a conversion of xlights.c which works in the X     *
+ * windows environment, so that it runs in the MS-windows     *
+ * environment.                                               *
+ **************************************************************/
+
+#include <stdio.h>
+#include <syslib.h>
+#include <root.h>
+#include <string.h>
+#include <stdlib.h>
+#include <queue.h>
+#include <rmlib.h>
+
+#include <graph.h>      /* include the windows graphics code */
+
+#define WNAME "Lights"
+#define DisplayFont ANSI_VAR
+
+void  bar( word, word, word, word, word);
+word  newbar(word, word);
+
+void  init_info( void );
+void  draw_bars(word i);
+
+void  MSEventFn(SHORT, SHORT, word, word);
+void  MSMouseFn(word, SHORT, SHORT, word);
+
+word  border;
+word  name_width;
+word  panel_width;
+word  panel_height;
+word  panel_start;
+
+word  bar_height;
+word  bar_length;
+word  bar_x;
+
+word  loadbar_y;
+word  membar_y;
+word  linkbar_y;
+
+
+static	int	NetworkWalk(RmProcessor Processor, ...);
+
+word  panel_y(word i) { return ((i)*(panel_height+border)+border); }
+
+Stream *win;
+
+word grey    	= RGB(128,128,128);
+word lblue   	= RGB(128,128,255);
+Semaphore running;
+word repaint 	= TRUE;
+word update  	= TRUE;
+word nprocs 	= 0;           	    	/* number of processors tracked */
+word pcount 	= 0;
+char pname[100];  	   		/* processor name */
+word maxw 	= 0;        		/* maximum string size of processor labels */
+char *maxname;       			/* the largest processor label - text */
+
+typedef struct Proc_Info {
+        char            *Name;
+        Object          *Proc;
+        word            LoadBar;
+        word		LinkBar;
+        word		MemBar;
+        word		LoadLight;
+        word            LinkLight[4];
+        word            LocalLight;
+        ProcStats       OldInfo;
+} Proc_Info;
+
+Proc_Info 	*info = NULL;
+
+ProcStats       NewInfo;        	/* place for new stat info      */
+char            name[100];      	/* buffer for name              */
+
+/* This routine is called for every processor in the network.	*/
+static	void	NetworkCount(RmProcessor Processor, ...)
+{
+
+  if (RmGetProcessorPurpose(Processor) == RmP_Helios)
+     nprocs++;
+}
+
+
+void MSEventFn(SHORT Type, SHORT WinID, word Word1, word Word2)
+{
+   WinID = WinID;
+   switch (Type) 
+   {
+      case MS_Repaint :
+         /* repaint the screen */
+         repaint = TRUE;
+         break;
+      case MS_KBD :
+         /* keys pressed */
+         {
+            SHORT key = (SHORT)(Word1 & 0xffff);
+            SHORT syskey = (SHORT)((Word1 & 0xffff0000) >> 16);
+            SHORT virtual = (SHORT)(Word2 & 0xffff);
+   
+            if ((!virtual) && (syskey == 0))
+               if(!((key != (SHORT)'q') && (key != (SHORT)'Q')))
+		  Signal(&running);
+         }
+         break;
+      case MS_Resize :
+         {
+            SHORT width = (SHORT)(Word1 & 0xffff);
+            SHORT height = (SHORT)((Word1 & 0xffff0000) >> 16);
+            
+            update = (width != -1) && (height != -1);
+         }
+         break;
+      default :
+         break;
+   }
+}
+
+void MSMouseFn(word WinID, SHORT X, SHORT Y, word Buttons)
+{
+   Buttons = Buttons;
+   WinID = WinID;
+   Y = Y;
+   
+   if (X > panel_start)
+      ChangeCursor(win, CROSS);
+   else
+      ChangeCursor(win, ARROW);
+}
+
+void draw_bars(word i)
+{
+	Proc_Info *ii = info+i;
+	word l;
+	word new;
+	word linkload = 0;
+
+	ServerInfo(ii->Proc, (byte *)&NewInfo);
+				
+	new = newbar(NewInfo.Load,1000);
+				
+	if( new != ii->LoadBar )
+	{
+		bar(new,ii->LoadBar,lblue,bar_x,
+		    panel_y(i)+loadbar_y);
+		ii->LoadBar = new;
+	}
+	for( l = 0; l < 4; l++ )
+	{
+		linkload += 
+			NewInfo.Link[l].In
+			-ii->OldInfo.Link[l].In
+			+NewInfo.Link[l].Out
+			-ii->OldInfo.Link[l].Out;
+	}
+	linkload += (NewInfo.LocalTraffic
+		   -ii->OldInfo.LocalTraffic)/10;
+		
+	new = newbar( linkload, 20000);
+					      
+	if( new != ii->LinkBar )
+	{
+		bar(new, ii->LinkBar, YELLOW, bar_x,
+		    panel_y(i)+linkbar_y);
+		ii->LinkBar = new;
+	}
+
+	new = newbar( NewInfo.MemMax-NewInfo.MemFree,
+			NewInfo.MemMax);
+
+	if( new != ii->MemBar )
+	{
+		bar(new,ii->MemBar, RED, bar_x,
+		     panel_y(i)+membar_y);
+		ii->MemBar = new;
+	}
+	ii->OldInfo = NewInfo;
+}
+
+void bar( word new, word old, word colour, word x, word y )
+{
+	
+	if( new > old )
+	{       /* extend bar */
+   		SetLineColor(win, colour);
+   		SetLineStyle(win, SOLID);
+   		SetLineWidth(win, border);
+                DrawLine(win, x+old, y, x+new, y);   		
+	}
+	else
+	{       /* shorten bar */
+   		SetLineColor(win, grey);
+   		SetLineStyle(win, SOLID);
+   		SetLineWidth(win, 2);
+                DrawLine(win, x+new, y , x+old, y);   		
+
+	}
+	
+}
+
+
+/*{{{  newbar function */
+word newbar( word value, word max )
+{
+	if ( value >= max )
+	{
+		value = max - 1;
+	}
+
+	if ( value == 0 ) return 0;
+		
+	return (value * bar_length) / max;
+}
+
+/*}}}*/
+
+/* This routine is called for every processor in the network.	*/
+static	int	NetworkWalk(RmProcessor Processor, ...)
+{
+
+   if (RmGetProcessorPurpose(Processor) == RmP_Helios)
+   {  char *arg;
+      word w;
+
+      arg = (char *)RmGetProcessorId(Processor);
+      w = strlen(arg);
+      strcpy(pname,"/");
+      strcat(pname,arg);
+      strcat(pname,"/tasks");
+
+      info[pcount].Proc = Locate(NULL,pname);
+      info[pcount].Name = arg;
+
+      if( info[pcount].Proc == NULL ) 
+      {  printf("failed to find %s\n\n",arg);
+         exit(EXIT_FAILURE);
+      }
+
+      if( w > maxw ) 
+         maxw = w,maxname = arg;
+
+      pcount++;
+   }
+   return(0);
+}
+
+int
+main(int argc, char **argv)
+{  word width, height;   		/* width and height of the window */
+   word  caption;			/* height of caption bar */
+   word x,y;             		/* top-left position of the window */
+   word i;
+   TextDim dim;
+
+   InitSemaphore(&running,0);        
+   if( argc <= 1 )
+   {  RmNetwork	Network;
+
+      /* Get details of the current network into local memory */
+      Network = RmGetNetwork();
+      if (Network == (RmNetwork) NULL)
+      {  fprintf(stderr, "mslights: failed to get network details.\n");
+         fprintf(stderr, "      : %s\n", RmMapErrorToString(RmErrno));
+         exit(EXIT_FAILURE);
+      }
+
+      /* Walk down the current network examining every processor	*/
+      (void) RmApplyProcessors(Network, (int (*)(RmProcessor,...))&NetworkCount);
+
+      info = malloc(sizeof(Proc_Info) * (int)nprocs);
+
+      if( info == NULL )
+      {  printf("failed to get info\n\n");
+         exit(EXIT_FAILURE);
+      }
+
+      memset(info,0,sizeof(Proc_Info) * (int)nprocs);
+
+      (void) RmApplyProcessors(Network, &NetworkWalk);
+
+
+      }
+      else
+      {  info = malloc(sizeof(Proc_Info)*argc-1);
+         if( info == NULL )
+         {  printf("failed to get info\n\n");
+            exit(EXIT_FAILURE);
+         }
+
+         memset(info,0,sizeof(Proc_Info)*argc-1);
+
+         for( i = 1; i < argc; i++ )
+         {  char *arg = argv[i];
+            word w;
+
+            w = strlen(arg);
+            strcpy(pname,"/");
+            strcat(pname,arg);
+            strcat(pname,"/tasks");
+
+            info[nprocs].Proc = Locate(NULL,pname);
+            info[nprocs].Name = arg;
+
+            if( info[nprocs].Proc == NULL ) 
+            {  printf("failed to find %s\n\n",arg);
+               exit(EXIT_FAILURE);
+            }
+
+            if( w > maxw ) maxw = w,maxname = arg;
+
+            nprocs++;
+         }
+      }
+
+      if(!InitGraphics((VoidFnPtr) MSMouseFn, (VoidFnPtr) MSEventFn))
+      {  printf("Windows graphics system not found.\n\n");
+         exit(EXIT_FAILURE);
+      }
+        
+      if(!MSEventSupported())
+      {  /* startws not loaded */
+         printf("mslights: windows server not found\n");
+         printf("        - repaint and exit disabled\n");
+         printf("        - run startws to enable\n");
+      }
+        
+
+      border	 	= 2;
+      win 		= OpenGraph(NULL,0,0,5,5,WS_POPUP | WS_BORDER, SW_SHOWNA);
+      caption 		= GetCaptionSize();
+      SelectFont(win,DisplayFont);
+      GetTextDim(win,&dim);
+      CloseGraph(win);
+
+      name_width 	= maxw * dim.ave_width + border;
+      panel_width 	= dim.height*6+4*border+name_width;
+
+      if ((7*border) < dim.height )
+         panel_height 	= dim.height;
+      else
+         panel_height 	= 7*border;
+
+      panel_start 	= name_width + border*2;
+
+      bar_height 	= border;
+      bar_x 		= name_width + 3*border;
+      bar_length 	= panel_width - 2*border;
+      loadbar_y 	= border + bar_height / 2;
+      linkbar_y 	= loadbar_y + bar_height + border;
+      membar_y 		= linkbar_y + bar_height + border;
+	
+      x = 0;
+      y = 0;
+
+      width 		= panel_width + name_width + 4*border;
+      height 		= (panel_height+border)*nprocs + caption + border;
+
+      win = OpenGraph(WNAME,x,y,width,height, 
+               WS_OVERLAPPED|WS_BORDER|WS_MINIMIZEBOX|WS_CAPTION|WS_SYSMENU,
+               SW_SHOWNA);
+              
+      if (win == (Stream *)NULL)
+      {  printf("Unable to open window\n\n");
+         exit(EXIT_FAILURE);
+      }
+        
+      SelectFont(win,DisplayFont);
+      GetWindowSize(win,&x,&y);
+
+      while(!TestSemaphore(&running))
+      {  if ( repaint && update )  /* repaint complete panel ? */
+         {  repaint = FALSE;
+            ClearGraph( win );
+                                
+            for(i = 0; i < nprocs; i++ )
+            {  FillRect( win, panel_start,panel_y(i), 
+		  name_width + border*2 + panel_width, 
+                  panel_y(i)+panel_height, grey);
+               info[i].LoadBar = 0;
+	       info[i].LinkBar = 0;
+	       info[i].MemBar = 0;
+               info[i].LoadLight = -1;
+               info[i].LinkLight[0] = -1;
+               info[i].LinkLight[1] = -1;
+               info[i].LinkLight[2] = -1;
+               info[i].LinkLight[3] = -1;
+               info[i].LocalLight = -1;
+            }
+
+            for(i = 0; i < nprocs; i++ )
+               TextOut(win,border,panel_y(i),info[i].Name);
+         }
+
+         for( i = 0; i < nprocs; i++ )
+            draw_bars(i);
+         FLUSH();
+                Delay(OneSec/4);
+      }
+      DisableMouse(win);
+      CloseGraph(win);
+      TidyGraphics();
+
+   return 0;
+   
+} /* main */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a14 2
+#define _BSD
+
+d20 2
+a21 1
+#include <signal.h>
+d23 1
+a23 1
+#include "graph.h"      /* include the windows graphics code */
+d26 1
+a26 1
+#define INAME "Lights"
+d28 2
+a29 1
+#define BAR_LENGHT 120
+d31 5
+a35 1
+#define DisplayFont ANSI_VAR
+d37 5
+a41 23
+word border;
+word name_width;
+word name_x;
+word name_y;
+word panel_width;
+word panel_height;
+word panel_start;
+word panel_x;
+
+word bar_height;
+word bar_length;
+word bar_x;
+
+word loadbar_y;
+word membar_y;
+word linkbar_y;
+
+word light_width;
+word light_height;
+
+word loadlight_x;
+word loadlight_y;
+word linklight_y;
+d43 3
+a45 2
+word caption;
+word offset;
+d47 3
+a49 2
+word panel_y(word i) { return ((i)*(panel_height+2*border)+border); }
+word linklight_x(word i)  { return ((4*border+light_width)+((i)*(light_width+2*border)+3*border+name_width) + offset); }
+a50 1
+Stream *win;
+d52 1
+a52 35
+word grey    = RGB(128,128,128);
+word pink    = RGB(255,0,128);
+word lred    = RGB(255,128,128);
+word orange  = RGB(255,128,0);
+word dyellow = RGB(192,192,0);
+word lgreen  = RGB(0,255,128);
+word lblue   = RGB(128,128,255);
+word dblue   = RGB(0,0,128);
+
+char **colnames;
+#define ncolors  11
+
+word colors[ncolors];
+
+int running;
+int repaint = TRUE;
+int update  = TRUE;
+
+int nprocs = 0;                     /* number of processors tracked */
+
+typedef struct Proc_Info
+  {
+    char *	Name;
+    Object *	Proc;
+    word        LoadBar;
+    word	LinkBar;
+    word	MemBar;
+    word	LoadLight;
+    word        LinkLight[ 4 ];
+    word        LocalLight;
+    ProcStats   OldInfo;
+  }
+Proc_Info;
+
+Proc_Info *info = NULL;
+d54 1
+a54 2
+ProcStats       NewInfo;        /* place for new stat info      */
+char            name[100];      /* buffer for name              */
+d56 1
+a56 1
+bool bars = TRUE;
+d58 22
+d81 1
+d83 2
+a84 5
+void light(word value, word x, word y)
+{
+    if (update)
+        FillRect(win,x,y,x+light_width,y+light_height,value);
+}
+d86 2
+a87 1
+word newlight(word value, word max)
+a88 1
+        if( value >= max ) value=max-1;
+d90 3
+a92 1
+        if( value == 0 ) return BLACK;
+a93 2
+        return colors[(value*ncolors)/max];
+}
+d112 2
+a113 17
+            {
+               running = (key != (SHORT)'q') && (key != (SHORT)'Q');
+               if ( key == (SHORT)'b')
+               {
+			repaint = TRUE;
+			update = TRUE;
+                	bars = TRUE;
+               }
+               
+               if ( key == (SHORT)'l')
+               {
+			repaint = TRUE;
+			update = TRUE;
+               		bars = FALSE;
+               }               
+
+            }
+d129 1
+a129 6
+void
+MSMouseFn(
+	  word 	WinID,
+	  SHORT X,
+	  SHORT Y,
+	  word  Buttons )
+a140 73
+void
+draw_lights(word i)
+{
+	Proc_Info *ii = info+i;
+	int l;
+	word new;
+
+	ServerInfo(ii->Proc,(byte *)&NewInfo);
+
+	new = newlight(NewInfo.Load,1000);
+
+	if( new != ii->LoadLight )
+	{
+		light(new,panel_x+loadlight_x,panel_y(i)+loadlight_y);
+		ii->LoadLight = new;
+	}
+	for( l = 0; l < 4; l++ )
+	{
+		new = newlight(
+			NewInfo.Link[l].In     +
+			NewInfo.Link[l].Out    -
+			ii->OldInfo.Link[l].In -
+			ii->OldInfo.Link[l].Out,	
+			10000);
+			
+		if( new != ii->LinkLight[l] )
+		{
+			light(new,panel_x+linklight_x(l),
+			      panel_y(i)+linklight_y);
+			ii->LinkLight[l] = new;
+		}
+	}
+	new = newlight( NewInfo.LocalTraffic -
+			ii->OldInfo.LocalTraffic,
+			10000);
+	if( new != ii->LocalLight )
+	{
+		light(new,panel_x+linklight_x(4),
+		      panel_y(i)+linklight_y);
+		ii->LocalLight = new;
+	}
+	ii->OldInfo = NewInfo;
+	
+}
+
+void bar( word new, word old, word colour, word x, word y )
+{
+	if( new > old )
+	{       /* extend bar */
+   		SetLineColor(win, colour);
+   		SetLineStyle(win, SOLID);
+   		SetLineWidth(win, 2);
+                DrawLine(win, x+old, y, x+new, y);   		
+	}
+	else
+	{       /* shorten bar */
+   		SetLineColor(win, grey);
+   		SetLineStyle(win, SOLID);
+   		SetLineWidth(win, 2);
+                DrawLine(win, x+new, y , x+old, y);   		
+	}
+}
+
+word newbar( word value, word max )
+{
+	if ( value >= max )
+		value = max - 1;
+
+	if ( value == 0 ) return 0;
+		
+	return (value * bar_length) / max;
+}
+
+d144 1
+a144 1
+	int l;
+d154 1
+a154 2
+		bar(new,ii->LoadBar,lblue,
+		    panel_x+bar_x,
+d173 1
+a173 2
+		bar(new,ii->LinkBar,GREEN,
+		    panel_x+bar_x,
+d183 1
+a183 2
+		bar(new,ii->MemBar,RED,
+		     panel_x+bar_x,
+d190 24
+a213 1
+static void intsig(int sig)
+d215 8
+a222 8
+#ifdef DEBUG
+	IOdebug ("sig = %d", sig) ;
+#else
+	sig = sig ;
+#endif
+	CloseGraph(win) ;
+	TidyGraphics() ;
+	exit(0) ;
+d225 1
+d227 2
+a228 4
+int
+main(
+     int 	argc,
+     char **	argv )
+d230 6
+a235 41
+  word 		width, height;   /* width and height of the window */
+  word		x,y;             /* top-left position of the window */
+  int		i;
+  char		pname[100];     /* processor name */
+  int		maxw = 0;        /* maximum string size of processor labels */
+  char *	maxname;       /* the largest processor label - text */
+  TextDim	dim,dim1;
+
+  
+  if ( argc <= 1 )
+    {
+      printf("usage: %s processors...\n",argv[0]);
+      exit(1);
+    }
+  
+  {
+    struct sigaction act ;
+    act.sa_handler = intsig ;
+    act.sa_mask = 0 ;
+    act.sa_flags = SA_ASYNC ;
+    (void) sigaction(SIGINT, &act, NULL) ;
+    (void) sigaction(SIGHUP, &act, NULL) ;
+    (void) sigaction(SIGQUIT, &act, NULL) ;
+    (void) sigaction(SIGTERM, &act, NULL) ;
+  }
+
+  info = malloc(sizeof(Proc_Info) * (argc - 1) );
+  
+  if ( info == NULL )
+    {
+      printf("failed to get info\n\n");
+      exit(1);
+    }
+  
+  memset( info, 0, sizeof(Proc_Info) * (argc - 1));
+  
+  for( i = 1; i < argc; i++ )
+    {
+      char *arg = argv[i];
+      int w;
+      
+d240 163
+a402 148
+      
+      info[nprocs].Proc = Locate(NULL,pname);
+      info[nprocs].Name = arg;
+      
+      if( info[nprocs].Proc == NULL ) 
+	{
+	  printf("failed to find %s\n\n",arg);
+	  exit(1);
+	}
+      
+      if( w > maxw ) maxw = w,maxname = arg;
+      
+      nprocs++;
+    }
+  
+  running = InitGraphics((VoidFnPtr)MSMouseFn, (VoidFnPtr)MSEventFn);
+  
+  if (!running)
+    {
+      printf("Windows graphics system not found.\n\n");
+      exit(1);
+    }
+  
+  running = MSEventSupported();
+  
+  if (!running) 
+    {
+      /* startws not loaded */
+      IOdebug("MSLights: windows server not found");
+      IOdebug("        - repaint and exit disabled");
+      IOdebug("        - run startws to enable");
+      running = TRUE;
+    }
+  
+  caption = GetCaptionSize();
+  
+  border = 2;
+  win = OpenGraph(NULL,0,0,5,5,WS_POPUP | WS_BORDER, SW_SHOWNA);
+  GetTextDim(win,&dim1);
+  SelectFont(win,DisplayFont);
+  GetTextDim(win,&dim);
+  CloseGraph(win);
+  
+  /* caption = dim1.height + dim1.external_leading + dim1.height/2; */
+  name_width = maxw * dim.ave_width + 1;
+  name_x = border;
+  name_y = 0;
+  light_width = dim.height - 2*border;
+  light_height = light_width;
+  panel_width = (light_width+2*border)*6+4*border+name_width;
+  panel_height = (light_height+2*border);
+  panel_start = panel_x+name_width+border*3;
+  panel_x = border;
+  
+  bar_height = light_height/3;
+  bar_x = name_width+3*border;
+  bar_length = panel_width-bar_x-border;
+  loadbar_y = border+bar_height-2;
+  linkbar_y = loadbar_y+bar_height;
+  membar_y = linkbar_y+bar_height;
+  
+  loadlight_x = name_width+3*border;
+  loadlight_y = border;
+  linklight_y = border;
+  
+  x = 0;
+  y = 0;
+  
+  width = panel_width + 3 * border;
+  height = (panel_height + 2 * border) * nprocs + caption;
+  
+  colors[0] = dblue;
+  colors[1] = BLUE;
+  colors[2] = lblue;
+  colors[3] = GREEN;
+  colors[4] = lgreen;
+  colors[5] = YELLOW;
+  colors[6] = dyellow;
+  colors[7] = orange;
+  colors[8] = lred;
+  colors[9] = pink;
+  colors[10] = RED;
+  
+  win = OpenGraph(WNAME,x,y,width,height, 
+		  WS_OVERLAPPED|WS_BORDER|WS_MINIMIZEBOX|WS_CAPTION|WS_SYSMENU,
+		  SW_SHOWNA);
+  
+  if (win == (Stream *)NULL)
+    {
+      printf("Unable to open window\n\n");
+      exit(1);
+    }
+  
+  SelectFont(win,DisplayFont);
+  GetWindowSize(win,&x,&y);
+  if (x > width)
+    {
+      offset = (x-width) / 2;
+      panel_start += offset;
+      panel_width += offset;
+      loadlight_x += offset;
+    }
+  else
+    offset = 0;
+  
+  for(; running ;)
+    {
+      if ( repaint && update )  /* repaint complete panel ? */
+	{
+	  repaint = FALSE;
+	  
+	  ClearGraph( win );
+	  
+	  for (i = 0; i < nprocs; i++ )
+	    {
+	      FillRect(win,panel_start,panel_y(i),
+		       panel_x+panel_width,
+		       panel_y(i)+panel_height,
+		       grey);
+
+	      info[i].LoadBar = 0;
+	      info[i].LinkBar = 0;
+	      info[i].MemBar = 0;
+	      info[i].LoadLight = -1;
+	      info[i].LinkLight[0] = -1;
+	      info[i].LinkLight[1] = -1;
+	      info[i].LinkLight[2] = -1;
+	      info[i].LinkLight[3] = -1;
+	      info[i].LocalLight = -1;
+	    }
+	  
+	  for(i = 0; i < nprocs; i++ )
+	    {
+	      TextOut( win, panel_x + name_x, panel_y(i) + name_y,
+		      info[i].Name);
+	    }
+	}
+      
+      for( i = 0; i < nprocs; i++ )
+	{
+	  if(bars) draw_bars(i);
+	  else draw_lights(i);
+	  
+	}
+      
+      FLUSH();
+      Delay(OneSec/4);
+    }
+d404 8
+a411 1
+  TidyGraphics();
+d413 2
+a414 2
+  return 0;
+  
+@

@@ -1,0 +1,327 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1
+	C40_Field_Test_2:1.1
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	94.03.08.13.05.57;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.08.13.08.03.57;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	93.08.12.16.19.48;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.26.19.02.42;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@fixed compile time warning for ARM world
+@
+text
+@/****************************************************************/
+/* File: macro.c                                                */
+/*                                                              */
+/* machine independant entry to macro processor. Infd and outfd */
+/* are already set to the input and output streams.             */
+/*                                                              */
+/* Author: NHG 19-Feb-87                                        */
+/****************************************************************/
+#ifdef __TRAN
+static char *RcsId = "$Id: macro.c,v 1.3 1993/08/13 08:03:57 nickc Exp nickc $ Copyright (C) Perihelion Software Ltd.";
+#endif
+  
+#include "ampp.h"
+#include <string.h>
+  
+#define trace if(traceflags&db_parse)_trace
+
+PUBLIC jmp_buf reclev;
+
+PRIVATE int parse_depth;
+
+PRIVATE void eval( void );
+PRIVATE void evalvar( void );
+PRIVATE void collectarg( struct Arg * arg );
+
+/********************************************************/
+/* macro                                                */
+/*                                                      */
+/* processor entry point                                */
+/*                                                      */
+/********************************************************/
+
+PUBLIC void macro()
+{
+	WORD nesting = 0;
+        jmp_buf catchall;
+
+        /* the default recovery level simply quits */
+        if( setjmp(catchall) ) return;
+        memcpy(reclev, catchall, sizeof(jmp_buf));
+
+	parse_depth = 0;
+	
+	symb = 0;
+	
+        while( symb != s_eof ) nesting = parse((int)nesting);
+
+	if( nesting != 0 ) warn("Mismatched brackets at EOF %d",nesting);
+}
+
+
+/********************************************************/
+/* parse                                                */
+/*                                                      */
+/* Recursively called routine which copies a single item*/
+/* from the input to the output doing any macro         */
+/* replacements etc. as it goes. An item consists of a  */
+/* single token, or a sequence of tokens enclosed in    */
+/* brackets. If the item is preceeded by a quote it is  */
+/* not examined for macros but is transferred directly	*/
+/* to the output.					*/
+/*                                                      */
+/********************************************************/
+
+PUBLIC WORD parse(INT old_nesting)
+{
+        int nesting = (int) old_nesting;
+        int quoted;
+	
+        nextsym();
+
+        if( symb==s_eof ) return nesting;
+
+	parse_depth++;
+
+	if( ( quoted = (symb==s_quote) ) != 0 ) nextsym();
+
+/*	trace("Parse %squoted depth %d",quoted?"":"un",parse_depth); */
+		
+        for(;;)
+        {
+                switch ( (int)symb )
+                {
+                case s_builtin: if(!quoted) { builtin(); break; }
+
+                case s_macro:   if(!quoted) { eval(); break; }
+
+		case s_hexvar:
+                case s_var:     if(!quoted) { evalvar(); break; }
+
+                default:
+                case s_token:  
+				if( toksize == 1 ) wrch(token[0]);
+				else wrstr(token);
+				break;
+
+                case s_lbra:
+                        if( nesting++ > 0) wrch(c_lbra);
+                        break;
+
+                case s_rbra:
+                        if( --nesting > 0 ) wrch(c_rbra);
+                        break;
+
+                case s_eof: return nesting;
+
+                case s_quote:
+                        if( quoted ) wrch(c_quote);
+                        pbchar(c_quote);
+                        nesting = (int) parse((WORD)nesting);
+                        break;
+                       
+                case s_concat:
+                        if( quoted ) wrch(c_concat);
+                        break;
+                }
+
+                if ( nesting <= old_nesting ) break;
+
+                nextsym();
+        }
+
+	parse_depth--;
+
+	return nesting;
+}
+
+
+/********************************************************/
+/* eval                                                 */
+/*                                                      */
+/* The current symbol has been identified as a macro,   */
+/* push its definition back onto the input and continue.*/
+/*                                                      */
+/********************************************************/
+
+PRIVATE void eval()
+{
+        struct Macro *macro = tokdef->Value.macro;
+        INT i;
+        struct Arg *arg = (struct Arg *)(macro->arglist.Head);
+
+	trace("Eval %12s depth %d",token,parse_depth);
+	
+        for( i = 0 ; i < macro->nargs ; i++ )
+        {
+                collectarg(arg);
+                arg = (struct Arg *)(arg->node.Next);
+        }
+
+        /* We now push the text of the macro backwards onto the putback
+           stack. We surround it with brackets so one call to parse will
+           read it all, we can then unwind the argument defs.
+        */
+
+        pbchar(c_rbra);				/* closing bracket */
+
+        pbdef(&macro->def); 			/* put def back */
+
+        pbchar(c_lbra);				/* opening bracket */
+
+        parse(0L);				/* evaluate the macro */
+
+        /* now clear the argument definitions */
+        arg = (struct Arg *)(macro->arglist.Head);
+        for( i = 0 ; i < macro->nargs ; i++ )
+        {
+                unwind(arg->sym);
+                arg = (struct Arg *)(arg->node.Next);
+        }
+
+}
+
+/********************************************************/
+/* collectarg                                           */
+/*                                                      */
+/* Collect the definition of an argument and add a def  */
+/* for it.                                              */
+/* If the formal parameter was prefixed by a number of  */
+/* quotes, these are placed in front of the actual	*/
+/* parameter before it is read in.			*/
+/*                                                      */
+/********************************************************/
+
+PRIVATE void collectarg(struct Arg *arg)
+{
+        struct Macro *macro = New(struct Macro);
+	INT quoted = arg->quoted;
+	
+        pbskipspaces();
+
+        while( quoted-- ) pbchar(c_quote);
+
+        getdef(&macro->def);
+
+        macro->nargs = 0;
+
+        adddef((INT)s_macro,arg->sym,(INT)macro);
+}
+
+/********************************************************/
+/* evalvar                                              */
+/*                                                      */
+/* evaluate a variable and replace it in the input with */
+/* a representative digit string.                       */
+/*                                                      */
+/********************************************************/
+
+PRIVATE void evalvar()
+{
+	if( symb == s_var ) pbnum(tokval);
+	else pbhex(tokval);
+}
+
+@
+
+
+1.3
+log
+@fixed compile time error
+@
+text
+@d10 1
+a10 1
+static char *RcsId = "$Id: macro.c,v 1.2 1993/08/12 16:19:48 nickc Exp nickc $ Copyright (C) Perihelion Software Ltd.";
+d22 3
+a24 3
+PRIVATE void eval();
+PRIVATE void evalvar();
+PRIVATE void collectarg();
+@
+
+
+1.2
+log
+@fixed compile time warnings
+@
+text
+@d10 1
+a10 1
+static char *RcsId = "$Id: macro.c,v 1.1 1990/09/26 19:02:42 paul Exp nickc $ Copyright (C) Perihelion Software Ltd.";
+d46 1
+a46 1
+        while( symb != s_eof ) nesting = parse(nesting);
+d198 1
+a198 1
+        adddef((WORD)s_macro,arg->sym,macro);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d9 4
+a12 2
+static char *RcsId = "$Id$ Copyright (C) Perihelion Software Ltd.";
+
+d14 2
+a15 1
+
+d65 1
+a65 2
+PUBLIC WORD parse(old_nesting)
+INT old_nesting;
+d67 1
+a67 1
+        int nesting = old_nesting;
+d76 1
+a76 1
+	if( ( quoted = (symb==s_quote) ) ) nextsym();
+d110 1
+a110 1
+                        nesting = parse((WORD)nesting);
+d185 1
+a185 2
+PRIVATE void collectarg(arg)
+struct Arg *arg;
+@

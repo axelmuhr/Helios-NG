@@ -1,0 +1,521 @@
+head	1.3;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1
+	Helios1_2:1.1
+	V1_2Beta0:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.3
+date	93.07.09.12.32.25;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.09.04.07.51.37;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.05.13.20.52;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@fault library code
+@
+
+
+1.3
+log
+@removed conflicts with C++
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S   N U C L E U S                      --
+--                     ---------------------------                      --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- fault.c								--
+--                                                                      --
+--	Library to extract error from faults database.			--
+--                                                                      --
+--	Author:  NHG 7/3/89						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId: 	%W%	%G% Copyright (C) 1989, Perihelion Software Ltd.*/
+
+
+#include <helios.h>	/* standard header */
+
+#define __in_fault 1	/* flag that we are in this module */
+
+/*--------------------------------------------------------
+-- 		     Include Files			--
+--------------------------------------------------------*/
+
+#include <string.h>
+#include <codes.h>
+#include <syslib.h>
+#include <errno.h>
+#include <fault.h>
+
+static char *skipname(char *p);
+static char *skipspace(char *p);
+static int strtonum(char *s);
+static void rdline(FDB *fdb, char *buf);
+static int rdch(FDB *fdb);
+static void addhex(char *text, word val);
+static word addint(char *s, word i);
+
+/*--------------------------------------------------------
+-- fdbopen						--
+--							--
+-- Open faults database					--
+--							--
+--------------------------------------------------------*/
+
+extern FDB *fdbopen(string name)
+{
+	Object *o = NULL;
+	Stream *s = NULL;
+
+	FDB *fdb = New(FDB);
+
+	if( fdb == NULL ) return NULL;
+
+	fdb->pos = 0;	
+	fdb->upb = 0;	
+	
+	o = Locate(NULL,name);
+	
+	if( o == NULL ) goto fail;
+	
+	s = Open(o,NULL,O_ReadOnly);
+	
+	if( s == NULL ) goto fail;
+	
+	fdb->stream = s;
+	
+	Close(o);
+	
+	return fdb;
+fail:
+	if( o != NULL ) Close(o);
+	if( s != NULL ) Close(s);
+	if( fdb != NULL ) Free(fdb);
+	return NULL;
+}
+
+/*--------------------------------------------------------
+-- fdbclose						--
+--							--
+-- Close faults database				--
+--							--
+--------------------------------------------------------*/
+
+extern void fdbclose(FDB *fdb)
+{
+	Close(fdb->stream);
+	Free(fdb);
+}
+
+/*--------------------------------------------------------
+-- fdbrewind						--
+--							--
+-- Rewind faults database				--
+--							--
+--------------------------------------------------------*/
+
+extern void fdbrewind(FDB *fdb)
+{
+	fdb->pos = 0;
+	fdb->upb = 0;
+	Seek(fdb->stream,0,0);
+}
+
+/*--------------------------------------------------------
+-- fdbfind						--
+--							--
+-- Search faults database for a given code		--
+--							--
+--------------------------------------------------------*/
+
+extern int fdbfind(FDB *fdb, char *Class, word code, char *text, word tsize)
+{
+	char *line = (char *)Malloc(100);
+	char *codename, *codenum, *codemsg, *p;
+	char *Classname, *Classmask, *Classpfix;
+	bool foundclass = FALSE;
+	int codeval, Classbits = 0;
+
+	forever
+	{
+		rdline(fdb,line);
+
+		switch( line[0] )
+		{
+		case '\0':		/* EOF		*/
+			goto nomsg;
+		case '\n':		/* blank line 	*/
+		case '#':		/* comment	*/
+			continue;
+		case '!':		/* Class name	*/
+			if( foundclass ) goto nomsg;
+			if( line[1] == '!' ) continue;
+			
+			p = skipspace(line+1);
+			Classname = p;
+			p = skipname(p);
+			p = skipspace(p);
+			Classmask = p;
+			p = skipname(p);
+			p = skipspace(p);
+			Classpfix = p;
+			p = skipname(p);
+			Classbits = strtonum(Classmask);
+			
+			if( strcmp(Classname,Class) == 0 ) foundclass = TRUE;
+
+			break;
+			
+		default:		/* code line	*/
+			if( !foundclass ) continue;
+
+			p = skipspace(line);
+			codename = p;
+			p = skipname(p);
+			p = skipspace(p);
+			codenum = p;
+			p = skipname(p);
+			p = skipspace(p);
+			codemsg = p;
+			while( *p != 0 && *p != '\n' ) p++;
+			*p = 0;
+
+			codeval = strtonum(codenum);
+
+			if( codeval == (code & Classbits) )
+			{
+				if( codemsg[0] == 0 ) codemsg = codename;
+				if( (word)strlen(codemsg) + (word)strlen(text) < tsize )
+				{
+					strcat(text,codemsg);
+				}
+				Free(line);
+				return strlen(text);
+			}
+			
+		}
+	}	
+
+nomsg:
+	strcpy(line,"<");
+	strcat(line,Class);
+	strcat(line,": 0x");
+	addhex(line,code & Classbits);
+	strcat(line,">");
+
+	if( (word)strlen(line) + (word)strlen(text) < tsize ) strcat(text,line);
+	
+	Free(line);
+	return strlen(text);
+}
+
+/*--------------------------------------------------------
+-- Fault						--
+--							--
+-- Decode Helios error/function code			--
+--							--
+--------------------------------------------------------*/
+
+extern void Fault(word code, char *msg, word msize)
+{
+	FDB *fdb;
+
+	fdb = fdbopen("/helios/etc/faults");
+	
+	if( fdb == NULL ) 
+	{
+		strcpy(msg,"Cannot open fault database");
+		return;
+	}
+	
+	if( code < 0 )
+	{
+		strcpy(msg,"From ");
+		fdbfind(fdb,"SubSystem",code,msg,msize);
+		strcat(msg,": ");
+		fdbfind(fdb,"ErrorClass",code,msg,msize); strcat(msg,", ");
+		fdbfind(fdb,"GeneralError",code,msg,msize); strcat(msg," ");
+		if( code&0x8000 ) fdbfind(fdb,"ObjectCode",code,msg,msize);
+		else {
+			if( (code&EG_Mask) == EG_Exception )
+			{
+				if( (code & 0x0000ff00) == EE_Signal )
+				{
+					strcat(msg,"Signal: ");
+					fdbfind(fdb,"Signal",code,msg,msize);
+				}
+				else fdbfind(fdb,"Exception",code,msg,msize);
+			}
+			else
+			{
+				word c = code&0xffff;
+				if( c == 0 ) strcat(msg,"0");
+				else addint(msg,c);
+				if( (code&EG_Mask) == EG_CallBack )
+					strcat(msg," secs");
+			}
+		}
+	}
+	else
+	{
+		if( code <= MAX_PERROR )
+		{
+			strcpy(msg,"Posix error: ");
+			fdbfind(fdb,"Posix",code,msg,msize);
+		}
+		else
+		{
+			strcpy(msg,"Function for ");
+			fdbfind(fdb,"SubSystem",code,msg,msize);
+			strcat(msg,": ");
+			fdbfind(fdb,"FunctionClass",code,msg,msize); strcat(msg," ");
+			fdbfind(fdb,"GeneralFunction",code,msg,msize); strcat(msg," ");
+			if ( (code & 0xf) ) fdbfind(fdb,"SubFunction",code,msg,msize);
+		}
+	}
+
+	fdbclose(fdb);
+}
+
+/*--------------------------------------------------------
+-- perror						--
+--							--
+-- get message for posix error code.			--
+--							--
+--------------------------------------------------------*/
+/*--------------------------------------------------------
+--							--
+-- Support routines					--
+--							--
+--------------------------------------------------------*/
+
+
+static char *skipname(char *p)
+{
+	while( *p != ' ' && *p != '\t' && *p != '\n' && *p != 0 ) p++;
+	if( *p == 0 ) return p;
+	*p++ = 0;
+	return p;
+}
+
+static char *skipspace(char *p)
+{
+	while( *p == ' ' || *p == '\t' ) p++;
+	return p;
+}
+
+static int strtonum(char *s)
+{
+	int radix = 10;
+	int val = 0;
+	
+	while( *s )
+	{
+		char c = *s++;
+		int digit = 0;
+		
+		if( c == 'x' ) { radix = 16; continue; }
+		
+		if( '0' <= c && c <= '9' ) digit = c - '0';
+		elif( radix == 16 && ('a' <= c && c <= 'f') ) digit = c - 'a' + 10;
+		elif( radix == 16 && ('F' <= c && c <= 'F') ) digit = c - 'A' + 10;
+
+		val = val * radix + digit;
+	}
+	
+	return val;
+}
+
+static word addint(char *s, word i)
+{	
+	word len;
+
+	if( i == 0 ) return strlen(s);
+
+	len = addint(s,i/10);
+  
+	s[len] = (char)(i%10) + '0';
+  
+	s[len+1] = '\0';
+
+	return len+1;
+}
+
+static void addhex(char *text, word val)
+{
+	word i;
+	char *digits = "0123456789abcdef";
+	text += strlen(text);
+	for( i = 7; i >= 0; i-- )
+	{
+		word d = (val>>(i*4))&0xf;
+		*text++ = digits[d];
+	}
+	*text = 0;
+}
+
+static void rdline(FDB *fdb, char *buf)
+{
+	forever
+	{
+		int c = rdch(fdb);
+		if( c == -1 )
+		{
+			break;
+		}
+		if( c == '\r' ) continue;
+		*buf++ = c;
+		if( c == '\n' ) break;	
+	}
+	*buf = 0;
+}
+
+static int rdch(FDB *fdb)
+{
+	if( fdb->upb == -1 ) return -1;
+	if( fdb->pos == fdb->upb )
+	{
+		word size = Read(fdb->stream,fdb->buf,FDBBUFMAX,-1);
+		fdb->upb = size;
+		if( size == -1 ) 
+		{
+			return -1;
+		}
+		fdb->pos = 0;
+	}
+	return fdb->buf[fdb->pos++];
+}
+
+/* -- End of fault.c */
+@
+
+
+1.2
+log
+@fixed compile time warnings
+@
+text
+@d114 1
+a114 1
+extern int fdbfind(FDB *fdb, char *class, word code, char *text, word tsize)
+d116 1
+a116 1
+	char *line = Malloc(100);
+d118 1
+a118 1
+	char *classname, *classmask, *classpfix;
+d120 1
+a120 1
+	int codeval, classbits = 0;
+d133 1
+a133 1
+		case '!':		/* class name	*/
+d138 1
+a138 1
+			classname = p;
+d141 1
+a141 1
+			classmask = p;
+d144 1
+a144 1
+			classpfix = p;
+d146 1
+a146 1
+			classbits = strtonum(classmask);
+d148 1
+a148 1
+			if( strcmp(classname,class) == 0 ) foundclass = TRUE;
+d168 1
+a168 1
+			if( codeval == (code & classbits) )
+d184 1
+a184 1
+	strcat(line,class);
+d186 1
+a186 1
+	addhex(line,code & classbits);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d38 1
+a38 1
+static void addhex(char *text, int val);
+d114 1
+a114 1
+extern int fdbfind(FDB *fdb, char *class, word code, char *text, int tsize)
+d120 1
+a120 1
+	int codeval, classbits;
+d168 1
+a168 1
+			if( codeval == (code&classbits) )
+d171 1
+a171 1
+				if( strlen(codemsg) + strlen(text) < tsize )
+d186 1
+a186 1
+	addhex(line,code&classbits);
+d189 1
+a189 1
+	if( strlen(line) + strlen(text) < tsize ) strcat(text,line);
+d234 1
+a234 1
+				int c = code&0xffff;
+d256 1
+a256 1
+			if( (code&0xf) ) fdbfind(fdb,"SubFunction",code,msg,msize);
+d298 1
+a298 1
+		int digit;
+d314 1
+a314 1
+	int len;
+d320 1
+a320 1
+	s[len] = (i%10) + '0';
+d327 1
+a327 1
+static void addhex(char *text, int val)
+d329 1
+a329 1
+	int i;
+d334 1
+a334 1
+		int d = (val>>(i*4))&0xf;
+d361 1
+a361 1
+		int size = Read(fdb->stream,fdb->buf,FDBBUFMAX,-1);
+@

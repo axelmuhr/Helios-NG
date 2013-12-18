@@ -1,0 +1,157 @@
+	include	i860.m
+	include instrhacks.m
+
+
+.ModStart:
+--
+-- Arithmetic routines
+--
+-- int ___multiply( int a, int b)
+-- r16               r16   r17
+--
+.__multiply::
+--	BUG6
+	mov	r1,r18
+--	LOADC adapter,r25
+--	printword r16
+         ixfr     r16,f16
+         ixfr     r17,f18
+         fmlow.dd f18,f16,f20
+         fxfr     f20,r16
+         BRI      r18
+         nop
+
+--	PCALIGN 32
+--
+-- int ___divide( int a, int b)
+-- r16            r16      r17
+--
+.__divide::
+         xorh     0x8000,  r16,   r19
+         xorh     0x8000,  r17,   r20
+         mov      r1,r23         -- Can't delay this one
+._div1:  ld.c     fir,r18
+         addu     DATACONSTS-._div1,r18,r18
+         fld.d    two52two31-DATACONSTS(r18),  f20
+         CALL     __DIVREM
+	nop
+--         fld.d    two52two31-DATACONSTS(r18),  f20
+         BRI      r23
+         nop
+
+--	PCALIGN 32
+.__remainder::
+         xorh     0x8000,  r16,   r19
+         xorh     0x8000,  r17,   r20
+         mov      r1,r23         -- Can't delay this one
+._rem1:  ld.c     fir,r18
+         addu     DATACONSTS-._rem1,r18,r18
+         fld.d    two52two31-DATACONSTS(r18),  f20
+	nop
+         CALL     __DIVREM
+	 nop
+--         fld.d    two52two31-DATACONSTS(r18),  f20
+         BRI      r23
+         mov      r17,r16
+
+--	PCALIGN 32
+.__divtest::
+.__udivide::
+--	 LOADC	adapter,r25
+         mov      r16,   r19
+         mov      r17,   r20
+         mov      r1,r23         -- Can't delay this one
+._udiv1: ld.c     fir,r18
+         addu     DATACONSTS-._udiv1,r18,r18
+         fld.d    two52-DATACONSTS(r18),  f20
+         CALL     __DIVREM
+	 nop
+         BRI      r23
+         nop
+
+--	PCALIGN 32
+.__uremainder::
+         mov      r16,   r19
+         mov      r17,   r20
+         mov      r1,r23         -- Can't delay this one
+._urem1: ld.c     fir,r18
+         addu     DATACONSTS-._urem1,r18,r18
+         fld.d    two52-DATACONSTS(r18),  f20
+         CALL     __DIVREM
+  	 nop
+--       fld.d    two52-DATACONSTS(r18),  f20
+
+         BRI      r23
+         mov      r17,r16
+
+	PCALIGN 32
+--
+-- r16 = Denominator
+-- r17 = Numerator
+-- r18 = Pointer to DATACONSTS (for addressing)
+-- r19 = Unsigned Denominator
+-- r20 = Unsigned Numerator
+-- f20 = Bias
+--
+-- Outputs
+-- r16 = Quotient
+-- r17 = Remainder
+--
+-- Convert Denominator end enumerator
+--
+__DIVREM:
+	 mov	r1,r24
+--   	 BUG6
+          ixfr     r20,      f16
+          fadd.ss  f21,      f0,    f17       -- = fmov
+          fsub.dd  f16,      f20,   f16
+          ixfr     r19,      f18
+          fadd.ss  f21,      f0,    f19       -- = fmov
+          fsub.dd  f18,      f20,   f18
+--
+-- f16 = numerator
+-- f18 = denominator
+--
+
+-- Perform divide
+
+          fld.d    fdtwo-DATACONSTS(r18),  f24
+          frcp.dd  f18,      f20
+
+          fmul.dd  f18,      f20,   f22
+          fsub.dd  f24,      f22,   f22
+          fmul.dd  f20,      f22,   f20
+ 
+          fmul.dd  f18,      f20,   f22
+          fsub.dd  f24,      f22,   f22
+          fmul.dd  f20,      f22,   f20
+ 
+          fmul.dd  f18,      f20,   f22
+          fsub.dd  f24,      f22,   f22
+          fmul.dd  f20,      f16,   f20
+ 
+          fmul.dd  f22,      f20,   f22
+ 
+          fld.d    onepluseps-DATACONSTS(r18), f24
+          fmul.dd  f22,f24,f22
+-- 	BUG6
+          ixfr     r16,f24
+          ftrunc.dd   f22,f22
+ 
+          fmlow.dd f24,f22,f24
+          fxfr     f24,r22         --  Book MUST be wrong
+          fxfr     f22,r16         -- transfer quotient
+         BRI      r24
+          subs     r17,r22,r17     -- Remainder
+	 nop
+
+         PCALIGN  32
+DATACONSTS:                                  -- reference label	
+onepluseps:  dc.l  0x00001000,0x3ff00000      -- 1 + 2**-40
+two52two31:  dc.l  0x80000000,0x43300000
+fdtwo:       dc.l  0x00000000,0x40000000
+two52:       dc.l  0x00000000,0x43300000
+
+	PCALIGN  32
+
+

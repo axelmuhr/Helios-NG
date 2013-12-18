@@ -1,0 +1,182 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- boot.a								--
+--                                                                      --
+--	Helios bootstrap						--
+--                                                                      --
+--	Author:  NHG 28/7/87						--
+--                                                                      --
+--------------------------------------------------------------------------
+rcsid[ $Id: nboot.a,v 1.2 90/09/05 11:53:07 nick Exp $ ]
+
+include basic.m
+include module.m
+
+_test _defp 'helios.arm
+[
+include munge.m
+
+	StartModule NBOOT 1 1 -- just a dummy! (should be taken out)
+
+	movs	pc,lr
+	movs	pc,lr
+
+	EndModule
+]
+[
+_def 'loop0	[0]
+_def 'cmd	[0]
+_def 'loop1	[1]
+_def 'addr	[1]
+
+_def 'savestart [2]
+_def 'savei	[savestart]
+_def 'savew	[savei+1]
+_def 'bootlink	[savew+1]
+_def 'analysed	[bootlink+1]
+_def 'lomemsave	[analysed+1]
+_def 'hipriq	[lomemsave+18]
+_def 'lopriq	[hipriq+2]
+_def 'membase	[lopriq+2]
+
+bootbase:
+	ajw 15
+	stl savei 				-- save entry regs
+	stl savew 
+	stl bootlink
+	testpranal stl analysed			-- save whether analysed
+	mint ldlp lomemsave ldc #48 move	-- save all of system area
+	ldlp hipriq saveh			-- save high priority queue
+	ldlp lopriq savel			-- save low prority queue
+
+        testerr clrhalterr      -- clear error flag
+        mint    sthf            -- initialise high priority queue
+        mint    stlf            -- initialise low priority queue
+        mint mint stnl 9        -- initialise timer queue 0
+        mint mint stnl 10       -- initialise timer queue 1
+        ldc 0   sttimer         -- zero timer
+
+        ldc 0   stl loop0       -- initialise loop variable
+        ldc 9   stl loop1       -- loop limit
+..loop1:
+        ldl loop0               -- get loop count
+        mint    wsub            -- point to link word
+        resetch                 -- reset the channel
+        ldlp loop0              -- point to loop control block
+        ldc  ..loop2-..loop1	-- load loop extent
+        lend
+..loop2:
+
+	-- enter command dispatcher
+dispatch:
+	ldc 0 stl cmd
+	ldlp cmd
+	ldl bootlink
+	ldc 1
+	in			-- get command
+
+	ldl cmd adc -4 cj boot	-- command 4 = boot
+	ldl cmd adc -5 cj clear	-- command 5 = clear memory
+	ldl cmd adc -6 cj dump	-- command 6 = dump processor state
+
+	-- drop through to debug a link, command = link no
+
+	mint adc #300			-- stack top
+	ldl cmd mint wsub		-- output link
+	ldl bootlink			-- input link
+	call starttfr
+
+	mint adc #400			-- stack top
+	ldl cmd adc 4 mint wsub		-- input link
+	ldl bootlink ldnlp -4		-- output link
+	rev
+	call starttfr
+
+	stopp
+
+starttfr:
+	ldc tfr-2 ldpi ldl 3 stnl -1	-- entry point
+	ldl 1 ldl 3 stnl 1		-- input link
+	ldl 2 ldl 3 stnl 2		-- output link
+	ldl 3 runp			-- and run it
+	ret
+
+tfr:
+	ldlp 0
+	ldl 1
+	ldc 1
+	in		-- get a byte from input channel
+
+	ldlp 0
+	ldl 2		
+	ldc 1
+	out		-- and write to output channel
+
+	j tfr
+
+clear:
+	ldlp addr
+	ldl bootlink
+	ldc 4
+	in				-- get memory upper bound
+
+	ldc 0 stl membase		-- zero first word
+	ldlp membase			-- source
+	ldl addr ldlp membase+1 sub	-- size
+	ldlp membase+1 rev		-- dest
+	move
+
+	ldlp cmd
+	ldl bootlink ldnlp -4
+	ldc 1
+	out				-- indicate finished
+
+	j dispatch
+
+
+dump:
+	ldlp savei			-- data to send
+	ldl bootlink ldnlp -4		-- link to send on
+	ldc (membase-savestart)*4	-- size of data to send
+	out				-- send it
+
+	j dispatch
+
+	
+boot:
+	mint ldnlp #400
+	stl addr		-- set load address = #80001000
+
+	ldl addr
+	ldl bootlink
+	ldc 4
+	in			-- get image size (as first word of image)
+
+	ldl addr ldnlp 1	-- load from word 1 (word 0 is size)
+	ldl bootlink
+	ldl addr ldnl 0 adc -4	-- less 4 for size
+	in			-- and get system image		
+
+	ldl addr		-- base of image
+
+	ldnl 1			-- offset of kernel
+
+	ldl addr ldnlp 1 add	-- form true address
+
+	adc Module.sizeof	-- skip over module header
+
+	ldl addr stl 2		-- to keep kernel happy
+	
+	ldc bootbase-2 ldpi
+	stl 0			-- put bootstrap base where kernel can find it
+
+	gcall			-- and enter kernel
+
+]
+-- End of boot.a

@@ -1,0 +1,1936 @@
+head     1.1;
+branch   ;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @! @;
+
+
+1.1
+date     91.03.10.23.53.37;  author paul;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@        TTL  ARM Helios Executive                               > loexec/s
+        SUBT Copyright (c) 1989, Active Book Company, Cambridge, United Kingdom
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ARM HELIOS Executive (process scheduler and interrupt handlers)
+        ;
+        ; Author:               James G Smith
+        ; History:      891031  Tidy source files ready for 1st ROM image
+        ;               900212  Add interruptible SVC threads support
+        ;               900412  (Brian Knight) Modify for functional prototype
+        ;                       Support for old prototype removed
+        ;               900719  Remove R140 support
+        ;               901005  Add new ITEM and BLOCK information
+        ;
+        ; ---------------------------------------------------------------------
+        ; This file (and those "LNK"ed to) expect certain global variables
+        ; to be defined by an external calling file:
+        ;
+        ;       ROMcode         : Produce a ROM image
+	;	FLASHcode	: Produce FlashEPROM image (ROMcode == TRUE)
+	;	hercules	: Produce a version for Hercules based system
+	;	activebook	; Produce a version for the Active Book
+        ;
+        ; ---------------------------------------------------------------------
+        ; TODO:
+        !       0,"TODO: Make SVC threads swappable"
+        !       0,"TODO: Make device drivers execute in SVC mode"
+        !       0,"TODO: IDLE priority level (simple chain of idle processes)"
+        !       0,"TODO: Optimise register usage (minimise memory transfers)"
+        !       0,"TODO: FIQ support (multiple users)"
+	!	0,"TODO: STACK Extension code"
+        ;
+        ; ---------------------------------------------------------------------
+        ; Note: To make SVC threads swappable, requires that individual SVC
+        ;       threads have their own stacks. This will require major changes
+        ;       to the Executive:
+        ;               A system SVC stack (used by IRQ and Scheduler)
+        ;               User SVC stacks (created on use of FPE or SWIs)
+        ;
+        ; Since FPE and SWI instructions are threads within the User process
+        ; their stacks can be allocated from the stack active at the instance
+        ; of their invocation. This can be optimised to use the current stack
+        ; if the instruction was executed in SVC mode.
+        ; ---------------------------------------------------------------------
+        ;
+        ; The lo-level Executive provides the machine dependent routines for
+        ; the Helios nucleus/kernel. The interface to these routines will be
+        ; via a set of SWI instructions.
+        ;
+        ; It is assumed (at the moment) that the Helios Executive
+        ; (kernel/nucleus) will execute in USR/OS mode in the final system.
+        ; 
+        ; ---------------------------------------------------------------------
+        ;
+        ; The hi-level interface however should allow any arbitrary priority
+        ; number (within the (unsigned int) type constraint) and that this
+        ; will be converted to an internal priority level. The number of
+        ; discrete priority levels available will be readable externally, and
+        ; applications should use this value when splitting the (unsigned int)
+        ; into individual priority ranges. This would allow future systems to
+        ; have a larger number of priority levels without affecting existing
+        ; applications.
+        ;
+        ; This scheme should allow the application writers the option of
+        ; using explicit priority levels, or tailoring the application to
+        ; run in a particular band. The Shell could always spawn processes
+        ; at the 50% priority level, allowing them to be nicer or nastier
+        ; later.
+        ;
+        ; Notes:
+        ; pri 0x00000000        always hi-priority
+        ; pri 0x00000001        nucleus priority
+        ; pri 0x0000nnnn        explicit priority level
+        ; pri 0xnnnnnnnn        priority ranged value
+        ; pri 0xFFFFFFFF        IDLE process priority
+        ;
+        ; "unsigned int":
+        ; 31     (31 - n)                  16                      n          0
+        ;  -------------------------------------------------------------------
+        ; |  ranged  |                     |                       | absolute |
+        ;  -------------------------------------------------------------------
+        ;
+        ; The simplest solution is to limit the number of priority levels
+        ; to (2^n); where  (1 <= n <= 16). This allows the hi-order (n) bits
+        ; to be used as a range... with the system performing a simple shift
+        ; to convert the number into an absolute priority value.
+        ;
+        ; ---------------------------------------------------------------------
+        ;
+        ; At the moment each individual priority level has its own queue
+        ; structure.
+        ; An addition to the current simple "head" and "tail" ProcessQ
+        ; structure would be a pointer to the next active queue. This would
+        ; allow quicker scanning of sparse priority queues.
+        ; The initial implementation will be that higher priority processes
+        ; always execute before lower priority processes. Processes of
+        ; equal priority will timeslice.
+        ;
+        ; Note: Code space could be saved, and the overall system made faster
+        ;       if the number of queues is NOT dynamic (i.e. fixed at
+        ;       assembly time). This should be added as an assembly time
+        ;       option.
+        ; 
+        ; ---------------------------------------------------------------------
+        ; Soft copies should be kept of all the Hercules write-only registers.
+        ; These should be kept in a contiguous list. A SWI call should be
+        ; provided to write to a register indexed within this list. This SWI
+        ; will update the TRUE register and the SOFT copy. The standard "AND"
+        ; and "EOR" method will be provided to update/interrogate the
+        ; registers.
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+        GET     listopts.s			; printing options
+
+        ; ---------------------------------------------------------------------
+
+        GET     fixes.s                         ; assembly control
+
+        ; ---------------------------------------------------------------------
+        ; Debugging options
+
+                GBLL    LEDdisplay
+LEDdisplay      SETL    {FALSE}         ; display LED patterns
+
+		GBLL	debug2		; 2nd link adaptor debugging
+		[	(activebook)
+debug2		SETL	{TRUE}
+		|	; middle (activebook)
+		[	(hercules)
+debug2		SETL	{FALSE}		; ALWAYS FALSE (no 2nd link on HEVAL)
+		|	; middle (hercules)
+		[	(fpmlink)
+debug2		SETL	{FALSE}		; 2nd link used for microlink
+		|	; middle (fpmlink)
+debug2		SETL	{TRUE}		; 2nd link adaptor debugging
+		]	; EOF (fpmlink)
+		]	; EOF (hercules)
+		]	; EOF (activebook)
+
+		[	(release)
+debug2		SETL	{FALSE}		; no 2nd link debugging for releases
+		]
+
+		[	(debug2)
+		!	0,"**** ENSURE 2nd link adaptor connected ****"
+		]
+
+		GBLL	idledbg		; IDLE entry debugging
+idledbg		SETL	{FALSE}
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+        !       0,"Processing loexec.s (Helios Executive)"
+
+        ; ---------------------------------------------------------------------
+
+	GBLS	hwfile
+	[	(activebook)
+hwfile	SETS	"hardAB1.s"			; Active Book
+	|
+	[	(:LNOT: hercules)
+hwfile	SETS	"hardABFP.s"			; ARM2 FP
+	|
+hwfile	SETS	"hardHFP.s"			; HEVAL
+	]	; (:LNOT: hercules)
+	]	; (activebook)
+
+	[	(activebook)
+flashexec	SETL	{FALSE}		; No FlashEPROM on Active Books yet
+flash_max_size	*	(8 :SHL: 20)	; MaxSize of FlashEPROM on Active Books
+	|
+	[	(hercules)
+flashexec	SETL	{FALSE}		; No FlashEPROM on HEVAL boards yet
+flash_base	*	ROM2_base	; FlashEPROM position on HEVAL boards
+flash_max_size	*	(8 :SHL: 20)	; MaxSize of FlashEPROM on HEVAL boards
+	]	; (hercules)
+	]	; (activebook)
+
+        GET     basic.s				; information
+        GET     arm.s          			; ARM description
+        GET     exmacros.s     			; Executive MACROs
+        GET     structs.s      			; structure MACROs
+	GET	microlink.s			; Microlink structs
+        GET     exstruct.s     			; Executive structures
+SWItable        SETL    {FALSE}                 ; define SWI manifests
+        GET     SWI.s         			; SWI allocations
+        GET     ROMitems.s     			; ROM structures
+        GET     $hwfile				; HW manifests etc.
+        GET     manifest.s     			; constants
+	GET	timedate.s			; build time info
+	GET	PCcard.s			; CARD information
+
+		GBLL	make_SMT
+		[	(SMTboot)
+make_SMT	SETL	{TRUE}			; SMT system build
+		|
+make_SMT	SETL	{FALSE}			; non-SMT system build
+		]	; (SMTboot)
+	GET	module.s			; module structures
+        GET     execwork.s                      ; workspace allocation
+	GET	simstate.s			; simulator definitions
+	GET	error.s				; Helios error numbers
+
+        ; ---------------------------------------------------------------------
+
+	[	(activebook)
+	! 0,"**** Generating code for an Active Book ****"
+	|
+	[	(hercules)
+	! 0,"**** Generating code for a Hercules functional prototype ****"
+	|
+        ! 0,"**** Generating code for an Active Book functional prototype ****"
+	]	; (hercules)
+	]	; (activebook)
+
+        ; ---------------------------------------------------------------------
+
+	[	(hercules :LOR: activebook)
+	; 100Hz timer initialiser desired
+centisecondtick	*	((TIMER_xclk / (100 * TIMER_multiplier)) - 1)
+	|
+        ; Timer clock is main system clock / 512
+        ; Therefore timer count for 10ms tick is clockfreq/512/100
+centisecondtick *       clockfreq/512/100
+	]
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+	[	(hercules :LOR: activebook)
+	[	(ROMcode)
+baseAddr	*	ROM_base
+	|	; middle (ROMcode)
+baseAddr	*	RAM_base	; RAM destination address: physical RAM
+	]	; EOF (ROMcode)
+	|	; middle (hercules :LOR: activebook)
+        [       (ROMcode)
+        !       0,"**** ROM based system being generated ****"
+	[	(FLASHcode)
+baseAddr	*	flash_base	; ROM destination address
+	|
+baseAddr        *       ROMbase         ; ROM destination address
+	]
+        |
+baseAddr        *       dataRAMblk      ; RAM destination address
+        ]       ; EOF (ROMcode)
+	]	; EOF (hercules :LOR: activebook)
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+	; The system ROM image ALWAYS contains a single branch instruction
+	; before any ITEM identification code. It DOES NOT contain a valid
+  	; JEDIA v4 header.
+
+memoryBase
+        B       exec_reset
+
+	; ---------------------------------------------------------------------
+
+                GBLS    objectname
+objectname      SETS    "helios/lib/executive"  ; who we are
+ExecutiveITEM
+	[	(flashexec)
+	ROMITEMStart	"$objectname",,&0010,MakeTime,defaultITEMaccess,,ITEMhdrBRANCH
+	B	exec_continue
+	|
+	ROMITEMStart	"$objectname",,&0010,MakeTime,defaultITEMaccess
+	]
+
+        ; ---------------------------------------------------------------------
+        ; This is the code copied to RAM at &00000000 during reset
+	; NOTE: These branches are non-PIC
+RAMvectors
+btz_code
+        B    exec_branch_through_zero   + baseAddr + (RAMvectors - memoryBase)
+        LDR  pc,[pc,#(software_vector_undef - &04 - 8)]
+        B    exec_SWI                   + baseAddr + (RAMvectors - memoryBase)
+        B    exec_prefetch_abort        + baseAddr + (RAMvectors - memoryBase)
+        B    exec_data_abort            + baseAddr + (RAMvectors - memoryBase)
+        B    exec_address_exception     + baseAddr + (RAMvectors - memoryBase)
+        B    exec_IRQ                   + baseAddr + (RAMvectors - memoryBase)
+        SUBS pc,fiq_r14,#&04
+RAMvectors_end
+
+        ; ---------------------------------------------------------------------
+        ; -- Executive workspace ----------------------------------------------
+        ; ---------------------------------------------------------------------
+        
+        [       (:LNOT: ROMcode)
+        ; If we are running in RAM we must leave room for the workspace.
+        %       (systemWSP - baseAddr - (RAMvectors_end - memoryBase))
+        %       (end_of_workspace - systemWSP)
+        ]       ; EOF (:LNOT: ROMcode)
+
+        ; ---------------------------------------------------------------------
+        ; -- software abort messages ------------------------------------------
+        ; ---------------------------------------------------------------------
+
+message_unknownSWI
+        =       "Unknown Executive SWI",null
+
+message_heliosSWI
+message_otherSWI
+        =       "No SWI extensions implemented",null
+
+message_halted
+        =       "Executive halted",null
+
+        ; ---------------------------------------------------------------------
+        ; -- hardware abort messages ------------------------------------------
+        ; ---------------------------------------------------------------------
+
+abort_btz
+        =       "Branch through zero",null
+
+abort_instruction
+        =       "Undefined instruction",null
+
+abort_address
+        =       "Address exception",null
+
+abort_data
+        =       "Data fetch abort",null
+
+abort_prefetch
+        =       "Instruction pre-fetch abort",null
+
+        ALIGN           ; after all the messages
+
+        ; ---------------------------------------------------------------------
+        ; -- Branch Through Zero ----------------------------------------------
+        ; ---------------------------------------------------------------------
+
+exec_branch_through_zero
+        ; in:   All registers undefined (idea is to preserve as many as
+        ;       possible).
+        ;       Processor mode and interrupt state undefined.
+        ;
+        ; Generate a suitable fatal error:
+        ;  We have either wrapped around in memory, or someone has illegally
+        ;  jumped here.
+
+        ; Assume not in SVC mode (if we are we will corrupt "svc_r14")
+        STR     r14,[r0,-r0]            ; over-write the BTZ instruction
+
+        SWI     exec_EnterSVC           ; enter SVC mode
+
+        ; Disable IRQs (preserving FIQs)
+        MOV     svc_r14,#(Ibit :OR: SVCmode)
+        TEQP    svc_r14,#&00            ; SVC mode; IRQs disabled.
+
+        ; Place all the un-mapped registers into the register dump area
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        PLED    &00,r0,"when branch through zero"
+
+        ; SVC mode; IRQs disabled; FIQs undefined.
+        ADRL    r1,abort_btz
+        MOV     r0,#sys_btz
+
+        B       generic_handler         ; and generate the error
+
+        ; ---------------------------------------------------------------------
+        ; -- Undefined Instruction --------------------------------------------
+        ; ---------------------------------------------------------------------
+
+exec_undefined_instruction
+        ; in:   SVC mode, FIQ preserved, IRQ disabled
+        ;       svc_r14 processor mode and return address (after failed
+        ;       instruction)
+        ;       all registers (other than svc_r14 and svc_r15) are preserved
+        ;
+        ; Generate a fatal error for the moment
+
+        TEQP    pc,#PSRflags            ; SVC mode, IRQ and FIQ disabled
+
+        ; temporarily store the svc_r14 (corrupting the reset vector)
+        STR     svc_r14,[r0,-r0]
+
+        ; place all the un-mapped registers into the register dump area
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        PLED    &01,r0,"when undefined instruction"
+
+        ADRL    r1,abort_instruction
+        MOV     r0,#sys_undefins
+
+        B       generic_handler
+
+        ; ---------------------------------------------------------------------
+        ; -- Software Interrupt (SWI) -----------------------------------------
+        ; ---------------------------------------------------------------------
+exec_SWI
+        [       (newsvc)
+        ; SWIs can be viewed as a continuation of the current process thread.
+        ; Therefore it is valid to use the same stack as the SWI caller.
+        ; This system may NOT work very well in the Hercules memory mapped
+        ; world. SWI instructions will execute in system mode (with a different
+        ; memory map to that of the usual SWI caller).
+        ; We need to discover the processor mode of the SWI caller, plus
+        ; utilise their stack. We need to preserve svc_r14 as the return
+        ; address.
+        ; Note: Beware of calling "exec_EnterSVC" from within an SVC thread.
+	;
+        ; IRQs are currently disabled, and FIQs should never call SWIs,
+        ; therefore this code is safe from external register manipulations.
+        ; We do not allow IRQ mode code to call SWIs to make this handler
+        ; entry a bit simpler, anyway the whole point of these modifications
+        ; is too allow interrupt code to run in SVC mode, so no-one but
+        ; the initial interrupt handler will be executing in IRQ mode.
+	;
+        ; switch (processor mode)
+        ;  case USR     utilise usr_r13 <= can corrupt svc_r13 during SWI entry
+        ;  case FIQ     <<FATAL SYSTEM ERROR>>
+        ;  case IRQ     <<FATAL SYSTEM ERROR>>
+        ;  case SVC     utilise svc_r13 <= cannot corrupt during SWI entry
+	;
+	; NOTE: At the moment the code assumes caller SVC mode if not USR mode
+	;
+        ; check if the bottom 2bits of the return PSR == USRmode
+        TST     svc_r14,#SVCmode        ; mask out all but the processor mode
+        BNE     caller_SVC              ; not in USR mode when called
+caller_USR
+        ; We need a SVC stack to perform the entry processing (copy callers).
+        ; Note: We use a word dedicated to this task in the static system
+	;	workspace. IRQs are still disabled, so no other SVC threads can
+        ;       be created until we enable IRQs.
+        LDR     sp,=entryword           ; temporary word in system workspace
+        STMIA   sp,{usr_sp}^            ; store USR mode r13 at temp word
+        NOP                             ; wait for registers to re-map
+        LDR     sp,[sp,#&00]            ; and load USR r13 into SVC r13
+caller_SVC
+        ; We have a FD SVC stack, so continue...
+        ]       ; (newsvc)
+        ; in:   SVC mode; FIQ preserved; IRQ disabled.
+        ;       svc_r14 processor mode and return address
+        ;       svc_r13 is corrupted
+
+        STMFD   sp!,{r10,r11,r12}       ; stack work registers
+
+        BIC     r12,svc_r14,#PSRflags   ; mask out the PSR
+        SUB     r11,r12,#4              ; get address of SWI instruction
+        TST     svc_r14,#SVCmode        ; look at caller's mode
+        LDREQT  r12,[r11],#0            ; get SWI instruction from user space
+        LDRNE   r12,[r11,#0]            ; get SWI instruction unmapped
+        BIC     r12,r12,#SWI_insmask    ; and mask out the SWI instruction
+
+        ; Execute through a software vector depending on the setting of the
+        ; OS bits and the HE bit.
+        MOV     r11,#vec_HeliosExecSWI  ; assume Helios Executive SWI
+
+        TST     r12,#swi_noexec         ; check Executive/non-Executive bit
+        MOVNE   r11,#vec_HeliosSWI      ; bit set = Helios application SWI
+
+        AND     r10,r12,#swi_osmask     ; mask out all but the OS identifier
+        CMP     r10,#swi_os_helios      ; check OS number
+        MOVNE   r11,#vec_otherSWI       ; not a Helios SWI
+
+        BIC     r12,r12,#swi_osmask     ; clear the OS bits
+
+        ; r11 = software vector number
+        ; r12 = SWI comment field
+
+        LDR     r10,=software_vectors
+        ADD     r11,r10,r11,LSL #2
+
+        LDMFD   sp!,{r10}
+
+        ; r0..r10 : preserved from caller
+        ; r11     : software vector entry address
+        ; r12     : SWI number (suitably modified for vector)
+        ; svc_r13 : FD stack (with entry r11 and r12)
+        ; svc_r14 : callers return address
+        ; SVC mode; IRQs disabled; FIQs undefined.
+
+        ; and enter the relevant vector
+        LDR     pc,[r11,#&00]
+
+        ; ---------------------------------------------------------------------
+        ; -- PreFetch Abort ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+exec_prefetch_abort
+        ; in:   SVC mode, FIQ preserved (from aborted process), IRQ disabled
+        ;       svc_r14 mode and (return address + 8), after failed instruction
+        ;       all registers (other than svc_r14 and svc_r15) are preserved.
+        ;
+        ; Instruction not present. Page protected or RAM not present.
+        ;
+        ; At the moment this abort is treated as fatal (since we have no memory
+        ; management system). In future Executives we may have to deal with
+        ; re-starting instructions that have aborted.
+
+        TEQP    pc,#PSRflags            ; SVC mode, IRQ and FIQ disabled
+
+        ; modify the callers PC (so we can return directly to it)
+        SUB     svc_r14,svc_r14,#8
+
+        ; temporarily store the svc_r14 (corrupting the reset vector)
+        STR     svc_r14,[r0,-r0]
+
+        ; place all the un-mapped registers into the register dump area
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        PLED    &02,r0,"when prefetch abort"
+
+        ADRL    r1,abort_prefetch
+        MOV     r0,#sys_prefetch
+
+        B       generic_handler
+
+        ; ---------------------------------------------------------------------
+        ; -- Data Abort -------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+exec_data_abort
+        ; in:   SVC mode, FIQ preserved (from aborted process), IRQ disabled
+        ;       svc_r14 mode and return (address + 4), after failed instruction
+        ;       all registers (other than svc_r14 and svc_r15) are preserved
+        ;
+        ; Data read/write failed. Page protected or RAM not present.
+        ;
+        ; See the comment for "exec_prefetch_abort".
+
+        TEQP    pc,#PSRflags            ; SVC mode, IRQ and FIQ disabled
+
+        ; modify the callers PC (so we can return directly to it)
+        SUB     svc_r14,svc_r14,#4
+
+        ; temporarily store the svc_r14 (corrupting the reset vector)
+        STR     svc_r14,[r0,-r0]
+
+        ; place all the un-mapped registers into the register dump area
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        PLED    &03,r0,"when data abort"
+
+        ADRL    r1,abort_data
+        MOV     r0,#sys_dataabort
+
+        B       generic_handler
+
+        ; ---------------------------------------------------------------------
+        ; -- Address Exception ------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+exec_address_exception
+        ; in:  SVC mode, FIQ preserved (from aborted process), IRQ disabled
+        ;      svc_r14 mode and (return address + 4) (after failed instruction)
+        ;      all registers (other than svc_r14 and svc_r15) are preserved
+        ;
+        ; Address exception is a constant FATAL error (i.e. there is nothing
+        ; to be gained from re-starting the failed code) generate a suitable
+        ; error.
+
+        TEQP    pc,#PSRflags            ; SVC mode, IRQ and FIQ disabled
+
+        ; modify the callers PC (so we can return directly to it)
+        SUB     svc_r14,svc_r14,#4
+
+        ; temporarily store the svc_r14 (corrupting the reset vector)
+        STR     svc_r14,[r0,-r0]
+
+        ; place all the un-mapped registers into the register dump area
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        PLED    &06,r0,"when address exception"
+
+        ADRL    r1,abort_address
+        MOV     r0,#sys_address         ; address exception error code
+
+        ; and fall through to the "generic_handler"
+
+        ; ---------------------------------------------------------------------
+generic_handler
+        ; Preserve mapped registers and enter the system error handler.
+        ; in:   r0  = 32bit error number
+        ;       r1  = NULL terminated ASCII error message
+        ;       r14 = register_dump
+        ;       Aborted r0..r7 are stored at "register_dump"
+        ;       SVC mode; IRQ disabled; FIQ undefined.
+
+        ; place the aborted PC into the save structure
+        LDR     r2,[r0,-r0]
+        STR     r2,[svc_r14,#(dumped_r15 - register_dump)]
+
+        LDR     r3,=dumped_r8           ; index for the (possibly) mapped regs
+
+        TST     r2,#SVCmode
+        STMEQIA r3,{r8-r14}^            ; USR mode aborted
+        BEQ     continue
+
+        TST     r2,#IRQmode
+        TSTNE   r2,#FIQmode
+        BNE     wasSVCmode
+        ; IRQ or FIQ mode abort
+        ORR     r2,r2,#INTflags         ; ensure IRQ/FIQ disabled
+        TEQP    r2,#&00                 ; and enter the aborted mode
+        NOP                             ; allow time for register remapping
+        STMIA   r3,{r8-r14}             ; and stack the correct registers
+        TEQP    pc,#PSRflags            ; and re-enter SVC mode (IRQ/FIQ off)
+        B       continue
+
+wasSVCmode      ; we were in SVC mode when the abort occured
+        STMIA   r3,{r8-r13}             ; and stack the easy registers
+        LDR     r2,=&DEADDEAD           ; we have corrupted svc_r14
+        STR     r2,[r3,#(dumped_r14 - dumped_r8)]
+        LDR     r2,[r2,-r2]             ; recover the aborted PC+PSR
+        STR     r2,[r3,#(dumped_r15 - dumped_r8)]
+continue
+        ; registers dumped into "register_dump"
+        ; SVC mode; IRQs and FIQs disabled
+
+        ; We can restore the aborted processes FIQ mode, since if we were
+        ; in FIQ mode when the abort occured, FIQs should have been disabled.
+        ; Otherwise it is better to preserve the callers FIQ state.
+        ; (NOTE: r3 currently points to the r8 value)
+        LDR     r2,[r3,#(dumped_r15 - dumped_r8)]
+
+        ; Also we should enable IRQs again when we enter the error vector
+        ; since we (used to) need to refresh RAM. 
+        ORR     r2,r2,#(Ibit :OR: SVCmode)
+        TEQP    r2,#&00                 ; SVC; IRQs disabled; FIQs as caller
+
+        LDR     svc_r14,[r0,-r0]        ; and recover return PC and PSR
+
+        ; and restore the "branch through zero" code
+        ADRL    r2,btz_code
+        LDR     r2,[r2,#&00]
+        STR     r2,[r2,-r2]
+        MOV     r3,#-1                  ; non-recoverable
+        B       enter_error_vector
+
+        ; ---------------------------------------------------------------------
+        ; -- Machine RESET ----------------------------------------------------
+        ; ---------------------------------------------------------------------
+exec_reset
+        ; in:   SVC mode; IRQ disabled; FIQ disabled;
+        ;       All registers are undefined
+        ;
+        ; Notes: When we are entered after reset the "software_vectors" are
+        ;        undefined. If a fatal error occurs before the vectors are
+        ;        written then the software is likely to loop, or disappear
+        ;        into the boonies. This would be solved by having hard-wired
+        ;        values built into the ROM.
+
+	; =====================================================================
+	; =====================================================================
+	; =====================================================================
+	;
+	; RESET options
+	; top buttons (assuming touch-pad on left of display):
+	;	LEFT	: Enter Helios "shell"
+	;	MIDDLE	: Zero RAM (clear RAMFS)
+	;	RIGHT	: Ignore PatchEPROM
+	;
+	; We must provide a scheme for configuring the system entered after
+	; RESET. The "shell" entry will be controlled by "init" program and
+	; the "preinitrc" and "initrc" scripts. The "Zero RAM" entry can be
+	; performed by the kernel before performing any RAMFS recovery.
+	; The "Ignore PatchEPROM" is the only operation we are interested in
+	; during the system RESET. Since the "Executive" may appear in the
+	; FlashEPROM, it will normally over-load the internal ROM version.
+	; At the moment the RESET code checks for a FlashEPROM Executive early
+	; in the RESET. This should be postponed until we are able to
+	; interrogate the keypad button state. However, this has the
+	; disadvantage that there is a higher probability of a bug appearing
+	; in the system ROM RESET code before a new FlashEPROM version can be
+	; started. On a releated subject: another key/RESET sequence should
+	; possibly be allocated to directly enter a FlashEPROM updating
+	; system. This will allow the FlashEPROM to be updated, even when the
+	; internal ROM is incapable of starting Helios. This will probably
+	; be hardwired to download the data from the serial (or some other
+	; SIMPLE mapped external IO device).
+	; =====================================================================
+	; =====================================================================
+	; =====================================================================
+
+        PLED    &1F,r0,"when entered from RESET"
+
+        [       (ROMcode)
+        ; The main RAM has physical addresses starting at &02000000 (32MB).
+        ; There is 4K of static RAM mapped at &00000000 underneath the ROM.
+        ; The low ROM image is mapped out by the first write to this area.
+        ; Continue execution in ROM (which is always mapped at "baseAddr").
+
+        PLED    &07,r0,"before attempting to enter ROM"
+
+	; NOTE: This branch is non-PIC
+        B       ROMentry + baseAddr
+ROMentry
+        ; we are now executing in the high ROM image
+
+        PLED    &08,r0,"when successfully in ROM"
+
+	[	(hercules :LOR: activebook)
+	; Map ROM out (mapping everything else in)
+	ADRL	r0,RAMvectors
+	LDR	r1,[r0,#&00]		; load the BTZ instruction
+	; The following is a nasty constant:
+	MOV	r0,#(&0200 - &0004)	; NOTE: &0200 is page size
+	; Trash &01FC (NASTY) and write BTZ vector
+	; (We could use &01FC as a soft-reset flag)
+	STMIA	r0,{r0,r1}
+	]
+
+	[	(flashexec)
+	; Check FlashEPROM for Executive image. If found then start it up.
+	; Note: We have no stack or RAM world at this point so cannot
+	;	safely use the SWI calls for interrogating the FlashEPROM
+	;	image. We can however use the complete register set.
+
+	!	0,"TODO: FlashEPROM Executive disable switch"
+	; In the Hercules version (and even in ROMmed ABFP versions) we
+	; should check the switches state to see if we should Execute
+	; a FlashEPROM based Executive. This will allow Executive development
+	; to continue with a true ROM based system. ie. we need some way of
+	; stopping the automatic startup of FlashEPROM Executives, in-case
+	; they are duff.
+
+	!	0,"TODO: access internal FlashEPROM during RESET"
+	; Code to be written to access the internal FlashEPROM as a PCcard
+	; device.
+
+	; At the moment we just treat it like a collection of ITEMs.
+	[	(activebook)
+	MOV	r1,#FLASH_base
+	|
+	MOV	r1,#flash_base
+	]	; (activebook)
+
+	; r1 = start of the first ITEM in the FlashEPROM
+	LDR	r2,=ITEMMagic		; r2 = the ITEM ID word
+	; Search for the ITEM in the FlashEPROM
+FlashSearch_loop
+	LDR	r3,[r1,#ITEMID]		; read the ITEM magic word
+	TEQ	r3,r2			; and check against the real value
+	BNE	FlashSearch_failed	; ITEM is not in the FlashEPROM
+        ; The ITEM magic word has been found, check that we are pointing at
+	; a ROM ITEM.
+	LDR	r3,[r1,#ITEMExtensions]	; extensions bitmask
+	TST	r3,#ITEMhdrROM		; ROM ITEM
+	BEQ	FlashSearch_failed	; invalid ITEM (end of chain)
+
+	TST	r3,#ITEMhdrBRANCH	; ITEM has Executive BRANCH
+	LDREQ	r3,[r1,#ITEMLength]	; load the length of this ITEM
+	ADDEQ	r1,r1,r3		; step over this ITEM
+	BEQ	FlashSearch_loop
+
+        ; Check that the names match (identically)
+        ADD     r3,r1,#ITEMName		; start of the full name
+
+	; compare names
+	; r0 = name we are searching for
+	; r3 = name we are to check
+	MOV	r6,#&00000000
+FlashSearch_namecheck
+	LDRB	r4,[r0,r6]
+	LDRB	r5,[r3,r6]
+	TEQ	r4,r5			; are they the same?
+	LDRNE	r4,[r1,#ITEMLength]	; load the length of this ITEM
+	ADDNE	r1,r1,r4		; and step onto the next ITEM
+	BNE	FlashSearch_loop	; NO - look at the next ITEM
+	TEQ	r4,#&00			; have we terminated
+	ADDNE	r6,r6,#&01		; step onto the next character
+	BNE	FlashSearch_namecheck	; and check the next character
+	; -- names matched --
+	; r1 = found ITEM pointer
+	LDRB	r2,[r1,#ITEMNameLength]	; get ITEM name length
+	ADD	r0,r1,#ITEMName		; reference the ROM specific header
+	ADD	r0,r0,r2		; add in the length of the name
+	ADD	r0,r0,#sizeof_ROMITEMstruct	; step over ROM specific header
+	; r0 = address of branch instruction
+	[	{TRUE}
+	ORRS	pc,r0,#(SVCmode :OR: INTflags)	; continue from branch in ITEM
+	|
+	ORR	r0,r0,#(SVCmode :OR: INTflags)	; SVC, IRQ and FIQ disabled
+	MOVS	pc,r0				; continue from branch in ITEM
+	]
+FlashSearch_failed				; Executive ITEM not found
+	]	; EOF (flashexec)
+exec_continue					; RESET continue point
+	|
+	; RAM loaded systems are not replaced by FlashEPROM Executives
+exec_continue	; but we provide a label for the header to reference
+	]	; EOF (ROMcode)
+
+	[	(hercules :LOR: activebook)
+	; Check the RESET state
+	MOV	r0,#INT_regs		; interrupt status register
+	LDR	r1,[r0,#INT_status]
+	TST	r1,#INT_POR		; test Power On Reset bit
+	BEQ	soft_reset		; clear, then NOT POR
+soft_reset				; at the moment we have no soft startup
+power_on_reset
+	; ----------------- Re-initialise the complete system -----------------
+	; NOTE: We should not touch the RAM or the external IO world until we
+	;	have setup the BANK timing etc.
+	; ---------------------------------------------------------------------
+
+	; Disable the POR flag (by writing to "CLOCK_regs") along with the
+	; grayscale and pre-scalers mode information.
+	MOV	r0,#CLOCK_regs
+	MOV	r1,#(CODEC_ON :OR: TIMER_ON :OR: MLI_ON)
+	STR	r1,[r0,#&00]
+
+	; ---------------------------------------------------------------------
+
+	[	(hydra)
+	; Initialise HYDRA (eventually this will be performed by the
+	; micro-controller on the HYDRA sub-system. On HEVAL boards there
+	; is no micro-controller.
+	; This code is copied directly from a piece of DFlynn code since I
+	; do not have a HYDRA specification.
+HYDRA_address	*	(EXTRAM1_base)
+HYDRA_data	*	(EXTIO2_base + (2 :SHL: 20))
+	MOV	r0,#HYDRA_address
+	MOV	r1,#HYDRA_data
+hydra_init_loop
+	MOV	r2,#&50		; refresh control address
+	STRB	r2,[r0,#&00]	; onto HYDRA address bus
+	MOV	r3,#&17		; program refresh (hercules DRAM control)
+	STRB	r3,[r1,#&00]	; onto HYDRA data bus
+	MOV	r3,#&51		; DRAM refresh register address
+	STRB	r3,[r0,#&00]
+	STRB	r3,[r1,#&00]	; cause refresh => out of standby mode
+	STRB	r2,[r0,#&00]	; refresh control address
+	MOV	r3,#&10		; HYDRA refresh and hercules access
+	STRB	r3,[r1,#&00]	; cause refresh => out of standby mode
+	LDRB	r3,[r1,#&00]	; load status
+	TST	r3,#&40		; out of standby yet?
+	BNE	hydra_init_loop	; NO - then try again
+	]	; EOF (hydra)
+
+	; ---------------------------------------------------------------------
+	; Load the address of the soft-copies (we cannot write until the BANK
+	; timing has been set (below)).
+	LDR	r11,=hardware_regs	; where all the soft-copies are kept
+
+	; ---------------------------------------------------------------------
+	; Initialise the HW BANK registers (bus width, etc.)
+	ADRL	r0,BANK_table			; default values
+	MOV	r1,#BANK_regs			; hardware registers
+	LDR	r2,[r1,#BANK6_reg]		; current BANK 6 mapping
+	AND	r2,r2,#BANK_WMASK		; current BANK BUS width
+	ASSERT	(BANK_table_size = (8 * 4))	; 8 registers worth
+	LDMIA	r0,{r3,r4,r5,r6,r7,r8,r9,r10}
+	ORR	r9,r9,r2			; retain external bus width
+	STMIA	r1,{r3,r4,r5,r6,r7,r8,r9,r10}	; write BANK timing
+
+	ADD	r12,r11,#BANK0_data		; address the soft-copies
+	STMIA	r12,{r3,r4,r5,r6,r7,r8,r9,r10}	; and store the soft-copies
+
+	; ---------------------------------------------------------------------
+	; This should be set to the value loaded into the register above.
+	MOV	r1,#(CODEC_ON :OR: TIMER_ON :OR: MLI_ON)
+	STR	r1,[r11,#CLOCK_data]		; clock soft-copy
+
+	; ---------------------------------------------------------------------
+	; Define the memory map view
+
+	MOV	r0,#MEMMAP_regs			; control register address
+	MOV	r1,#(MAPEN_USR :OR: OS_MODE1)	; Enable OS mode 1
+	STRB	r1,[r0,#&00]
+	STR	r1,[r11,#MEMMAP_data]		; word write to clear top
+
+	; ---------------------------------------------------------------------
+	; Initialise the DMA registers (All off except LCD DMA (for DRAM
+	; refresh).
+	ADRL	r0,DMA_table			; default values
+	MOV	r1,#DMA_base			; hardware registers
+	ASSERT	(DMA_table_size = (4 * 4))	; only channel 0
+	LDMIA	r0,{r3,r4,r5,r6}
+	STMIA	r1,{r3,r4,r5,r6}
+	; The DMA channels can be read, so they do not need a soft-copy state
+
+	; ---------------------------------------------------------------------
+	; Initialise the MMU (default memory mapping).
+	ADRL	r0,MMU_table			; default values
+	MOV	r1,#MMU_base			; hardware registers
+	ASSERT	(MMU_table_size = (16 * 4))	; 16 registers worth
+	LDMIA	r0!,{r3,r4,r5,r6,r7,r8,r9,r10}	; first 8
+	STMIA	r1!,{r3,r4,r5,r6,r7,r8,r9,r10}
+	LDMIA	r0!,{r3,r4,r5,r6,r7,r8,r9,r10}	; second 8
+	STMIA	r1!,{r3,r4,r5,r6,r7,r8,r9,r10}
+	; The MMU can be read, so a soft-copy state is not required.
+
+	; ---------------------------------------------------------------------
+	; Initialise the LCD (shape and size information)
+	MOV	r0,#LCD_regs			; LCD control registers
+
+	MOV	r1,#((LCD_displaywidth - 1) :AND: LCD_LLMASK)
+	STR	r1,[r0,#LCD_linelength]		; set the line length
+	STR	r1,[r11,#LCDlinelength_data]	; and initialise the soft-copy
+
+	MOV	r1,#(((20 / 4) - 1) :AND: LCD_LRMASK)
+	STR	r1,[r0,#LCD_linerate]		; set the line rate
+	STR	r1,[r0,#LCDlinerate_data]	; and initialise the soft-copy
+
+	MOV	r1,#(((LCD_tier_height / 4) - 1) :AND: LCD_NLMASK)
+	STR	r1,[r0,#LCD_numlines]		; set the number of lines
+	STR	r1,[r11,#LCDnumlines_data]	; and initialise the soft-copy
+
+	;	       delay          latch pulse type     clock rate
+	MOV	r1,#(LCD_DLY_80  :OR:   (&01 :SHL: 4)  :OR:   &09)
+	ORR	r1,r1,#(LCD_WAI :OR: LCD_normal :OR: LCD_ICP)
+	STR	r1,[r0,#LCD_control]		; force write to resync world
+	STR	r1,[r11,#LCDcontrol_data]	; and initialise the soft-copy
+
+	; ---------------------------------------------------------------------
+
+	[	(activebook)
+	; This is a problem in the Active Book. The FAX, FDC and any LINK
+	; adaptors share the same interrupt bit. The interrupt logic is
+	; active low. If the FAX is not powered it will hold this line low
+	; generating a permanent interrupt.
+	MOV	r1,#CONTROL_base	; miscellaneous control port
+	MOV	r2,#CONTROL_FPE		; FAX  Power Enable
+	STRB	r2,[r1,#CONTROL_reg]	; and write the information
+	]
+
+	; ---------------------------------------------------------------------
+	; Disable all IRQ/FIQ sources and initialise the interrupt world
+
+	MOV	r1,#INT_regs		; interrupt control registers
+	MOV	r2,#&00000000		; a nice constant
+
+	LDR	r0,=FIQ_allsources
+	STR	r0,[r1,#FIQ_control]	; disable all FIQ sources
+	STR	r2,[r11,#FIQ_data]	; and clear the soft-copy
+
+	LDR	r0,=IRQ_allsources
+	STR	r0,[r1,#IRQ_control]	; disable all IRQ sources
+	STR	r2,[r11,#IRQ_data]	; and clear the soft-copy
+
+	STR	r2,[r1,#INT_status]	; clear the interrupt test register
+	STR	r2,[r11,#INTtest_data]	; and the soft copy
+
+	; Ensure that the link adaptors will NOT generate interrupts for the
+	; moment. Note: This pre-empts the "InitBackplane" call.
+	[	(activebook)
+	LDR	r0,=LINK0_base
+	|
+	MOV	r0,#LINK_base
+	]	; (activebook)
+	MOV	r1,#&00
+	STRB	r1,[r0,#LINK_rstatus]	; disable read interrupts
+	STRB	r1,[r0,#LINK_wstatus]	; disable write interrupts
+
+	; ---------------------------------------------------------------------
+
+	MOV	r0,#&00000000
+	STR	r0,[r11,#TIMER_data]		; clear TIMER soft-copy
+
+	; ---------------------------------------------------------------------
+	; We have a known world (2MB of DRAM) on a HEVAL board
+
+	MOV	r0,#RAM_base			; physical RAM base address
+	; If (ROMcode) then all the memory for the user. A compile time
+	; flag for RAM loaded systems will be used to set the simulated
+	; ROM image size (512K or 2MB).
+	[	(ROMcode)
+	ADD	r0,r0,#workspace_size		; RAM base presented to Helios
+	|
+	[	(twomegrom)
+	ADD	r0,r0,#(2 :SHL: 20)		; 2MB simulated ROM
+	|
+	ADD	r0,r0,#(512 :SHL: 10)		; 512K simulated ROM
+	]	; EOF (twomegrom)
+	]	; EOF (ROMcode)
+
+	LDR	r2,=LCD_base			; end of physical USER RAM
+
+	LDR	r1,=sysRAMtop
+	STR	r0,[r1,#&00]			; end of system is base of USER
+
+	LDR	r1,=userRAMtop
+	STR	r2,[r1,#&00]			; end of user RAM
+	; r0 = base of USER RAM (userRAMbase)
+	; r2 = end of USER RAM (userRAMtop)
+	B	size_memory_completed
+
+	; ---------------------------------------------------------------------
+	|	; ---- middle (hercules :LOR: activebook) ---------------------
+	; ---------------------------------------------------------------------
+        ; Disable all hardware IRQ/FIQ sources.
+        ; (Note: the link adaptor present on the prototype does NOT have
+        ;        a software accessible control register (speed, reset, etc.))
+
+        ; Set both interrupt enable registers and their soft copies
+	; Note that InitBackPlane will set both the IRQ register and
+	; its soft copy later.
+
+	MOV	r0,#&00000000		; No FIQs or IRQs enabled at startup
+        LDR     r1,=irq_mask            ; Not 8bit value on this prototype
+        STRB    r0,[r1,#0]              ; Disable all IRQs
+        LDR     r1,=IRQ_mask_copy       ; Address of soft copy
+        STR     r0,[r1,#0]              ; Set soft copy
+
+        LDR     r1,=fiq_mask            ; Not 8bit value on this prototype
+        STRB    r0,[r1,#0]              ; Disable all FIQs
+        LDR     r1,=FIQ_mask_copy       ; Address of soft copy
+        STR     r0,[r1,#0]              ; Clear soft copy
+
+        ; Ensure the link adaptors will NOT generate interrupts for the moment
+        ; Note: This pre-empts the "InitBackplane" call.
+        MOV     r1,#&00
+        MOV     r0,#inmos_link_base	; link to IO server
+        STRB    r1,[r0,#link_rstatus]   ; disable read interrupts
+        STRB    r1,[r0,#link_wstatus]   ; disable write interrupts
+
+	MOV	r0,#ml_link_base	; link used as microlink substitute
+	STRB	r1,[r0,#link_rstatus]	; disable read interrupts
+	STRB	r1,[r0,#link_wstatus]	; disable write interrupts
+
+        ; Ensure that the RAM is NOT write-protected
+        MOV     r0,#mmumap_base         ; required for the following MACROs
+        ; Set up the MMU to give OS mode 1, with straight-through access to
+        ; fast RAM and devices on the Functional Prototype board.
+	[	(page0trap)
+	MMUMAP	 0,   1,&00000000,NONE ,UP
+	|	; middle (page0trap)
+        MMUMAP   0,   1,&00000000,WRITE,UP
+	]	; EOF (page0trap)
+        MMUMAP   1,   0,&00000000,NONE ,UP
+        MMUMAP   2,4096,&00400000,WRITE,UP
+        MMUMAP   3,4096,&00600000,WRITE,UP
+        MMUMAP   4,   0,&00000000,NONE ,UP
+        MMUMAP   5,   0,&00000000,NONE ,UP
+        MMUMAP   6,   0,&00000000,NONE ,UP
+        MMUMAP   7,   0,&00000000,NONE ,UP
+        MMUMAP   8,   0,&00000000,NONE ,UP
+        MMUMAP   9,   0,&00000000,NONE ,UP
+        MMUMAP  10,   0,&00000000,NONE ,UP
+        MMUMAP  11,   0,&00000000,NONE ,UP
+        MMUMAP  12,   0,&00000000,NONE ,UP
+        MMUMAP  13,   0,&00000000,NONE ,UP
+        MMUMAP  14,   0,&00000000,NONE ,UP
+        MMUMAP  15,   0,&00000000,NONE ,UP
+
+        ; Enable OS mode 1
+        LDR     r0,=mmu_mode            ; control register address
+	[	{TRUE}			; bodge test for MJackson
+	MOV	r1,#&00			; physical memory map
+	; This drives the FastRAM at 2cycles access, whereas the line below
+	; drives it at 8cycles access (which actually makes it slower than
+	; the normal DRAM).
+	|
+        MOV     r1,#(mmumode_mapen :OR: mmumode_osmode :OR: mmumode_mode1)
+	]
+        STRB    r1,[r0,#&00]
+
+        ; Functional prototypes have 3 areas of RAM:
+        ;
+        ; - 4KB static RAM at &00000000 used for vectors and small
+        ;   amounts of time-critical code. In Hercules this will reduce to 
+        ;   512 bytes.
+        ;
+        ; - Up to 16MB DRAM starting at &02000000. We must find the
+        ;   size of this.
+        ;
+        ; - 256KB of video RAM starting at &00740000. The first 100KB
+        ;   of this is the LCD memory (400 lines * 2 planes * (80+48) bytes).
+        ;
+        ; sysRAMtop     = top of memory from &02000000
+        ; userRAMbase   = base address of memory available to user
+        ; userRAMtop    = top of memory available to user
+
+        ; RAM sizing must be checked by ghosting and aborting
+        ; We are currently in SVC mode (IRQs/FIQs disabled) with the
+        ; complete register set available. Note: The hardware vectors
+        ; have NOT yet been written to the RAM.
+
+	; RAM sizing should be NON-Destructive
+
+        PLED    &1E,r0,"before attempting to size RAM"
+
+        ; Define the "data abort" handler
+        MOV     r0,#vec_data_abort      ; branch instruction address
+        LDR     r1,sys_abort            ; abort handler routine
+        STR     r1,[r0,#&00]
+
+        MOV     r0,#dataRAMblk          ; base RAM address
+        MOV     r1,#(128 * &0400)       ; use 128K steps
+        ADD     r2,r1,r0                ; base search address
+        LDR     r3,=&12345678           ; a funny bit pattern
+        LDR     r4,=&AAAAAAAA           ; another funny bit pattern
+        ADR     r6,sysmem_end           ; where we go when we abort
+        ORR     r6,r6,#(INTflags :OR: SVCmode)
+
+        LDR     r9,[r0,#&00]            ; load (and preserve) the word
+        STR     r3,[r0,#&00]            ; and store bit pattern into the RAM
+        LDR     r8,[r0,#&00]            ; reload the bit pattern
+        CMP     r8,r3                   ; and check for ROM at dataRAMblk
+
+	MOVNE	r0,#&FFFFFFFF		; very bad number
+	ADRNE	r1,fatal_noRAM		; error message
+        BNE     FatalError              ; this is a very bad condition
+
+        ; now look for a ghost copy
+sizesysmem_loop
+        ; check for reaching RAM limit (currently ROMbase)
+        CMP     r2,#ROMbase             ; top of possible system RAM
+        BEQ     sysmem_end
+
+        LDR     r8,[r2,#&00]
+        CMP     r8,r3                   ; check for bit pattern
+        ADDNE   r2,r2,r1                ; step upto the next RAM bank
+        BNE     sizesysmem_loop
+        ; and then check that it is a true ghost copy
+        STR     r4,[r0,#&00]
+        LDR     r8,[r2,#&00]
+        CMP     r8,r4                   ; check for bit pattern
+        ADDNE   r2,r2,r1                ; step upto the next RAM bank
+        BNE     sizesysmem_loop
+        ; memory has ghosted at "r2"    
+sysmem_end
+        LDR     r1,=sysRAMtop
+        STR     r2,[r1,#&00]            ; and remember this address
+        STR     r9,[r0,#&00]            ; restore original word
+
+	; r0 = base of RAM
+	; If (ROMcode) then all the memory for the user. A compile time
+	; flag for RAM loaded systems will be used to set the simulated
+	; ROM image size (512K or 2MB).
+	[	(ROMcode)
+	; In a ROM loaded system, all the RAM (other than the Executive
+	; requirement) is available to the user.
+	ADD	r0,r0,#workspace_size
+	|	; middle (ROMcode)
+	; In a RAM loaded system, we have a choice of emulating a 512K or
+	; a 2MB ROM image.
+	[	(twomegrom)
+	ADD	r0,r0,#(2 :SHL: 20)	; 2MB simulated ROM
+	|	; middle (twomegrom)
+	ADD	r0,r0,#(512 :SHL: 10)	; 512K simulated ROM
+	]	; EOF (twomegrom)
+	]	; EOF (ROMcode)
+        LDR     r3,=userRAMtop
+        STR     r2,[r3,#0]              ; top of user RAM is top of memory
+        STR     r0,[r1,#0]              ; top of sys RAM is base of user RAM
+        ; r0 = user RAM base address
+        B       size_memory_completed
+	]	; EOF (hercules :LOR: activebook)
+
+        ; ---------------------------------------------------------------------
+
+fatal_noRAM
+	=	"No RAM found",&00
+	ALIGN
+
+        ; ---------------------------------------------------------------------
+
+	[	(hercules :LOR: activebook)	; for Hercules based boards
+	; This table contains the initialisation values for the BANK registers.
+	; It assumes the mapping of the registers at "BANK_regs".
+BANK_RAMMAP	*	(BANK_RAMMODE1 :OR: BANK_NOPC)
+	[	(activebook)
+BANK_FIOMAP	*	(BANK_RAMMODE1 :OR: BANK_NOPC)	; Fast IO
+BANK_SIOMAP	*	(BANK_RAMMODE1 :OR: BANK_PC)	; Slow IO
+BANK_EXTMAP	*	(BANK_ROMMODE0 :OR: BANK_PC)	; external ROM
+BANK_ROMMAP	*	(BANK_ROMMODE0 :OR: BANK_NOPC)	; internal ROM
+	|
+BANK_IOMAP	*	(BANK_ROMMODE1 :OR: BANK_PC)
+	]	; (activebook)
+BANK_table
+	[	(activebook)
+	& (              BANK_FIOMAP :OR: BANK_T1_0 :OR: BANK_T2_0) ; EXTIO1
+	& (BANK_W32 :OR: BANK_SIOMAP :OR: BANK_T1_2 :OR: BANK_T2_4) ; EXTIO2
+	|
+	& (                               BANK_T1_1 :OR: BANK_T2_1) ; EXTIO1
+	& (BANK_W32 :OR: BANK_IOMAP  :OR: BANK_T1_2 :OR: BANK_T2_4) ; EXTIO2
+	]	; (activebook)
+	& (BANK_W32 :OR:                  BANK_T1_0 :OR: BANK_T2_0) ; EXTMEM1
+	& (BANK_W32 :OR:                  BANK_T1_0 :OR: BANK_T2_0) ; EXTMEM2
+	& (BANK_W32 :OR: BANK_RAMMAP :OR: BANK_T1_1 :OR: BANK_T2_0) ; DRAM1
+	[	(activebook)
+	& (BANK_W8  :OR: BANK_EXTMAP :OR: BANK_T1_4 :OR: BANK_T2_2) ; EXTCARD
+	& (BANK_W32 :OR: BANK_ROMMAP :OR: BANK_T1_2 :OR: BANK_T2_2) ; ROM
+	& (BANK_W8  :OR: BANK_EXTMAP :OR: BANK_T1_2 :OR: BANK_T2_2) ; FLASH
+	|
+	& (BANK_W32 :OR:                  BANK_T1_1 :OR: BANK_T2_1) ; PSRAM2
+	& (BANK_W0  :OR:                  BANK_T1_2 :OR: BANK_T2_1) ; SLOWROM1
+	& (BANK_W32 :OR:                  BANK_T1_1 :OR: BANK_T2_1) ; SLOWROM2
+	]	; (activebook)
+BANK_table_end
+BANK_table_size	*	(BANK_table_end - BANK_table)
+
+	; ---------------------------------------------------------------------
+	; This table contains the default initialisation values for the
+	; DMA system. It assumes the mapping of the registers at "DMA_base".
+	; Note: At the moment this table only defines channel 0 (LCD).
+DMA_table
+	[	(activebook)
+	&	(LCD_base_tier1 :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	&	(RAM_base       :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	&	(LCD_base_tier2 :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	&	(RAM_base       :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	|
+	&	(LCD_base_tier1 :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	&	(RAM1_base      :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	&	(LCD_base_tier2 :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	&	(RAM1_base      :SHL: DMA_src_shift) :OR: DMALCD_xfer
+	]
+DMA_table_end
+DMA_table_size	*	(DMA_table_end - DMA_table) ;
+
+	; ---------------------------------------------------------------------
+	; This table contains the default initialisation values for the
+	; MMU segment control registers. It assumes the mapping of the
+	; registers at "MMU_base".
+MMU_table
+	[	(page0trap)
+	; do not allow any "page 0" USR mode accesses
+	MMUVAL	   1,SRAM_base,             NONE, UP    ;  0 ; FastSRAM
+	|	; middle (page0trap)
+	MMUVAL	   1,SRAM_base,             WRITE,UP	;  0 ; FastSRAM
+	]	; EOF (page0trap)
+	MMUVAL	2049,MMU_base,              WRITE,UP	;  1 ; MMU & DMA
+	MMUVAL	4096,(IO_base + zeromeg),   WRITE,UP	;  2 ; IO
+	MMUVAL	4096,(LCD_base - &140000),  WRITE,UP	;  3 ; mapped LCD
+	MMUVAL	   0,&00000000,             NONE, UP	;  4 ; not mapped
+	[	{TRUE}
+	MMUVAL  4096,(EXTIO1_base + twomeg),WRITE,UP	;  5 ; Serial IO (etc.)
+	|
+	MMUVAL	   0,&00000000,             NONE, UP	;  5 ; not mapped
+	]
+	MMUVAL	   0,&00000000,             NONE, UP	;  6 ; not mapped
+	MMUVAL	4096,(EXTIO2_base + twomeg),WRITE,UP	;  7 ; FAX IO
+	MMUVAL	   0,&00000000,             NONE, UP	;  8 ; not mapped
+	MMUVAL	   0,&00000000,             NONE, UP	;  9 ; not mapped
+	MMUVAL	   0,&00000000,             NONE, UP	; 10 ; not mapped
+	MMUVAL	   0,&00000000,             NONE, UP	; 11 ; not mapped
+	MMUVAL	   0,&00000000,             NONE, UP	; 12 ; not mapped
+	MMUVAL	   0,&00000000,             NONE, UP	; 13 ; not mapped
+	MMUVAL	   0,&00000000,             NONE, UP	; 14 ; not mapped
+	MMUVAL	   0,&00000000,             NONE, UP	; 15 ; not mapped
+MMU_table_end
+MMU_table_size	*	(MMU_table_end - MMU_table)
+	|	; middle (hercules :LOR: activebook)
+
+        ; ---------------------------------------------------------------------
+	; NOTE: This branch is non-PIC
+sys_abort
+        B      mem_abort + baseAddr + (sys_abort - memoryBase) + vec_data_abort
+
+        ; ---------------------------------------------------------------------
+
+mem_abort
+        ; entered when a "data abort" has occured
+        ; r0 = base address
+        ; r1 = size of RAM bank
+        ; r2 = address being read
+        ; r3 = bit pattern 1
+        ; r4 = bit pattern 2
+        ; r5 = ROM start address
+        ; r6 = return address (and processor state)
+        ; r8 = temporary work register
+        ; r9 = original "r0" contents
+
+        ; The data abort marked the end of the RAM (since it must appear
+        ; in multiples of "r1")
+        MOVS    pc,r6
+	]	; EOF (hercules :LOR: activebook)
+
+        ; ---------------------------------------------------------------------
+
+	[	{TRUE}
+systemRAMname	=	"SYSRAM",&00,&00
+	]
+
+        ; ---------------------------------------------------------------------
+
+size_memory_completed
+        PLED    &1D,r1,"after sizing RAM"
+
+        ; r0 = userRAMbase
+        ; r2 = userRAMtop
+        LDR     r1,=userRAMbase
+        STR     r0,[r1,#&00]            ; start of the user RAM
+
+	[	{TRUE}
+	; Do not zero memory. If it is required it will be performed by the
+	; Helios kernel initialisation. This is because the kernel memory
+	; initialisation will perform any necessary RAM data recovery.
+	|
+	; r0 = start address of memory to NULL
+	; r2 = end address of memory to NULL
+        ; (This code assumes that (r2 - r0) is a multiple of 128bytes)
+        ADRL    r3,zeroes
+        LDMIA   r3,{r3,r4,r5,r6,r7,r8,r9,r10}   ; 8 NULL registers
+zeromem_loop
+        ; 32 registers (128bytes) at a time
+        STMIA   r0!,{r3,r4,r5,r6,r7,r8,r9,r10}
+        STMIA   r0!,{r3,r4,r5,r6,r7,r8,r9,r10}
+        STMIA   r0!,{r3,r4,r5,r6,r7,r8,r9,r10}
+        STMIA   r0!,{r3,r4,r5,r6,r7,r8,r9,r10}
+        CMP     r0,r2
+        BNE     zeromem_loop
+	]
+
+        ; setup the RAM copy of the hardware vectors
+        ADRL    r0,RAMvectors           ; code copy of the HW vectors
+        MOV     r1,#&00000000           ; where the HW vectors live
+        ADRL    r2,RAMvectors_end       ; End of the vectors
+
+copy_HW_vec_loop
+        LDR     r3,[r0],#&04            ; load a branch value
+        STR     r3,[r1],#&04            ; and place into RAM
+        CMP     r0,r2                   ; have we copied all the vectors
+        BNE     copy_HW_vec_loop
+
+        ; setup the IRQ vector table (at "IRQ_vectors")
+        ; (this is IO system dependent)
+        ; most of the entries will be NULL operations so write the complete
+        ; table as NULL entries
+
+        LDR     r0,=IRQ_vectors         ; address the IRQ vector table
+        MOV     r1,#num_IRQs            ; and the number of IRQ table entries
+        MOV     r1,r1,LSL #2            ; r1 = (r1 * 4)
+        ADRL    r2,null_instruction
+        LDR     r2,[r2,#&00]
+build_IRQ_table
+        SUBS    r1,r1,#&04              ; decrement the table index
+        STR     r2,[r0,r1]              ; store the NULL entry
+        BNE     build_IRQ_table
+
+        ; The proto-type does NOT have easily accessible IRQ sources like
+        ; an IOC system. For the moment we will allocate specific IRQ slots
+        ; for the required sources.
+        ;
+        ; Slot          Usage
+        ; ---------------------------------------------------------------------
+        ;  0            timer clock 0 (10milli-second tick for scheduler)
+        ;  1            link1 when link transfer is IRQ-driven
+	;  2		link0 used as substitute for microlink
+        ;  3..15        <<UNALLOCATED>>
+        ; ---------------------------------------------------------------------
+        ; Add into the table the "timer" interrupt handler address (entry 0)
+        ; r1 = constructed branch instruction to "ClockInterrupt"
+        ; (cond_AL | instruction_B | ((destination - (source + 8)) >> 2))
+        ADRL    r3,ClockInterrupt
+        ADD     r4,r0,#&08              ; source = source + 8
+        SUB     r3,r3,r4                ; offset = destination - source
+        MOV     r1,r3,LSR #2            ; offset = offset >> 2
+        ORR     r1,r1,#(cond_AL :OR: instruction_B)
+        STR     r1,[r0],#&04		; write table slot 0
+
+        ; add table entry for link1 interrupts
+        ADRL    r3,LinkInterrupt
+        ADD     r4,r0,#&08              ; source = source + 8
+        SUB     r3,r3,r4                ; offset = destination - source
+        MOV     r1,r3,LSR #2            ; offset = offset >> 2
+        ORR     r1,r1,#(cond_AL :OR: instruction_B)
+        STR     r1,[r0],#&04		; write table slot 1
+
+	[	(hercules :LOR: activebook)
+	[	(hercmlink)
+        ; add table entry for microlink reception interrupts
+        ADRL    r3,ML_Rx_IRQ		; microlink rx IRQ handler
+        ADD     r4,r0,#&08              ; source = source + 8
+        SUB     r3,r3,r4                ; offset = destination - source
+        MOV     r1,r3,LSR #2            ; offset = offset >> 2
+        ORR     r1,r1,#(cond_AL :OR: instruction_B)
+        STR     r1,[r0],#&04		; write table slot 2
+
+        ; add table entry for microlink transmission interrupts
+        ADRL    r3,ML_Tx_IRQ		; microlink tx IRQ handler
+        ADD     r4,r0,#&08              ; source = source + 8
+        SUB     r3,r3,r4                ; offset = destination - source
+        MOV     r1,r3,LSR #2            ; offset = offset >> 2
+        ORR     r1,r1,#(cond_AL :OR: instruction_B)
+        STR     r1,[r0],#&04		; write table slot 3
+
+        ; add table entry for microlink break interrupts
+        ADRL    r3,ML_Break_IRQ		; microlink break IRQ handler
+        ADD     r4,r0,#&08              ; source = source + 8
+        SUB     r3,r3,r4                ; offset = destination - source
+        MOV     r1,r3,LSR #2            ; offset = offset >> 2
+        ORR     r1,r1,#(cond_AL :OR: instruction_B)
+        STR     r1,[r0],#&04		; write table slot 4
+	]	; end (hercmlink)
+
+	|	; middle (hercules :LOR: activebook)
+
+	[	(fpmlink)
+        ; add table entry for link0 interrupts
+        ADRL    r3,ML_Interrupt		; link0 is microlink substitute
+        ADD     r4,r0,#&08              ; source = source + 8
+        SUB     r3,r3,r4                ; offset = destination - source
+        MOV     r1,r3,LSR #2            ; offset = offset >> 2
+        ORR     r1,r1,#(cond_AL :OR: instruction_B)
+        STR     r1,[r0],#&04		; write table slot 2
+	]	; end (fpmlink)
+	]	; EOF (hercules :LOR: activebook)
+
+        ; Setup software vectors (SWI vectors and error vector).
+        ADR     r0,SOFTvectors
+        LDR     r1,=software_vectors
+        MOV     r2,#number_of_vectors
+vec_copy_loop
+        SUBS    r2,r2,#&01
+        LDR     r3,[r0],#&04
+        STR     r3,[r1],#&04
+        BNE     vec_copy_loop
+
+        ; Set up the undefined instruction software vector in low memory
+        LDR     r0,SOFTvector_undef     ; Get initial vector contents
+        MOV     r1,#software_vector_undef ; Get vector address
+        STR     r0,[r1,#0]              ; Initialise it
+
+        ; After this point it is safe to generate aborts, etc.
+        ; We have the software vectors in place.
+
+        ; Define USR/IRQ/FIQ and SVC stacks (etc.)
+        ; This depends heavily on the memory map:
+        ;       FIQ FD stack at top of FIQ memory
+        ;       IRQ FD stack in the system workspace area
+        ;       SVC FD stack somewhere in memory
+        ;       USR FD stack (in user process address space)
+
+        ; NOTE: The IRQ stack is a small fixed memory stack. It need not be
+        ;       large since no Executive external routines will execute in
+        ;       IRQ mode.
+        ; **** This comment is not true at the moment. Device drivers are
+        ; **** called in IRQ mode.
+	!	0,"TODO: do NOT call external drivers in IRQ mode"
+
+        MOV     r0,#(INTflags :OR: FIQmode)
+        TEQP    r0,#&00000000           ; enter FIQ mode, IRQs/FIQs disabled
+        NOP                             ; wait for registers to be remapped
+        LDR     fiq_r13,=top_FIQ_stack
+
+        MOV     r0,#(INTflags :OR: IRQmode)
+        TEQP    r0,#&00000000           ; enter IRQ mode, IRQs/FIQs disabled
+        NOP                             ; wait for registers to be remapped
+	[	(newsvc)
+	LDR	irq_r13,=top_IRQ_entry	; IRQ handler entry stack
+	|
+        LDR     irq_r13,=top_IRQ_stack
+	]
+
+        TEQP    pc,#PSRflags            ; SVC mode, IRQs/FIQs disabled
+        NOP                             ; wait for registers to be remapped
+
+	[	(newsvc)
+	; We do not need an explicit SVC stack in the new world.
+	MOV	r13,#&FFFFFFF0		; make sure errors are generated
+	|
+        ; Define SVC mode stack (this is a system (Executive) resource)
+        LDR     r13,=SVCstack
+	]
+
+        ; Define startup USR mode stack. This is dependent on the requirements
+        ; of the C run-time system used to initialise and startup Helios.
+	; At the moment we will use the screen memory.
+	[	(hercules :LOR: activebook)
+	LDR	r0,=LCD_end
+	|
+	LDR	r0,=lcd_end
+	]
+
+	[	(newsvc)
+	LDR	sp,=entryword		; temporary location
+	STR	r0,[sp,#&00]
+	LDMFD	sp,{usr_r13}^		; load into USR r13
+	NOP
+	|
+        STMFD   sp!,{r0}                ; store on SVC stack
+        LDMFD   sp,{usr_r13}^           ; load into USR r13
+        NOP
+        ADD     sp,sp,#&04              ; and re-claim the stack location
+        ; NOTE: The above is required since we cannot use write-back when
+        ;       forcing USR mode transfers.
+	]	; EOF (newsvc)
+
+	; r1 = 0 for the following initialisation code segments
+        MOV     r1,#&00000000
+
+        ; Zero link adaptor variables
+        ; (Only the "count" variables are important)
+        LDR     r0,=link_IRQ_workspace
+        STR     r1,[r0,#(txbuffer_count - link_IRQ_workspace)]
+        STR     r1,[r0,#(rxbuffer_count - link_IRQ_workspace)]
+
+	[	(newsvc)
+	; Initialise the IRQ handler thread active count
+	LDR	r0,=entered_IRQ
+	STR	r1,[r0,#&00]	; no IRQ handler threads active
+	]
+
+	[	(:LNOT: splitnucleus)
+	LDR	r0,=nucleusBASE
+	STR	r1,[r0,#&00]	; we do not know where the Nucleus is
+	]	; (:LNOT: splitnucleus)
+
+        [       (newFIQ)
+        ; Initialise the multiple FIQ handler workspace:
+        LDR     r0,=FIQ_state   ; address of the array descriptor
+        STR     r1,[r0,#&00]
+        ]       ; (newFIQ)
+
+	[	(fpmlink :LOR: hercmlink)
+	; Initialise microlink variables (by setting the whole area to 0)
+	LDR	r0,=ML_Workspace_Start
+	LDR	r2,=ML_Workspace_End
+
+ml_ws_init_loop
+	STR	r1,[r0],#4		; Clear one word and step
+	CMP	r0,r2			; Reached end?
+	BLT	ml_ws_init_loop		; No
+
+        [       (hercules :LOR: activebook)
+	; Set up the two buffer pointers
+	LDR	r0,=ML_RxBuffer1	; First buffer
+	LDR	r1,=ML_Rx_CurBuf	; Address of current buffer pointer
+	STR	r0,[r1]			; Set up current pointer
+	ADD	r0,r0,#(ML_RxBuffer2 - ML_RxBuffer1); Addr of second buffer
+	STR	r0,[r1,#(ML_Rx_OtherBuf - ML_Rx_CurBuf)]; Set up other ptr
+
+        |       ; middle (hercules :LOR: activebook)
+
+	LDR	r0,=ML_RxBuffer1	; Address of static rx buffer
+	LDR	r1,=ML_RxBuf_Ptr	; Buffer pointer variable
+	STR	r0,[r1]			; Initialise pointer
+        ]       ; end (hercules :LOR: activebook)
+	]	; end (fpmlink :LOR: hercmlink)
+
+	; -- end of (r1 == 0) phase -------------------------------------------
+
+        ; Ensure that any interrupts that occur during the bootstrap phase
+        ; return immediately to the main thread.
+        ; NOTE: IRQs are NOT enabled at this point.
+        LDR     r1,=ROOT_start
+        STR     r0,[r1,#ExecRoot_pri]		; this thread is hi-priority
+
+        ; ---------------------------------------------------------------------
+        ; -- RUN-TIME SYSTEM STARTUP ------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Enter USR mode for Helios initialisation
+
+        TEQP    pc,#USRmode		; USR mode; IRQs enabled; FIQs enabled
+
+        MOV     r0,#&00000000
+        LDR     r1,=fp_old_vector
+        STR     r0,[r1,#&00]
+
+        ADRL    r0,FPEItemName
+        SWI     exec_FindROMItem
+        BVS     no_FPE_item
+
+	LDRB	r7,[r0,#ITEMNameLength]	; length of the name field
+	ADD	r7,r7,#ITEMName		; plus the offset to the name field
+	ADD	r7,r0,r7		; r7 = start of the ROM specific header
+	LDR	r9,[r7,#OBJECTInit]	; load the initialisation code offset
+
+        TEQ     r9,#&00000000
+        ADDNE   r9,r9,r0                ; calculate the real address
+        MOVNE   r14,pc                  ; remember the return address
+        MOVNE   pc,r9                   ; and execute the initialisation code
+        ; **** NO INSTRUCTIONS TO BE ADDED HERE ****
+no_FPE_item
+
+        ; ---------------------------------------------------------------------
+
+	[	(splitnucleus)
+	; This code deals with constructing the SYSBASE vector. This is an
+	; array of relative pointers to the start of the seperate "Nucleus"
+	; objects.
+	LDR	r2,=SYSBASE_start	; address of the SYSBASE structure
+	ADRL	r3,ObjectNameTable	; offsets to the object names
+	MOV	r4,r3			; and keep a copy of the base
+	MOV	r5,#&00000000		; a useful constant
+	STR	r5,[r2],#&04		; zero the IVecISize word
+
+	; We need to construct a NULL terminated list of relative pointers
+	; to the start of the objects. We have an ordered list of the objects
+	; we must reference in this "SYSBASE" structure, which we use with
+	; "SWI exec_FindROMItem" to access the mapped address of the object.
+SYSBASE_build_loop
+	LDR	r0,[r3],#&04		; load this table entry
+	CMP	r0,#&FFFFFFFF		; check for the end of the list
+	BEQ	SYSBASE_build_done
+	ADD	r0,r0,r4		; get the actual name text address
+	SWI	exec_FindROMItem	; r0 = NULL terminated ASCII filename
+	BVS	SYSBASE_build_done	; terminate SYSBASE at this point
+	LDR	r1,[r0,#OBJECTOffset]	; get the offset to the actual data
+        ADD     r0,r0,r1
+	; r0 = address of the actual object file
+	; r2 = address of this SYSBASE entry
+	SUB	r0,r0,r2		; r0 = RPTR to actual object file
+	STR	r0,[r2],#&04		; and step onto the next IVec entry
+	B	SYSBASE_build_loop
+
+SYSBASE_build_done
+	STR	r5,[r2],#&04		; and fill in the terminating NULL
+
+	; and enter the Nucleus...
+        MOV     r0,#&00000000		; a1 = &00000000 ((Channel *)bootlink)
+        LDR     r1,=SYSBASE_start	; a2 = SYSBASE   ((word *)loadbase)
+	MOV	r2,#&00000000		; a3 = &00000000 (word bootaddr)
+        MOV     sl,#&00000000		; zero stack-limit
+        MOV     fp,#&00000000		; zero frame-pointer
+        MOV     lr,#&00000000           ; USR mode (all PSR bits cleared)
+	; sp is already defined as a small FD USR stack (currently screen)
+        ; USR mode, IRQs and FIQs enabled
+	LDR	r3,[r1,#&04]		; load Kernel RPTR (not offset of 4)
+	ADD	r3,r3,r1		; add in the SYSBASE address
+	ADD	r3,r3,#(Module_sizeof + 4)	; 4 for offset above
+
+	[	((debug2) :LAND: {FALSE})	; enable/disable
+	ADR	r0,dbgmess1
+	SWI	exec_Output
+	LDR	r0,=userRAMbase
+	LDR	r0,[r0,#&00]
+	SWI	exec_WriteHex8
+	ADR	r0,dbgmess2
+	SWI	exec_Output
+	LDR	r0,=userRAMtop
+	LDR	r0,[r0,#&00]
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	ADR	r0,dbgt991
+	SWI	exec_Output
+	MOV	r0,r1
+	SWI	exec_WriteHex8
+	ADR	r0,dbgt992
+	SWI	exec_Output
+	MOV	r0,r3
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	[	{FALSE}		; display all the RPTRs
+	MOV	r4,#&00
+dbgloop1
+	LDR	r0,[r1,r4]
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	ADD	r4,r4,#&04
+	CMP	r4,#((IVecTotal * word) + (2 * word))
+	BNE	dbgloop1
+	]			; display all the RPTRs
+	ADR	r0,dbgt993
+	SWI	exec_Output
+	LDR	r0,=ROOT_start
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	B	dbgcont1
+dbgmess1	=	"About to start nucleus: RAMbase = &",&00
+dbgmess2	=	", RAMtop = &",&00
+dbgt991		=	"SYSBASE address (r1) = &",&00
+dbgt992		=	", entry point (r3) = &",&00
+dbgt993		=	"ROOT_start = &",&00
+	ALIGN
+dbgcont1
+	MOV	r0,#&00000000		; restore the "a1" parameter
+	]	; EOF ((debug2) :LAND: {enable flag})
+
+        ; USR mode, IRQs and FIQs enabled
+        MOV     pc,r3                   ; and enter the loaded code
+
+	; ---------------------------------------------------------------------
+	; This list of "files" should be in identical order to the entry
+	; indices defined in "config.h"/"manifest.s".
+	; This is a list of relative addresses to the object name.
+	; At the moments there are no checks on the validity of this structure.
+ObjectNameTable
+	&	(ObjectKernelName - ObjectNameTable)
+	&	(ObjectSysLibName - ObjectNameTable)
+	&	(ObjectServLibName - ObjectNameTable)
+	&	(ObjectUtilName - ObjectNameTable)
+	&	(ObjectABClibName - ObjectNameTable)
+	&	(ObjectPosixName - ObjectNameTable)
+	&	(ObjectCLibName - ObjectNameTable)
+	&	(ObjectFaultName - ObjectNameTable)
+	&	(ObjectFPLibName - ObjectNameTable)
+	&	(ObjectPatchLibName - ObjectNameTable)
+	&	(ObjectProcManName - ObjectNameTable)
+	&	(ObjectLoaderName - ObjectNameTable)
+	&	(ObjectWindowName - ObjectNameTable)
+	&	(ObjectRomName - ObjectNameTable)
+	&	(ObjectRamName - ObjectNameTable)
+	&	(ObjectNullName - ObjectNameTable)
+	&	(ObjectHeliosName - ObjectNameTable)
+	&	&FFFFFFFF				; list terminator
+ObjectNameTableEnd
+
+ObjectKernelName	=	"helios/lib/kernel",null
+ObjectSysLibName	=	"helios/lib/syslib",null
+ObjectServLibName	=	"helios/lib/servlib",null
+ObjectUtilName		=	"helios/lib/util",null
+ObjectABClibName	=	"helios/lib/ABClib",null
+ObjectPosixName		=	"helios/lib/Posix",null
+ObjectCLibName		=	"helios/lib/Clib",null
+ObjectFaultName		=	"helios/lib/Fault",null
+ObjectFPLibName		=	"helios/lib/FpLib",null
+ObjectPatchLibName	=	"helios/lib/patchlib",null
+ObjectProcManName	=	"helios/lib/procman",null
+ObjectLoaderName	=	"helios/lib/loader",null
+ObjectWindowName	=	"helios/lib/window",null
+ObjectRomName		=	"helios/lib/rom",null
+ObjectRamName		=	"helios/lib/ram",null
+ObjectNullName		=	"helios/lib/null",null
+ObjectHeliosName	=	"helios/lib/helios",null
+
+	; ---------------------------------------------------------------------
+
+FPEItemName
+        =       "helios/lib/FPEmulator",null
+        ALIGN
+
+	; ---------------------------------------------------------------------
+	|	; middle (splitnucleus)
+	; ---------------------------------------------------------------------
+
+        ADRL    r0,NucleusItemName
+        SWI     exec_FindROMItem
+        BVS     no_nucleus_item
+
+	LDR	r9,[r0,#OBJECTOffset]
+        ADD     r9,r0,r9                ; r9 = nucleus image base address
+        B       execute_nucleus 
+no_nucleus_item
+        ; We now need to download the Helios nucleus.
+
+        ; Read the 32bit length (4bytes) from the link adaptor
+        ; Load (amount specified - 4) bytes of data to the baseaddress
+        ; Calculate the entry point:
+        ;              baseaddress + word1 (bytes4..7) + 56
+no_data
+        LDR     r9,=userRAMbase
+        LDR     r9,[r9,#&00]
+        MOV     r7,r9
+
+        MOV     r1,#&20                 ; number of bits to load
+        MOV     r8,#&00000000           ; object length
+get_length_loop
+        SWI     exec_LinkReadC          ; r0 = byte value
+        BVS     length_read_failed
+        ORR     r8,r8,r0,ROR r1         ; r1 = shift
+        SUBS    r1,r1,#&08              ; number of bits in a character
+        BNE     get_length_loop         ; only shift 32, 24, 16 and 8
+
+        STR     r8,[r7],#&04            ; store length at base address
+
+        SUBS    r8,r8,#&04              ; remove received length word
+        BEQ     no_data                 ; no data? go around again
+
+        ; r8 = passed length
+        ; load "r8" bytes to "r9"
+
+more_object_data
+        SWI     exec_LinkReadC
+        BVS     data_read_failed
+
+        STRB    r0,[r7],#&01            ; store and increment
+        SUBS    r8,r8,#&01              ; decrement count
+        BNE     more_object_data
+execute_nucleus
+        ; r9 = base address of nucleus image
+
+	[	((debug2) :LAND: {FALSE})
+	ADR	r0,dbgmess1
+	SWI	exec_Output
+	LDR	r0,=userRAMbase
+	LDR	r0,[r0,#&00]
+	SWI	exec_WriteHex8
+	ADR	r0,dbgmess2
+	SWI	exec_Output
+	LDR	r0,=userRAMtop
+	LDR	r0,[r0,#&00]
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	B	dbgcont1
+dbgmess1	=	"About to start nucleus: RAMbase = &",&00
+dbgmess2	=	", RAMtop = &",&00
+	ALIGN
+dbgcont1
+	]	; ((debug2) :LAND: {enable/disable flag})
+
+        ; the following code assumes that the base address is word-aligned
+        ; NOTE: we add in the address of word 1; NOT the base address
+        LDR     r6,[r9,#&04]            ; load kernel rptr
+        ADD     r6,r6,r9                ; add in the base address
+	[	{TRUE}
+	; add in (sizeof(modhdr) + 4)
+	ADD	r6,r6,#(Module_sizeof + 4)	; 4 for original offset
+	|
+        [       (SMTboot)
+        ADD     r6,r6,#60               ; add in sizeof(modhdr)
+        |
+        ADD     r6,r6,#56               ; add in sizeof(modhdr)
+        ]
+                                        ;    (+ word 1 offset)
+                                        ; Note: sizeof(proghdr) == 68
+	]
+
+	[	((debug2) :LAND: {FALSE})
+	ADR	r0,dbgt991
+	SWI	exec_Output
+	MOV	r0,r9
+	SWI	exec_WriteHex8
+	ADR	r0,dbgt992
+	SWI	exec_Output
+	MOV	r0,r6
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	B	dbgcont99
+dbgt991	=	"Nucleus base address (r9) = &",&00
+dbgt992	=	", entry point (r6) = &",&00
+	ALIGN
+dbgcont99
+	]	; EOF ((debug2) :LAND: {enable/disable flag})
+        ; r9 = base address
+        ; r6  = calculated entry point (PSR flags zero)
+        MOV     r0,#&00000000
+        MOV     r1,r9
+        MOV     sl,#&00000000		; zero stack-limit
+        MOV     fp,#&00000000		; zero frame-pointer
+        ADR     lr,no_data              ; USR mode (all PSR bits cleared)
+        ; ORR     lr,lr,#Ibit             ; ensure interrupts are disabled
+        ; a1 = &00000000
+        ; a2 = base address
+        ; sl = &00000000
+        ; fp = &00000000
+        ; sp = small FD USR stack
+        ; lr = return address (loop point to load image)
+
+        ; Note: When we call the nucleus in a ROM system, we still need
+        ;       to pass in its address
+
+        ; USR mode, IRQs and FIQs enabled
+        MOV     pc,r6                   ; and enter the loaded code
+
+        ; ---------------------------------------------------------------------
+
+FPEItemName
+        =       "helios/lib/FPEmulator",null
+NucleusItemName
+        =       "helios/lib/nucleus",null
+        ALIGN
+	]	; EOF (splitnucleus)
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; The default software vector contents. These should be consistent with
+        ; the vector numbering scheme defined in "SWI.s".
+SOFTvectors
+        ; NOTE: These vectors contain pure addresses (non-PIC)
+        &       (HeliosExecutiveSWI             - memoryBase) + baseAddr
+        &       (HeliosSWI                      - memoryBase) + baseAddr
+        &       (otherSWI                       - memoryBase) + baseAddr
+	[	{TRUE}
+	&	(FatalError			- memoryBase) + baseAddr
+	|
+        &       (SystemError                    - memoryBase) + baseAddr
+	]
+	&	(defaultCARDHandler		- memoryBase) + baseAddr
+SOFTvectors_end
+	; Ensure all the vectors have default handlers.
+	ASSERT	((SOFTvectors_end - SOFTvectors) = (number_of_vectors * 4))
+
+	; The "undefined instruction" vector is a special case.
+SOFTvector_undef
+        &       (exec_undefined_instruction     - memoryBase) + baseAddr
+
+        ; ---------------------------------------------------------------------
+
+length_read_failed      ; failed to read a length byte from the Link adaptor
+data_read_failed        ; failed to read a data byte from the Link adaptor
+
+        MOV     r0,#err_readfailed
+        SWI     exec_ExecHalt
+        ; should not return; but loop just in case
+        B       data_read_failed
+
+        ; ---------------------------------------------------------------------
+
+null_instruction        ; this forms the null entry in the IRQ vectors table
+        MOVS    pc,link
+
+        ; ---------------------------------------------------------------------
+
+zeroes                  ; 8words (32bytes) of fixed NULLs
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+        &       &00000000
+
+        ; ---------------------------------------------------------------------
+        ; Storage for PC relative constants
+        LTORG
+
+        ; ---------------------------------------------------------------------
+        LNK     loint.s
+@

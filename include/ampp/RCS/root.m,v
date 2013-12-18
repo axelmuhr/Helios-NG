@@ -1,0 +1,459 @@
+head	1.14;
+access;
+symbols;
+locks; strict;
+
+
+1.14
+date	93.08.05.17.06.06;	author paul;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.12.02.15.54.40;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.12.02.15.54.00;	author nick;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.11.18.17.04.58;	author paul;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.09.23.09.06.29;	author paul;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.09.22.16.51.43;	author paul;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.09.17.16.21.07;	author paul;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.08.12.18.04.03;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.08.12.18.02.39;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.08.06.15.21.25;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.08.05.10.50.44;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.06.30.20.16.51;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.06.10.15.38.11;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.26.17.28.36;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.14
+log
+@integrated with ARM version
+@
+text
+@--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- root.m                                                               --
+--                                                                      --
+--      Root data structure                                             --
+--                                                                      --
+--      Author: NHG 16-July-87						--
+--                                                                      --
+--	SCCS Id: %W% %G%						--
+--------------------------------------------------------------------------
+
+_report ['include root.m]
+_def 'root.m_flag 1
+
+include memory.m
+include queue.m
+include sem.m
+include ports.m
+
+-- Processor specific includes to get value of 'InterruptVectors'
+_if _defp 'helios.C40 [
+	include c40.m
+]
+_if _defp 'helios.arm [
+	include arm.m
+]
+
+_if _defp 'helios.TRAN [
+	--_def	'MemStart   [18]	-- T414
+	_def	'MemStart   [28]	-- T800
+
+	_defq 'GetRoot [
+		mint ldnl #400
+		mint ldnlp #400
+		add
+	]
+]
+
+_if _defp 'helios.C40 [
+	_defq 'GetRoot['Areg] [
+		ldep	tvtp, Areg		--*Warning* ExecRoot.KernelRoot
+		-- C40WordAddress *+Areg(3), Areg
+		lsh	-2, *+Areg(3), Areg	-- mustn't change position (3)
+		addi	R_BASE, Areg
+	]
+]
+
+
+struct Root [
+        word    	Flags		-- flag bits 
+        word    	PortTable       -- pointer to port table
+        word    	PTSize          -- size of port table in words
+        word    	PTFreeq         -- port table free queue
+	word		Links		-- pointer to link table
+	struct Pool	SysPool		-- allocated system memory
+	word		FreePool	-- free memory list
+	word		Incarnation	-- our incarnation number
+	struct List	BufferPool	-- pending delivery buffer pool
+	word		BuffPoolSize	-- no. of free slots in pool
+	word		LoadAverage	-- low pri load average
+	word		Latency		-- hi pri scheduling latency
+	word		TraceVec	-- pointer to trace vector
+	_if _defp 'helios.TRAN [
+		struct List	EventList	-- list of event routines
+	]
+	_if _defp 'helios.C40 [		-- list of interrupt handlers
+		-- vec 	_mul InterruptVectors List.sizeof EventList
+		-- vec 	_mul 6                12          EventList
+		vec 	72 EventList
+	]
+	_if _defp 'helios.arm [
+		vec [_mul _eval InterruptVectors _eval List.sizeof] EventList
+	]
+	_if _defp '__ABC [
+		-- vec 	_mul UserVectors List.sizeof EventList
+		vec	264	UserEventList
+	]
+	word		EventCount	-- number of events seen
+	word		Time		-- current system time
+	struct Pool	FastPool	-- fast RAM pool
+	word		MaxLatency	-- maximum latency seen
+	struct Sem	UIDebugLock	-- lock for all IOdebugs
+	word		MachineType	-- processor type code
+	word		BufferCount	-- number of kernel buffers used
+	word		MaxBuffers	-- max number of buffers allowed
+	word		Timer		-- system timer value (MHz)
+	word		Errors		-- number of errors seen
+	word		LocalMsgs	-- local message traffic	
+	word		BufferedMsgs	-- messages buffered by kernel	
+	word		Flags		-- system flags			
+	word		LoaderPool	-- pointer to loader pool	
+	word		Configuration	-- pointer to config structure	
+	word		ErrorCodes	-- array of kernel error codes	
+	struct Port	IODebugPort	-- intercept on IOdebug messages
+	word		GCControl	-- control of port garbage collector 
+	_if _not _defp 'helios.TRAN [
+		vec 80		IODBuffer	-- static buffer for IOdebug()s	
+		word		IODBufPos	-- Position in buffer		
+	]
+	_if _defp '__SMT [
+		word		cpi		-- SMT code pointer index	
+		word		cpislots	-- number of slots in cpi	
+		struct Sem	cpi_op		-- atomic ops on cpi		
+	]
+	_if _defp '__ABC [
+		word		MISysMem	-- Memory Indirect(ion) table 	
+		word		RRDScavenged	-- Number of blocks found	
+		word		RRDPool;	-- Robust Ram Disk pool		
+	]
+	_if _and _defp 'helios.C40 _defp 'ALLOCDMA [
+		word		DMAReqQhead	-- DMA engine alloc req Q
+		word		DMAReqQtail	-- DMA engine alloc req Q
+		word		DMAFreeQhead	-- first DMA engine in DMAFreeQ
+		vec 48		DMAFreeQ	-- list of free DMA engines
+	]
+
+	-- Spare slots to be used when adding new fields to the root structure.
+	-- If the root structure grows beyond this size, then all the (shared
+	-- memory) bootstraps that download the config structure. will have to
+	-- be re-assembled, and distributed with the new nucleus.
+
+	_test _true [
+		word		SpecialPools
+	][
+		word		spare1
+	]
+	_test _or _defp 'helios.arm _defp '__VY86PID [
+		-- VLSI PID INTC interrupt mask is write only so its contents
+		-- should always be read from here and written here and to INTC.
+		word	IRQM_softcopy
+	][
+		word	spare2
+	]
+	word		spare3
+	word		spare4
+	word		spare5
+	word		spare6
+	word		spare7
+	word		spare8
+]
+
+_test _defp 'helios.TRAN [
+	_def Root_Flags_rootnode #00000001	-- set if this is rootnode
+	_def Root_Flags_special	 #00000002	-- set if this is special nuc.
+	_def Root_Flags_ROM	 #00000004	-- set if this is ROMm'ed nuc.
+	_def Root_Flags_xoffed	 #00000100	-- set if links xoffed
+][
+	_def Root_Flags_rootnode 0x00000001	-- set if this is rootnode
+	_def Root_Flags_special	 0x00000002	-- set if this is special nuc.
+	_def Root_Flags_ROM	 0x00000004	-- set if this is ROMm'ed nuc.
+	_def Root_Flags_xoffed	 0x00000100	-- set if links xoffed
+]
+
+_if _defp 'helios.C40 [
+	_def Root_Flags_CacheOff 0x00000200	-- Dont enable cache
+]
+
+
+--  End of root.m
+@
+
+
+1.13
+log
+@removed Idle and StdPriProcs
+@
+text
+@d25 2
+d30 3
+d78 1
+a78 3
+		-- vec 	_mul InterruptVectors List.sizeof EventList
+		-- vec 	_mul 2                12          EventList
+		vec	24 EventList
+d123 23
+a145 10
+	word		SpecialPools		-- Array of special memory pools
+
+--	word		spare1		-- Spare slots to be used when adding
+	word		spare2		-- new fields to the root structure.
+	word		spare3		-- If the root structure grows beyond
+	word		spare4		-- this size, then all the (shared
+	word		spare5		-- memory) bootstraps that download
+	word		spare6		-- the config structure. will have to
+	word		spare7		-- be re-assembled, and distributed
+	word		spare8		-- with the new nucleus.
+@
+
+
+1.12
+log
+@Added SpecialPools pointer.
+@
+text
+@a101 2
+		word		Idle		-- % of time processor is idle	
+		word		StdPriProcs	-- No. of StandardPri processes	
+@
+
+
+1.11
+log
+@fixed GetRoot macro for non 0 IRO (C40) and added spare slots in root
+structure as per NickG's instructions
+@
+text
+@d122 3
+a124 1
+	word		spare1		-- Spare slots to be used when adding
+@
+
+
+1.10
+log
+@added NMI to the list of interrupt vectors supported
+@
+text
+@d42 4
+a45 2
+		ldep	tvtp, Areg		--*Warning* ExecRoot.KernelRoot 
+		C40WordAddress	*+Areg(3), Areg	-- mustn't change position
+d121 9
+@
+
+
+1.9
+log
+@fixed for new flexible addressing of execroot
+@
+text
+@d67 2
+a68 1
+		vec 	60 EventList
+d72 1
+@
+
+
+1.8
+log
+@updated for new ARM port
+@
+text
+@d42 2
+a43 2
+		ldhi	0x30, Areg		-- ExecRoot mustn't change
+		C40WordAddress	*+Areg(3), Areg	-- ExecRoot.KernelRoot mustn't change
+@
+
+
+1.7
+log
+@fixed expansion
+@
+text
+@d67 1
+a67 1
+		vec 	516 EventList
+d70 2
+a71 2
+		vec	264	EventList
+		vec	40	UserEventList
+d73 4
+d106 1
+a106 1
+	_if _defp 'helios.arm [
+d111 1
+a111 1
+	_if _defp 'helios.C40 [
+@
+
+
+1.6
+log
+@fixed defp's
+@
+text
+@d127 1
+a127 1
+_if _defp helios.C40 [
+@
+
+
+1.5
+log
+@added root flags
+@
+text
+@d43 1
+a43 1
+		C40WordAddress	*+Areg(3), Areg	-- ExecRoot.Nucleus mustn't change
+d116 4
+a119 4
+	_defp Root_Flags_rootnode	#00000001	-- set if this is rootnode
+	_defp Root_Flags_special	#00000002	-- set if this is special nuc.
+	_defp Root_Flags_ROM		#00000004	-- set if this is ROMm'ed nuc.
+	_defp Root_Flags_xoffed		#00000100	-- set if links xoffed
+d121 4
+a124 4
+	_defp Root_Flags_rootnode	0x00000001	-- set if this is rootnode
+	_defp Root_Flags_special	0x00000002	-- set if this is special nuc.
+	_defp Root_Flags_ROM		0x00000004	-- set if this is ROMm'ed nuc.
+	_defp Root_Flags_xoffed		0x00000100	-- set if links xoffed
+d128 1
+a128 1
+	_defp Root_Flags_CacheOff	0x00000200	-- Dont enable cache
+@
+
+
+1.4
+log
+@removed stupid C rem word for % operator
+@
+text
+@d115 16
+@
+
+
+1.3
+log
+@added correct size of interrupt vectors
+@
+text
+@a107 1
+		word		Rem		-- remainder for NCC supprt fns 
+@
+
+
+1.2
+log
+@updated for C40
+@
+text
+@d25 3
+d65 3
+a67 2
+	_if _defp 'helios.C40 [
+		vec	480	EventList	-- @@@@@@ values should be _defp
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d24 1
+d26 3
+a28 2
+--_def	'MemStart   [18]			-- T414
+_def	'MemStart   [28]			-- T800
+d30 5
+a34 4
+_defq 'GetRoot [
+	mint ldnl #400
+	mint ldnlp #400
+	add
+d37 8
+d59 10
+a68 1
+	struct List	EventList	-- list of event routines
+d79 31
+a109 1
+	vec 20		Reserved	-- bring up to 50 words
+d113 1
+a113 1
+-- End of root.m
+@

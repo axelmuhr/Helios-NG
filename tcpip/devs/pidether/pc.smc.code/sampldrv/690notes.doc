@@ -1,0 +1,190 @@
+
+                         WESTERN DIGITAL
+
+                   SAMPLE SOFTWARE DRIVER FOR
+             ETHERNET AND STARLAN LAN ADAPTER BOARDS
+
+                           690NOTES.DOC
+                           Version 7.00
+                            May 9, 1991
+
+OVERVIEW
+
+This document provides a detailed description of the differences between
+programming an adapter using the National Semiconductor DP8390C and those
+using the Western Digital WD83C690 Network Interface Controller (NIC).
+
+Included with the Sample Driver are the following documents:
+
+USER.DOC
+PRGRMMER.DOC
+690NOTES.DOC
+
+It is recommended that you read the documents in the sequence
+listed above.
+
+Acronyms used throughout this document are:
+	 AM - Accept Multicast
+	MAR - Multicast Address Register
+	MSR - Memory Select Register
+	NIC - Network Interface Controller
+	RCR - Receive Configuration Register
+	RST - Hard Reset
+
+References are made to National Semiconductor DP8390C
+specifications.
+
+Information is provided to aid in finding the specific code within
+the SAMPLE DRIVER source code.
+
+
+1)   MULTICAST ADDRESS REGISTERS
+
+     The DP8390C provides a hashing algorithm to discard
+     some of the received multicast packets from the network.
+     The WD83C690 receives either all or no multicast packets. 
+     This binary function is controlled by the Accept Multicast 
+     (AM) bit of the Receive Configuration Register (RCR).
+
+     RELEVANT CODE IN SAMPLE DRIVER
+
+	Module:  \DIAG\DM_TOOLS.C
+	Routine: DISABLE_MULTICAST() and
+		 ENABLE_MULTICAST()
+
+     The following is some pseudo code to help understand
+     a driver implementation of multicast addresses.
+
+     ENABLE MULTICAST ADDRESS ROUTINE
+
+     A pointer to the specific six byte multicast address 
+     may be passed to this routine.
+
+        Definitions Needed:
+
+	     Define RCR = baseio+0x1C
+	     Define AM = 0x08
+	     Define MAR = baseio+0x18 through baseio+0x1F
+
+	DP8390C Case:
+
+	     Calculate hash value of passed multicast address
+	     Set hash bit in appropriate MAR
+	     Set AM bit in RCR
+	     Add multicast address to multicast address table
+
+	WD83C690 Case:
+
+	     Set AM bit in RCR
+	     Add multicast address to multicast address table
+
+     ADDITIONAL CODE FOR INTERRUPT SERVICE ROUTINE
+
+     When Receive Interrupt Hits occur (for both chips):
+
+ 	Compare destination address of received packet to
+	multicast address table, and accept packet if it 
+	matches an enabled multicast address.
+
+
+2)   RECEIVE OVERFLOW CODE
+
+     The DP8390C specification describes the preferred method 
+     for overflow which includes stopping the chip, enabling 
+     loopback mode, restarting the chip, clearing at least one 
+     packet from the ring and disabling loopback mode.  The 
+     WD83C690 does not need this overhead and restarting this 
+     chip may produce unpredictable results.  For best results, 
+     the driver should service received packets as usual.
+
+     RELEVANT CODE IN SAMPLE DRIVER
+
+	Module:  \DIAG\NSTK_CHK.C
+	Routine: HANDLE_8390_OVERWRITE() and
+		 HANDLE_690_OVERWRITE()
+
+     No pseudo code is provided since the referenced source code 
+     is sufficient.
+
+
+3)   MORE RECEIVE OVERFLOW CODE
+
+     The WD83C690 has the potential for posting a receive
+     overflow interrupt with an empty receive ring.  The
+     driver should check this condition and write the
+     BNRY register with its current contents to proceed.
+
+     RELEVANT CODE IN SAMPLE DRIVER
+
+	Module:  \DIAG\NSTK_CHK.C
+	Routine: HANDLE_690_OVERWRITE()
+
+     No pseudo code is provided since the referenced source code 
+     is sufficient.
+
+
+4)   TRANSMITTER LOCKUP CODE
+
+     The WD83C690 could enter a locked state under heavy
+     network traffic.  If the driver senses that the
+     transmitter is hung, a software controlled hard reset
+     must be performed (RST bit of the MSR).
+
+     RELEVANT CODE IN SAMPLE DRIVER
+
+	Module:      \DIAG\SR_TOOLS.C
+	Routine:     TRANSMIT_PACKET()
+	Description: This is where the software senses that the
+		     previous transmit packet is not completed.  
+		     Retries may be desired before resetting.
+
+	Module:      \DIAG\TESTS.C
+	Routine:     QUIET_RESET_NIC()
+	Description: This is where the reset is performed on the
+		     NIC.  Note this is a "Hard" reset.
+
+	Module:      \DIAG\DM_TOOLS.C
+	Routine:     INIT_NIC()
+	Description: Following a "Hard" reset, the entire NIC must
+		     be reinitialized.
+
+     No pseudo code is provided since the referenced source code 
+     is sufficient.
+
+
+5)   RECEIVE HEADER VERIFICATION
+
+     Drivers running on a WD83C690 should verify received
+     packets via the NIC header before passing the packet to
+     the next layer of software.  If an invalid header is 
+     detected, the packet may be thrown away or the receive 
+     ring may be reinitialized, depending on the severity of 
+     the error.
+
+     RELEVANT CODE IN SAMPLE DRIVER
+
+	Module:      \DIAG\NSTK_COM.C
+	Routine:     ANY_DEADLY_ERRORS()
+	Description: This is where the operation of the receiver
+		     is verified.  Additionally, the status
+		     byte in the NICs receive header may be
+		     checked.
+
+	Module:      \DIAG\NSTK_COM.C
+	Routine:     REINIT_RCV_RING()
+	Description: This is where the receive ring is reset
+		     while keeping the rest of the NIC intact.
+
+     No pseudo code is provided since the referenced source code
+     is sufficient.
+
+
+   Licensed by Western Digital for use by its customers only.  Western
+   Digital Corporation makes no warranty of any kind with regards to the 
+   sample driver code contained on this disk.
+
+   Western Digital is a registered trademark of Western Digital Corporation.
+   Other marks mentioned herein belong to their respective companies.
+
+	      Copyright (C) 1991 Western Digital Corporation.
+   	                 All Rights Reserved.

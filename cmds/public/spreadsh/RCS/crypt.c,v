@@ -1,0 +1,231 @@
+head	1.2;
+access;
+symbols
+	Helios_1_3_1:1.1
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1
+	C40_Field_Test_2:1.1
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	94.03.10.13.41.15;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.03.08.17.24.16;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@fixed compile time warnings
+@
+text
+@/*
+ * Encryption utilites
+ * Bradley Williams	
+ * {allegra,ihnp4,uiucdcs,ctvax}!convex!williams
+ * $Revision: 1.1 $
+ */
+
+#include <stdio.h>
+#include <curses.h>
+#include <strings.h>
+#include <sys/wait.h>
+#include <stdlib.h>
+#include <signal.h>
+
+#if defined(BSD42) || defined(BSD43)
+#include <sys/file.h>
+#else
+#include <fcntl.h>
+#endif
+
+#include "sc.h"
+
+#ifdef SYSV3
+void exit();
+#endif
+
+int         Crypt = 0;
+
+void
+creadfile (save, eraseflg)
+char *save;
+int  eraseflg;
+{
+    register FILE *f;
+    int pipefd[2];
+    int fildes;
+    int pid;
+
+    if (eraseflg && strcmp(save, curfile) && modcheck(" first")) return;
+
+    fildes = open (save, O_RDONLY, 0);
+    if (fildes < 0)
+    {
+	error ("Can't read file \"%s\"", save);
+	return;
+    }
+
+    if (eraseflg) erasedb ();
+
+    if (pipe(pipefd) < 0) {
+	error("Can't make pipe to child");
+	return;
+    }
+
+    deraw();
+    if ((pid=fork()) == 0)			  /* if child  */
+    {
+	(void) close (0);		  /* close stdin */
+	(void) close (1);		  /* close stdout */
+	(void) close (pipefd[0]);	  /* close pipe input */
+	(void) dup (fildes);		  /* standard in from file */
+	(void) dup (pipefd[1]);		  /* connect to pipe */
+	(void) fprintf (stderr, " ");
+	(void) execl ("/bin/sh", "sh", "-c", "crypt", 0);
+	exit (-127);
+    }
+    else				  /* else parent */
+    {
+	(void) close (fildes);
+	(void) close (pipefd[1]);	  /* close pipe output */
+	f = fdopen (pipefd[0], "r");
+	if (f == 0)
+	{
+	    (void) kill (pid, -9);
+	    error ("Can't fdopen file \"%s\"", save);
+	    (void) close (pipefd[0]);
+	    return;
+	}
+    }
+
+    loading++;
+    while (fgets(line,sizeof line,f)) {
+	linelim = 0;
+	if (line[0] != '#') (void) yyparse ();
+    }
+    --loading;
+    (void) fclose (f);
+    (void) close (pipefd[0]);
+    while (pid != wait(&fildes)) /**/;
+    goraw();
+    linelim = -1;
+    modflg++;
+    if (eraseflg) {
+	(void) strcpy (curfile, save);
+	modflg = 0;
+    }
+    EvalAll();
+}
+
+int
+cwritefile (fname, r0, c0, rn, cn)
+char *fname;
+int r0, c0, rn, cn;
+{
+    register FILE *f;
+    int pipefd[2];
+    int fildes;
+    int pid;
+    char save[1024];
+    char *fn;
+
+
+    if (*fname == 0) fname = &curfile[0];
+
+    fn = fname;
+    while (*fn && (*fn == ' '))  /* Skip leading blanks */
+	fn++;
+
+    if ( *fn == '|' ) {
+	error ("Can't have encrypted pipe");
+	return(-1);
+	}
+
+    (void) strcpy(save,fname);
+
+    fildes = open (save, O_WRONLY|O_CREAT, 0600);
+    if (fildes < 0)
+    {
+	error ("Can't create file \"%s\"", save);
+	return(-1);
+    }
+
+    if (pipe (pipefd) < 0) {
+	error ("Can't make pipe to child\n");
+	return(-1);
+    }
+
+    deraw();
+    if ((pid=fork()) == 0)			  /* if child  */
+    {
+	(void) close (0);			  /* close stdin */
+	(void) close (1);			  /* close stdout */
+	(void) close (pipefd[1]);		  /* close pipe output */
+	(void) dup (pipefd[0]);			  /* connect to pipe input */
+	(void) dup (fildes);			  /* standard out to file */
+	(void) fprintf (stderr, " ");
+	(void) execl ("/bin/sh", "sh", "-c", "crypt", 0);
+	exit (-127);
+    }
+    else				  /* else parent */
+    {
+	(void) close (fildes);
+	(void) close (pipefd[0]);		  /* close pipe input */
+	f = fdopen (pipefd[1], "w");
+	if (f == 0)
+	{
+	    (void) kill (pid, -9);
+	    error ("Can't fdopen file \"%s\"", save);
+	    (void) close (pipefd[1]);
+	    return(-1);
+	}
+    }
+
+    write_fd(f, r0, c0, rn, cn);
+
+    (void) fclose (f);
+    (void) close (pipefd[1]);
+    while (pid != wait(&fildes)) /**/;
+    (void) strcpy(curfile,save);
+
+    modflg = 0;
+    error ("File \"%s\" written", curfile);
+    goraw();
+    return(0);
+}
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d5 1
+a5 1
+ * $Revision: 6.1 $
+d10 4
+a22 2
+char        *strcpy();
+
+d29 1
+d100 1
+@

@@ -1,0 +1,506 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.4
+	Helios_C40_1_3_Official_Release:1.4
+	Alenia_release:1.4
+	Helios13_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	92.11.04.14.33.06;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.10.27.15.05.30;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.08.19.09.44.04;	author craig;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.16.30.03;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@C40 version completed
+@
+text
+@/**
+*
+* Title:  Helios Debugger - Program support.
+*
+* Author: Andy England
+*
+* Date:   September 1988
+*
+*         (c) Copyright 1988 - 1992, Perihelion Software Ltd.
+*
+*         All Rights Reserved.
+*
+**/
+
+#ifdef __TRAN
+static char *rcsid = "$Header: /m/giga/Helios.tmp/Helios/cmds/debugger/RCS/debug.c,v 1.3 1992/10/27 15:05:30 nickc Exp nickc $";
+#endif
+
+#include "tla.h"
+
+#ifdef PARSYTEC
+#ifdef HE12
+PRIVATE void worksig(void);
+#endif
+#endif
+
+PUBLIC  Semaphore loadlock;
+PUBLIC BOOL debugging;
+
+#ifdef V1_1
+PUBLIC  FILE my_iob[_MYSYS_OPEN];
+#endif
+
+/**
+*
+* sighandler();
+*
+* Signal handler.
+*
+**/
+#ifdef PARSYTEC
+PRIVATE void sighandler(int i)  /* CR: int was void */
+{
+  i = 1 ;   /* CR: just a dummy to keep compiler quite */
+#endif
+PRIVATE void sighandler () 
+{
+  tidyup();
+  _exit(0);
+}
+
+/**
+*
+* initdebug(argc, argv);
+*
+* Initialise the world.
+*
+**/
+PUBLIC void initdebug(int argc, char **argv)
+{
+  BOOL memchecking = FALSE;
+  char *arg;
+
+  debugging = FALSE;
+  
+  until ((arg = *++argv) == NULL)
+  {
+    if (arg[0] == '-')
+    {
+      switch (arg[1])
+      {
+      	case 'd':
+/*
+-- crf : 17/08/91 - report option
+*/
+        IOdebug ("tla : debugging enabled") ;
+      	debugging = TRUE;
+      	break;
+
+      	case 'm':
+/*
+-- crf : 17/08/91 - report option
+*/
+        IOdebug ("tla : memory checking enabled") ;
+      	memchecking = TRUE;
+      	break;
+
+      	default:
+      	break;
+      }
+    }
+  }
+  initmem(memchecking);
+  initsource();
+#ifdef V1_1
+  /* JMP: locking mechanism for fopen/fdopen requests*/
+  InitSemaphore(&loadlock, 1);
+  /* initialisation of iob table for my_fdopen my_fopen */
+  memset(my_iob,0,sizeof(my_iob));
+#endif
+
+#ifdef PARSYTEC
+#ifndef HE12
+  signal(SIGINT, sighandler);
+#else
+  Fork ( 2000, worksig, 0 );
+#endif
+#endif
+
+#ifdef OLDCODE
+  signal(SIGINT, sighandler);
+#endif
+/*
+-- crf : 16/07/91 - Bug 706
+-- Trap signals to terminate debugger
+*/
+  {
+    struct sigaction act;
+    act.sa_handler = sighandler;
+    act.sa_mask = 0;
+    act.sa_flags = SA_ASYNC;
+    (void) sigaction(SIGINT, &act, NULL);
+    (void) sigaction(SIGHUP, &act, NULL);
+    (void) sigaction(SIGTERM, &act, NULL);
+  }
+}
+
+/*
+*
+* debugf(format, ...);
+*
+* Formatted output to standard error.
+*
+**/
+PUBLIC void debugf(char *format, ...)
+{
+  if (debugging)
+  {
+    va_list args;
+
+    va_start(args, format);
+#ifdef MYDEBUG
+    fprintf(stderr, "MYTLA: ");
+#else    
+    fprintf(stderr, "TLA: ");
+#endif    
+    vfprintf(stderr, format, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+  }
+}
+
+/**
+*
+* debug = newdebug(name);
+*
+* Create a new debugging session.
+*
+**/
+PUBLIC DEBUG *newdebug(char *name)
+{
+  DEBUG *debug = NEW(DEBUG);
+
+  /* ACE: Name must be stored in ObjNode structure */
+  strcpy(debug->name, name);
+  InitList(&debug->modulelist);
+  InitList(&debug->breakpointlist);
+  InitList(&debug->watchlist);
+  InitList(&debug->watchpointlist);
+  InitList(&debug->threadlist);
+  debug->thread = NULL;
+  return debug;
+} 
+
+/**
+*
+* startdebug(debug, port, reply);
+*
+* Start debugging using the specified ports.
+*
+**/
+PUBLIC void startdebug(DEBUG *debug, Port port, Port reply)
+{
+  BOOL read_ok;
+
+  
+  debugf("startdebug()");
+  debug->port = port;
+  debug->reply = reply;
+  GetEnv(port, &debug->env);
+  debugf("open display");
+  debugf("windowserver = %s", debug->env.Objv[OV_CServer]->Name);
+
+  if (debug->env.Objv[OV_CServer]->Name != NULL AND 
+      debug->env.Objv[OV_CServer]->Name != "\0")
+  {
+    debug->display = dopen(debug, debug->name, 
+                           debug->env.Objv[OV_CServer]->Name);
+  }
+  else
+  {
+    debug->display = dopen(debug, debug->name, "/window");
+  }
+  
+  debugf("new line");
+  debug->line = newline(debug->display);
+  debugf("new eval");
+  debug->eval = neweval(debug);
+
+  cmdmsg(debug, "Loading symbols for %s", debug->env.Objv[OV_Code]->Name);
+
+#ifdef SYMBOLS
+  debugf("new table");
+  debug->table = (CHAIN *)newtable(); /* CR: cast for compiler */
+#endif
+  debugf("read code");
+
+  read_ok = readcode(debug);
+  /* returns false if .dbg is not located */
+
+  Fork( 20000, interp, sizeof(DEBUG *), debug );
+
+  cmdmsg(debug, "");
+  debugf("startdebug() done");
+
+  receiver(debug);
+}
+
+/**
+*
+* remdebug(debug);
+*
+* Remove debug instance.
+*
+**/
+PUBLIC void remdebug(DEBUG *debug)
+{
+  debugf("remdebug()");
+  (void)WalkList(&debug->modulelist, (WordFnPtr)remmodule, 0);
+  debugf("free breakpoints");
+  (void)WalkList(&debug->breakpointlist, (WordFnPtr)freebreakpoint, 0);
+#ifdef NEWCODE
+  (void)WalkList(&debug->watchlist, (WordFnPtr)freewatch, 0);
+#endif
+  (void)WalkList(&debug->watchpointlist, (WordFnPtr)freewatchpoint, 0);
+  debugf("free threads");
+  (void)WalkList(&debug->threadlist, (WordFnPtr)remthread, 0);
+  debugf("close display");
+  dclose(debug->display);
+  debugf("free port");
+  FreePort(debug->port);
+/*#ifdef OLDCODE   CR: I think this is necessary  */
+  FreePort(debug->reply);
+/* #endif                 *********/
+#ifdef SYMBOLS
+  walktable(debug->table, freesymbol, 0);
+  freemem(debug->table);
+#endif
+  debugf("free interp");
+  reminterp(debug->interp);
+  debugf("free line");
+  remline(debug->line);
+  debugf("free eval");
+  remeval(debug->eval);
+/*
+-- crf : 12/08/91 - close Objv, Strv
+*/
+  { 
+    int i;
+    WORD err ;
+    if (debug->env.Objv != Null(Object *))
+    { 
+      for (i = 0; debug->env.Objv[i] != Null(Object); i++)
+      {
+        if (debug->env.Objv[i] != (Object *) MinInt)
+        {
+          if ((err = Close(debug->env.Objv[i])) != 0)
+            IOdebug ("TLA: Error closing Objv[%d] : %x", i, err) ;
+        }
+      }
+    }
+    if (debug->env.Strv != Null(Stream *))
+    { 
+      for (i = 0; debug->env.Strv[i] != Null(Stream); i++)
+      {
+        if (debug->env.Strv[i] != (Stream *) MinInt)
+        {
+          if ((err = Close(debug->env.Strv[i])) != 0)
+          {
+#ifdef CRs
+/*
+-- crf : Strv[1] & [2] : fault c2098007 ("... invalid or corrupt Stream")
+*/
+            IOdebug ("TLA: Error closing Strv[%d] : %x", i, err) ;
+#endif
+          }
+        }
+      }
+    }
+/*
+-- crf : 12/08/91 - free Argv
+*/
+    if ((err = Free (debug->env.Argv)) != 0)
+      IOdebug ("TLA: Error freeing Argv : %x", err) ;
+  }
+  debugf("free debug");
+  freemem(debug);
+  debugf("remdebug() done");
+}
+
+#ifdef PARSYTEC
+#ifdef HE12
+/************************************************************
+*
+*
+*	to terminate the debugger on ctrl C
+*
+*	CR: necessary to be compatible to Helios 1.2 cause the
+*	    signalhandling is different (no new thread for a 
+*	    signalhandler)
+*
+*
+************************************************************/
+
+
+PRIVATE void worksig(void)
+{
+  sigset_t *sigset = 0;
+  
+  signal(SIGINT,sighandler);
+  sigsuspend(sigset);
+
+}
+#endif
+#endif
+@
+
+
+1.3
+log
+@fixed compile time warnings
+@
+text
+@d16 1
+a16 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/RCS/debug.c,v 1.2 1991/08/19 09:44:04 craig Exp nickc $";
+a191 6
+#ifdef OLDCODE
+  debugf("windowserver = %s", debug->env.Objv[3]->Name);
+#endif
+/*
+-- crf : 12/08/91 - clean up use of Environment Objv
+*/
+a193 6
+#ifdef OLDCODE
+  if (debug->env.Objv[3]->Name != NULL AND debug->env.Objv[3]->Name != "\0")
+#endif
+/*
+-- crf : 12/08/91 - clean up use of Environment Objv
+*/
+a196 6
+#ifdef OLDCODE
+    debug->display = dopen(debug, debug->name, debug->env.Objv[3]->Name);
+#endif
+/*
+-- crf : 12/08/91 - clean up use of Environment Objv
+*/
+a209 6
+#ifdef OLDCODE
+  cmdmsg(debug, "Loading symbols for %s", debug->env.Objv[1]->Name);
+#endif
+/*
+-- crf : 12/08/91 - clean up use of Environment Objv
+*/
+@
+
+
+1.2
+log
+@Major fixes to V1.1 for V2.0 (see documentation for details)
+@
+text
+@d9 1
+a9 1
+*         (c) Copyright 1988, Perihelion Software Ltd.
+d15 3
+a17 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/RCS/debug.c,v 1.1 1990/08/28 16:30:03 james Exp craig $";
+d186 1
+d244 3
+a246 2
+    
+  Fork(20000, interp, sizeof(DEBUG *), debug);
+d302 1
+a302 1
+            IOdebug ("Error closing Objv[%d] : %x", i, err) ;
+d318 1
+a318 1
+            IOdebug ("Error closing Strv[%d] : %x", i, err) ;
+d328 1
+a328 1
+      IOdebug ("Error freeing Argv : %x", err) ;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d15 1
+a15 12
+#include <stdarg.h>
+#include <signal.h>
+#include "debug.h"
+#include "display.h"
+#include "line.h"
+#include "symbol.h"
+#include "expr.h"
+#include "eval.h"
+#include "monitor.h"
+#include "module.h"
+#include "cmd.h"
+#include "system.h"
+d17 1
+a17 1
+static char *rcsid = "$Header$";
+d19 6
+a24 1
+PRIVATE BOOL debugging = FALSE;
+d26 1
+d39 2
+a40 1
+PRIVATE void sighandler(void)
+d42 4
+d62 2
+d71 4
+d79 4
+d99 3
+d103 21
+d140 3
+d144 1
+d183 1
+d189 31
+a219 1
+  debug->display = dopen(debug, debug->name);
+d224 2
+d227 6
+d235 1
+a235 1
+  debug->table = newtable();
+a246 1
+
+d272 1
+a272 1
+#ifdef OLDCODE
+d274 1
+a274 1
+#endif
+d285 41
+d330 26
+@

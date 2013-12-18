@@ -1,0 +1,1036 @@
+/*
+ * File:	c40intr.a
+ * Subsystem:	'C40 executive
+ * Author:	P.A.Beskeen
+ * Date:	Nov '91
+ *
+ * Description: `C40 Helios executive interrupt related functions.
+ *
+ *
+ * RcsId: $Id: c40intr.a,v 1.21 1993/10/04 12:12:37 paul Exp $
+ *
+ * (C) Copyright 1991 Perihelion Software Ltd.
+ * 
+ * RcsLog: $Log: c40intr.a,v $
+-- Revision 1.21  1993/10/04  12:12:37  paul
+-- added support for max dispatch latency test
+--
+-- Revision 1.20  1993/04/01  16:56:18  nick
+-- Functions SetIIFBits(), ClrIIFBits() and WriteTCR added.
+--
+-- Revision 1.19  1993/01/26  18:35:02  paul
+-- fixed assembler bug that allowed nonsense cmpi NULL, *ar2++ to be parsed.
+-- Fixed assembler and changed source - how did this ever work? timesliceing
+-- should have caused threads to be lost?
+--
+-- Revision 1.18  1993/01/26  10:07:27  paul
+-- optimised time slice and reduced generic interrupt handlers dispatch
+-- latency.
+--
+-- Revision 1.17  1993/01/25  09:06:28  paul
+-- minor tidies + IR0 is now preserved
+--
+-- Revision 1.16  1992/11/20  15:43:46  paul
+-- address base reg IR0 is now defined to be a constant, user code must
+-- not change its value.
+-- interrupt routines now assume that IR0 is correct
+--
+-- Revision 1.15  1992/11/18  14:37:00  paul
+-- fixed up interrupt handlers to stop assuming IR0 is 0, instead they assume
+-- GetExecRoot (tvtp) is synonymous with the std C address base
+--
+-- Revision 1.14  1992/11/12  20:54:42  paul
+-- made C40Word/CAddress compatible with IR0 != 0
+--
+-- Revision 1.13  1992/11/12  17:17:25  paul
+-- now used generic cpustate.m
+--
+-- Revision 1.12  1992/11/09  15:43:21  nickc
+-- temporary fix until Paul produces new version of cpustate.h
+--
+-- Revision 1.11  1992/11/09  15:32:43  nickc
+-- applied patch as per PB instructions
+--
+-- Revision 1.10  1992/09/25  09:37:18  paul
+-- changed to use gexec.m
+--
+-- Revision 1.9  1992/09/23  17:21:54  paul
+-- added NMI interrupt handler support
+--
+-- Revision 1.8  1992/08/18  09:54:42  paul
+-- added generic interrupt handler initialisation and stub code
+--
+-- Revision 1.7  1992/07/30  18:30:29  paul
+-- added thread timing support
+--
+-- Revision 1.6  1992/06/30  19:23:59  paul
+-- removed debug
+-- ,
+--
+-- Revision 1.5  1992/06/26  17:59:02  paul
+-- changed from a fixed timeslice quantum to a variable one
+--
+-- Revision 1.4  1992/06/19  18:24:53  paul
+-- removed some debugging, optimised and fixed timeslice interrupt handler
+--
+-- Revision 1.3  1992/06/16  08:47:28  paul
+-- cleaned up code and optimised slightly
+--
+-- Revision 1.2  1992/04/21  09:54:56  paul
+-- alpha version
+--
+ */
+
+
+include ../gexec.m	-- Executive manifests
+include c40intr.m
+include c40mmap.m
+include cpustate.m
+include module.m
+
+
+-- word IntsAreEnabled(void);
+--
+-- Returns TRUE if ints are enabled globally else false
+--
+-- Called from C so must conform to PCS
+
+	Function IntsAreEnabled
+
+	bud	R_LR
+		ldi	ST, R_A1result
+		and	ST_GIE, R_A1result
+		lsh	-13, R_A1result		-- set bit result to TRUE (1)
+
+
+_if _false [	-- C now uses inline opcode macros (event.h)
+-- void IntsOn(void);
+--
+-- Enable interrupts globally
+--
+-- Called from C so must conform to PCS
+
+	Function IntsOn
+
+	bud	R_LR
+		or	ST_GIE, st	-- global interrupt enable bit set
+		nop
+		nop
+
+-- void IntsOff(void);
+--
+-- Disable interrupts globally
+--
+-- Called from C so must conform to PCS
+
+
+	Function IntsOff
+
+	bud	R_LR
+		andn	ST_GIE, st	-- global interrupt enable bit zeroed
+		nop
+		nop
+
+-- void ClockIntsOn(void);
+--
+-- Enable time slicer clock interrupts
+--
+-- Called from C so must conform to PCS
+
+	Function ClockIntsOn
+
+	or	IIE_ETINT0, iie		-- timer 0 enabled
+	b	R_LR
+
+
+-- void ClockIntsOff(void);
+--
+-- Disable time slicer clock interrupts
+--
+-- Called from C so must conform to PCS
+
+	Function ClockIntsOff
+
+	andn	IIE_ETINT0, iie		-- timer 0 disabled
+	b	R_LR
+
+]
+
+-- void SetIIFBits(bits);
+--
+-- Set some bits in the IIF register
+--
+--
+	Function SetIIFBits
+
+	bud	R_LR
+		or	R0,IIF
+		nop
+		nop
+
+
+-- void ClrIIFBits(bits);
+--
+-- Clear some bits in the IIF register
+--
+--
+	Function ClrIIFBits
+
+	bud	R_LR
+		andn	R0,IIF
+		nop
+		nop
+
+-- int WriteTCR( int tcr )
+--
+--
+	Function WriteTCR
+
+	ldi	R_ADDR1,r10		-- save R_ADDR1
+
+	ldhi	0x10,R_ADDR1		-- R_ADDR1 = 0x100000 = GMCR address
+	ldi	*R_ADDR1,r1		-- r1 = old GMCR value
+	ldhi	0x1dea,r2		-- r2 = 0x1dea0050 = new GMCR value
+	or	0x0050,r2
+	sti	r2,*R_ADDR1		-- set GMCR
+
+	ldhi	0x8000,R_ATMP		-- put G0 address in R_ATMP
+	ldi	iif,r2			-- r2 = saved IIF
+	ldi	2,iif			-- iif = 2
+	ldi	*R_ATMP,r3		-- r3 = old tcr
+
+	sti	r0,*R_ATMP		-- *R_ATMP = new tcr
+	nop				-- give it time to settle
+	nop
+	nop
+	nop
+
+	ldi	r2,iif			-- iif = original value
+	sti	r1,*R_ADDR1		-- restore GMCR
+	ldi	r10,R_ADDR1		-- restore R_ADDR1
+
+	ldi	r3,r0			-- r0 = old tcr (return value)
+	and	0xFF,r0			-- return only ls 8 bits
+
+	bu	R_LR			-- and return
+
+
+-- void StartTimeSlicer(void)
+--
+-- Starts the time slicer.
+-- 
+-- Initialise time slicer clock to call `SliceIntrHandler' every
+-- millisecond . Once set up, the clock is reset and slicer
+-- interrupts are enabled.
+-- Assumes system stack pointer and interrupt vector table already initialised
+--
+-- Called from C so must conform to PCS
+
+
+	Function StartTimeSlicer
+
+_def	start_timer	[(tcr_io|tcr_go|tcr_hld|tcr_clksrc)]
+_def	halt_timer	[(tcr_io|tcr_clksrc)]
+_def	continue_timer	[(tcr_io|tcr_hld|tcr_clksrc)]
+
+	-- Initialise clock interrupt and handler
+
+	-- get address of time slice interrupt handler
+	ldabs16 SliceIntrHandler R_TMP1
+
+	-- Get interrupt vector table
+	ldep	ivtp, R_ATMP
+
+	-- Set interrupt vector for clock 0 to SliceIntrHandler
+	sti	R_TMP1, *+R_ATMP(iv_tint0)	-- store in clk0 interrupt vect.
+
+	-- Set up timer 0 period register
+	-- e.g.	33Mhz = 60.60606060 nanosecond H1 cycle time
+	--	timer resolution = H1 * 2 = 121.21212121 nanosecond units
+	--	period for 1 millisecond interrupt = 1000000 / resolution
+	--	1 millisecond = 8250 timer ticks
+	-- In TIM-40 systems this value is calulated from ID ROM info
+
+	-- Load clock tick value for 1 millisecond
+	GetExecRoot R_ATMP				-- address of ExecRoot
+	-- load IDROM value for number of clock ticks in 1 millisecond
+	ldi	*+R_ATMP(ExecRoot.ID_ROM + IDROM.TIMER0_PERIOD), R_TMP1
+	ldaperi	timer0_control R_ATMP
+	sti	R_TMP1, *+R_ATMP(timer_period)		-- st in clk0 period reg
+	stik	0, *+R_ATMP(timer_count)		-- zero counter
+
+	bUd	R_LR	-- delayed branch
+		-- setup clk0 control reg
+		-- use internal clock, reset it and let it go
+		-- set TCLK0 pin to general I/O output
+		-- set output low = access local RAM rather than TIM-40 ID ROM
+		ldi	start_timer, R_TMP1
+		sti	R_TMP1, *+R_ATMP(timer_control)	-- st in clk0 ctrl reg
+
+		-- enable clock 0 interrupts
+		or	IIE_ETINT0, iie
+
+
+-- Time slicer clock interrupt handler
+-- 
+-- This is entered directly from the timer 0 interrupt vector.
+-- Interrupts are disabled and the return address is pointed to by
+-- the system stack pointer.
+--
+-- Assumes clock 0 interrupt every millisecond.
+--
+-- The code is organised so that the most likely set of circumstances causes
+-- no branches until the RETI is hit. i.e. There will usually be items on
+-- the timer Q, but they will not usually need waking up and the interrupt
+-- will not usually require the current thread to be timesliced. Also
+-- the minimum number of registers are stacked.
+--
+-- @@@ This code should be re-organised to minimise interrupt latency, the
+-- potentially longest path should be optimised by removing any branches
+-- from this path (reduce pipeline stalling).
+
+	-- Exported to c40linkio.a for LinkRx/Tx dispatch.
+	export	extern_slice_now
+
+SliceIntrHandler:
+	-- save minimal state
+	push	ST
+	push	R_BASE
+	push	ar0	-- used exclusively as ExecRoot pointer
+	push	ar1
+	push	ar2
+
+	-- if any regs are added to the stack update this manifest
+	_def	'num_stacked_regs	5
+
+_test _defp 'LATENCYTEST [	-- used to check Max interrupt latency
+	ldaperi timer0_control ar2
+	or	ST_SET_COND, st		-- Set cond codes for all registers
+
+	ldi	halt_timer, ar0		-- hold timer so we can read count
+	sti	ar0, *+ar2(timer_control)
+
+	ldi	continue_timer, ar0	-- resume timer control bits
+	ldi	*+ar2(timer_count), ar1	-- read current count
+
+	sti	ar0, *+ar2(timer_control) -- resume timer
+
+	-- ar0 = address of ExecRoot
+	GetExecRoot ar0
+
+	subi	10/2, ar1	-- subtract the handler overhead
+				-- 10 instructions in handler / timer clock
+
+	ldi	*+ar0(ExecRoot.MaxLatency), ar2
+
+	cmpi	ar2, ar1
+	bLSd	smaller_latency
+	        -- Increment ExecRoot usec timer by 1 millisecond.
+	        -- ar2 = incremented ExecRoot timer value
+        	ldi     *+ar0(ExecRoot.Timer), ar2
+	        addi    ONEMILLISEC, ar2
+	        sti     ar2, *+ar0(ExecRoot.Timer)
+
+	-- Save new max intr. latency seen + PC of interrupted thread.
+	sti	ar1, *+ar0(ExecRoot.MaxLatency)
+	ldi	SP, ar1
+	ldi	*-ar1(4), ar1	-- get stacked PC
+	sti	ar1, *+ar0(ExecRoot.MaxLatencyPC)
+	b	conttimerhandler
+smaller_latency:
+	sti	ar1, *+ar0(ExecRoot.Latency)
+conttimerhandler:
+][
+	-- ar0 = address of ExecRoot
+	GetExecRoot ar0
+
+	or	ST_SET_COND, st		-- Set cond codes for all registers
+
+        -- increment ExecRoot usec timer by 1 millisecond
+        -- ar2 = incremented ExecRoot timer value
+        ldi     *+ar0(ExecRoot.Timer), ar2
+        addi    ONEMILLISEC, ar2
+        sti     ar2, *+ar0(ExecRoot.Timer)
+]
+
+_if _false [ -- used to check for SP bug corrupting stacked return address
+	ldi	sp, ar0
+	ldi	*-ar0(4), ar1
+
+	ldhi	0x40, ar0
+	cmpi	ar0, ar1
+	bge	stopme
+
+	GetExecRoot ar0
+	cmpi	ar0, ar1
+	ble	stopme
+
+	-- may store value in ar1 in root struct if we are having problems
+	-- determining what gets corrupted by an interrupt at the wrong time
+]
+	-- Load the C address base. This is needed when converting byte
+	-- to word (MPtrs) pointers.
+	ldi	*+ar0(ExecRoot.CAddressBase), R_BASE
+
+        -- check timer Q for threads to reshedule
+        -- ar1 = TimerQ SaveState pointer
+        ldi     *+ar0(ExecRoot.TimerQ), ar1
+        bZ      no_wakeups 	        -- empty TimerQ
+
+        -- Check if top SaveState should be woken up now
+	-- TimerQ SaveStates are in shortest time to wakeup order
+	-- if (After(xroot->Timer, ss->wakeup) goto do_wakeups
+	-- C40WordAddress ar1
+	lsh	-2, ar1		 	-- convert ar1 BPTR to WPTR
+	addi	R_BASE, ar1
+
+        cmpi    *+ar1(SaveState.endtime), ar2
+        bGE	do_wakeups
+
+no_wakeups:
+	-- When higher priority threads than the current one
+	-- are on the run Q, we preemptively slice the current thread
+	-- before its full timeslice is completed and immediately execute the
+	-- higher priority thread(s).
+	-- ar1 = current pri
+
+	-- check if current thread is HIGHPRI (0). If so simply return.
+	ldi	*+ar0(ExecRoot.CurrentPri), ar1
+	bZ	IntrRet
+
+	-- if higher priority is available - slice straight away
+	cmpi	*+ar0(ExecRoot.HighestAvailPri), ar1
+	bGT	slice_now
+
+	-- check if timeslicing is enabled
+	cmpi	0, *+ar0(ExecRoot.SliceEnabled)
+	beq	IntrRet
+
+	-- dec ticks until slice counter
+	subi	1, *+ar0(ExecRoot.SliceTime), ar2	-- ar2 = number of ticks left
+	sti	ar2, *+ar0(ExecRoot.SliceTime)
+
+	-- If Timeslice has not yet expired then return from interrupt and
+	-- continue thread.
+
+	bLE	check_slice	-- if timeslice not exausted, continue
+				-- else check if any other threads are on our
+				-- priorities run Q, if so slice me.
+
+IntrRet:
+	pop	ar2
+	pop	ar1
+	pop	ar0
+	pop	R_BASE
+	pop	st
+	retiU		-- enable interrupts and return from interrupt 
+
+
+do_wakeups:
+	push	ar3	-- need a few more regs
+	push	ar4
+	push	ar5
+
+_if _defp 'accurate_but_not_deterministic [
+	push	ar6	-- don't need ar6 if no loop at end
+
+while_loop:
+]
+
+        -- If we get here the ar1 == (WPTR) SaveState is due for wakeup
+	-- ar0 = ExecRoot
+        -- ar1 = TimerQ SaveState to wakeup
+        -- ar2 = current ExecRoot timer value
+
+	-- Remove SaveState from timer Q
+        -- ExecRoot->TimerQ = ss->next
+_test _defp 'accurate_but_not_deterministic [
+	ldi     *+ar1(SaveState.next), ar6	-- ar6 = ss->next (BPTR)
+	ldi	*+ar1(SaveState.priority), ar3	-- ar3 = priority
+	sti     ar6, *+ar0(ExecRoot.TimerQ)	-- xroot->TimerQ = ss->next
+][
+	-- can re-use ar4
+	ldi     *+ar1(SaveState.next), ar4	-- ar4 = ss->next (BPTR)
+	ldi	*+ar1(SaveState.priority), ar3	-- ar3 = priority
+	sti     ar4, *+ar0(ExecRoot.TimerQ)	-- xroot->TimerQ = ss->next
+]
+
+	-- Check if new thread is higher than the HighestAvailPri
+	--
+	-- if (xroot->HighestAvailPri < ss->priority)
+	cmpi	*+ar0(ExecRoot.HighestAvailPri), ar3
+	bGEd	not_higherpri
+	        -- Add SaveState to the tail of its priority's run Q
+        	-- ar2 = &ExecRoot->Queues[priority].tail
+
+		-- Get addr. of start of run Q's.
+	        addi    ExecRoot.Queue0.tail, ar0, ar5
+		-- ar5 = index into run Q table
+		addi	ar3, ar5
+		addi	ar3, ar5	-- &ExecRoot->Queue[0] + priority * 2 
+
+	-- Keep a note of the highest priority thread available to schedule.
+	--	xroot->HighestAvailPri = ss->priority;
+	sti	ar3, *+ar0(ExecRoot.HighestAvailPri)
+
+not_higherpri:
+	-- Add SaveState to tail of run Q.
+	-- do: q.tail = q.tail->next = ss
+	--
+	-- ar1 = SaveState (WPTR)
+	-- ar5 = q.tail
+
+	-- ar4 = (BPTR) SaveState
+	-- C40CAddress ar1, ar4
+	subi	R_BASE, ar1, ar4
+	lsh	2, ar4
+
+	-- ar3 = q.tail (WPTR)
+	-- C40WordAddress *+ar5(0), ar3
+	lsh	-2, *+ar5(0), ar3
+	addi	R_BASE, ar3
+
+	-- rest of instructions for adding to tail are in delay slots
+	-- after next conditional delayed branch
+
+	-- If a TimedWait()/TimedSuspend() thread times out then the status
+	-- value must be left unmolested so that concurrent Resume()'s can
+	-- detect that the thread is special - see Resume().
+
+	-- if (ss->status != THREAD_TIMEDWAIT)
+	--	ss->status = THREAD_RUNNABLE;
+
+	cmpi	THREAD_TIMEDWAIT, *+ar1(SaveState.status)
+	bEQd	skip_run_status
+		sti	ar4, *+ar3(SaveState.next)	-- q.tail->next = ss
+		sti	ar4, *ar5			-- q.tail = ss
+		-- terminate Q at this SaveState
+		stik	NULL, *+ar1(SaveState.next)	-- ss->next = NULL
+
+	stik	THREAD_RUNNABLE, *+ar1(SaveState.status)
+
+skip_run_status:
+
+_test _defp 'accurate_but_not_deterministic [
+	-- ar6 = ss->next at this point
+	-- ss = xroot->TimerQ;
+	ldi	ar6, ar1
+        -- C40WordAddress ar1
+	lsh	-2, ar1		 	-- convert ar1 BPTR to WPTR
+	addi	R_BASE, ar1
+
+	-- if (ss == NULL) break
+	bZ	no_more_wakeups
+
+        -- Check if the new top SaveState should be woken up now
+        -- if (After(xroot->Timer, ss->wakeup) goto while_loop
+        cmpi    *+ar1(SaveState.endtime), ar2
+        bGE	while_loop
+][
+	-- Deterministic - wouldn't loop for 200 entries if they all needed
+	-- scheduling, just once. But not as accurate as each concurrent wakeup
+	-- could be > 1Ms out.
+]
+
+no_more_wakeups:
+_if _defp 'accurate_but_not_deterministic [
+	pop	ar6			-- only pop if we save
+]
+	bud	no_wakeups
+		pop	ar5
+		pop	ar4
+		pop	ar3
+
+
+check_slice:
+	-- We reach this point if we know that no higher priorities are
+	-- currently available to run. Therefore we are simply running
+	-- round robin in this priorities Q. Therefore if we are the only
+	-- thread on the Q, we can simply continue instead of slicing.
+	--
+	-- Entered with:
+	--	ar0 = ExecRoot
+	--	ar1 = current pri
+
+	-- Get address of run Q for this priority into ar2.
+	-- ar2 = &ExecRoot->Queue[pri].head
+        addi    ExecRoot.Queue0.head, ar0, ar2	-- &xroot->Queue[0].head
+	addi	ar1, ar2
+	addi	ar1, ar2			-- ar2 =index into run Q
+
+	-- Check if any other threads are at the same priority, if not
+	-- just continue current thread.
+	ldi	*ar2++, ar1			-- ++ now points ar2 at tail
+	cmpi	NULL, ar1			-- check if Q is empty
+	bNE	do_slice
+
+	-- Only thread on Q so reset timeslice time and continue thread
+	bud	IntrRet
+		ldi	*+ar0(ExecRoot.TicksPerSlice), ar1
+		nop
+		sti	ar1, *+ar0(ExecRoot.SliceTime) 	
+
+
+extern_slice_now:
+	-- Time slicing mechanism entered here from external callers. This
+	-- is currently just the LinkTx/Rx interrupt handlers.
+
+	-- Entered with:
+	--	ar1 = current pri
+	--
+	--	System stack must contain:
+	--		ST
+	--		IR0
+	--		AR0-2
+
+	-- Adjust stack to correct contents.
+	pop	ar3
+
+	-- Make sure ar0 holds expected address.
+	GetExecRoot ar0
+
+slice_now:
+	-- If we get to this point then we are going to slice the current
+	-- thread. This is achieved by adding its SaveState to the appropriate
+	-- run Q, saving its CPU context into its SaveState and then jumping
+	-- to the Dispatch()er.
+	--
+	-- Entered with:
+	--	ar0 = ExecRoot
+	--	ar1 = current pri
+
+	-- Get address of run Q for this priority into ar2
+	-- ar2 = &ExecRoot->Queue[pri].tail
+        addi    ExecRoot.Queue0.tail, ar0, ar2	-- &xroot->Queue[0].tail
+	addi	ar1, ar2
+	addi	ar1, ar2			-- ar2 =index into run Q
+
+do_slice:
+	-- Place CPU context of thread into SaveState pointed to from
+	-- ExecRoot->CurrentSaveArea.
+	--
+	-- Entered with:
+	--	ar0 = ExecRoot
+	--	ar2 = &ExecRoot->Queue[pri].tail (MPtr)
+	--
+	--	System stack contains:
+	--		ST
+	--		IR0
+	--		AR0-2
+
+	-- Add the SaveState to the appropriate run Q.
+
+	push	ar3	-- Need a few more scratch regs
+	push	ar4
+
+	-- ar1 = current threads SaveState
+	-- C40WordAddress *+ar0(ExecRoot.CurrentSaveArea), ar1
+	lsh	-2, *+ar0(ExecRoot.CurrentSaveArea), ar1
+	addi	R_BASE, ar1
+
+	-- Add thread to tail of this priorities run Q.
+	-- do: q.tail = q.tail->next = ss
+
+	-- ar4 = (BPTR) SaveState
+	-- C40CAddress ar1, ar4
+	subi	R_BASE, ar1, ar4
+	lsh	2, ar4
+
+	-- ar3 = q.tail (WPTR) SaveState
+	-- C40WordAddress *+ar2(0), ar3
+	lsh	-2, *+ar2(0), ar3
+	addi	R_BASE, ar3
+
+	sti	ar4, *+ar3(SaveState.next)	-- q.tail->next = ss
+	sti	ar4, *ar2			-- q.tail = ss
+
+	-- Terminate Q at this SaveState.
+	stik	NULL, *+ar1(SaveState.next)	-- ss->next = NULL
+
+	-- oldss->CPUTimeTotal += difftimes(Timer(), oldss->LastTimeStamp);
+	subi	*+ar1(SaveState.LastTimeStamp), *+ar0(ExecRoot.Timer), ar3
+	addi	*+ar1(SaveState.CPUTimeTotal), ar3
+	sti	ar3, *+ar1(SaveState.CPUTimeTotal)
+
+	-- Note we should be restored via a RETI
+	stik	THREAD_SLICED, *+ar1(SaveState.status)
+
+	-- Save CPU state to threads SaveState structure.
+	-- Required reg state:
+	--	ar0 = ExecRoot
+	--	ar1 = Current threads SaveState structure (WPTR)
+	--	ar2-4 are stacked on SSP
+
+	-- ar4 = ss->CPUcontext.PC
+	addi	SaveState.CPUcontext + CPURegs.PC, ar1, ar4
+
+	-- ar3 = Position of interrupted PC stored on system stack.
+	-- = SSP - previously stacked regs - 2 for stacked ar3-4
+	subi	num_stacked_regs + 2, R_SSP, ar3
+
+	-- @@@ If position of IR0 in SaveState is changed, we can optimise this
+	-- code further (no need to save ir0, bigger rpts when saving rest of
+	-- stacked registers).
+
+	-- Move start of stacked state (PC, ST) to SaveState.
+	-- Assumes PC, ST, are held contigously in SaveState
+	ldi	*ar3++, ar2
+	sti	ar2, *ar4++		-- interrupt return address
+
+	ldi	*ar3++, ar2
+	sti	ar2, *ar4++		-- status reg
+
+	ldi	*ar3++, ar2		-- hold user R_BASE value
+
+	-- Point stack at FP register SaveState area.
+	-- 	- 1 to compensate for PUSH preincrement
+	addi	SaveState.CPUcontext + CPURegs.A1 - 1, ar1, R_SSP
+
+	-- PUSH unmolested registers into the SaveState.
+	-- Assumes these registers are held in contigous locations in the
+	-- SaveState. PUSH both the integer and float portions of the
+	-- extended-precision registers.
+	push	r0	pushf	r0
+	push	r1	pushf	r1
+	push	r2	pushf	r2
+	push	r3	pushf	r3
+	push	r4	pushf	r4
+	push	r5	pushf	r5
+	push	r6	pushf	r6
+	push	r7	pushf	r7
+	push	r8	pushf	r8
+	push	r9	pushf	r9
+	push	r10	pushf	r10
+	push	r11	pushf	r11
+
+	-- PUSH remaining registers.
+	push	dp
+	push	ar2		-- ar2 holds stacked user R_BASE
+	push	ir1
+	push	bk
+	push	rs
+	push	re
+	push	rc
+
+	-- Adjust system stack pointer back to pre-interrupt position.
+	-- R_SSP = ar3 - 1 to adjust for push pre-increment, - 3 for 'pop'ed PC,
+	-- ST and IR0.
+	subi	1 + 3, ar3, R_SSP
+
+	-- Move rest of stacked state (ar0-4) to SaveState
+	-- Assumes AR0..AR7 are held contigously in SaveState
+	-- can now corrupt r0 as it has been saved.
+
+	ldi	*ar3++, r0		-- init first r0 value (ar0) 
+					-- for // instr.
+
+	rpts	3			-- actually repeats 4 times.
+		ldi	*ar3++, r0 ||	-- sti occurs with old r0 value.
+		sti	r0, *ar4++	-- ar0 - ar3
+
+	sti	r0, *ar4++		-- store final r0 value (ar4)
+
+	-- Save non stacked address regs (ar5-7)
+	sti	ar5, *ar4++		-- ar5
+	sti	ar6, *ar4++		-- ar6
+	sti	ar7, *ar4++		-- ar7
+
+	-- As we have just saved the machine state, we can now corrupt
+	-- any register.
+	-- Create skeleton C environment.
+	-- R_USP = dispatch stack for safe timer interrupt during scheduler idle
+	-- R_BASE = use standard system base (already set)
+	-- R_A1 = NULL (arg to Dispatch())
+	-- R_USE - not needed, as kernel never enables stack checking
+	-- R_FP - not needed
+	-- R_MT - not needed (kernel has no module table)
+	-- R_LR - not needed (we will never return)
+
+_test _defp 'LATENCYTEST [
+	-- Set millisecond time, incase the latency is greater than 1Ms.
+	-- Timer holds microsecond count, but resultion is only milleseconds.
+	ldi	*+ar0(ExecRoot.Timer), ar1
+	sti	ar1, *+ar0(ExecRoot.DispatchLatMs)
+
+	-- Get address of semaphore.
+	addi	ExecRoot.DispatchLatCheck, ar0, R_A1
+	C40CAddress R_A1
+
+	patchinstr(PATCHC40MASK24ADD, shift(-2, labelref(.HardenedSignal)),
+		laj	0)
+		-- Get address of stack for HardenedSignal/Dispatch(). This is
+		-- a small stack that allows interrupts to occur safely while
+		-- the dispatcher stays in its idle loop.
+		ldi	ExecRoot.DispatchStack + DISPATCHSTACKSIZE - 1, R_USP
+		addi	ar0, R_USP
+		nop
+
+	patchinstr(PATCHC40MASK24ADD, shift(-2, labelref(.Dispatch)),
+		bud	0)
+		ldi	NULL, R_A1	-- NULL *SaveState arg to Dispatch()
+		nop
+		nop
+][
+	-- jump to C implementation of Dispatch()er
+	patchinstr(PATCHC40MASK24ADD, shift(-2, labelref(.Dispatch)),
+		bud	0)
+	
+		-- Get address of stack for Dispatch(). This is a small stack
+		-- that allows interrupts to occur safely while the dispatcher
+		-- stays in its idle loop.
+		ldi	ExecRoot.DispatchStack + DISPATCHSTACKSIZE - 1, R_USP
+		addi	ar0, R_USP
+		ldi	NULL, R_A1	-- NULL *SaveState arg to Dispatch()
+]
+
+
+-- void IdleUntilInterrupt(void);
+--
+-- Enable interrupts and idle until an interrupt occurs, then disable
+-- interrupts again and return.
+--
+-- Called from C so must conform to PCS
+
+	Function IdleUntilInterrupt
+
+	idle			-- enable interrupts and wait for an interrupt
+	AllIntsOff		-- disable interrupts globally again
+	b	R_LR
+
+
+
+-- void InitEventHandler(VoidFnPtr handler);
+--
+-- Initialise each interrupt vector to call the event handler passed.
+-- The call must be done in a PCS conformant fashion.
+-- The handler expects to be called with the number of the
+-- vector number of the interrupt source.
+--
+-- Note that the C40 version will always call the RootEventHandler() whatever
+-- ignoring the function pointer passed to this function.
+--
+-- Called from C so must conform to PCS
+
+	Function InitEventHandler
+
+        -- Point interrupt vector at correct handler stub
+
+        -- get address of first interrupt handler stub
+        ldabs16 IntrHandler0 R_A1
+
+        -- get hold of interrupt vector base
+        ldep    ivtp, R_ADDR1
+                
+	-- NMI
+        -- store address of stub handler into interrupt vector.
+        sti     R_A1, *+R_ADDR1(iv_nmi)		-- setup stub
+
+	-- II0F0
+	-- 5 = stub handler is 5 instructions long.
+	addi	5, R_A1				-- inc to next handler
+        sti     R_A1, *+R_ADDR1(iv_iiof0)	-- setup stub
+
+	-- II0F1
+	addi	5, R_A1				-- inc to next handler
+        sti     R_A1, *+R_ADDR1(iv_iiof1)	-- setup stub
+
+	-- II0F2
+	addi	5, R_A1				-- inc to next handler
+        sti     R_A1, *+R_ADDR1(iv_iiof2)	-- setup stub
+
+	-- II0F3
+	addi	5, R_A1				-- inc to next handler
+        sti     R_A1, *+R_ADDR1(iv_iiof3)	-- setup stub
+
+	-- TINT1
+	addi	5, R_A1				-- inc to next handler
+        sti     R_A1, *+R_ADDR1(iv_tint1)	-- setup stub
+
+	b	R_LR
+
+
+-- IntrHandlerX
+--
+-- These interrupt handlers handle the general interrupt vectors that
+-- user programs can attach to with SetEvent.
+--
+-- The interrupt is vectored through a stub that loads the correct interrupt
+-- vector number, and then proceeds into the general handler.
+
+
+-- Interrupt handler for INTR_NMI
+IntrHandler0:
+        -- interrupt vectored to this point 
+        push    R_ST                     -- MUST save ST here
+        bud     GenHandler
+		push	R_BASE
+		push	R_ADDR1		-- save reg we're about to trash
+		ldi	INTR_NMI, R_ADDR1
+
+-- Interrupt handler for INTR_IIOF0
+IntrHandler1:
+        -- interrupt vectored to this point 
+        push    R_ST                     -- MUST save ST here
+        bud     GenHandler
+		push	R_BASE
+		push	R_ADDR1		-- save reg we're about to trash
+		ldi	INTR_IIOF0, R_ADDR1
+
+-- Interrupt handler for INTR_IIOF1
+IntrHandler2:
+        push    R_ST                     -- MUST save ST here
+        bud     GenHandler
+		push	R_BASE
+		push	R_ADDR1		-- save reg we're about to trash
+		ldi	INTR_IIOF1, R_ADDR1
+
+-- Interrupt handler for INTR_IIOF2
+IntrHandler3:
+        push    R_ST                     -- MUST save ST here
+        bud     GenHandler
+		push	R_BASE
+		push	R_ADDR1		-- save reg we're about to trash
+		ldi	INTR_IIOF2, R_ADDR1
+
+-- Interrupt handler for INTR_IIOF3
+IntrHandler4:
+        push    R_ST                     -- MUST save ST here
+        bud     GenHandler
+		push	R_BASE
+		push	R_ADDR1		-- save reg we're about to trash
+		ldi	INTR_IIOF3, R_ADDR1
+
+-- Interrupt handler for INTR_TINT1
+IntrHandler5:
+        push    R_ST                     -- MUST save ST here
+        bud     GenHandler
+		push	R_BASE
+		push	R_ADDR1		-- save reg we're about to trash
+		ldi	INTR_TINT1, R_ADDR1
+
+
+-- General interrupt handler
+GenHandler:
+	-- Save registers that will get trashed in a standard PCS environment
+	-- The only registers we do not need to save are the variable (R_V?)
+	-- ones that are saved upon entry.
+	--
+	-- @@@ A major optimisation here would be to save the processor state
+	-- into the current threads SaveState structure. If we subsequently
+	-- decide to slice the thread, half the work has been done already,
+	-- we would simply have to add the thread to the run Q and call the
+	-- dispatcher.
+
+	-- R_ST, R_BASE and R_ADDR1 have already been stacked
+
+	push	R_ADDR2			-- ar1
+	push	R_ADDR3			-- ar2
+
+	push	R_ADDR4
+	push	R_A1
+	push	R_A2
+	push	R_A3
+	push	R_A4
+	push	R_FT1		
+	push	R_FT2
+	push	R_T1
+	push	R_LR
+	push	R_TMP1
+	push	R_TMP2
+	push	R_TMP3
+	push	R_MT
+	push	R_ATMP
+	push	R_USE
+	push	R_USP
+	push	R_FP
+
+	-- Create skeleton C environment.
+	-- R_USP = use R_SSP stack area as interrupts should not be re-enabled
+	-- 	   also note that we set this at the end of the stack area as
+	--	   C stack push downwards, whereas the system stack pushes up.
+	-- R_BASE = base of C Addressable memory.
+	-- R_A1 = interrupting vectors number set by stub
+	-- R_USE = 0 so any stack checking in users code is ignored
+	-- R_FP = 0 so backtraces wont get screwed up.
+	-- R_MT - not needed by kernel, root handler will set user MT.
+	-- R_LR - our return addr.
+	-- R_ST - condition codes are set for all registers.
+
+	ldi	R_ADDR1, R_A1		-- pass INTR_XXX arg to event handler
+
+	or	ST_SET_COND, st		-- Set cond codes for all registers
+
+	-- Reset system-wide C address base.
+	GetExecRoot R_ATMP
+	ldi	*+R_ATMP(ExecRoot.CAddressBase), R_BASE
+
+	-- Set user stack to end of system stack area (USP pushes down).
+	addi	ExecRoot.sizeof / 4, R_ATMP, R_USP
+	addi	0x200-1, R_USP
+
+	-- jump to C Root Event Handler
+	patchinstr(PATCHC40MASK24ADD, shift(-2, labelref(.RootEventHandler)),
+		laj	0)
+		andn	0x200-1, R_USP
+		ldi	NULL, R_USE
+		ldi	NULL, R_FP
+
+GenIntrReturn:
+	-- Restore original state from system stack
+	pop	R_FP
+	pop	R_USP
+	pop	R_USE
+	pop	R_ATMP
+	pop	R_MT
+	pop	R_TMP3
+	pop	R_TMP2
+	pop	R_TMP1
+	pop	R_LR
+	pop	R_T1
+	pop	R_FT2
+	pop	R_FT1		
+	pop	R_A4
+	pop	R_A3
+	pop	R_A2
+        pop     R_A1
+	pop	R_ADDR4
+
+	-- Make sure that any higher priority threads that have just been
+	-- resumed are run immediately.
+	-- Stack remaining is the same as is required by the timeslicer.
+
+	-- If we detect a higher priority thread than the current one is
+	-- available, then we slice the current thread and call the
+	-- dispatcher to run the higher priority thread.
+	GetExecRoot ar0
+	ldi	*+ar0(ExecRoot.CurrentPri), ar1
+	cmpi	*+ar0(ExecRoot.HighestAvailPri), ar1
+	bgt	slice_now
+
+	-- Otherwise resume the interrupted thread.
+	pop	R_ADDR3			-- ar2
+	pop	R_ADDR2			-- ar1
+	pop	R_ADDR1			-- ar0
+	pop	R_BASE			-- ir0
+        pop     R_ST
+
+        retiU                           -- return from interrupt
+
+
+
+-- int DefineExecErrorHandler(VoidFnPtr handler);
+--
+-- Attach the handler function to the processors exception vector. The function
+-- called should form the root of the syncronous run-time signal handler.
+-- i.e. any address/bus errors, div by 0, etc exceptions.
+--
+-- Called from C so must conform to PCS
+
+	Function DefineExecErrorHandler
+
+	-- C40 cannot do any of this so simply return!
+	b	R_LR
+
+
+
+-- end of c40intr.a

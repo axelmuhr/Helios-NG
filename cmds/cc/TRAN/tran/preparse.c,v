@@ -1,0 +1,707 @@
+head     1.1;
+branch   1.1.1;
+access   ;
+symbols  ncc:1.1.1.1 ncc:1.1.1;
+locks    ; strict;
+comment  @ * @;
+
+
+1.1
+date     93.07.21.14.07.06;  author nick;  state Exp;
+branches 1.1.1.1;
+next     ;
+
+1.1.1.1
+date     93.07.21.14.07.07;  author nick;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/*{{{  Header */
+/* $Id: preparse.c,v 1.3 90/11/02 15:03:21 nick Exp $ */
+/*
+ * Preparser for Transputer code generator, performs the following
+ * jobs:
+ * 1. build hash table of expression nodes to store evaluation depths.
+ * 2. determine number of external and own static references.
+ * 3. determine usage of vector stack.
+ * 4. determine whether any further procedures are called.
+ *
+ * Updated by Jim 4/11/87 to take account of valneeded in working out 
+ * depth for assignment statements. 
+ * valneeded implies that the result is required left in a suitable
+ * register at the end of the statement. This only causes grief for 
+ * assignments where it wouldn't happen naturally.
+ */
+/*}}}*/
+/*{{{  Includes */
+#ifdef __old
+#include "cchdr.h"
+#include "AEops.h"
+#include "util.h"
+#include "xrefs.h"
+#include "xpuops.h"
+#include "cg.h"
+#else
+#include "globals.h"
+#include "bind.h"
+#include "store.h"
+#include "aeops.h"
+#include "util.h"
+#include "xrefs.h"
+#include "xpuops.h"
+#include "cg.h"
+#endif
+/*}}}*/
+/*{{{  defines and statics */
+
+#define HashSize	32
+#define HashMask	(HashSize-1)
+
+typedef struct HashEntry {
+	struct HashEntry *next;
+	int		info;
+	int		key;
+} HashEntry;
+
+HashEntry *hashtab[HashSize];	/* hash table */
+
+int nextrefs;
+int nstatrefs;
+int vstackused;
+int ncalls;
+int real32used;
+int real64used;
+int needlitpool;
+static int loopdepth;
+
+extern int ssp;
+extern int maxssp;
+/*}}}*/
+/*{{{  preparse */
+
+preparse(x)
+TopDecl *x;
+{
+	int i;
+	nextrefs = 0;
+	nstatrefs = 0;
+	vstackused = 0;
+	ncalls = 0;
+	real32used = 0;
+	real64used = 0;
+	needlitpool = 0;
+	loopdepth = 0;
+		
+	for( i = 0 ; i < HashSize ; i++ ) hashtab[i] = NULL;
+	ssp = maxssp = 0;
+	pp_cmd(x->v_f.fn.body);
+
+}
+/*}}}*/
+/*{{{  pp_cmd */
+
+/* Commands don't have values */
+pp_cmd(x)
+Cmd *x;
+{
+	AEop op;
+	for(;;)
+	{
+		if( x == 0 ) return;
+		switch( op = h0_(x))
+		{
+		default:
+			syserr("<odd cmd in pp_cmd %d = %s>",op, symbol_name_(op));
+		            return;
+
+		case s_endcase:
+		case s_break:
+		case s_continue:
+		case s_goto:
+			return;
+		case s_semicolon:
+			pp_expr(cmd1e_(x), FALSE);
+			return;
+		case s_return:
+			if( cmd1e_(x) != 0 ) pp_expr(cmd1e_(x),TRUE);
+			return;
+		case s_do:
+			pp_loop(0,0,0, cmd1c_(x), cmd2e_(x));
+			return;
+		case s_for:
+			pp_loop(cmd1e_(x), cmd2e_(x), cmd3e_(x), cmd4c_(x), 0);
+			return;
+		case s_if:
+			pp_test(cmd1e_(x));
+			pp_cmd(cmd2c_(x));
+			if((x = cmd3c_(x))!=0) pp_cmd(x);
+			return;
+		case s_switch:
+			pp_expr(cmd1e_(x),TRUE);
+			{
+				Cmd *c;
+				for( c = switch_caselist_(x); c != 0; c = case_next_(c) )
+				{
+					int val = evaluate(cmd1e_(c));
+					if( poolint(val) ) needlitpool = 1;
+				}
+			}
+			pp_cmd(cmd2c_(x));
+			return;
+		case s_case:
+		case s_colon:
+			x = cmd2c_(x);
+			continue;
+		case s_default:
+			x = cmd1c_(x);
+			continue;
+		case s_block:
+		{
+			int savessp = ssp;
+			CmdList *cl = cmdblk_cl_(x);
+			SynBindList *bl = cmdblk_bl_(x);
+			pp_bindlist(bl);
+			while (cl!=NULL)
+	                {   pp_cmd(cmdcar_(cl));
+                    	    cl = cdr_(cl);
+       		        }
+			ssp = savessp;
+			return;
+		}
+		}
+	}
+}
+/*}}}*/
+/*{{{  pp_bindlist */
+
+pp_bindlist(x)
+SynBindList *x;
+{
+	for(; x!=NULL; x = x->bindlistcdr)
+	{
+		Binder *b = x->bindlistcar;
+		if(bindstg_(b) & bitofstg_(s_auto)) 
+		{
+			int len = mcrepofexpr((Expr *)b) & 0x00ffffff;
+			if( len > 8 ) vstackused=TRUE;
+		}
+		else 
+			nstatrefs++;
+	}
+}
+/*}}}*/
+/*{{{  pp_binder */
+int pp_binder(b)
+Binder *b;
+{
+	int use = IntUse;
+	int mclength = mcrepofexpr((Expr *)b);
+	int mcmode = (mclength>>24) & 0xff;
+	int rsort;
+	
+	mclength &= 0x00ffffff;
+	rsort = (mcmode!=2) ? INTREG : (mclength==4 ? FLTREG : DBLREG );
+
+	switch( bindstg_(b) & PRINCSTGBITS )
+	{
+	case bitofstg_(s_extern):
+		nextrefs++; break;
+	case bitofstg_(s_static):
+		nstatrefs++; break;
+	case bitofstg_(s_auto):
+	    {
+		int olduse, use = 1;
+	  	int ld = loopdepth;
+	  	if( (olduse=getinfo(b)) == -1 ) olduse = 0;
+	  	while( ld-- ) use *= 8;		/* avg. times round loop = 8 */
+	  	saveinfo(b, olduse+use );
+ 	    }
+	}
+#if 1
+	if( !lxxAllowed )
+	{
+		switch( mclength )
+		{
+		case 1:
+			/* extra stack location needed to sign extend */
+			if( mcmode == 0 ) use++;
+			break;
+		case 2:
+			use++;
+			if( mcmode == 0 ) xshorts++;
+			mshorts++;
+			break;
+		case 4:
+			break;
+		default:
+			vstackused = 1;
+			break;
+		}
+	}
+#else
+	if( mclength == 1 && mcmode == 0 ) use++;
+	else if( mclength == 2 ) use++;
+	else if( mclength > 8 ) vstackused = 1;
+#endif	
+#if 0
+trace("binder %s depth %d",_symname(bindsym_(b)),use);
+#endif
+	return( (rsort == INTREG) ? use : 
+		!floatingHardware ? use : use+FpUse );
+}
+/*}}}*/
+/*{{{  pp_expr */
+
+pp_expr(x,valneeded)
+Expr *x;
+bool valneeded;
+{
+    int mclength;
+    int mcmode;
+    RegSort rsort;
+    int mode1;
+    int use;
+        	
+    if( h0_(x) == s_binder && 
+    	bindstg_((Binder *)x) & b_fnconst )
+    	return IntUse;
+		
+    mclength = mcrepofexpr(x);
+    mcmode = (mclength>>24) & 0xff;
+    mclength &= 0x00ffffff;
+    rsort = (mcmode!=2) ? INTREG : (mclength==4 ? FLTREG : DBLREG );
+
+#if 0
+trace("pp_expr: op = %d mclen %d mcmode %d rsort %d",
+		h0_(x),mclength,mcmode,rsort);
+#endif
+    switch (h0_(x))
+    {
+case s_integer:
+#ifndef OLDLITS
+	{
+		int v = intval_(x);
+		if( poolint(v) ) needlitpool=1;
+	}
+#endif
+        return IntUse;
+case s_floatcon:
+#ifndef OLDLITS
+	if(!(isFpZero((FloatCon *)x,rsort)&&floatingHardware))needlitpool=1;
+#endif
+	return floatingHardware ? FpUse+IntUse : IntUse;
+
+case s_binder:
+	return pp_binder((Binder *)x);
+
+case s_string:
+#ifndef OLDLITS
+	needlitpool = 1;
+#endif
+        return IntUse;
+case s_fnap:
+	{
+		ExprList *a = exprfnargs_(x);
+		Expr *fn = arg1_(x);
+		Binder *b;
+
+		/* vstack is used if this fn returns a structure	*/
+		if( mclength > 8 ) vstackused = 1;
+		
+		/* this detects whether we need any structure temps	*/
+		for (; a != NULL; a = cdr_(a))
+		{
+			if( contains_fnap(exprcar_(a)) &&
+			 (mcrepofexpr(exprcar_(a)) & 0xff000000) == 0x03000000 )
+				vstackused = 1;
+			pp_expr(exprcar_(a),TRUE);
+		}
+		/* now see if it is a proc var call, and if so, preparse */
+		/* the variable expression.				 */
+		if( !(h0_(fn)==s_addrof && (b = (Binder *)arg1_(fn))!=0 && h0_(b)==s_binder) )
+		{
+			pp_expr(fn,TRUE);
+		}
+
+		ncalls++;
+		/* if the result is double, we need a doubledest */
+		if( !floatingHardware && mcmode == 2 &&	mclength == 8 ) 
+			return usesAll | NeedsDD;
+	        else 	return usesAll;
+	}
+case s_cond:
+	{ /* Each expression is independant of the others */
+		int d1 = pp_expr(arg1_(x),TRUE);
+		int d2 = pp_expr(arg2_(x),TRUE);
+		int d3 = pp_expr(arg3_(x),TRUE);
+		return saveinfo(x,max(d1,max(d2,d3))+1);
+	}	
+case s_neg:
+        if (rsort != INTREG)
+            /* Floating point done by 0 - x so depth is at least 2 */
+         {
+           int d = pp_expr( arg1_(x), TRUE );
+	   (void)(rsort==FLTREG?real32used=1:rsort==DBLREG?real64used=1:0);
+	   /* if simulating, need litpool for zero constant	*/
+	   if( !floatingHardware ) needlitpool = 1;
+	   if( !floatingHardware )return saveinfo(x,(3*IntUse)|NeedsDD);
+           else return saveinfo(x,idepth(d) + max(fdepth(d),2*FpUse));
+        }
+         
+case s_dot:
+	if ( (mcmode<2 || mcmode==4) && mclength==2 ) 
+	{
+	   int use = pp_expr(arg1_(x),TRUE);
+	   return saveinfo(x,use+3*IntUse);
+	}
+	else return saveinfo(x,pp_expr(arg1_(x),TRUE)+(rsort==INTREG?0:FpUse));
+
+case s_content:
+	if( (mcmode<2 || mcmode==4) && mclength==2 ) 
+	{
+		/* access to shorts needs all 3 regs */
+		int use = pp_expr(arg1_(x),TRUE);
+		return saveinfo(x,use+3*IntUse);
+	}
+	else 
+	{
+		/* all other indirections use no extra regs 		*/
+		/* note that when in fp emulation, an indirection to a	*/
+		/* double merely loads the address of the double. Hence	*/
+		/* no doubledest is needed.				*/
+		int use = pp_expr(arg1_(x),TRUE);
+		if( floatingHardware & mcmode==2 ) use += FpUse;
+		return saveinfo(x,use);
+	}
+	
+case s_cast:
+	{
+		int argmode = mcrepofexpr(arg1_(x));
+		int arglength = argmode & 0xffffff;
+		int use = pp_expr(arg1_(x),TRUE);
+		argmode = argmode >> 24;
+
+		/* a null cast should do nothing */
+		if( mcmode==argmode && mclength==arglength ) 
+					return saveinfo(x,use);
+
+		if(  mcmode==2 || argmode==2 )
+		{
+			/* cast from real -> short/char needs litpool */
+			if( argmode == 2 && mclength < 4 ) needlitpool=1;
+			
+			/* if the dest is double, we need a doubledest */
+			if( !floatingHardware && mcmode == 2 &&
+				mclength == 8 ) use |= NeedsDD;
+
+			/* a floating cast... */
+			if( floatingHardware )
+			{
+				/* real <-> unsigned needs more stack */
+				if( mcmode == 1 || argmode == 1 )
+				{
+					needlitpool=1;
+					return saveinfo(x,use+FpUse*2+IntUse);
+				}
+
+				/* int -> real uses an FpReg		*/
+				if( mcmode == 2 && argmode < 2 )
+				{
+					return saveinfo(x,use+FpUse);
+				}
+			}
+			else {
+				/* real <-> unsigned needs real64op */
+				/* also unsigned -> float needs litpool */
+				if( mcmode == 1 || argmode == 1 ) 
+					real64used=1,needlitpool=1;
+				return saveinfo(x,use+IntUse*3);
+			}
+			/* all other casts use no extra regs */
+			
+		}
+		else if( (mcmode < 2 || mcmode == 4) && (argmode < 2 || argmode == 4) )
+		{
+			if( mcmode == 4 ) mcmode = 0;
+			if( argmode == 4 ) argmode = 0;
+			
+			/* Certain integer->integer casts need an extra */
+			/* register for masking and sign extending	*/
+			/* We also determine here whether these casts	*/
+			/* could make use of the xshort and mshort	*/
+			/* variables.					*/
+			switch( (mclength<<8)|(arglength<<4)|(mcmode<<1)|argmode )
+			{
+			/* The following need masking down to 8 bits	*/
+			case 0x112:	/* char -> uchar	*/
+			case 0x122:	/* short -> uchar	*/
+			case 0x142:	/* int -> uchar		*/
+			case 0x412:	/* char -> uint		*/
+			case 0x123:	/* ushort -> uchar	*/
+			case 0x143:	/* uint -> uchar	*/
+			case 0x243:	/* uint -> ushort	*/
+				use++;
+				break;
+
+			/* The following need masking to 8 bits and 	*/
+			/* then sign extending from bit 7		*/
+			case 0x120:	/* short -> char	*/
+			case 0x140:	/* int	 -> char	*/
+			case 0x121:	/* ushort -> char	*/
+			case 0x141:	/* uint  -> char	*/
+				use++;
+				break;
+
+			/* The following need masking down to 16 bits	*/
+			case 0x222:	/* short -> ushort	*/
+			case 0x212:	/* char -> ushort	*/
+			case 0x242:	/* int -> ushort	*/
+			case 0x422:	/* short -> uint	*/
+				xshorts++;
+				use++;
+				break;
+
+			/* The following need masking to 16 bits and	*/
+			/* then sign extending from bit 15		*/
+			case 0x241:	/* uint  -> short	*/
+			case 0x240:	/* int   -> short	*/
+				if( !lxxAllowed ) xshorts++, mshorts++;
+				use++;
+				break;
+			}
+		}
+		return saveinfo(x,use);
+	}
+	break;
+	
+case s_addrof:
+/* addrof(binder) will always take only 1 register, dont bother to save it */
+	if( h0_(arg1_(x)) == s_binder ) return IntUse;
+
+case s_bitnot:
+case s_boolnot:
+case s_monplus:
+        return saveinfo(x,pp_expr(arg1_(x),TRUE));
+
+case s_displace:
+/* s_displace can take up to 3 registers: 1 for the new value, 1 for	*/
+/* the old value, and 1 for the variable's address            		*/
+	return saveinfo(x,pp_expr(arg1_(x),TRUE)+
+	                  pp_expr(arg2_(x),TRUE)+IntUse); 
+
+case s_assign:
+/* s_assign can take up to 3 registers: consider the expression		*/
+/* a = *b = <expr>; at some point we need a reg for the value of <expr>,*/
+/* one to save it for assignment to a, and one to calculate *b in.	*/
+/* NOTE : This is only a problem in the integer case, since we can easily*/
+/* duplicate a floating value to preserve it without getting into the    */
+/* mess we get into with integer values where we don't have the right    */
+/* instructions for getting things in the correct registers              */
+/* If this is a structure assignment, it will use all registers		 */
+
+	{
+		int d1 = pp_expr(arg1_(x),TRUE);
+		int d2 = pp_expr(arg2_(x),TRUE);
+		if( mcmode > 2 && mclength > 4 ) return saveinfo(x,usesAll);
+		else return saveinfo(x,max(d1,d2)+(valneeded ? 1:0) ); 
+	}
+
+case s_greater:
+case s_greaterequal:
+case s_less:
+case s_lessequal:
+		mode1 = mcrepofexpr(arg1_(x));
+		if( (mode1>>24) == 1 || mcmode == 1 )
+		{
+			pp_expr(arg1_(x),TRUE);
+			pp_expr(arg2_(x),TRUE);
+			return saveinfo(x,IntUse*3);
+		}
+		if( (mode1>>24) == 2 && !floatingHardware )
+		{
+			pp_expr(arg1_(x),TRUE);
+			pp_expr(arg2_(x),TRUE);
+			return saveinfo(x,IntUse*3);
+		}
+		goto ppbin1;
+	
+case s_minus:
+	   if((rsort==INTREG) && integer_constant(arg2_(x)) && smallint(result2))
+		return saveinfo(x,pp_expr(arg1_(x),TRUE));
+
+case s_div:
+	(void)(rsort==FLTREG?real32used=1:rsort==DBLREG?real64used=1:0);
+
+case s_comma:
+case s_leftshift:
+case s_rightshift:
+case s_rem:
+	ppbin1:
+		return pp_binary(x,mcmode,mclength,rsort,0);
+
+case s_plus:       /* Check if we can use eqc or adc */
+case s_equalequal:
+case s_notequal:
+	(void)(rsort==FLTREG?real32used=1:rsort==DBLREG?real64used=1:0);
+	if (rsort==INTREG) 
+	{
+	   if (integer_constant(arg1_(x)) && smallint(result2))
+	      return saveinfo(x,pp_expr(arg2_(x),TRUE));
+	   else if (integer_constant(arg2_(x)) && smallint(result2))
+	      return  saveinfo(x, pp_expr(arg1_(x),TRUE));
+	}
+
+case s_andand:
+case s_oror:
+case s_and:
+case s_xor:
+case s_or:	goto ppbin;
+case s_times:   (void)(rsort==FLTREG?real32used=1:rsort==DBLREG?real64used=1:0);
+	ppbin:
+		return pp_binary(x,mcmode,mclength,rsort,1);
+case s_let:
+		pp_bindlist((SynBindList *)arg1_(x));
+       	 	return saveinfo(x,pp_expr(arg2_(x),TRUE));
+
+default: /* This is conservative ! */
+	return saveinfo(x,usesAll);
+    }
+}
+/*}}}*/
+/*{{{  depthCalc */
+
+int depthCalc(d1,d2)
+int d1,d2;
+{
+  if (d1 != d2)
+     return( max(d1,d2) );
+  else
+     return( d1+1 );
+}
+/*}}}*/
+/*{{{  pp_binary */
+
+int pp_binary(x,mcmode,mclength,rsort,commutesp)
+Expr *x;
+int mcmode,mclength,rsort;
+int commutesp;
+{
+	int id = 0, fd = 0;
+	int d1 = pp_expr(arg1_(x),TRUE);
+	int d2 = pp_expr(arg2_(x),TRUE);
+	int id1 = idepth(d1), id2 = idepth(d2);
+	int fd1 = fdepth(d1), fd2 = fdepth(d2);
+	int op = h0_(x);
+#if 0
+trace("pp_binary: op = %d d1 = %x d2 = %x op1 = %d op2 = %d",
+		op,d1,d2,h0_(arg1_(x)),h0_(arg2_(x)));
+#endif
+	/* on T4 all fp operations take full depth and need a doubledest */
+	if( rsort != INTREG && !floatingHardware )
+		return saveinfo(x,NeedsDD|IntUse*3);
+
+	/* propagate integer depth */
+	if( id1 > id2 ) id = id1;
+	else if( id1 < id2 ) id = id2;
+	else if( rsort == INTREG ) id = id1+IntUse;
+	else id = id1;
+
+	/* same for float depth */
+	if( fd1 > fd2 ) fd = fd1;
+	else if( fd1 < fd2 ) fd = fd2;
+	else if( rsort != INTREG ) fd = fd1+FpUse;
+	else fd = fd1;
+
+	/* signed shifts need an extra register because they must be 	*/
+	/* done with a double length shift				*/
+	if( (op == s_rightshift || op == s_leftshift) && mcmode == 0 )
+		id++;
+
+	return saveinfo(x,fd+id); 
+}
+/*}}}*/
+/*{{{  pp_loop */
+
+pp_loop(init,pretest,step,body,posttest)
+Expr *init; Expr *pretest; Expr *step; Cmd *body;
+Expr *posttest;
+{
+	loopdepth++;
+	if(init!=0) pp_expr(init,FALSE);
+	if (pretest!=0) pp_test(pretest, 0 );
+	else if (posttest!=0) pp_test(posttest, 0);
+	if( body!= 0 )pp_cmd(body);
+	if( step!=0 ) pp_expr(step,FALSE);
+	loopdepth--;
+}
+/*}}}*/
+/*{{{  pp_test */
+pp_test(x,branchtrue)
+Expr *x;
+int branchtrue;
+{
+	pp_expr(x,TRUE);
+}
+/*}}}*/
+/*{{{  saveinfo */
+int saveinfo(key,info)
+int key,info;
+{
+	int index = (key>>3) & HashMask; 
+	HashEntry *h = hashtab[index];
+#if 0
+trace("saveinfo %x %d %x",key,h0_((Expr *)key),info);
+#endif
+	while( h != (HashEntry *)NULL )
+	{
+		if( key == h->key ) break;
+		h = h->next;
+	}
+
+	
+	if( h == NULL )	hashtab[index] = syn_list3(hashtab[index],info,key);
+	else h->info = info;
+	
+	return info;
+}
+/*}}}*/
+/*{{{  getinfo */
+
+int getinfo(key)
+int key;
+{
+	int index = (key>>3) & HashMask; 
+	HashEntry *h = hashtab[index];
+	while( h != (HashEntry *)NULL )
+	{
+		if( key == h->key ) 
+		{
+/*trace("getinfo %x == %x %d %x",key,h->key,h0_((Expr *)key),h->info);*/
+			return h->info;
+		}
+		h = h->next;
+	}
+/*trace("no info for %x %d",key,h0_((Expr *)key));*/
+	return -1;
+}
+/*}}}*/
+@
+
+
+1.1.1.1
+log
+@Initial Import of Norcroft C compiler for Transputer.
+@
+text
+@@

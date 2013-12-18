@@ -1,0 +1,611 @@
+head	1.8;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.7
+	Helios1_3:1.7
+	C40_Field_Test_2:1.7
+	C40_Field_Test_R1:1.7
+	Helios13_beta:1.7
+	Helios1_2_2_Fault:1.4
+	Helios1_2_2_Native:1.3
+	Helios1_2_2_native_beta:1.3
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.8
+date	93.08.11.10.30.24;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.06.10.12.30.38;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.06.08.15.27.20;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.06.07.16.28.14;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.01.15.11.04.39;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.12.01.15.29.55;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.11.21.14.54.18;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@This command is used to join a small network inside a user's private
+machine into a large network running Helios.
+@
+
+
+1.8
+log
+@On the C40 this command is now a no-op
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- joinnet.c								--
+--		Join the current network into a larger one, by enabling	--
+-- a connecting link etc.						--
+--                                                                      --
+--	Author:  BLV 18/11/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/joinnet.c,v 1.7 1992/06/10 12:30:38 bart Exp $*/
+
+#include <string.h>
+#include <stdarg.h>
+#include <posix.h>
+#include <syslib.h>
+#include <codes.h>
+#include <nonansi.h>
+#include <stdlib.h>
+#include "private.h"
+#include "rmlib.h"
+#include "session.h"
+#include "exports.h"
+#include "netutils.h"
+
+	/* joinnet cannot work with C40 links, problems with the token	*/
+#ifdef __C40
+int main(void)
+{
+	fputs("joinnet: cannot be used in a C40 network.\n", stderr);
+	exit(EXIT_FAILURE);
+}
+
+#else
+
+#ifndef eq
+#define eq ==
+#define ne !=
+#endif
+
+static	void 		usage(void);
+static	void 		enable_the_link(void);
+static	void 		find_the_connector(void);
+static	void 		find_the_network_server(void);
+static	void 		do_the_business(void);
+
+static	Object	*neighbour;
+static	int	neighbour_link;
+static	Object	*connector;
+static	int	connector_link;
+static	Object	*network_server;
+static	char	text_buffer[1024];
+static	char	path[109];
+
+int main(int argc, char **argv)
+{ 
+  if (argc ne 3) usage();
+
+  if (*argv[1] eq '/')
+   neighbour = Locate(Null(Object), argv[1]);
+  else
+   { path[0] = '/';
+     strcpy(&(path[1]), argv[1]);
+     neighbour = Locate(Null(Object), path);
+   }
+
+  if (neighbour eq Null(Object))
+   { fprintf(stderr, "joinnet: failed to locate processor %s\n", argv[1]);
+     exit(EXIT_FAILURE);
+   }
+
+  neighbour_link = atoi(argv[2]);
+
+  enable_the_link();
+  find_the_connector();
+  find_the_network_server();
+  do_the_business();
+  return(0);     
+}
+
+static	void usage(void)
+{ fputs("joinnet: usage, joinnet <processor> <link>\n", stderr);
+  fputs("       : for example, joinnet /02 2\n", stderr);
+  exit(EXIT_FAILURE);
+}
+
+/**
+*** Enable the specified link, if possible.
+**/
+static	void	enable_the_link(void)
+{ RmProcessor	target;
+  RmNetwork	net;
+  int		mode;
+  int		rc;
+        
+  net = RmGetNetwork();
+  if (net eq (RmNetwork) NULL)
+   { fputs("joinnet: failed to get current network details.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  target = RmLookupProcessor(net, neighbour->Name);
+  if (target eq (RmProcessor) NULL)
+   { fprintf(stderr, "joinnet: processor %s is not known to the Network Server\n",
+   		neighbour->Name);
+     exit(EXIT_FAILURE);
+   }
+
+  rc = RmSetLinkMode(target, neighbour_link, RmL_Intelligent);
+  if (rc ne RmE_Success)
+   { fputs("joinnet: failed to enable connecting link.\n", stderr);
+     exit(EXIT_FAILURE);
+   }  
+
+  Delay(OneSec);
+  rc = RmGetLinkMode(target, neighbour_link, &mode);
+  if ((rc ne RmE_Success) || (mode ne RmL_Intelligent))
+   { fputs("joinnet: failed to enable the connecting link.\n", stderr);
+     exit(EXIT_FAILURE);
+   }  
+}
+
+/**
+*** Once the link has been enabled, find the connector. One of its links
+*** should come back to processor neighbour.
+**/
+static	void	find_the_connector(void)
+{ char		linkbuf[16];
+  int		i;
+  Object	*temp;
+  int		number_links;
+
+  sprintf(linkbuf, "link.%d", neighbour_link);
+  connector = Locate(neighbour, linkbuf);
+  if (connector eq Null(Object))
+   { fputs("joinnet: failed to find a processor at the other end of the link.\n",
+   		stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  number_links = Util_CountLinks(connector);
+  for (i = 0; i < number_links; i++)
+   { sprintf(linkbuf, "link.%d", i);
+     temp = Locate(connector, linkbuf);
+     if (temp ne Null(Object))
+      { 
+        if (!strcmp(temp->Name, neighbour->Name))
+         { connector_link = i;
+           Close(temp);
+           return;
+         }
+        Close(temp);
+        continue;
+      }
+   }
+  
+  fprintf(stderr, "joinnet: failed to find a link on processor %s going back into this network.\n",
+  		connector->Name);
+  exit(EXIT_FAILURE);
+}
+
+/**
+*** Given a processor in the remote network, find the appropriate network
+*** server.
+**/
+static	void	find_the_network_server(void)
+{ Object		**proc_vec;
+  int			max_processors;
+  char			*temp;
+  int			len = 2;
+  int			next_proc = 0;
+  char			linkbuf[16];
+  int			cur_proc;
+  char			name[IOCDataMax];
+
+  network_server = Null(Object);
+  strcpy(name, connector->Name);
+        
+ 	/* Ignore processors that do not have the right base name	*/
+  for (temp = &(name[1]); *temp ne '/'; temp++) len++;
+  
+  proc_vec = (Object **) Malloc(16 * sizeof(Object *));
+  if (proc_vec eq Null(Object *))
+   { fputs("joinnet: out of memory locating Network Server\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+   
+  max_processors = 16;
+  proc_vec[next_proc++] = connector;
+  strcpy(linkbuf, "link.");
+  
+  for (cur_proc = 0; cur_proc < next_proc; cur_proc++)
+   { Object	*current = proc_vec[cur_proc];
+     Object	*ns = Locate(current, "ns");
+     Object	*next;
+     int	i;
+     int	number_links;
+
+     if (ns ne Null(Object))
+      { network_server = ns;
+        break;
+      }
+
+     number_links = Util_CountLinks(current);
+     for (i = 0; i < number_links; i++)
+      { 
+	if ((current eq connector) && (i eq connector_link))
+         continue;
+
+	linkbuf[5] = '\0';
+        if (i eq 0)
+         strcat(linkbuf, "0");
+        else
+         addint(linkbuf, i);
+        next = Locate(current, linkbuf);
+        if (next ne Null(Object))
+         { int	j;
+
+		/* Check we are still in the right network */
+	   if (strncmp(next->Name, name, len)) 
+	    goto skip;
+	    
+	   	/* Check that this processor has not been found already */
+           for (j = 0; j < next_proc; j++)
+            if (!strcmp(proc_vec[j]->Name, next->Name))
+             goto skip;
+             
+           if (next_proc eq max_processors)
+            { Object **temp = Malloc(2 * max_processors * sizeof(Object *));
+              if (temp eq Null(Object *))
+               { fputs("joinnet: out of memory locating Network Server.\n", stderr);
+                 exit(EXIT_FAILURE);
+               }
+              memcpy(temp, proc_vec, max_processors * sizeof(Object *));
+              Free(proc_vec);
+              proc_vec = temp;
+              max_processors *= 2;
+            }
+           proc_vec[next_proc++] = next;
+         }
+skip:
+	continue;
+      }
+   }
+
+  for (cur_proc = 0; cur_proc < next_proc; cur_proc++)
+   Close(proc_vec[cur_proc]);
+  Free(proc_vec);
+  if (network_server eq Null(Object))
+   { fputs("joinnet: failed to locate a Network Server in the remote network.\n",
+   		stderr);
+     exit(EXIT_FAILURE);
+   }
+
+	/* /Cluster/00/ns -> /Cluster/00/.socket	*/
+  strcpy(path, network_server->Name);
+  temp = objname(path);
+  strcpy(temp, ".socket");
+}
+
+/**
+*** Do the business. This involves contacting the local network server and
+*** asking it to do lots of nasties.
+**/
+static	void	do_the_business(void)
+{ int		rc;
+  RmRequest	request;
+  RmReply	reply;
+  int		size;
+  
+  Clear(request); Clear(reply);
+  request.FnRc		= RmC_JoinNetwork;
+  request.Arg1		= connector_link;
+  request.Arg2		= neighbour_link;
+  request.VariableData	= text_buffer;
+
+  strcpy(text_buffer, path);
+  size = strlen(path) + 1;
+  strcpy(&(text_buffer[size]), connector->Name);
+  size += strlen(connector->Name) + 1;
+  strcpy(&(text_buffer[size]), neighbour->Name);
+  size += strlen(neighbour->Name) + 1;
+
+  request.VariableSize	= size;
+
+  rc = RmXch(&RmNetworkServer, &request, &reply);
+  if (rc ne RmE_Success)
+   { fprintf(stderr, "joinnet: failed to join networks, RmLib error %s.\n",
+   	RmMapErrorToString(rc));
+     exit(EXIT_FAILURE);
+   }
+}
+
+#endif
+@
+
+
+1.7
+log
+@Reduced an excessive 5 second delay to only one second, this appears to
+be adequate. Less than one second causes problems.
+@
+text
+@d16 1
+a17 2
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/joinnet.c,v 1.6 1992/06/08 15:27:20 bart Exp bart $";
+
+d31 10
+d299 1
+a299 1
+
+@
+
+
+1.6
+log
+@Moved the netutils routine LookupProcessor into the Resource Management
+library, RmLookupProcessor()
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/joinnet.c,v 1.5 1992/06/07 16:28:14 bart Exp bart $";
+d111 1
+a111 1
+  Delay(5 * OneSec);
+@
+
+
+1.5
+log
+@Patched to get around nucleus bug, where the wrong processor name
+was being returned.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/joinnet.c,v 1.4 1992/01/15 11:04:39 bart Exp $";
+d98 1
+a98 1
+  target = LookupProcessor(net, &(neighbour->Name[1]));
+@
+
+
+1.4
+log
+@Major update of networking sources, to incorporate the fault-tolerance
+work as demonstrated at the IED meeting 10.1.92
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/joinnet.c,v 1.2 90/12/01 15:29:55 bart Exp $";
+d55 8
+a62 1
+  neighbour = Locate(Null(Object), argv[1]);
+d194 1
+a194 1
+     
+d202 5
+a206 1
+      { linkbuf[5] = '\0';
+@
+
+
+1.3
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/joinnet.c,v 1.2 1991/08/20 13:47:24 bart Exp $";
+d49 1
+d120 1
+d130 2
+a131 1
+  for (i = 0; ; i++)
+a143 4
+     { int rc = Result2(connector);
+       if (i > 3) break;	/* BLV !@@$@@^ the nucleus */
+       if (((rc & SS_Mask) eq SS_IOC) && ((rc & EG_Mask) ne EG_Broken)) break;
+     }
+d186 1
+d193 2
+a194 1
+     for (i = 0; ; i++)
+a225 5
+        else
+         { int rc = Result2(current);
+           if (i > 3) break;	/* BLV !@@$@@^ the nucleus */         
+           if (((rc & SS_Mask) eq SS_IOC) && ((rc & EG_Mask) ne EG_Broken)) break;
+         }
+d239 5
+d262 2
+a263 2
+  strcpy(text_buffer, network_server->Name);
+  size = strlen(network_server->Name) + 1;
+@
+
+
+1.2
+log
+@there are problems determining the number of links on a processor, so I
+have had to hardcode in the number 4 for now
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/joinnet.c,v 1.1 90/09/12 14:40:31 jon Exp $";
+d30 1
+a41 1
+static	RmProcessor	LookupProcessor(RmNetwork net, char *name);
+d48 1
+d81 1
+d83 2
+a84 3
+  int		mode;
+      
+  net = RmGetNetwork(&rc);
+d250 3
+a252 3
+{ RmJob		Job;
+  int		rc;
+  Stream	*pipe;
+d255 5
+a259 9
+  rc = RmNewJob(&RmNetworkServer, &Job);
+  if (rc ne RmE_Success)
+   { fputs("joinnet: error contacting local Network Server.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+   
+  pipe = RmLockWrite(Job);
+  rc	= RmC_JoinNetwork;
+  (void) Write(pipe, (BYTE *) &rc, sizeof(int), -1);
+d261 1
+d263 8
+a270 15
+  (void) Write(pipe, (BYTE *) &size, sizeof(int), -1);
+  (void) Write(pipe, network_server->Name, size, -1);
+  
+  size = strlen(connector->Name) + 1;
+  (void) Write(pipe, (BYTE *) &size, sizeof(int), -1);
+  (void) Write(pipe, connector->Name, size, -1);
+  (void) Write(pipe, (BYTE *) &connector_link, sizeof(int), -1);
+  
+  size = strlen(neighbour->Name) + 1;
+  (void) Write(pipe, (BYTE *) &size, sizeof(int), -1);
+  (void) Write(pipe, neighbour->Name, size, -1);
+  (void) Write(pipe, (BYTE *) &neighbour_link, sizeof(int), -1);
+  
+  pipe = RmSwitchLockRead(Job);
+  (void) Read(pipe, (BYTE *) &rc, sizeof(int), -1);
+d272 2
+a273 1
+   { fprintf(stderr, "joinnet: RmLib error 0x%x when joining networks.\n", rc);
+a275 2
+  RmUnlockRead(Job);
+  RmFinishedJob(Job);
+a277 51
+/**
+*** Given a network, look up the processor. 
+*** Arguments : Network, the root structure or a subnet
+***             name, something like Cluster/00
+*** 
+*** The routine determines the last bit of the name, e.g. 00, and
+*** searches the network. When a processor is reached whose ID matches
+*** this last bit of the name, the search goes back up the tree trying
+*** to match all the parents.
+**/
+static int	LookupAux1(RmProcessor, ...);
+
+static RmProcessor	LookupProcessor(RmNetwork Network, char *name)
+{ char		*temp = name + strlen(name);
+  
+  for ( ; (temp >= name) && (*temp ne '/'); temp--);
+
+  return((RmProcessor) RmSearchNetwork(Network, &LookupAux1, name, ++temp));
+}
+
+static int LookupAux1(RmProcessor Processor, ...)
+{ va_list	args;
+  char		*name;
+  char		*last_name;
+  RmNetwork	current;
+  int		amount;
+      
+  va_start(args, Processor);
+  name		= va_arg(args, char *);
+  last_name	= va_arg(args, char *);
+  va_end(args);
+  
+  if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &LookupAux1, name, last_name));
+
+	/* Unless the last bit matches, do not bother to check */  
+  if (strcmp(RmGetProcessorID(Processor), last_name)) return(0);
+
+  current	= (RmNetwork) Processor;
+  
+  while (last_name > name)	/* If name is 00, match is immediate	*/
+   { last_name--; last_name--;  /* Skip the / and get to last char	*/
+     for ( amount = 0; (last_name >= name) && (*last_name ne '/'); 
+           last_name--, amount++);
+     last_name++;		/* should now be Cluster */
+     current = RmParentNetwork((RmProcessor) current);
+     if (current eq (RmNetwork) NULL) return(0);
+     if (strncmp(RmGetNetworkID(current), last_name, amount)) return(0); 
+   }
+  return((int) Processor);
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a118 1
+IOdebug("finding the connector");
+d126 1
+a126 1
+IOdebug("found the connector");   
+d141 1
+a164 2
+IOdebug("finding the network server");
+
+d226 1
+a241 1
+IOdebug("located network server %s", network_server->Name);   
+d284 1
+@

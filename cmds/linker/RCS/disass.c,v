@@ -1,0 +1,206 @@
+head	1.1;
+access;
+symbols
+	Helios_1_3_1:1.1
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	C40_Field_Test_2:1.1
+	C40_Field_Test_R1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	90.10.22.15.46.25;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@disassembler
+@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/*> c.disass <*/
+/*---------------------------------------------------------------------------*/
+/* Simple ARM disassembler                                                   */
+/*---------------------------------------------------------------------------*/
+/* RcsId: $Id$ */
+
+#include <stdio.h>
+#include <string.h>
+
+#include "ARMshape.h"
+
+#define whoami	"disass"
+
+/*---------------------------------------------------------------------------*/
+
+unsigned int readhex(char *cptr)
+{
+ unsigned int value = 0x00000000 ;
+ int loop ;
+
+#ifdef DEBUG
+ printf("HEX string \"%s\"\n",cptr) ;
+#endif
+ 
+ if ((cptr == NULL) || (*cptr == '\0'))
+  {
+   fprintf(stderr,"%s: NULL hex number given\n",whoami) ;
+   exit(3) ;
+  }
+
+ for (loop = 0; (loop < 8); loop++)
+  {
+   if (*cptr == '\0')
+    break ;
+
+   *cptr = toupper(*cptr) ;
+
+#ifdef DEBUG
+   printf("HEX character '%c'\n",*cptr) ;
+#endif
+
+   if (((*cptr < '0') || (*cptr > '9')) && ((*cptr < 'A') || (*cptr > 'F')))
+    {
+     fprintf(stderr,"%s: invalid HEX digit given\n",whoami) ;
+     exit(3) ;
+    }
+
+   value = ((value << 4) | ((*cptr <= '9') ? (*cptr - '0') : ((*cptr - 'A') + 10))) ;
+   cptr++ ;
+  }
+
+ if (*cptr != '\0')
+  {
+   fprintf(stderr,"%s: Too many HEX digits given\n",whoami) ;
+   exit(3) ;
+  }
+
+#ifdef DEBUG
+ printf("HEX value &%08X\n",value) ;
+#endif
+
+ return(value) ;
+}
+
+/*---------------------------------------------------------------------------*/
+/* return a printable character for the specified byte in the number */
+
+static char byte(int bnum,uint val)
+{
+ char retval = ((val & (0xFF << (8 * bnum))) >> (8 * bnum)) ;
+ /* Only return 7bit printable characters */
+ return(((retval < ' ') || (retval >= 0x7F)) ? '.' : retval) ;
+}
+
+/*---------------------------------------------------------------------------*/
+
+int readword(FILE *inf,unsigned int *value)
+{
+ return((fread((char *)value,sizeof(unsigned int),1,inf) == 1) ? 0 : -1) ;
+}
+
+/*---------------------------------------------------------------------------*/
+
+int main(int argc,char **argv)
+{
+ FILE		*inf = stdin ;
+ int		loop ;
+ char		*cptr ;
+ unsigned int	value ;
+ unsigned int	baseaddress = 0x00000000 ;
+ int		baseaddressgiven = FALSE ;
+ unsigned int	endaddress = 0x00000000 ;
+ unsigned int	foffset = 0x00000000 ;
+
+ for (loop=1; (loop < argc); loop++)
+  {
+   if (argv[loop][0] == '-')
+    {
+     switch (tolower(argv[loop][1]))
+      {
+       case 'b' : if (argv[loop][2] == '\0')
+                   cptr = argv[++loop] ;
+                  else
+                   cptr = &argv[loop][2] ;
+
+                  baseaddress = readhex(cptr) ;
+                  baseaddressgiven = TRUE ;
+                  break ;
+                  
+       case 's' : if (argv[loop][2] == '\0')
+                   cptr = argv[++loop] ;
+                  else
+                   cptr = &argv[loop][2] ;
+
+                  foffset = readhex(cptr) ;
+                  break ;
+                  
+       case 'h' : printf("%s: ARM binary disassembler v0.12\n",whoami) ;
+                  printf("options:\n") ;
+                  printf("-b <address> : Specify the base address to use.\n") ;
+                  printf("-s <offset>  : Specify a start offset within the image file\n") ;
+                  printf("<imagefile>    : An ARM binary image file.\n") ;
+                  printf("\nNOTE: If the \"-b\" flag is used the disassembly address will always start\n") ;
+                  printf("      at this value, otherwise it will start at the \"-s\" offset.\n") ;
+                  printf("\n") ;
+       default  : printf("Usage: %s [-h] [-b<address>] [-s<offset>] <imagefile>\n",whoami) ;
+                  exit(1) ;
+      }
+    }
+   else
+    {
+     /* open specified input file */
+     if ((inf = fopen(argv[loop],"r")) == NULL)
+      {
+       fprintf(stderr,"%s: cannot open input file\n",whoami) ;
+       exit(2) ;
+      }
+    }
+  }
+ /* end of argument processing */
+
+ if (foffset != 0)
+  {
+   if (fseek(inf,foffset,1) != 0)
+    {
+     fprintf(stderr,"%s: failed to seek to starting offset\n",whoami) ;
+     exit(4) ;
+    }
+   /* It is probably nicer having the "baseaddress" as specified */
+   if (!baseaddressgiven)
+    baseaddress += foffset ;
+  }
+ /* disassemble from the current point in the file */
+ while (readword(inf,&value) == 0)
+  {
+   printf("%08X : ",baseaddress) ;
+   printf("%c%c%c%c ",byte(0,value),byte(1,value),byte(2,value),byte(3,value)) ;
+   printf(": %08X : ",value) ;
+
+   disassemble(value,baseaddress,TRUE) ;
+   putchar('\n') ;
+   baseaddress += 4 ;
+
+   /* when we are looking at the "text" segment of a file, we must
+    * terminate at the correct point
+    */
+   if ((endaddress != 0x00000000) && (endaddress <= baseaddress))
+    break ;
+  }
+  
+ fclose(inf) ;
+ exit(0) ;
+}
+
+/*---------------------------------------------------------------------------*/
+/*> EOF c.disass <*/
+@

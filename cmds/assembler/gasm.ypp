@@ -1,0 +1,1287 @@
+/* Warning: You must only edit the unpre-processed .ypp version of this file */
+#include "warn.h"
+
+/*
+ * File:	gasm.ypp
+ * Author:	P.A.Beskeen
+ * Date:	Aug '91
+ *
+ * Description: Yacc grammer for generic Helios assembler
+ *
+ * This file is pre-processed by CPP to generate the correct YACC grammer
+ * and actions for the target processors assembly language mnemonics.
+ *
+ * The parser (yyparse()) created by YACC from this file, uses the lexical
+ * analyer (yylex() in lex.c) to provide it with a tokenised representation of
+ * the input text. The parser checks the syntax of the input files and
+ * creates a parse tree from this information. The parse tree in conjunction
+ * with the symbol table is then used by later modules to create the object
+ * file.
+ *
+ * RcsId: $Id: gasm.ypp,v 1.11 1993/07/12 16:16:46 nickc Exp $
+ *
+ * (C) Copyright 1991 Perihelion Software Ltd.
+ * 
+ * $RcsLog$
+ *
+ */
+
+/* ******************************************************************** */
+/* C definition section							*/
+
+%{
+
+/* Include Files: */
+
+#ifdef BISON
+#define fred \#
+fred include <stdio.h>
+#undef fred
+#endif
+ 
+#include "gasm.h"
+
+
+/* Exported Variables: */
+
+			/* current logical PC value */
+int			curPC = 0;
+
+			/* Dummy top item, its next field point to first */
+			/* true item */
+ParseTreeItem		HeaderParseTreeItem;
+
+
+int			StartLine = 0;
+
+
+/* Internal Variables: */
+
+			/* contains the SIZE of the items in a list */
+static int		list_size_count = 0;
+
+			/* maintains pointer to last item in parse tree */
+static ParseTreeItem	*LastParseTreeItem = &HeaderParseTreeItem;
+
+
+#ifdef BISON
+  static void 		yyerror(char *s);
+#endif
+
+%}
+
+
+/* ******************************************************************** */
+/* YACC declarations section						*/
+
+/* defines types that can be returned from tokens and rules */
+%union {
+	int			num;
+	Dble			flt;
+	char			*str;
+	struct ConstList	*clist;
+	struct FloatList	*flist;
+	struct NameList		*nlist;
+	struct Patch		*patch;
+	struct Instruction	*instr;
+	struct Expression	*expr;
+	struct Mnemonic		*mnem;
+}
+
+/* constant expression tokens */
+%token <str>	NAME
+%token <num>	NUMBER
+%token <num>	CHARCONST
+%token <flt>	FLOATNUM
+%token		LSHIFT RSHIFT
+
+/* message directives */
+%token		USERERROR USERWARNING USERNOTE
+
+/* termination directive - never explicitly seen - returns 0 */
+/* %token	USEREND = 0 */
+
+/* code area directives */
+%token 		BYTE SHORT WORD FLOATY DOUBLE BLOCKBYTE BLOCKSHORT BLOCKWORD SPACE ALIGN
+
+/* module data area directives */ 
+%token 		DATA COMMON CODETABLE EXPORT IMPORT
+
+/* object code directives */
+%token		MODULE INIT REF PATCHINSTR
+
+/* std patches */
+%token		MODSIZE MODNUM DATASYMB CODESYMB DATAMODULE
+%token		LABELREF CODESTUB ADDRSTUB BYTESWAP SHIFT P_ADD P_OR
+
+/* string constants */
+%token <str>	STRINGCONST
+%token <str>	LABEL
+
+/* pre / post increment / decrement operators */
+/* usually used in CPU's indirect addressing modes */
+%token		PLUSPLUS MINUSMINUS
+
+/* CPU instruction, not actually returned by lexer, but used in parse tree */
+/* to denote a machine specific opcode item */
+%token <instr>	INSTRUCTION
+
+
+/* ******************************************************************** */
+/* Define what types are returned by internal rules 			*/
+
+%type <num>	imm_constexpr opt_imm_constexpr
+%type <flt>	imm_fp_constexpr
+%type <expr>	instrpatch
+
+%type <clist>	codeconstlist codeconst
+%type <flist>	floatconstlist
+%type <expr>	constexpr opt_constexpr
+%type <patch>	stdpatch
+%type <nlist>	namelist
+
+
+/* ********************************************************************* */
+/* Precidence of operators in decending level of precidence		 */
+
+%left	'|'		/* lowest precidence */
+%left	'^'
+%left	'&'
+%left	LSHIFT RSHIFT
+%left	'+' '-'
+%left	'*' '/' '%'
+%left	UNARY		/* highest precidence */
+
+
+/* ******************************************************************** */
+/* Machine specific mnemonic tokens					*/
+/* Machine specific linker instruction patch tokens			*/
+
+/* include target CPU mneumonic and patch token definitions */
+#include CPU_YYTOKENS
+
+
+/* ******************************************************************** */
+/* Parsing starts at the rule defined here				*/
+
+%start statement
+
+
+/* ******************************************************************** */
+%%		/* YACC Grammer definition section			*/
+/* ******************************************************************** */
+
+
+statement:	/* empty */
+		| statement {StartLine = CurLine;} label
+		| statement {StartLine = CurLine;} mnemonic
+		| statement error
+		{
+			yyclearin;	/* clear read ahead tokens */
+			yyerrok;	/* allow syntax errors to restart */
+			ClearInput();	/* clear all input up to next \n */
+		}
+		;
+
+
+/* Add label to symbol table and parse tree */
+label:		LABEL
+		{
+			/* if symbol already defined, raise an error */
+			if (FindSymb($1)) {
+				char	Err[128];
+
+				sprintf(Err, "redefinition of label \"%s\"", $1);
+				Error(Err);
+				/* and continue parsing... */
+			}
+			else {
+				/* Add label to symbol table */
+#ifdef __C40TARGET
+				/* Naff word address machine */
+				Symbol *s = NewSymb($1, HT_LABEL, curPC / 4);
+#else
+				Symbol *s = NewSymb($1, HT_LABEL, curPC);
+#endif
+
+				/* add symbol table ref to parse tree */
+				/* this will output an object code label */
+				ParseTreeItem *pti = NewParseTreeItem(LABEL);
+
+				pti->type.symb = s;
+
+#ifdef __C40TARGET
+				/* check alignment of label */
+				if (curPC % 4 != 0) {
+					char Err[128];
+
+					sprintf(Err, "label \"%s\" is not aligned to a  word address", $1);
+					Error(Err);
+				}
+#endif
+			}
+		}
+		;
+
+
+mnemonic:	pseudo_op
+		| machine_op
+		;
+
+
+/* Pseudo opcodes supported: */
+pseudo_op:
+		byte
+		| short
+		| word
+		| blockbyte
+		| blockshort
+		| blockword
+		| double
+		| floaty
+#ifdef __C40TARGET
+		| c40float
+#endif
+		| space
+		| align
+		| data
+		| common
+		| codetable
+		| export
+		| import
+		| module
+		| init
+		| ref
+		| patchinstr
+		| usererror
+		| userwarning
+		| usernote
+		;
+
+
+/* ******************************************************************** */
+/* Code area directives							*/
+
+/* append item to parse tree with a pointer to the code constant list */
+/* returned by the 'codeconstlist' rule */
+byte:		BYTE codeconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(BYTE);
+
+			/* insert ref to codeconstlist items */
+			pti->type.clist = $2;
+			curPC += list_size_count * sizeof(char);
+		}
+		;
+
+short:		SHORT codeconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(SHORT);
+
+			pti->type.clist = $2;
+			curPC += list_size_count * (2 * sizeof(char));
+		}
+		;
+
+word:		WORD codeconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(WORD);
+
+			pti->type.clist = $2;
+			curPC += list_size_count * sizeof(int);
+		}
+		;
+
+floaty:		FLOATY floatconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(FLOATY);
+
+			pti->type.flist = $2;
+			curPC += list_size_count * 4; /* 32 bit float */
+		}
+		;
+
+double:		DOUBLE floatconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(DOUBLE);
+
+			pti->type.flist = $2;
+			curPC += list_size_count * 8; /* 64 bit float */
+		}
+		;
+
+#ifdef __C40TARGET
+c40float:	C40FLOAT floatconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(C40FLOAT);
+
+			pti->type.flist = $2;
+			curPC += list_size_count * 4; /* 32 bit float */
+		}
+		;
+#endif
+
+
+/* add blockbyte to the parse tree as a byte constlist item and a space item */
+/* to pad out the remaining space in the block */
+blockbyte:	BLOCKBYTE imm_constexpr ',' codeconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(BYTE);
+			int remain = $2 - list_size_count;
+
+			pti->type.clist = $4;
+
+			/* pad remaining block space with zeros by inserting */
+			/* a bogus SPACE pseudo op. */
+			if (remain < 0) {
+				Error("blockbyte: block size exceeded by data supplied");
+			}
+			else if (remain > 0) {
+				pti = NewParseTreeItem(SPACE);
+				pti->type.num = remain;
+			}
+			/* else if (remain==0) no need for padding */
+
+			curPC += $2 * sizeof(char);
+		}
+		;
+
+blockshort:	BLOCKSHORT imm_constexpr ',' codeconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(SHORT);
+			int remain = $2 - list_size_count;
+
+			pti->type.clist = $4;
+
+			/* pad remaining block space with zeros by inserting */
+			/* a bogus SPACE pseudo op. */
+			if (remain < 0) {
+				Error("blockshort: block size exceeded by data supplied");
+			}
+			else if (remain > 0) {
+				pti = NewParseTreeItem(SPACE);
+				pti->type.num = remain * (2 * sizeof(char));
+			}
+			/* else if (remain==0) no need for padding */
+
+			curPC += $2 * (2 * sizeof(char));
+		}
+		;
+
+blockword:	BLOCKWORD imm_constexpr ',' codeconstlist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(WORD);
+			int remain = $2 - list_size_count;
+
+			pti->type.clist = $4;
+
+			/* pad remaining block space with zeros by inserting */
+			/* a bogus SPACE pseudo op. */
+			if (remain < 0) {
+				Error("blockword: block size exceeded by data supplied");
+			}
+			else if (remain > 0) {
+				pti = NewParseTreeItem(SPACE);
+				pti->type.num = remain * sizeof(int);
+			}
+			/* else if (remain==0) no need for padding */
+
+			curPC += $2 * sizeof(int);
+		}
+		;
+
+
+/* add space directive to the parse tree. The imm_constexpr rule returns an */
+/* integer result from the constant expression entered in the source file */
+space:		SPACE imm_constexpr
+		{
+			/* add space directive to parse tree */
+			ParseTreeItem *pti = NewParseTreeItem(SPACE);
+
+			pti->type.num = $2;
+
+			curPC += $2;
+		}
+		;
+
+
+/* align address, possibly adding space directive to parse tree to pad to */
+/* the new aligned address */
+align:		ALIGN opt_imm_constexpr
+		{
+			ParseTreeItem *pti;
+			int pad;
+
+			/* if alignment not defined default to 4 */
+			pad = ALIGNADDR(curPC, ($2) ? $2 : 4);
+
+			if (pad != 0) {
+				/* if we need to pad out current address so */
+				/* that the next opcode is aligned to the */
+				/* specified byte boundary, then add a SPACE */
+				/* directive of the relevant size */
+
+				pti = NewParseTreeItem(SPACE);
+				pti->type.num = pad;
+
+				curPC += pad;
+			}
+		}
+		;
+
+
+/* ******************************************************************** */
+/* Module data area generation directives				*/
+
+/* add static data defn. directive to parse tree */
+data:		DATA NAME ',' constexpr
+		{
+			ParseTreeItem *pti = NewParseTreeItem(DATA);
+
+			pti->type.datacommon.name = $2;
+			pti->type.datacommon.expr = $4;
+
+#ifdef DEBUG
+			fprintf(stderr, "Defined data %s, %d\n",$2, Eval($4, curPC));
+#endif
+		}
+		;
+
+/* add static common defn. directive to parse tree */
+common:		COMMON NAME ',' constexpr
+		{
+			ParseTreeItem *pti = NewParseTreeItem(COMMON);
+
+			pti->type.datacommon.name = $2;
+			pti->type.datacommon.expr = $4;
+
+#ifdef DEBUG
+			fprintf(stderr, "Defined common %s, x\n",$2);
+#endif
+		}
+		;
+
+/* add function defn. directive to parse tree */
+codetable:	CODETABLE namelist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(CODETABLE);
+
+			pti->type.nlist = $2;
+
+#ifdef DEBUG
+			fprintf(stderr, "Defined codetable\n");
+#endif
+		}
+		;
+
+
+/* add function defn. directive to parse tree */
+export:		EXPORT namelist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(EXPORT);
+
+			pti->type.nlist = $2;
+
+#ifdef DEBUG
+			fprintf(stderr, "Defined export\n");
+#endif
+		}
+		;
+
+
+/* add function label import directive to parse tree */
+import:		IMPORT namelist
+		{
+			/* force a linker global directive to be emited */
+			ParseTreeItem *pti = NewParseTreeItem(IMPORT);
+			NameList *n = $2;
+
+			pti->type.nlist = $2;
+
+			/* add imported label to the symbol table */
+			while ( n != NULL) {
+				NewSymb(n->name, HT_IMPORT, 0);
+				n = n->next;
+			}
+#ifdef DEBUG
+			fprintf(stderr, "Defined import\n");
+#endif
+		}
+		;
+
+
+/* ******************************************************************** */
+/* Misc object code directives						*/
+
+/* add module start directive to parse tree */
+module:		MODULE opt_constexpr
+		{
+			ParseTreeItem *pti = NewParseTreeItem(MODULE);
+
+			/* if no module number expression, default to -1 */
+			pti->type.expr = ($2) ? $2 : NewExprNum(-1);
+
+#ifdef DEBUG
+			fprintf(stderr, "Defined module %d\n", $2);
+#endif
+		}
+		;
+
+/* add initialisation chain directive to parse tree */
+init:		INIT
+		{
+			NewParseTreeItem(INIT);
+
+			/* init parse item needs to remember no data */
+
+#ifdef DEBUG
+			fprintf(stderr, "Defined init\n");
+#endif
+			curPC += sizeof(int);
+		}
+		;
+
+/* add library reference to parse tree */
+ref:		REF namelist
+		{
+			ParseTreeItem *pti = NewParseTreeItem(REF);
+
+			pti->type.nlist = $2;
+
+#ifdef DEBUG
+			fprintf(stderr, "Defined ref\n");
+#endif
+		}
+		;
+
+/* add instruction patch to parse tree */
+patchinstr:	PATCHINSTR '(' instrpatch ',' stdpatch ',' machine_op ')'
+		{
+			Instruction *instr;
+
+			if (LastParseTreeItem->what == INSTRUCTION) {
+				/* Change the parse tree item that the */
+				/* processor specific parser appends to the */
+				/* parse tree into a PATCHINSTR type parse */
+				/* tree item */
+
+				/* remember instruction struct pointer */
+				instr = LastParseTreeItem->type.instr;
+
+				/* convert parse tree item into a PATCHINSTR */
+				LastParseTreeItem->what = PATCHINSTR;
+				LastParseTreeItem->type.patchinstr.mcpatch = $3;
+				LastParseTreeItem->type.patchinstr.patch = $5;
+
+				/* re-insert instruction struct pointer */
+				LastParseTreeItem->type.patchinstr.instr =instr;
+#ifdef DEBUG
+				fprintf(stderr, "Defined patchinstr\n");
+#endif
+			}
+			else
+				Error("patchinstr failed due to instruction syntax error");
+		}
+		;
+
+
+/* ******************************************************************** */
+/* Message Output							*/
+
+usererror:	USERERROR STRINGCONST
+		{
+			Error($2);
+		}
+		;
+
+userwarning:	USERWARNING STRINGCONST
+		{
+			Warn($2);
+		}
+		;
+
+usernote:	USERNOTE STRINGCONST
+		{
+			Note($2);
+		}
+		;
+
+
+/* ******************************************************************** */
+/* Standard patches 							*/
+
+/* These patches are available in all linkers conforming to GHOF. They	*/
+/* return linker calculated data such as the module size and module	*/
+/* number. This information can then be placed into the code as		*/
+/* contants, or combined with an instruction patch to place the data	*/
+/* directly into an instruction.					*/
+
+stdpatch :	MODSIZE
+		{
+			$$ = NewPatch(MODSIZE);			/* 0x0e */
+#ifdef DEBUG
+			fprintf(stderr, "modsize\n");
+#endif
+		}
+		| MODNUM
+		{
+			$$ = NewPatch(MODNUM);			/* 0x012 */
+#ifdef DEBUG
+			fprintf(stderr, "modnum\n");
+#endif
+		}
+		| DATASYMB '(' NAME ')'
+		{
+			$$ = NewPatch(DATASYMB);		/* 0x010 */
+			$$->type.name = $3;
+#ifdef DEBUG
+			fprintf(stderr, "datasymb\n");
+#endif
+		}
+		| CODESYMB '(' NAME ')'
+		{
+			$$ = NewPatch(CODESYMB);		/* 0x01d */
+			$$->type.name = $3;
+#ifdef DEBUG
+			fprintf(stderr, "codesymb\n");
+#endif
+		}
+		| DATAMODULE '(' NAME ')'
+		{
+			$$ = NewPatch(DATAMODULE);		/* 0x011 */
+			$$->type.name = $3;
+#ifdef DEBUG
+			fprintf(stderr, "datamodule\n");
+#endif
+		}
+		| LABELREF '(' NAME ')'
+		{
+			/* @@@ give warning if label is not in this module */
+			/* @@@ during second pass */
+			$$ = NewPatch(LABELREF);		/* 0x01f */
+			$$->type.name = $3;
+
+#ifdef DEBUG
+			fprintf(stderr, "labelref\n");
+#endif
+		}
+
+		| CODESTUB '(' NAME ')'
+		{
+			$$ = NewPatch(CODESTUB);		/* 0x028 */
+			$$->type.name = $3;
+
+#ifdef DEBUG
+			fprintf(stderr, "codestub\n");
+#endif
+		}
+
+		| ADDRSTUB '(' NAME ')'
+		{
+			$$ = NewPatch(ADDRSTUB);		/* 0x029 */
+			$$->type.name = $3;
+
+#ifdef DEBUG
+			fprintf(stderr, "addrstub\n");
+#endif
+		}
+
+		/* prefix patches (patches that patch patches!) */
+		| BYTESWAP '(' stdpatch ')'
+		{
+			$$ = NewPatch(BYTESWAP);		/* 0x01e */
+			$$->type.patch = $3;
+
+#ifdef DEBUG
+			fprintf(stderr, "byteswap\n");
+#endif
+		}
+		| SHIFT '(' constexpr ',' stdpatch ')'
+		{
+			$$ = NewPatch(SHIFT);			/* 0x014 */
+			$$->type.shift.expr = $3;
+			$$->type.shift.patch = $5;
+
+#ifdef DEBUG
+			fprintf(stderr, "shift\n");
+#endif
+		}
+		| P_ADD '(' constexpr ',' stdpatch ')'
+		{
+			$$ = NewPatch(P_ADD);			/* 0x013 */
+			$$->type.shift.expr = $3;
+			$$->type.shift.patch = $5;
+
+#ifdef DEBUG
+			fprintf(stderr, "p_add\n");
+#endif
+		}
+		| P_OR '(' constexpr ',' stdpatch ')'
+		{
+			$$ = NewPatch(P_OR);			/* 0x01f */
+			$$->type.shift.expr = $3;
+			$$->type.shift.patch = $5;
+
+#ifdef DEBUG
+			fprintf(stderr, "p_add\n");
+#endif
+		}
+		;
+
+
+/* ******************************************************************** */
+/* Name list processing	(left recursive)				*/
+
+namelist:	NAME
+		{
+			/* first or only item in list */
+			NameList *n = (NameList *)malloc(sizeof(NameList));
+
+			if (n == NULL)
+				Fatal("Out of memory whilst building name list");
+
+			n->next = NULL;
+			n->name = $1;
+			$$ = n;
+		}
+		| namelist ',' NAME
+		{
+			/* list of names */
+			NameList *n = $1;
+			NameList *nn = (NameList *)malloc(sizeof(NameList));
+
+			if (nn == NULL)
+				Fatal("Out of memory whilst building name list");
+
+			/* insert name list item - order is not important */
+			/* so dont search to end of list */
+			nn->next = n->next;
+			n->next = nn;
+			nn->name = $3;
+
+			$$ = n;	/* return start of namelist */
+		}
+		;
+
+
+/* ******************************************************************** */
+/* Code constant list processing					*/
+
+/* codeconstlist chains together codeconst items returned by the	*/
+/* codeconst rule (expressions, patches and strings)			*/
+/* left recursive */
+
+codeconstlist:	{ list_size_count = 0; }	/* must count as $1 arg! */
+		codeconst
+		{
+			$$ = $2;	/* first or only item in list */
+		}
+		| codeconstlist ',' codeconst
+		{
+			ConstList *n = $1;	/* start of list */
+
+			/* search for end of list */
+			while (n->next != NULL)
+				n = n->next;
+
+			n->next = $3;	/* append item to end of list */	
+
+			$$ = $1;	/* returns start of constlist */
+		}
+		;
+
+
+floatconstlist:	{ list_size_count = 0; }	/* must count as $1 arg! */
+		imm_fp_constexpr
+		{
+			/* first or only item in list */
+			$$ = NewFloatConstItem($2);
+			list_size_count++;
+		}
+		| floatconstlist ',' imm_fp_constexpr
+		{
+			FloatList *fl = $1;	/* start of list */
+
+			/* search for end of list */
+			while (fl->next != NULL)
+				fl = fl->next;
+			/* append item to end of list */
+			fl->next = NewFloatConstItem($3);
+			list_size_count++;
+
+			$$ = $1;	/* returns start of floatconstlist */
+		}
+		;
+
+
+/* codeconst returns items that are then chained into a codeconst list */
+
+codeconst:	constexpr
+		{
+			/* return an Expression constlist item */
+			$$ = NewConstItem(E_Expr);
+
+			$$->type.expr = $1;
+			list_size_count++;
+		}
+		| stdpatch
+		{
+			/* return a patch constlist item */
+			$$ = NewConstItem(E_Patch);
+
+			$$->type.patch = $1;
+			list_size_count++;
+		}
+		| STRINGCONST
+		{
+			/* return a string constlist item */
+			$$ = NewConstItem(E_Str);
+
+			$$->type.str = $1;
+			/* increment the list size count by the number of */
+			/* chars in the string - 1 counted by default already */
+#ifdef DEBUG
+			fprintf(stderr,"1 list_size_count = %d, pc = %#x\n",list_size_count, curPC);
+			list_size_count += strlen($1);
+			fprintf(stderr,"2 strconst \"%s\" list_size_count = %d, pc + listsize = %#x\n",$1,list_size_count, (list_size_count * 4  + curPC)/4);
+#else
+			list_size_count += strlen($1);
+#endif
+		}
+		;
+
+
+/* ******************************************************************** */
+/* Constant expressions							*/
+
+/* Immediately evaluated constant expression (DOESN'T allow symbols)	*/
+/* This rule immediately returns the integer result of any valid	*/
+/* expression found in the source at this point.			*/
+
+
+/* ******************************************************************** */
+/* Constant expressions							*/
+
+/* Immediately evaluated constant expression (DOESN'T allow symbols)	*/
+/* This rule immediately returns the integer result of any valid	*/
+/* expression found in the source at this point.			*/
+
+imm_constexpr:	'(' imm_constexpr ')'
+		{	$$ = $2; }
+		| imm_constexpr '+' imm_constexpr
+		{	$$ = $1 + $3; }
+		| imm_constexpr '-' imm_constexpr
+		{	$$ = $1 - $3; }
+		| imm_constexpr '*' imm_constexpr
+		{	$$ = $1 * $3; }
+		| imm_constexpr '/' imm_constexpr
+		{	$$ = $1 / $3; }
+		| imm_constexpr '%' imm_constexpr
+		{	$$ = $1 % $3; }
+		| imm_constexpr '&' imm_constexpr
+		{	$$ = $1 & $3; }
+		| imm_constexpr '|' imm_constexpr
+		{	$$ = $1 | $3; }
+		| imm_constexpr '^' imm_constexpr
+		{	$$ = $1 ^ $3; }
+		| imm_constexpr LSHIFT imm_constexpr
+		{	$$ = $1 << $3; }
+		| imm_constexpr RSHIFT imm_constexpr
+		{	$$ = $1 >> $3; }
+		| '~' imm_constexpr %prec UNARY
+		{	$$ = ~ ($2); }
+		| '-' imm_constexpr %prec UNARY
+		{	$$ = - ($2); }
+
+		/* just return value of number */
+		| NUMBER
+
+		/* just return value of character constant */
+		| CHARCONST
+
+		;
+
+
+/* Floating point immediate expression.					*/
+/* This rule immediately returns the integer result of any valid	*/
+/* expression found in the source at this point.			*/
+
+imm_fp_constexpr: '(' imm_fp_constexpr ')'
+		{	$$ = $2; }
+#ifdef HOST_SUPPORTS_IEEE
+		| imm_fp_constexpr '+' imm_fp_constexpr
+		{	$$ = $1 + $3; }
+		| imm_fp_constexpr '-' imm_fp_constexpr
+		{	$$ = $1 - $3; }
+		| imm_fp_constexpr '*' imm_fp_constexpr
+		{	$$ = $1 * $3; }
+		| imm_fp_constexpr '/' imm_fp_constexpr
+		{	$$ = $1 / $3; }
+		| '-' imm_fp_constexpr %prec UNARY
+		{	$$ = - ($2); }
+
+		/* just return value of number */
+		| NUMBER
+		{ $$ = (double)$1;}
+#else
+		| imm_fp_constexpr '+' imm_fp_constexpr
+		{	if (!flt_add (&$$, &$1, &$3))
+				Warn ("overflow: floating point addition") ; }
+		| imm_fp_constexpr '-' imm_fp_constexpr
+		{	if (!flt_subtract (&$$, &$1, &$3))
+				Warn ("overflow: floating point subtraction") ; }
+		| imm_fp_constexpr '*' imm_fp_constexpr
+		{	if (!flt_multiply (&$$, &$1, &$3))
+				Warn ("overflow: floating point multiplication") ; }
+		| imm_fp_constexpr '/' imm_fp_constexpr
+		{	if (!flt_divide (&$$, &$1, &$3))
+				Warn ("overflow: floating point division") ; }
+		| '-' imm_fp_constexpr %prec UNARY
+		{	(void) flt_negate (&$$, &$2); }
+
+		/* just return value of number */
+		| NUMBER
+		{ (void) flt_itod (&$$, $1);}
+#endif
+		/* just return value of number */
+		| FLOATNUM
+		;
+
+
+/* optional immediate expression (used by align) */
+opt_imm_constexpr:	/* empty */
+		{
+#ifdef DEBUG
+			fprintf(stderr,"empty opt_imm_constexpr\n");
+#endif
+			$$ = 0;
+		}
+		| imm_constexpr
+		;
+
+
+/* Delayed evaluation form of constant expression. This allows the	*/
+/* inclusion of symbol references in expressions. constexpr builds a	*/
+/* binary evaluation tree of Expression items. This describes the	*/
+/* operands, operators and order of evaluation (precidence). During the	*/
+/* second pass, when all valid labels are guaranteed to have been set,	*/
+/* the Eval() fn is used to return an integer result from the tree.	*/
+
+constexpr:	'(' constexpr ')'
+		{	$$ = $2; }
+		| constexpr '+' constexpr
+		{	$$ = NewExpr($1, '+', $3); }
+		| constexpr '-' constexpr
+		{	$$ = NewExpr($1, '-', $3); }
+		| constexpr '*' constexpr
+		{	$$ = NewExpr($1, '*', $3); }
+		| constexpr '/' constexpr
+		{	$$ = NewExpr($1, '/', $3); }
+		| constexpr '%' constexpr
+		{	$$ = NewExpr($1, '%', $3); }
+		| constexpr '&' constexpr
+		{	$$ = NewExpr($1, '&', $3); }
+		| constexpr '|' constexpr
+		{	$$ = NewExpr($1, '|', $3); }
+		| constexpr '^' constexpr
+		{	$$ = NewExpr($1, '^', $3); }
+		| constexpr LSHIFT constexpr
+		{	$$ = NewExpr($1, LSHIFT, $3); }
+		| constexpr RSHIFT constexpr
+		{	$$ = NewExpr($1, RSHIFT, $3); }
+		| '~' constexpr %prec UNARY
+		{	$$ = NewExpr(NULL, '~', $2); }
+		| '-' constexpr %prec UNARY
+		{	$$ = NewExpr(NULL, '-', $2); }
+		| NUMBER
+			/* return value of number into evaluation tree */
+		{	$$ = NewExprNum($1);}
+		| CHARCONST
+			/* return integer value of character constant */
+		{	$$ = NewExprNum($1);}
+		| NAME
+			/* return symbol reference */
+		{	$$ = NewExprSymbRef($1);}
+		;
+
+
+/* optional expression (used by module) */
+opt_constexpr:	/* empty */
+		{
+			/* code executed if no optional constexpr in source */
+
+#ifdef DEBUG
+			fprintf(stderr,"empty opt_constexpr\n");
+#endif
+			$$ = NULL;
+		}
+		| constexpr
+		;
+
+
+#if 0		/* constlist not currently used */
+/* list of one or more constants */
+constlist:	{	list_size_count = 0; }	/* must count as $1 arg! */
+		constexpr
+		| constlist ',' constexpr
+		;
+#endif
+
+/* include CPU specific mneumonic and patch rules */
+#include CPU_YYRULES
+
+/* CPU_YYRULES: */
+/* ******************************************************************** */
+/* Machine specific mnemonic grammers and actions			*/
+/* ******************************************************************** */
+/* Parsed opcodes should increment the logical program counter (curPC)	*/
+/* and add themselves to the parse tree.				*/
+/* ******************************************************************** */
+/* Target CPU specific linker instruction patches			*/
+/* ******************************************************************** */
+/* These patches are implemented by the target CPU's linker.		*/
+/* They enable instructions to be patched with data that is only	*/
+/* available at link time, such as the module number, or offsets into	*/
+/* the module table for static data. The patch usually masks in the	*/
+/* information into the immediate data area of specific instructions.	*/
+/* The instrpatch rule fakes up a Expression structure to allow normal	*/
+/* expressions to be used as patch number arguments as well.		*/
+/* ******************************************************************** */
+
+
+
+/* ******************************************************************** */
+%%		/* Appended C Code section				*/
+/* ******************************************************************** */
+
+
+/****************************************************************/
+/* yyerror							*/
+/*								*/
+/* yyerror() is the predefined YACC error function, it simply	*/
+/* prints the error, and returns. The macro YYERROR that it	*/
+/* is usually used in conjunction with increments an error	*/
+/* count 'yynerr' and attempts to restart parsing at the	*/
+/* 'error' rule (placed in our 'statement' rule).		*/
+/*								*/
+/****************************************************************/
+
+static void yyerror(char *s)
+{
+	Error(s);
+}
+
+
+
+/****************************************************************/
+/* NewParseTreeItem						*/
+/*								*/
+/* Create a parse tree item and append it to the parse tree.	*/
+/* Set what type of item it is and abort on memory failure.	*/
+/*								*/
+/* Note that this is the only place that interacts directly	*/
+/* with the parse tree, apart from PATCHINSTR where the		*/
+/* current tail item is	replaced by another item.		*/
+/*								*/
+/* Returns pointer to new item.					*/
+/*								*/
+/****************************************************************/
+
+ParseTreeItem *NewParseTreeItem(int type)
+{
+	ParseTreeItem *pti = (ParseTreeItem *)malloc(sizeof(ParseTreeItem));
+
+	if (pti == NULL)
+		Fatal("Out of memory whilst building parse tree");
+
+	pti->what = type;
+	pti->next = NULL;
+
+	/* mnemonic's line number for accurate error reports in second pass */
+	pti->linenum = StartLine;
+
+	/* remember mnemonic's PC for use in pc relative label computation */
+#ifdef __C40TARGET
+	pti->logicalPC = curPC / 4;	/* word address machine */
+#else
+	pti->logicalPC = curPC;		/* luverly BYTE address machines */
+#endif
+	/* add item into parse tree */
+	LastParseTreeItem->next = pti;
+	LastParseTreeItem = pti;
+
+	return pti;
+}
+
+
+/****************************************************************/
+/* NewConstItem							*/
+/*								*/
+/* Create a new ConstList item and set its type.		*/
+/* Abort on any memory failure.					*/
+/*								*/
+/* Returns pointer to new item.					*/
+/*								*/
+/****************************************************************/
+
+ConstList *NewConstItem(int type)
+{
+	ConstList *cl = (ConstList *)malloc(sizeof(ConstList));
+
+	if (cl == NULL)
+		Fatal("Out of memory whilst building new constant");
+
+	cl->what = type;
+	cl->next = NULL;
+
+#ifdef DEBUG
+	fprintf(stderr, "NewConstItem type %d\n",type);
+#endif
+	return cl;
+}
+
+
+/****************************************************************/
+/* NewFloatConstItem						*/
+/*								*/
+/* Create a new FloatConstList item.				*/
+/* Abort on any memory failure.					*/
+/*								*/
+/* Returns pointer to new item.					*/
+/*								*/
+/****************************************************************/
+
+FloatList *NewFloatConstItem(Dble d)
+{
+	FloatList *fl = (FloatList *)malloc(sizeof(FloatList));
+
+	if (fl == NULL)
+		Fatal("Out of memory whilst building new float constant");
+
+	fl->next = NULL;
+	fl->value = d;
+
+#ifdef DEBUG
+	fprintf(stderr, "NewFloatConstItem %g\n", d);
+#endif
+	return fl;
+}
+
+
+/****************************************************************/
+/* NewPatch							*/
+/*								*/
+/* Create a new patch item and set its patch type.		*/
+/* Abort on any memory failure.					*/
+/*								*/
+/* Returns pointer to new item.					*/
+/*								*/
+/****************************************************************/
+
+Patch *NewPatch(int type)
+{
+	Patch *p = (Patch *)malloc(sizeof(Patch));
+
+	if (p == NULL)
+		Fatal("Out of memory whilst defining patch");
+
+	p->what = type;
+
+#ifdef DEBUG
+	fprintf(stderr, "NewPatch type %d\n",type);
+#endif
+	return p;
+}
+
+
+/****************************************************************/
+/* NewExpr							*/
+/*								*/
+/* Create a new expression item, setting its type, operator and */
+/* left and right expressions.					*/
+/* Aborts on any memory failure.				*/
+/*								*/
+/* Returns pointer to new item.					*/
+/*								*/
+/****************************************************************/
+
+Expression *NewExpr(Expression *le, int op, Expression *re)
+{
+	Expression *e = (Expression *)malloc(sizeof(Expression));
+
+	if (e == NULL)
+		Fatal("Out of memory defining expression");
+
+	e->what = E_Expr;
+
+	e->type.expr.Operator = op;
+	e->type.expr.left  = le;
+	e->type.expr.right = re;
+
+#ifdef DEBUG
+	fprintf(stderr, "NewExpr op %c\n",op);
+#endif
+	return e;
+}
+
+
+/****************************************************************/
+/* NewExprNum							*/
+/*								*/
+/* Create a new number containing expression item.		*/
+/* Aborts on any memory failure.				*/
+/*								*/
+/* Returns pointer to new item.					*/
+/*								*/
+/****************************************************************/
+
+Expression *NewExprNum(int num)
+{
+	Expression *e = (Expression *)malloc(sizeof(Expression));
+
+	if (e == NULL)
+		Fatal("Out of memory defining expression");
+
+	e->what = E_Num;
+
+	e->type.number = num;
+
+#ifdef DEBUG
+	fprintf(stderr, "NewExprNum adding %d\n",num);
+#endif
+	return e;
+}
+
+
+/****************************************************************/
+/* NewExprSymbRef						*/
+/*								*/
+/* Create a new symbol reference containing expression item.	*/
+/* Aborts on any memory failure.				*/
+/*								*/
+/* Returns pointer to new item.					*/
+/*								*/
+/****************************************************************/
+
+Expression *NewExprSymbRef(char *name)
+{
+	Expression *e = (Expression *)malloc(sizeof(Expression));
+
+	if (e == NULL)
+		Fatal("Out of memory defining expression");
+
+	e->what = E_Str;
+
+	e->type.name = name;
+
+#ifdef DEBUG
+	fprintf(stderr, "NewExprSymbRef adding %s\n",name);
+#endif
+	return e;
+}
+
+
+/* *********************************************************************** */
+
+
+/* end of gasm.ypp */

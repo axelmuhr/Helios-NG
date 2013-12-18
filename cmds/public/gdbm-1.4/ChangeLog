@@ -1,0 +1,77 @@
+Tue Aug 14 13:08:43 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* Version 1.4 released.  (version.c: Updated to correct version.)
+
+	* Makefile: Added $(LIBS) to link for conv2gdbm.
+
+	* README: Updated to version 1.4 and added a 1.0-1.4 change
+	  statement.
+
+Wed Aug  8 16:57:29 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* gdbmopen.c: Restructured some code to initialize dbf
+	  more completely.
+
+	* dbm.h: Added a null define to satisfy some versions that
+	  require a dbmclose() call.
+
+	* findkey.c: (_gdbm_findkey) Added a check for the NULL
+	  pointer in ...ca_data.dptr.
+
+	* gdbmdelete.c: Added code to more completely remove the
+	  cache entry for a deleted item.
+
+	* gdbmreorg.c: Added code to finish the transfer of information
+	  from the new_dbf to the orginal dbf.
+
+Fri May 30 08:29:16 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* gdbmstore.c: Changed a strncpy to bcopy.
+
+Tue May 15 09:55:21 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* Version 1.3 released.
+
+	* systems.h: Changed the defines for alloca to use the
+	  name builtin_alloca to depend on BUILTIN_ALLOCA instead
+	  of __GNUC__.  Added a definition of BUILTIN_ALLOCA for
+	  GNUC and for sun sparc.
+
+Fri May 11 12:15:56 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* systems.h: Removed the include for <sys/types> and now
+	  systems.h requires <sys/types> included before it.
+
+	* Makefile: Corrected the makefile to include a file that
+	  was missing before.  Also, switched order of conv2gdbm
+	  and alldbm in the all option.
+
+	* findkey.c (_gdbm_read_entry): Reordered some statements
+	  to make the code more readable.
+
+	* update.c (_gdbm_fatal): Changed fatal message from "dbm fatal:"
+	  to "gdbm fatal:".
+
+Mon Apr 30 10:18:24 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* Version 1.2 released.
+
+Fri Apr 27 09:49:59 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* Makefile: Added the dist option.  Similar to the 
+	  addition from hack@ai.mit.edu, but correct.
+
+	* falloc.c (push_avail_block):  Change the avail count
+	  to reflect the correct number of entries.
+
+	* dbminit.c (dbminit): Changed the stat call to stat the
+	  ".dir" file as is done in dbmopen.c (dbm_open).
+
+Tue Apr 10 12:18:40 1990  Phil Nelson  (phil at unicorn.wwu.edu)
+
+	* Version 1.1. released.
+
+	* gdbmopen.c (gdbm_open): Clear out bucket cache.
+
+
+

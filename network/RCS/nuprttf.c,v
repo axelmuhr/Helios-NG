@@ -1,0 +1,311 @@
+head	1.7;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.6
+	Alenia_release:1.6
+	Helios1_3:1.6
+	C40_Field_Test_2:1.6
+	C40_Field_Test_R1:1.5
+	Helios13_beta:1.5
+	Helios1_2_2_Fault:1.5
+	Helios1_2_2_Native:1.4
+	Helios1_2_2_native_beta:1.4
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.2
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.7
+date	93.08.11.10.40.19;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.10.07.13.31.45;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.01.15.11.04.39;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.06.03.13.12.38;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.03.01.17.19.56;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.14.43.32;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@memory reduction
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- netutils : printtf							--
+--									--
+--	Author:  BLV 1/5/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/nuprttf.c,v 1.6 1992/10/07 13:31:45 bart Exp $*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdarg.h>
+#include <message.h>
+#include <syslib.h>
+#include <nonansi.h>
+#include "private.h"
+#include "exports.h"
+#include "rmlib.h"
+
+void PrintTask(RmTask Task, RmNetwork domain, int level)
+{ int	i, ptype, conns;
+  int	args;
+  unsigned long mem;
+
+  for (i = 0; i < level; i++) putchar(' ');
+  ptype = RmGetTaskType(Task);
+  if ((ptype >= RmT_Known) || (ptype < 0))
+   ptype = RmT_Unknown;
+  printf("Task %8s : ", RmGetTaskId(Task));
+
+  if ((ptype ne RmT_Unknown) && (ptype ne RmT_Default))
+   printf("processor type %s, ", RmT_Names[ptype]);
+  if (RmIsTaskNative(Task))
+   printf("(native)");
+  mem = RmGetTaskMemory(Task);
+  if (mem ne 0L)
+   printf(" , memory requirement 0x%08lx ", mem);
+  putchar('\n');
+  for (i = 0; i <= level; i++) putchar(' ');
+  printf("Code %s\n", RmGetTaskCode(Task));
+  for (i = 0; i <= level; i++) putchar(' ');
+
+  args = RmCountTaskArguments(Task);
+  if (args > 1)
+   { printf("args: ");
+     for (i = 1; i < args; i++)
+      printf("(%d) %s ", i, RmGetTaskArgument(Task, i));
+     putchar('\n');
+     for (i = 0; i <= level; i++) putchar(' ');
+   }
+
+  conns = RmCountChannels(Task);
+  printf("%d channels :", conns);
+  for (i = 0; i < conns; i++)
+   { RmTask Target;
+     int destchannel;
+     printf(" (%d) ", i);
+     Target = RmFollowChannel(Task, i, &destchannel);
+     if (Target eq RmM_NoTask) 
+      continue;
+     elif (Target eq RmM_ExternalTask)
+      { const char	*filename;
+        int		mode;
+        filename = RmFollowChannelToFile(Task, i, &mode);
+        if (filename eq Null(const char))
+         { printf("Error: component %s, channel %d, should be file, RmErrno %d\n",
+         	RmGetTaskId(Task), i, mode);
+         }
+        else
+         printf("file %s, mode %x", filename, mode);
+      }
+     elif (Target eq (RmTask)NULL)
+      printf("!!!NULL!!!");
+     else
+      { printf("%s", RmGetTaskId(Target));
+        if (destchannel ne RmM_AnyChannel)
+         printf("<%d>", destchannel);
+      }
+   }
+
+  if (domain ne (RmNetwork) NULL)
+   { RmProcessor processor = RmFollowTaskMapping(domain, Task);
+     if (processor ne (RmProcessor) NULL)
+      { putchar('\n');
+        for (i = 0; i <= level; i++) putchar(' ');
+        printf("Mapped to processor %s", RmGetProcessorId(processor));
+      }
+   }
+
+  putchar('\n');
+}
+
+void PrintSubTaskforce(RmTaskforce Taskforce, RmNetwork domain, int level)
+{ int		i;
+  RmTask	Task;
+  
+  for (i = 0; i < level; i++) putchar(' ');
+  if (level eq 0)
+   printf("Taskforce");
+  else
+   printf("Sub-Taskforce");
+  printf(" %s\n", RmGetTaskforceId(Taskforce));
+  
+  for (Task = RmFirstTask(Taskforce);
+       Task ne (RmTask)NULL;
+       Task = RmNextTask(Task) )
+   { if (RmIsTaskforce(Task))
+      PrintSubTaskforce((RmTaskforce) Task, domain, level+1);
+     else
+      PrintTask(Task, domain, level+1);
+   }
+}
+
+void PrintTaskforce(RmTaskforce Taskforce, RmNetwork domain)
+{ PrintSubTaskforce(Taskforce, domain, 0);
+}
+
+@
+
+
+1.6
+log
+@Removed an IOdebug()
+@
+text
+@d14 1
+a14 2
+
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/nuprttf.c,v 1.5 1992/01/15 11:04:39 bart Exp $";
+@
+
+
+1.5
+log
+@Major update of networking sources, to incorporate the fault-tolerance
+work as demonstrated at the IED meeting 10.1.92
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/nuprttf.c,v 1.1 90/09/12 14:43:32 jon Exp Locker: bart $";
+a91 1
+IOdebug("mapped to %x", processor);
+@
+
+
+1.4
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/nuprttf.c,v 1.1 1991/08/06 17:32:53 bart Exp $";
+d29 1
+a29 1
+void PrintTask(RmTask Task, int level)
+d32 2
+a33 1
+  
+d38 1
+a38 1
+  printf("Task %8s : %s, ", RmGetTaskId(Task), RmT_Names[ptype]);
+d40 2
+d44 3
+a46 1
+  printf(" , memory size 0x%08lx ", RmGetTaskMemory(Task));
+d68 2
+a69 2
+     if (Target eq RmM_NoTask)
+      printf("not connected");
+d89 11
+d103 1
+a103 1
+void PrintSubTaskforce(RmTaskforce Taskforce, int level)
+d118 1
+a118 1
+      PrintSubTaskforce((RmTaskforce) Task, level+1);
+d120 1
+a120 1
+      PrintTask(Task, level+1);
+d124 2
+a125 2
+void PrintTaskforce(RmTaskforce Taskforce)
+{ PrintSubTaskforce(Taskforce, 0);
+@
+
+
+1.3
+log
+@stack checking now enabled.
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/nuprttf.c,v 1.2 91/03/01 17:19:56 bart Exp $";
+d37 1
+a37 1
+  printf("Task %8s : %s, ", RmGetTaskID(Task), RmT_Names[ptype]);
+d41 1
+a41 1
+  printf(" , memory size 0x%08x ", RmGetTaskMemory(Task));
+d71 1
+a71 1
+         	RmGetTaskID(Task), i, mode);
+d79 1
+a79 1
+      { printf("%s", RmGetTaskID(Target));
+d96 1
+a96 1
+  printf(" %s\n", RmGetTaskforceID(Taskforce));
+@
+
+
+1.2
+log
+@Various files had been left checked out somehow, tidying up.
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/nuprttf.c,v 1.1 90/09/12 14:43:32 jon Exp Locker: bart $";
+a27 3
+
+#pragma	-s1
+#pragma -g0
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header$";
+@

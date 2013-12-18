@@ -1,0 +1,892 @@
+head     1.1;
+branch   1.1.1;
+access   ;
+symbols  ncc:1.1.1.1 ncc:1.1.1;
+locks    ; strict;
+comment  @ * @;
+
+
+1.1
+date     93.07.21.14.07.05;  author nick;  state Exp;
+branches 1.1.1.1;
+next     ;
+
+1.1.1.1
+date     93.07.21.14.07.06;  author nick;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/*{{{  Includes */
+/* $Id: emit.c,v 1.2 90/12/19 13:09:21 martyn Exp Locker: martyn $ */
+#ifdef __old
+#include "cchdr.h"
+#include "AEops.h"
+#else
+#include "globals.h"
+#include "aeops.h"
+#include "xrefs.h"
+#include "store.h"
+#include "codebuf.h"
+#include "builtin.h"
+#include "errors.h"
+#endif
+#include "util.h"
+#include "xpuops.h"
+#include "cg.h"
+
+/*}}}*/
+/*{{{  UNIONFIX */
+
+#ifdef COMPILING_ON_ST
+#define UNIONFIX 1
+#endif
+#ifdef COMPILING_ON_ORION
+#define UNIONFIX 1
+#endif
+#ifdef COMPILING_ON_SUN4
+#define UNIONFIX 1
+#endif
+/*}}}*/
+/*{{{  Externs, defines etc */
+
+#ifndef __old
+static int32 vg_wpos;
+static union { int32 w32[1]; int16 w16[2]; int8 w8[4]; } vg_wbuff;
+static int vg_wtype;
+#endif
+
+#ifdef CC420
+DataDesc data;
+DataDesc *datap = &data;
+#endif
+
+extern int ssp;
+static int next_label_name;
+int deadcode;
+
+int maxprocsize;
+char *maxprocname;
+
+Block *topblock,*curblock;
+Tcode *blockcode, *curcode;
+Literal *litpoolhead, *litpoolend;
+int litpoolsize;
+
+FloatCon *fc_unsfix;
+
+int addFpConst();
+
+int xshorts;
+VLocal *xshortvar;
+int mshorts;
+VLocal *mshortvar;
+
+/*}}}*/
+/*{{{  codebuf_init */
+
+void codebuf_init() 
+{
+	next_label_name = 0;
+
+#if CC420
+	datap = &data;
+	data.size = 0;
+	data.xrefs = NULL;
+	data.xrarea = xr_data;
+#endif
+	datainitp = datainitq = NULL;
+
+	
+	fc_unsfix = real_of_string("2147483648.5", bitoftype_(s_double));
+}
+/*}}}*/
+/*{{{  codebuf_reinit */
+void codebuf_reinit() {}
+/*}}}*/
+/*{{{  codeseg_flush */
+void codeseg_flush(Symstr *strlitname) {}
+/*}}}*/
+/*{{{  codebuf_reinit2 */
+
+void codebuf_reinit2()
+{
+	curblock = topblock = NULL;
+	curcode = blockcode = NULL;
+	litpoolhead = litpoolend = NULL;
+	litpoolsize = 0;
+	deadcode = TRUE;
+}
+/*}}}*/
+/*{{{  nextlabel */
+
+extern struct LabelNumber *nextlabel(void)
+{
+#ifdef __old
+    LabelNumber *w = GlobAlloc(sizeof(LabelNumber));
+#else
+    LabelNumber *w = GlobAlloc(SU_Other, sizeof(LabelNumber));
+#endif
+    w->block = DUFF_ADDR;          /* unset label - illegal pointer */
+    w->refs = 0;
+    w->defn = (Tcode *)-1;
+    w->name = next_label_name++;
+    return w;
+}
+/*}}}*/
+/*{{{  newblock */
+
+Block *newblock(l)
+LabelNumber *l;
+{
+#ifdef __old
+	Block *b = SynAlloc(sizeof(Block)); block_cur += sizeof(Block);
+#else
+	Block *b = SynAlloc(sizeof(Block));
+#endif
+	b->code = NULL;
+	b->next = NULL;
+	b->jump = p_noop;
+	b->flags = in_loop?BlkFlg_align:0;
+	b->succ1 = NULL;
+	b->succ2 = NULL;
+	b->prev = curblock;
+	if( curblock != NULL ) curblock->next = b;
+	b->lab = l;
+	curblock = b;
+	if( topblock == NULL ) 
+	{
+	    topblock = b;
+	    l-> refs++;
+	}
+	blockcode = curcode = NULL;
+	return b;
+}
+/*}}}*/
+/*{{{  align_block */
+
+void align_block()
+{
+	curblock->flags |= BlkFlg_align;
+}
+/*}}}*/
+/*{{{  start_new_basic_block */
+
+Block *start_new_basic_block(l)
+LabelNumber *l;
+{
+	Block *b;
+	emit( f_j, l);
+	l->block = b = newblock(l);
+	
+	deadcode = FALSE;
+/* trace("Start block %x %x",b,l); */
+	return b;
+}
+/*}}}*/
+/*{{{  emitcasebranch */
+
+emitcasebranch(table,size,l)
+LabelNumber **table;
+int size;
+LabelNumber *l;
+{
+	Block *b = start_new_basic_block(l);
+
+	b->jump = p_case;
+	b->operand1.table = table;
+	b->operand2.tabsize = size;
+	l->refs++;	
+	deadcode = TRUE;
+}
+/*}}}*/
+/*{{{  emitprofile */
+
+emitprofile()
+{
+	trace("EmitProfile");
+}
+/*}}}*/
+/*{{{  static data initialisation */
+#ifndef __old
+
+/*{{{  adddata1 */
+static void adddata1(DataInit *x)
+{
+#ifndef FORTRAN /* blows up f77 formats, which aren't aligned -- MRC.   */
+/* AM thinks this is because fortran currently puts out non-aligned labels */
+    if (vg_wpos != 0) syserr(syserr_vg_wpos, (long)vg_wpos);  /* consistency */
+#endif
+    if (datainitp == 0) datainitp = datainitq = x;
+    else datainitq->datacdr = x, datainitq = x;
+}
+/*}}}*/
+/*{{{  adddata */
+void adddata(DataInit *a, int32 b, int32 c, int32 d, int32 e)
+{   DataInit *x = (DataInit *) GlobAlloc(SU_Data, sizeof(DataInit));
+    if (vg_wpos != 0) syserr("vg_wpos(%ld)", (long)vg_wpos);  /* consistency */
+    x->datacdr = a, x->rpt = b, x->sort = c, x->len = d, x->val = e;
+    adddata1(x);
+}
+/*}}}*/
+/*{{{  labeldata */
+void labeldata(Symstr *s)
+{
+	int ext;
+	/* New CC does not have symdata set up for datasegment base label */
+	if( symdata_(s) == NULL ) ext = 0;
+	else ext = bindstg_(symdata_(s)) & bitofstg_(s_extern);
+        adddata1(global_list4(SU_Data, 0, s, LIT_LABEL,ext));
+}
+/*}}}*/
+/*{{{  trydeletezerodata */
+/* The following procedure is used to delete trailing zeros in
+ * auto structs, unions and arrays. It carries a PLG Heath Warning !!
+ * In short it just (optionally) hacks the trailing zeros off the last
+ * static data item defined.  AM has (partly) house trained it.
+ * 'previous' should be the place preceeding where to start searching
+ * for zeros -- i.e. datainitq before call or 0 if no previous statics.
+ * AM: maybe we should hold datainit backwards and then this code
+ * would be nearly trivial, but compatibility problems.
+ * Note that it currently misses floating point zeros.
+ */
+
+int32 trydeletezerodata(DataInit *previous, int32 minsize)
+{   int32 size = 0;
+    DataInit *p,*q = previous;
+    for (p = q ? q->datacdr : datainitp; p; p = p->datacdr)
+        switch (p->sort)
+        {   case LIT_BBBB: case LIT_HH: case LIT_BBH: case LIT_HBB:
+            case LIT_NUMBER:
+                if (p->val == 0) { size += p->rpt * 4; break; }
+                /* else drop through */
+            default:
+                size = 0, q = p;
+        }
+    if (size >= minsize)
+    {   if (q==0) datainitp = 0; else datainitq=q, q->datacdr=0;
+        dataloc -= size;
+        return size;
+    }
+    return 0;
+}
+/*}}}*/
+/*{{{  gendcE */
+void gendcE(int32 len, FloatCon *val)
+{   adddata(0, 1, LIT_FPNUM, len, (int32)val);
+    if (debugging(DEBUG_DATA))
+    { cc_msg("%.6lx:  ", (long)dataloc);
+      { int32 *p = val -> floatbin.irep;
+        cc_msg(" %.8lx", (long)p[0]);
+        if (len == 8) cc_msg(" %.8lx", (long)p[1]);
+        cc_msg(" DC %ldEL%ld'%s'\n", (long)1, (long)len, val -> floatstr);
+      }
+    }
+    dataloc += len;
+}
+/*}}}*/
+/*{{{  gendcI */
+void gendcI(int32 len, int32 val)
+{
+    int32 v;
+    if (debugging(DEBUG_DATA))
+        cc_msg("%.6lx:   DC FL%ld'%ld'\n",
+               (long)dataloc, (long)len, (long)val);
+    v = alignof_int;
+    if ((len != 1 && len != 2 && len != 4) || (vg_wpos & len-1 & v-1))
+        /* check consistent - includes integral alignment */
+        syserr("gendcI(%ld,%ld)", (long)len, (long)vg_wpos);
+    /*
+     * N.B. the next lines are written carefully to be sex independent.
+     */
+    if (alignof_int == 2 && vg_wpos == 2 && len == 4)
+    { /* e.g. APRM halfword aligned word... */
+#ifdef TARGET_IS_BIG_ENDIAN
+      v = val & 0xffff;   val = val >> 16;
+#endif
+#ifdef TARGET_IS_LITTLE_ENDIAN
+      v = val >> 16;   val = val & 0xffff;
+#endif
+      len = 2;
+    }
+    else v = -1;
+    switch (len)
+    {   case 1: vg_wbuff.w8[vg_wpos] = (unsigned8)val; break;
+        case 2: vg_wbuff.w16[vg_wpos>>1] = (unsigned16)val; break;
+        case 4: vg_wbuff.w32[0] = val; break;
+    }
+    vg_wtype = (vg_wtype << len) | 1;            /* flag 'byte' boundaries */
+    vg_wpos += len;
+    if (vg_wpos == 4)
+    {   int32 lit_flag;
+/* the following values could be coded into the LIT_xxx values             */
+        switch (vg_wtype)
+        {   default:  syserr("vg_wtype=0x%x", (int)vg_wtype);
+            case 1:  lit_flag = LIT_NUMBER; break;
+            case 5:  lit_flag = LIT_HH;     break;
+            case 15: lit_flag = LIT_BBBB;   break;
+            case 7:  lit_flag = LIT_HBB;    break;
+            case 13: lit_flag = LIT_BBH;    break;
+        }
+        vg_wpos = 0, vg_wtype = 0;
+        adddata(0, 1, lit_flag, 4, vg_wbuff.w32[0]);
+        if (v >= 0)
+        {   /* second part of a non-aligned word */
+            len = 4;
+            vg_wbuff.w16[0] = (unsigned16)v;
+            vg_wpos = 2, vg_wtype = 1;
+        }
+        else
+        {   vg_wpos = 0, vg_wtype = 0;
+        }
+    }
+    dataloc += len;
+}
+/*}}}*/
+/*{{{  gendcAx */
+void gendcAX(Symstr *sv, int32 offset, int xrflavour)
+{   /* (possibly external) name + offset, flavour is xr_data or xr_code */
+#ifdef REVERSE_OBJECT_BYTE_ORDER
+    if ((dataloc & 3) == alignof_int)
+    {   /* e.g. APRM non-aligned ADCON... */
+#ifdef NONALIGNED_ADCON_IS_RECOVERABLE_ERROR
+        cc_rerr(vargen_rerr_nonaligned, dataloc, sv, offset);
+#else
+        cc_err(vargen_rerr_nonaligned, dataloc, sv, offset);
+#endif
+        gendcI(4, 0);
+        return;
+    }
+#endif
+    (void)obj_symref(sv, xrflavour, 0);
+#ifdef TARGET_IS_ARM
+    /* This could be a more generally useful re-entrancy type fragment. */
+    if (arthur_module && (xrflavour & xr_data))
+       cc_rerr(vargen_rerr_datadata_reloc, sv);
+#endif
+
+#ifdef TARGET_IS_ACW
+    dataxrefs = (DataXref *) global_list3(SU_Xref, dataxrefs,
+                 dataloc | ((assembler_call) ? X_sysname : 0),
+                 sv);
+#else /* TARGET_IS_ACW */
+    dataxrefs = (DataXref *) global_list3(SU_Xref, dataxrefs, dataloc, sv);
+#endif /* TARGET_IS_ACW */
+    adddata(0, 1, LIT_ADCON, (int32)sv, offset);
+    if (debugging(DEBUG_DATA))
+        cc_msg("%.6lx:   DC A(%s+%ld)\n",
+               (long)dataloc, symname_(sv), (long)offset);
+    dataloc += 4;
+}
+/*}}}*/
+/*{{{  gendcF */
+#if CC420
+void gendcF(Symstr *sv, int32 offset, int32 strength)
+#else
+void gendcF(Symstr *sv, int32 offset)
+#endif
+{
+	gendcAX(sv, offset, xr_data);
+	if( sv != bindsym_(codesegment) ) genstub( 1, sv, 1 );	
+}
+
+/*}}}*/
+/*{{{  gendc0 */
+
+void gendc0(int32 nbytes)
+{   if (debugging(DEBUG_DATA))
+        cc_msg("%.6lx:   DC %ldX'00'\n", (long)dataloc, (long)nbytes);
+    while (nbytes != 0 && vg_wpos != 0) gendcI(1,0), nbytes--;
+    if ((nbytes>>2) != 0)
+        adddata(0, nbytes>>2, LIT_NUMBER, 4, 0);
+    while (nbytes & 3) gendcI(1,0), nbytes--;
+    dataloc += nbytes;
+}
+/*}}}*/
+/*{{{  vg_genstring */
+
+void vg_genstring(StringSegList *p, int32 size, int pad)
+{
+    int32 planted = 0;
+    for (; p != 0; p = p->strsegcdr)
+    {   unsigned char *s = (unsigned char *)p->strsegbase;
+        int32 n = p->strseglen;
+        while (n-- > 0)
+        {   if (planted < size)
+                gendcI(1,*s++), planted++;
+            else
+                return;
+        }
+    }
+    if (planted < size)
+    {   if (pad == 0)
+            gendc0(size-planted);
+        else while (planted++ < size)
+            gendcI(1, pad);
+    }
+}
+/*}}}*/
+/*{{{  padstatic */
+
+void padstatic(int32 align)
+{
+    if (dataloc & (align-1)) gendc0((-dataloc) & (align-1));
+}
+/*}}}*/
+/*{{{  stringlength */
+
+int32 stringlength(StringSegList *s)
+{   int32 n = 0;
+    for ( ; s != NULL ; s = s->strsegcdr) n += s->strseglen;
+    return n;
+}
+/*}}}*/
+
+#endif
+/*}}}*/
+/*{{{  duplicate */
+         
+duplicate(rsort)
+RegSort rsort;
+{
+	/* @@@@@@ T414 variant needed here		*/
+	if( floatingHardware )
+	{
+		emit( f_opr, rsort==INTREG?op_dup:op_fpdup );
+		if( rsort == INTREG ) pushInt(); else pushFloat();
+	}
+	else {
+		VLocal *v = pushtemp( INTREG );
+		emit( p_ldvl, v ); pushInt();
+		poptemp( v, INTREG );
+	}
+}
+/*}}}*/
+/*{{{  linearize_code */
+void linearize_code() {}
+/*}}}*/
+/*{{{  literal pool handling */
+/* literal pool handling */
+
+/*{{{  emitconstant */
+emitconstant( i )
+int i;
+{
+	int offset = addlitint( i );
+	if( litpool == NULL ) syserr("Uninitialised literal pool");
+	emit( p_ldvl, litpool );
+	emit( f_ldnl, offset );
+}
+/*}}}*/
+/*{{{  emitstring */
+
+emitstring(s)
+StringSegList *s;
+{
+	int offset = addlitstring( s );
+	if( litpool == NULL ) syserr("Uninitialised literal pool");
+	emit( p_ldvl, litpool );
+	emit( f_ldnlp, offset );
+}
+/*}}}*/
+/*{{{  emitFpConst */
+
+emitFpConst( x , rsort)
+FloatCon *x;
+RegSort rsort;
+{
+   if (floatingHardware )
+   {
+      if (isFpZero(x, rsort))
+         emit( f_opr, rsort == FLTREG ? op_fpldzerosn : op_fpldzerodb );
+      else
+      {
+         int offset = addFpConst(x, rsort);
+         if( litpool == NULL ) syserr("Uninitialised literal pool");
+ 	 emit( p_ldvl, litpool ); pushInt();
+ 	 emit( f_ldnlp, offset );
+	 emit( f_opr,rsort == FLTREG ? op_fpldnlsn : op_fpldnldb );
+	 popInt();
+      }
+      pushFloat() ;
+   }
+   else
+   {
+	/* T414 variant */
+        int offset = addFpConst(x, rsort);
+	if( litpool == NULL ) syserr("Uninitialised literal pool");
+	emit( p_ldvl, litpool ); pushInt();
+	if( rsort == FLTREG ) emit( f_ldnl, offset ); 
+	else emit( f_ldnlp, offset ); /* doubles are manipulated via pointers */
+   }
+}
+/*}}}*/
+/*{{{  addlitint */
+
+int addlitint( i )
+int i;
+{
+	Literal *l = litpoolhead;
+
+	/* first see if we already have this constant in the pool. */
+	for(; l != NULL; l = l->next )
+	{
+		if( l->type == lit_integer && l->v.i == i )
+			return l->offset;
+	}
+	
+	l = BindAlloc(sizeof(Literal));
+	l->next = NULL;
+	l->type = lit_integer;
+	l->v.i = i;
+	l->offset = litpoolsize;
+	litpoolsize += 1;
+	if( litpoolend != NULL ) litpoolend->next = l;
+	litpoolend = l;
+	if( litpoolhead == NULL ) litpoolhead = l;
+	return l->offset;
+}
+/*}}}*/
+/*{{{  addlitstring */
+
+/* @@@@@@ addlitstring - possibly share strings ? */
+int addlitstring( s )
+StringSegList *s;
+{
+	int stringlen = 0;
+	Literal *l = BindAlloc(sizeof(Literal));
+	l->next = NULL;
+	l->type = lit_string;
+	l->v.s = s;
+	l->offset = litpoolsize;
+
+	while( s != NULL )
+	{
+		stringlen += s->strseglen;
+		s = (StringSegList *)cdr_((List *)s);
+	}
+	litpoolsize += padstrlen(stringlen)/4;	/* size in words */
+	
+	if( litpoolend != NULL ) litpoolend->next = l;
+	litpoolend = l;
+	if( litpoolhead == NULL ) litpoolhead = l;
+	return l->offset;
+}
+/*}}}*/
+/*{{{  addFpConst */
+
+/* Look down the literal list for an identical constant,
+   if none is present then add a new constant */
+int addFpConst( x, rsort )
+FloatCon *x;
+RegSort rsort;
+{
+   Literal *lit = litpoolhead;
+   bool found   = FALSE;
+   
+   if (debugging (DEBUG_CG)) 
+       trace("Addfpconst %8x %8x", x->floatbin.db.msd, x->floatbin.db.lsd);
+   
+   for (; lit != NULL; lit = lit->next)
+   {
+     switch (lit -> type)
+     {
+        case lit_floatDb: 
+           if(rsort != DBLREG) break;
+           if ( (lit->v.db.lsd) == (x->floatbin.db.lsd) &&
+		(lit->v.db.msd) == (x->floatbin.db.msd) ) found = TRUE;
+              break;
+             
+        case lit_floatSn:
+           if( rsort != FLTREG ) break;
+           if ( (lit->v.fb.val) == (x->floatbin.fb.val) ) found = TRUE;
+        case lit_string: break;
+      }
+      if (found) break;
+   }
+   
+   if (found)
+   {
+      if (debugging (DEBUG_CG)) 
+          trace("Addfpconst found value at offset #%x", lit->offset);
+      return lit->offset;
+   }
+   else
+   {
+	Literal *l = BindAlloc(sizeof(Literal));
+	l->next = NULL;
+	l->type = rsort == DBLREG ? lit_floatDb : lit_floatSn ;
+	l->v.db = x->floatbin.db;
+	l->offset = litpoolsize;
+	litpoolsize += rsort==DBLREG ? 2 : 1 ;
+	if( litpoolend != NULL ) litpoolend->next = l;
+	litpoolend = l;
+	if( litpoolhead == NULL ) litpoolhead = l;
+        if (debugging (DEBUG_CG)) 
+            trace("Addfpconst added value at offset %d", l->offset);
+	return l->offset;
+   }
+}
+/*}}}*/
+/*{{{  isFpZero */
+
+/* This version is ONLY for IEEE format arithmetic */
+bool isFpZero( x, rsort)
+FloatCon *x;
+RegSort rsort;
+{
+  if (rsort == DBLREG)
+     if (x->floatbin.db.msd != 0)
+        return FALSE;
+  return (x->floatbin.fb.val == 0);
+}
+/*}}}*/
+/*}}}*/
+/*{{{  emitjcfix */
+emitcjfix()
+{
+	emit( f_opr, op_diff );
+}
+/*}}}*/
+/*{{{  emitmask */
+void emitmask(width)
+int width;
+{
+#if 0
+	if( width == 1 ) emit( f_ldc, 0xFF );
+	else
+	{
+		if( mshortvar != NULL ) emit( p_ldvl, mshortvar );
+		else emit( f_ldc, 0xFFFF );
+	}
+	pushInt();
+	emit( f_opr, op_and ); popInt();
+#else
+	pushInt(); popInt();
+	emit( p_mask, width );
+#endif
+}
+/*}}}*/
+/*{{{  emitxword */
+void emitxword(width)
+int width;
+{
+#if 0
+	if( lxxAllowed )
+	{
+		int xwop = op_xbword;
+		if( width == 2 ) xwop = op_xsword;
+		emit( f_opr, xwop );
+		
+	}
+	else
+	{
+		if( width == 1 ) emit( f_ldc, 0x80 );
+		else
+		{
+			if( xshortvar != NULL ) emit( p_ldvl, xshortvar );
+			else emit( f_ldc, 0x8000 ); 
+		}
+		pushInt();
+		emit( f_opr, op_xword ); popInt();
+	}
+#else
+	pushInt(); popInt();
+	emit( p_xword, width );
+#endif
+}
+
+/*}}}*/
+/*{{{  emitmaskxword */
+void emitmaskxword(width)
+int width;
+{
+	if( !lxxAllowed ) emitmask(width);
+	emitxword(width);
+}
+
+
+/*}}}*/
+/*{{{  emit */
+#ifndef UNIONFIX
+emit(op,opd)
+Xop op;
+Operand opd;
+{
+#else
+emit(op,opdarg)
+Xop op;
+long opdarg;
+{
+	/* Lattice C gets union arguments wrong, the following is a fix */
+	Operand opd;
+	opd.value = opdarg;
+#endif
+
+	/* some small optimisations */
+	switch( op )
+	{
+	case f_ldc:
+		if( inline_constants || smallint(opd.value) ) break;
+		else if( opd.value < (int)(MinInt+maxsmallint) )
+		{
+			storeCode( f_opr, op_mint );
+			opd.value &= ~MinInt; /* Careful with overflow ! */
+			op  = f_adc;
+			/* fall through to adc case */
+		}
+		else if( opd.value == ~MinInt )
+		{
+			storeCode( f_opr,op_mint );
+			storeCode( f_opr,op_not );
+			return;
+		}
+		else
+		{
+			emitconstant( opd.value );
+			return;
+		}
+	case f_adc:
+		/* if we are in an address expression, convert adc to	*/
+		/* ldnlp if possible.					*/
+		if( (opd.value % 4) == 0 && addrexpr )
+		{
+		    op = f_ldnlp;
+		    opd.value = opd.value>>2;
+		}
+                /* Fall through for ldnlp */
+
+	case f_ldnlp:	
+		if( opd.value == 0 ) return;
+	        break;
+	 
+	/* Label reference instructions */
+	case p_ldpi:       
+#ifdef JIMS
+	case f_j:
+	case f_cj:
+	case p_j:
+#endif
+	        if (!deadcode) opd.label->refs++;
+
+                break;
+                
+        /* VLocal reference instructions */
+        case p_ldvl:
+        case p_ldvlp:
+        case p_stvl:
+                if (!deadcode)
+                   opd.local -> refs += 1; /* (1 << loopdepth ?) */ 
+             
+	default: break;
+	}
+
+#ifdef UNIONFIX
+	storeCode(op, opd.value);
+#else
+	storeCode(op, opd);
+#endif
+}
+/*}}}*/
+/*{{{  storeCode */
+
+/* The real routine to store a code tem into the code structure */
+#ifndef UNIONFIX
+storeCode(op,opd)
+Xop op;
+Operand opd;
+{
+	Tcode *t;
+#else
+storeCode(op,opdarg)
+Xop op;
+long opdarg;
+{
+	/* Lattice C gets union arguments wrong, the following is a fix */
+	Operand opd;
+	Tcode *t;
+	opd.value = opdarg;
+#endif
+
+
+	if(debugging(DEBUG_CG))
+		trace("%s #%x #%x %s",op!=f_opr?fName(op):opName(opd.value),
+			op,opd.value,deadcode ? "dead":"");
+
+	if( deadcode ) return;
+	/* note that f_j and f_cj never get into the code but control the
+	 * generation of the flow graph.
+	 */
+	if( op == f_j || op == p_j )
+	{
+		deadcode = TRUE;
+		if( curblock -> jump == p_noop ) curblock->jump = op;
+		if (curblock -> succ1 == NULL)
+		    curblock->succ1  = opd.label;
+	        else
+	            curblock->succ2 = opd.label;
+		(opd.label -> refs) ++;
+		return;
+	}
+	if( op == f_cj )
+	{
+		/* conditional branches terminate the current block and
+		 * set the label as this blocks alternate successor.
+		 * If the instruction above this is an eqc 0, then
+		 * this is removed, (reversing the branch sense), and
+		 * the label is set as the block successor ...
+		 */
+#ifdef JIMS
+		if ((curcode -> op == f_eqc) && (curcode -> opd.value == 0))
+		{ /* Need to remove this item. We simply make it a noop */
+		   curcode -> op    = p_noop;
+		   curblock -> succ1 = opd.label;
+		}
+		else
+		{
+		    curblock->succ2 = opd.label;
+		} 
+#else
+		curblock->succ2 = opd.label;
+#endif
+
+		(opd.label -> refs) ++;
+		curblock->jump = f_cj;
+		start_new_basic_block(nextlabel());
+		return;
+	}
+
+	t = SynAlloc(sizeof(Tcode));
+	t->next = NULL;
+	t->op   = op;
+	t->opd.value  = opd.value;
+
+	if( curcode != NULL ) curcode->next = t;
+	curcode = t;
+	if( blockcode == NULL )
+	{ blockcode = t; curblock->code = t; }
+	curblock -> current = curcode;
+	if (op == p_ret)
+	   deadcode = TRUE;
+}
+
+/*}}}*/
+@
+
+
+1.1.1.1
+log
+@Initial Import of Norcroft C compiler for Transputer.
+@
+text
+@@

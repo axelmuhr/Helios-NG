@@ -1,0 +1,106 @@
+#!/bin/sh
+# 6/9/89  SPEC Benchathon - untested
+#
+#	main shell for running 1 or more benchmarks, sending all
+#	output to a result directory underneath each benchmark 
+#	directory.  For example, for /x/benchspec/015.doduc a directory 
+#	called /x/benchspec/015.doduc/result is where the results of 
+#	the test will reside.
+#
+#	The entire suite of benchmarks can be run by using this
+#	shell program, or individual benchmarks can be run.
+#
+if [ $# -lt 2 ]
+then
+	echo >&2 "usage: $0 target ident [ [ code ] directory1 ... ]
+		target = compile 	compile only 
+			 all		run test, compile if needed
+			 clean		clean up any leftover junk
+			 anythingelse	if you have such
+		ident  = company, or company.machine (same as in M.ident)
+			 or can be "" to pick up the default makefiles
+		code   = identification subcode (release, etc)
+		directory1... = list of directories, 1/benchmark
+			if omitted, does all of benchspec"
+	echo >&2 "shell variables"
+	echo >&2 "MACHINE: use for identification if ident == ''"
+	exit 1
+fi
+
+target="$1"
+case "$1" in
+compile | all | clean) ;;
+*)	echo >&2 "$0 warning: $1 nonstandard, attempting anyway";;
+esac
+
+#	set up Mfile= M.ident, or Makefile
+#	set up Afile= A.ident, or nomatch
+#	set up ident = machine-type, $MACHINE, or unk(nown)
+if [ "$2" != "" ]
+then
+	Mfile="M.$2"
+	Afile="A.$2"
+	ident="$2"
+else
+		Mfile=Makefile
+		Afile=nomatch
+		ident=${MACHINE-unk}
+fi
+
+#	set up code as input code, or unk(nown)
+if [ $# -le 2 ]
+then
+	code=unk
+	shift;shift
+elif [ $# -eq 3 ]
+then
+	code="$3"
+	if [ ! -d benchspec ]
+	then
+		echo >&2 "$0: error, no benchspec subdirectory found"
+		exit 1
+	fi
+	set benchspec/*
+else
+	code="$3"
+	shift;shift;shift
+fi
+
+#	everything is set, $* = list of directories to do
+for dir
+do
+	echo $dir
+	(
+	if [ ! -d $dir ]
+	then
+		echo >&2 "$0: error: $dir not found, skipped"
+	else
+		bench=`basename $dir`
+		date=`date`
+		cd $dir
+		if [ -d $Afile ]
+		then
+			cd $Afile
+		fi
+		if [ -f $Mfile ]
+		then
+			Mfilename=$Mfile
+		elif [ -f Makefile ]
+		then
+			Mfilename=Makefile
+		elif [ -f makefile ]
+		then
+			Mfilename=makefile
+		else
+			echo >&2 "$0: error in `pwd`"
+			echo >&2 "$0: error: no $Mfile, Makefile, or makefile"
+			exit 1
+		fi
+
+		#	finally, the real thing!
+		echo "BENCHRUN:START $bench, $ident, $code $date"
+		make -f $Mfilename $target
+		echo "BENCHRUN:END $bench, $ident, $code, $date"
+	fi
+	)
+done

@@ -1,0 +1,175 @@
+From hedrick@cs.rutgers.edu Wed Jan 30 12:58:42 1991
+Return-Path: <@clutx.clarkson.edu:hedrick@cs.rutgers.edu>
+Date: Tue, 29 Jan 91 03:28:51 EST
+From: hedrick@cs.rutgers.edu
+To: nelson@clutx.clarkson.edu
+Subject: SLIP problem
+In-Reply-To: USENET article <NELSON.91Jan21132425@sun.clarkson.edu>
+
+For what it's worth, the following patches seem to fix my problem.  I
+don't propose this as something that I'd actually want to give out to
+people, but it may give you an idea of what is going on.  I don't
+think the hardware is simply dropping the interrupt, because then KA9Q
+would fail also.  So I think it's a problem in SLIP8250, but I sure
+can't tell where.
+
+*** slip8250.org	Mon Jan 28 22:09:36 1980
+--- slip8250.asm	Tue Jan 29 01:15:10 1980
+***************
+*** 2,7
+  
+  	include	defs.asm
+  
+  ;Ported from Phil Karn's asy.c and slip.c, a C-language driver for the IBM-PC
+  ;8250 by Russell Nelson.  Any bugs are due to Russell Nelson.
+  ;16550 support ruthlessly stolen from Phil Karn's 8250.c. Bugs by Denis DeLaRoca
+
+--- 2,9 -----
+  
+  	include	defs.asm
+  
++ debug = 1
++ 
+  ;Ported from Phil Karn's asy.c and slip.c, a C-language driver for the IBM-PC
+  ;8250 by Russell Nelson.  Any bugs are due to Russell Nelson.
+  ;16550 support ruthlessly stolen from Phil Karn's 8250.c. Bugs by Denis DeLaRoca
+***************
+*** 151,157
+  recv_pkt_ready	dw	0		; flag indicating a packet is ready
+  
+    ifdef debug
+! 	public send_buf
+    endif
+  send_buf_size	dw	3000,0		;send buffer size
+  send_buf	dw	?		;->send buffer
+
+--- 153,159 -----
+  recv_pkt_ready	dw	0		; flag indicating a packet is ready
+  
+    ifdef debug
+! 	public send_buf, send_buf_end, send_buf_head, send_buf_tail
+    endif
+  send_buf_size	dw	3000,0		;send buffer size
+  send_buf	dw	?		;->send buffer
+***************
+*** 160,166
+  send_buf_tail	dw	?		;->next character to store
+  
+    ifdef debug
+! 	public packet_sem, pkt_send_sem, xmit_time
+    endif
+  packet_sem	dw	0		; semaphore for	packets received
+  pkt_send_sem	dw	0		; semaphore for	packets xmitted
+
+--- 162,168 -----
+  send_buf_tail	dw	?		;->next character to store
+  
+    ifdef debug
+! 	public packet_sem, pkt_send_sem, xmit_time, send_keep, keep_failed
+    endif
+  packet_sem	dw	0		; semaphore for	packets received
+  pkt_send_sem	dw	0		; semaphore for	packets xmitted
+***************
+*** 166,171
+  pkt_send_sem	dw	0		; semaphore for	packets xmitted
+  asyrxint_cnt	dw	0		; loop counter in asyrxint
+  xmit_time	dw	0		; loop timer for asyrxint
+  
+  	public	rcv_modes
+  rcv_modes	dw	4		;number	of receive modes in our table.
+
+--- 168,175 -----
+  pkt_send_sem	dw	0		; semaphore for	packets xmitted
+  asyrxint_cnt	dw	0		; loop counter in asyrxint
+  xmit_time	dw	0		; loop timer for asyrxint
++ send_keep	dw	0		; keepalive counter for send
++ keep_failed	dw	0		; number of keepalive failures
+  
+  	public	rcv_modes
+  rcv_modes	dw	4		;number	of receive modes in our table.
+***************
+*** 240,245
+  	loop	send_pkt_1
+  	mov	al,FR_END		;terminate it with a FR_END
+  	call	send_char
+  	mov	send_buf_tail,di
+  
+  	inc	pkt_send_sem		; increment the semaphore
+
+--- 244,252 -----
+  	loop	send_pkt_1
+  	mov	al,FR_END		;terminate it with a FR_END
+  	call	send_char
++ 
++ 	cli
++ 
+  	mov	send_buf_tail,di
+  
+  	inc	send_keep		; keepalive count
+***************
+*** 242,247
+  	call	send_char
+  	mov	send_buf_tail,di
+  
+  	inc	pkt_send_sem		; increment the semaphore
+  	cmp	pkt_send_sem, 1		; see if we need to enable
+  					; xmit buffer empty interrupt
+
+--- 249,263 -----
+  
+  	mov	send_buf_tail,di
+  
++ 	inc	send_keep		; keepalive count
++ 	cmp	send_keep, 3		; 3 packets without one xmt done
++ 	jna	keep_ok
++ 
++ ; we seem to be hung, probably due to a dropped tx done int.  restart
++ 	mov	pkt_send_sem, 0		; indicate we're finished	
++ 	inc	keep_failed		; count errors
++ 
++ keep_ok:
+  	inc	pkt_send_sem		; increment the semaphore
+  	cmp	pkt_send_sem, 1		; see if we need to enable
+  					; xmit buffer empty interrupt
+***************
+*** 265,271
+  	loadport
+  	setport	IER
+  	call	setbit			; enable
+! 	cli
+  send_pkt_end:
+  	clc
+  	ret
+
+--- 281,292 -----
+  	loadport
+  	setport	IER
+  	call	setbit			; enable
+! 	push ds
+! 	push cs
+! 	pop ds
+! 	call	asytxint
+! 	pop ds
+! 
+  send_pkt_end:
+  	clc
+  	ret
+***************
+*** 668,673
+  ;
+  
+  asytxint:
+  
+  asytxint_2:
+  
+
+--- 689,695 -----
+  ;
+  
+  asytxint:
++ 	mov	send_keep, 0		; restart keepalive
+  
+  asytxint_2:
+  
+
+

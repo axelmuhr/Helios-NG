@@ -1,0 +1,114 @@
+# Upgrade_Helios 1.22 950
+set exitcode=0
+
+set old_ver=121
+set new_ver=122
+set bup_dir=/helios/system/files.$old_ver
+
+if ($argv[1] != 0) then
+  echo Installing Helios $new_ver Upgrade
+# installation script
+# argv[1] = 0 for uninstalling software, otherwise the software is installed
+# argv[2] = dirname of the installation disk or tape drive
+# argv[3] = installation medium "tape" or "disk"
+  switch ($argv[3])
+    case disk:
+
+      set file_list="server.exe"
+      set dir_list="bin etc include include/sys lib"
+
+      test -r $bup_dir
+      if ($status == 0) then
+        echo Directory: $bup_dir already exists - aborting installation ...
+        exit 1
+      endif
+      mkdir $bup_dir
+
+      cp $argv[2]/compress.14 /helios/bin
+      rehash
+
+      cd $argv[2]
+      echo
+      echo 1. Backing up Helios $old_ver to: $bup_dir
+      foreach file ($file_list)
+        set source=/helios/$file
+        echo "     Backing up file: $source ..."
+        cp $source $bup_dir
+      end
+      foreach dir ($dir_list)
+        set target_dir=/helios/$dir
+        test -d $target_dir
+        if ($status == 1) then
+          echo "     Warning - directory: $target_dir does not exist"
+        else
+          mkdir $bup_dir/$dir
+          echo "     Backing up directory: $target_dir ..."
+          foreach file ($dir/*)
+            set target_file=/helios/$file
+            test -d $target_file
+            if ($status == 1) then
+              test -f $target_file
+              if ($status == 1) then
+                echo "        Warning - file: $target_file does not exist"
+              else
+#               echo "        Backing up file: $target_file"
+                cp $target_file $bup_dir/$dir
+              endif
+            endif
+          end
+        endif
+      end
+      
+      echo
+      echo 2. Installing Helios $new_ver to: /helios
+      foreach file ($file_list)
+        set target=/helios/$file
+        echo "     Installing file: $target"
+        compress.14 -dc < $file > $target
+      end
+      set dir_list="$dir_list system"
+      foreach dir ($dir_list)
+        set target_dir=/helios/$dir
+        test -d $target_dir
+        if ($status == 1) then
+          echo "     Warning - creating directory: $target_dir"
+          mkdir $target_dir
+        endif
+        echo "     Installing directory: /helios/$dir ..."
+        foreach file ($dir/*)
+          test -f $file
+          if ($status == 0) then
+            set target=/helios/$file
+#           echo "        Installing file: $target"
+            compress.14 -dc < $file > $target
+          endif
+        end
+      end
+
+      rm -f /helios/bin/compress.14
+      rehash
+
+      echo 
+      echo "Press <Enter> to continue"
+      set tempflag=$<
+      more /helios/system/readme.$new_ver
+      echo 
+      
+      echo "Upgrade installed - please exit loadpac and reboot Helios"
+      
+      breaksw
+    case tape:
+       echo No tape support for loadpac yet
+       breaksw
+    endsw
+else
+# remove instructions
+  echo Restoring Helios $old_ver from: $bup_dir
+
+  cp -r $bup_dir/* /helios
+  rm -rf $bup_dir
+  rm -f /helios/system/readme.$new_ver
+
+  echo Helios $old_ver restored
+endif
+exit $exitcode

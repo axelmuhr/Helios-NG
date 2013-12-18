@@ -1,0 +1,356 @@
+head	1.9;
+access;
+symbols
+	Helios_1_3_1:1.9
+	Helios_C40_1_3_Official_Release:1.9
+	Alenia_release:1.5
+	C40_Field_Test_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.9
+date	93.04.01.16.55.24;	author nick;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	93.03.05.10.55.39;	author nick;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	93.02.02.17.25.55;	author nick;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.01.21.09.56.30;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.12.03.16.48.09;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.11.30.16.15.31;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.11.23.10.11.21;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.11.18.14.41.14;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.09.13.16.41.06;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@This module implements "special" extra links for hardware with
+non-link based interfaces to/from the host.
+@
+
+
+1.9
+log
+@Call to InitSMLLink now made in all systems.
+@
+text
+@/*
+ * File:	c40specials.c
+ * Subsystem:	c40 Helios executive
+ * Author:	B. Veer
+ * Date:	September 92
+ *
+ * Description: implements "special" links over and above the normal 6
+ *		and provides a function to return the default hardware
+ *		config word passed to bootstraps.
+ *
+ * RcsId: $Id: c40specials.c,v 1.8 1993/03/05 10:55:39 nick Exp $
+ *
+ * (C) Copyright 1992 Perihelion Software Ltd.
+ * 
+ */
+
+/* Include Files: */
+
+#include "../kernel.h"
+#include <root.h>
+#include <link.h>
+
+/*{{{  DSP1 link specials */
+
+#if 1
+/* DOESN'T WORK DUE TO A BUG IN THE C40 C COMPILER GetExecRoot SUBSTITUTION */
+/* i.e. GetExecRoot()->KernelRoot->Links doesn't work. */
+
+/*
+ * On the Hema DSP1 board a transputer link interface is used, with link
+ * 3 of the C40 being an input from the transputer link and link 0 being
+ * the output. The implementation is fairly trivial, all that is needed is
+ * calling the executive's link tx/rx/abort functions again with the
+ * real link number.
+ */
+static word DSP1_LinkRx(LinkTransferInfo *info)
+{ word		 size	= info->size;
+  MPtr		 buf	= info->buf;
+  LinkInfo	*link3	= GetRoot()->Links[3];
+
+  if (size == 0)
+   return((word)AbortLinkRx(link3));
+  else
+   { MP_LinkRx(size, link3, buf);
+     return(0);
+   }
+}
+
+static word DSP1_LinkTx(LinkTransferInfo *info)
+{ word		 size	= info->size;
+  MPtr		 buf	= info->buf;
+  LinkInfo	*link0	= GetRoot()->Links[0];
+
+  if (size == 0)
+   return((word)AbortLinkTx(link0));
+  else
+   { MP_LinkTx(size, link0, buf);
+     return(0);
+   }
+}
+#else
+/* re-organise code to get around bug */
+static word DSP1_LinkRx(LinkTransferInfo *info)
+{
+	RootStruct	*r = GetRoot();
+
+	if (info->size == 0)
+		return((word)AbortLinkRx(r->Links[3]));
+	else {
+		word	size	= info->size;
+		MPtr	buf	= info->buf;
+
+		MP_LinkRx(size, r->Links[3], buf);
+		return(0);
+	}
+}
+
+static word DSP1_LinkTx(LinkTransferInfo *info)
+{
+	RootStruct	*r = GetRoot();
+
+	if (info->size == 0)
+		return((word)AbortLinkTx(r->Links[0]));
+	else {
+		word	size	= info->size;
+		MPtr	buf	= info->buf;
+
+		MP_LinkTx(size, r->Links[0], buf);
+		return(0);
+	}
+}
+#endif
+/*}}}*/
+/*{{{  Shared Memory Links */
+
+extern void InitSMLLink(LinkInfo *link);
+
+/*}}}*/
+
+void LinkInitSpecial(LinkInfo *link)
+{
+
+  if( (link->State&Link_State_Mask) == Link_State_SML ) InitSMLLink(link);
+  else switch(link->State)
+   { case Link_State_DSP1 :
+		link->TxFunction	= (WordFnPtr) &DSP1_LinkTx;
+		link->RxFunction	= (WordFnPtr) &DSP1_LinkRx;
+		break;
+
+	/* If the link type is not recognised, set the link to unusable */
+     default:	link->Mode	= Link_Mode_Null;
+		link->State	= Link_State_Null;
+		return;
+   }
+
+	/* If the special link type is known, change the link mode and	*/
+	/* state from special to running. Flags should have been set	*/
+	/* already.							*/
+  link->Mode	= Link_Mode_Intelligent;
+  link->State	= Link_State_Running;
+}
+
+
+/* Returns the hardware config word that was sent to our bootstrap.
+ * This is used by the networking software as the default hardware config
+ * word when booting other processors.
+ */
+word GetHWConfig(void) {
+	return GetExecRoot()->HWConfig;
+}
+@
+
+
+1.8
+log
+@Support for shared memory links altered to allow for some configuration
+of the links.
+@
+text
+@d11 1
+a11 1
+ * RcsId: $Id: c40specials.c,v 1.7 1993/02/02 17:25:55 nick Exp $
+d103 2
+a104 8
+#if defined(SML_SPIRIT40) || defined(SML_VC40)
+  if( (link->State&Link_State_Mask) == Link_State_SML )
+  {
+  	InitSMLLink(link);
+  }
+  else
+#endif
+  switch(link->State)
+@
+
+
+1.7
+log
+@Support for shared memory links added.
+@
+text
+@d11 1
+a11 1
+ * RcsId: $Id: c40specials.c,v 1.6 1993/01/21 09:56:30 paul Exp $
+d102 8
+a114 6
+
+#if defined(SML_SPIRIT40) || defined(SML_VC40)
+     case Link_State_SML:
+     		InitSMLLink(link);
+     		break;
+#endif
+@
+
+
+1.6
+log
+@Bootstrap now records HWConfig word in the ExecRoot for the networking
+software to use as the default when booting other processors. It gets
+this info via the Fn GetHWConfig().
+@
+text
+@d11 1
+a11 1
+ * RcsId: $Id: c40specials.c,v 1.5 1992/12/03 16:48:09 paul Exp paul $
+d94 1
+d96 4
+d107 6
+@
+
+
+1.5
+log
+@changed names of all WP_ functions to MP_
+@
+text
+@d8 2
+d11 1
+a11 1
+ * RcsId: $Id: c40specials.c,v 1.4 1992/11/30 16:15:31 nickc Exp paul $
+d117 7
+@
+
+
+1.4
+log
+@re-enaled bug ridden code !
+@
+text
+@d9 1
+a9 1
+ * RcsId: $Id: c40specials.c,v 1.3 1992/11/23 10:11:21 paul Exp nickc $
+d42 1
+a42 1
+   { WP_LinkRx(size, link3, buf);
+d55 1
+a55 1
+   { WP_LinkTx(size, link0, buf);
+d71 1
+a71 1
+		WP_LinkRx(size, r->Links[3], buf);
+d86 1
+a86 1
+		WP_LinkTx(size, r->Links[0], buf);
+@
+
+
+1.3
+log
+@converted all link tx/rx call to take word addresses and word size arguments
+@
+text
+@d9 1
+a9 1
+ * RcsId: $Id: c40specials.c,v 1.2 1992/11/18 14:41:14 paul Exp $
+d23 1
+a23 1
+#if 0
+@
+
+
+1.2
+log
+@temporarily updated to avoid compiler bug - this was a simple re-organisation
+of the code
+@
+text
+@d9 1
+a9 1
+ * RcsId: $Id: c40specials.c,v 1.1 1992/09/13 16:41:06 bart Exp paul $
+d36 1
+a36 1
+  BYTE		*buf	= info->buf;
+d42 1
+a42 1
+   { LinkRx(size, link3, buf);
+d49 1
+a49 1
+  BYTE		*buf	= info->buf;
+d55 1
+a55 1
+   { LinkTx(size, link0, buf);
+d69 1
+a69 1
+		BYTE	*buf	= info->buf;
+d71 1
+a71 1
+		LinkRx(size, r->Links[3], buf);
+d83 2
+a84 2
+		word	 size	= info->size;
+		BYTE	*buf	= info->buf;
+d86 1
+a86 1
+		LinkTx(size, r->Links[0], buf);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d9 1
+a9 1
+ * RcsId: $Id: c40specials.c,v 1.1 1992/04/21 09:54:56 paul Exp $
+d22 5
+d59 32
+@

@@ -1,0 +1,464 @@
+Work Schedule for Helios-ARM port of Helios
+===========================================
+
+Paul Beskeen
+
+Created: 26th October '92
+Updated: 27th Oct
+
+
+Temporary Jobs (Aide Memoir)
+============================
+
+*Disaster* If IRQ interrupt handler is interrupted by a FIQ, then the
+saved user state is trashed:
+	If(Detect IRQ interrupt in progress (xroot->InterruptLevel !=0)
+		Save unbanked user mode regs and svc banked regs to fiq stack.
+	else
+		Save unbanked user mode regs and svc banked regs to
+		xroot->CurrentSaveArea;
+	xroot->InterruptLevel++
+	Process interrupt.
+	At end, check if IRQ was in progress, if so just pop unbanked
+	regs from FIQ stack and return - DO NOT enter the dispatcher.
+This is similar to the requirements for nested interrupts, and therefore
+could be rolled into the changes to support nested interrupts.
+
+
+Direct interrupt support functions: GrabInterrupt () / RestoreInterrupt() /
+CheckDispatch() need to be coded.
+
+_stack_overflow*	- should this be a trap or a func in kmodule.a
+		- doesn't work!
+
+When ARCH Helios-ARM started, its should detect number of link adapters and
+only start the reauired link adapters.
+	- check that code works for link adapter in different slots
+	- speed up LinkTx/Rx by introducing delay loops in code?
+
+
+kdebugmap/nucdebugmap
+
+Things to CHECK:
+
+	Do mem, free and any other programs that think onchip mem is available?
+
+
+When dhry running get comms errors.
+
+ncc/ports/enquire4/c fail with exception.
+
+^C causes freeze sometimes.
+
+
+Short Term (Initial simple Archimedies port)
+============================================
+
+
+Previous work completed:
+------------------------
+
+Week	Job
+----	---
+0	Job Scheduling. (.5)
+0	Ongoing documentation. (.5)
+0	Generic Assembler port. (7)
+0	Port of Compiler and other tools to HPUX. (1)
+1	Build of separate world and Basic Helios-ARM build via makesystem. (5)
+2	Documentation reading: ARM/IOC/MEMC/VIDC/Archimedies/PCS. (2)
+2/3	Initialisation (1+1)
+2/3	Trap handler (5+3)
+3	Exception handler (1)
+
+
+Work Remaining for Initial Port
+-------------------------------
+
+Days:
+Best/Worst(actual)
+
+1/2(1)	Further CPU and support chips initialisation:
+		IOC - mask all interrupt sources.
+		MEMC - linear memory organisation (possibly do with bootstrap),
+		and marking of protected memory areas.
+			Nucleus, kernel/exec root and config, exception
+			vectors.
+
+1/3(5)	Design and implement interrupt handling strategy.
+
+		Functionality:
+			Low overhead.
+			Low dispatch latency if interrupt re-schedules
+			user thread.
+			Generic support of different hardware architectures.
+			Support dynamic allocation of fast interrupt.
+			Support code copy direct to FIQ vector.
+			PCS wrappers to call from assembler to C, or
+			direct to C.
+			Access to trap functions without corrupting SVC regs,
+			swapping to user stack, or re-enabling interrupts (a
+			sort of pseudo swi).
+
+		Make sure design can cope with supporting:
+			IOC/backplane:
+				Gnome link podule.
+				IOC timers + timeslice.
+				IOC keyboard.
+				VIDC flyback.
+			External hardware:
+				PID (VLSI proto) timer.
+	
+1/3(4)	Context Switch:
+		User and SVC state must be saved and restored.
+		StartTimeSlice();
+		Save/RestoreSlicedState()
+			- Initially run with timeslicing disabled.
+		Save/RestorePCSState()
+			- No need to save/restore arg or tmp regs.
+		Timer Interrupt handler.
+			- Inc. clock
+			- Save user/svc state, setup PCS conformant
+			run time environment - call Dispatch().
+		CPUIdle()
+			- Must abort immediately on interrupt.
+
+2/4(5)	Link Adapter:
+		Understand both podule interface and gnome
+		link adapter implementation (waiting for doc from Acorn on
+		backplane interface).
+
+		_LinkTx/Rx()
+			Blocking fns.
+		__LinkTx/Rx()
+			Interrupt driven non blocking.
+		AbortLinkTx/Rx()
+
+2/4(1)	Bootstrap (Archimedies boot + PC I/O Server)
+		Define ARM Boot protocol.
+		Archimedies boostrap:
+			SVC mode.
+			Download nucleus to physical memory.
+			Linear addressing of MEMC.
+			Disable interrupts.
+			Setup initial stack.
+			Set bootstrap channel number (link adapter address).
+			Branch to kernel entry point.
+		IOserver:
+			Implement ARM boot protocol.
+			Set number of links to 4 if box = archimedies.
+			Set number of links to 1 if box = vlsi_pid
+
+1/2(1)	Check Fork()/EnterProcess()/CreateProcess() ARM implementation.
+	Check where Util/Sys/Serv/Procman/Loader may write to kernel
+	structures and enable via _Trap(EnterSVCMode). Plus check commands
+	such as slice, threadps, etc.
+	
+
+0/10	Debugging period to reach initial running system.
+
+--------
+8/28(17) Min/Max(Actual) total days.
+
+
+Min/Max:	Range of estimated number of days to complete job.
+(Actual):	Elapsed time in days to complete job. This includes overhead
+		such as Helios meetings, work on C40 port, administration, etc.
+
+
+
+Long Term
+=========
+
+Extensions to Initial Port
+--------------------------
+
+
+VLSI:
+	Sun I/O Server.
+	ARM6 support.
+		Will need separate tree as ARM6 uses slightly different PCS
+		and some instructions are slightly different.
+		ARM 600 MMU
+		ARM 600 Cache + write buffers (needs MMU enabled).
+		CPSR - processor mode, flags and interrupt masking
+		are different from original ARM's.
+		Need Return macro that does mov pc,lr on arm6 and mvs pc,lr on
+		all other ARM processors.
+		Additional Abort and Undefined instruction register
+		banks.
+			Will SWI return sequence will be compatible with ARM6
+			separate mode regs?
+		disas/objdump/asm extensions for ARM6.
+		PCS-3 for ARM6 compilence in C compiler.
+
+	Support PID prototype board.
+		10 Millisecond timer.
+		Serial interface on PID + I/O Server on PC/SUN.
+	Interrupt and dispatch latency must be minimalised.
+		System() maximimum duration monitoring (dispatch latency).
+		Interrupt latency monitor via timer interrupt latency.
+		Implement nestable (re-entrant) interrupt handlers.
+	Possible VLSI extensions:
+		Port VLSI ARMulator and other tools to Helios-ARM.
+			Optional OS emulator could run native.
+		Support VLSI runtime system swi's.
+			DBG lib swi 0-16
+			CLIB lib 17-?
+		AAOF to Helios converter?
+			- impossible due to different register usage?
+			(their re-entrant/location independent PCS is almost
+			identical to the Helios one).
+		Helios porting tools for user hardware.
+			- Kernel to examine nucleus for link drivers.
+			- If found, sets config->Nlinks appropriately and
+			  sets initial link state.
+			- Kernel link and timer drivers insert themselves into
+			the link->Tx/RxFunction and interrupt vectors.
+			- I/O Server is no longer responsible for seting the
+			number and type of the links.
+			- Add a standard I/O Server link driver and we have a
+			more customisable system.
+	TLA Debugger port?
+
+Acorn:
+	Good demo/standalone system requires:
+		Keyboard/console server (have some old code).
+		Disk interface: ufs/msdos servers (SCSI/ST506/IDE
+		interfaces available + floppy).
+		Ethernet (need driver for podule).
+		X-Windows (possible get optimised driver code from
+		Acorn).
+	Support for Acorn expansion backplane (podule bus).
+		If xcb reg support detected, then add xcb pseudo interrupt
+		vectors.
+	RISCOS compatibility investigation.
+	Archimedies hardware investigation.
+	V2 Suitability investigation.
+		+ Best chance for a V2 partner.
+	ROMed implementation of Helios-ARM V1.
+
+
+Kernel:
+	Need to identify and separate out hardware dependencies into separate
+	source files so that building versions for different hardware is eased.
+
+	Need CPU identification sequence (MachineName()):
+		Distinguish between ARM2/2aS/250/ARM3/ARM6/60/600.
+		Support ARM3 cache.
+
+	StoreSize() assumes 4MB. Add memory sizing code (machine
+	dependent to some extent).
+		e.g. on the Archi: Real memory starts at 0x2000000 and will echo
+		after its end. For sizes of 256k and 512k, memc page size
+		must be 4k and 1Mb = 8k page size for DRAM addressing to work
+		correctly - do we wish to support these sizes?
+		Other machines could use data abort trap to find memsize.
+
+	Reduce interrupt latency.
+
+	Reduce dispatch latency by checking dispatch tables after
+	interrupt.
+
+	Lower overhead / more accurate clock handling required.
+		Set clock interrupt to earliest timer Q entry or
+		next timeslice.
+
+	Auto stack extension.
+		- Explicit via procedure entry checks (current)
+		- longjmp should free jumped-over stack chunks
+		- Implicit by use of MMU (possible)
+			- need separate stack segment
+			- free's up sl reg for PCS.
+
+	FPU emulator added to undefined instruction exception handler.
+		- Also use of coproc on/off to allow partial context save
+		trick. Only save FPU state if accessed by different thread.
+		- Save/RestoreCPUState dont save/restore FP regs.
+		- set/longjmp doesn't save/restore FP regs.
+
+	ARM CPU's are capable of supporting a fully protected
+	environment:
+		- Use separate allocation system for loader (LowAlloc())
+		and protect via R/O region.
+		- Implementation of NickG's hybrid scheduler and new
+		memory allocater so we can do task protection without
+		the overhead of changeing the memory protection CAM
+		on every timeslice. Should only have to change memory
+		protection regime between user tasks (not system as
+		these could operate in physical memory). This could
+		serve as a testbed for v2 ideas, but it is probably
+		best left to support this functionality cleanly with
+		a proper v2 port.
+
+	ROM Support:
+		System must be capable of being ROMmed. This will
+		require some additional hardware initialisation/reset
+		support.
+
+	Minor optimisations via _word():
+		- _GetModTab()
+		- Internal executive fns
+			- IntsOn/Off(), GetExecRoot()
+
+C:
+	MUST BE SURE we have the right to alter and market the ARM
+	version of the compiler. The ARM compiler we have at the moment
+	is a result of a technology exchange agreement with Acorn and
+	ABC.
+
+	Support for auto code stub generation (+linker).
+		+ Lower overhead when not making shared library call.
+		+ lower RAM usage for module table.
+		+ less code generated.
+
+	Support for '_trap()' - call traps as if they are a normal
+	PCS complient function call.
+		!!NEWSFLASH!! VLSI armc has the exact __swi() support required.
+		+ Mustn't make use of tail call optimisation.
+		+ Use of Macro's & _word() would loose C parameter
+		+ Should still save link register as may be called in SVC mode.
+		type checking. + how to pass parameters?
+		+ When implemented, the trap stubs and trap pointers
+		can be removed from kernel module table.
+		+ Need technique to achieve this in C compiler.
+		+ Perhaps the linker should be involved in the translation of
+		calls to swi's - when the linker detects a request for a
+		labelref to a function label that has been registered as a trap
+		function, it would convert the branch to the appropriate swi.
+		+ Need to insert correct assembler in _word() calls in trap.h.
+
+		+ As an alternative, the kernel library interface should
+		be coded as a link library and the .def file reduced to simply
+		proving the functions that do not require a trap interface.
+
+	_word() made to work.
+		+ Useful for adding small amount of inline assembler
+		optimisations.
+
+	Port latest version of Norcroft C compiler:
+		+ Gain memory checking.
+		+ Gain pcc mode.
+		+ Version that has passed Plum Hall.
+		+ Same version of compiler as VLSI use.
+
+	TLA Debugger support?
+
+	I note that the current ARM compilers structure access code is
+	*LOUSY*. whenever it accesses a structure, it constantly loads the
+	address of the structure into a register and then adds the offset
+	within the structure to it. e.g.:
+		mov	r1, struct addr
+		add	r1, struct element offset
+		ldr	r0, [r1, 0]	; read structure element
+	For addressable structure offsets it should do:
+		mov	r1, struct addr
+		ldr	r0, [r1, struct element offset]
+	Not only would this save a third of the instructions in the simple
+	case, but there would also be no need to constantly re-load the
+	structure address for further accesses to the same structure.
+	This was the case in the IOC timer handling, but not the link
+	adapter handling code? - structures within structures cause problems?
+
+	-S support. The current -S support does not produce code that is
+	anything like the true Helios object code disassembly.
+
+
+Linker:
+	Support for auto code stub generation (+C).
+
+
+Assembler:
+	ARM6 extensions.
+	FPU mnemonics (still need hobjasm for fplib/fpdirect.a)
+	LEA/LEAL/LDCON pseudo-opcodes for long range targets and
+	large constants.
+	Add ANSI CPP compatible front-end:
+		+ User familiarity
+		+ Share headers with C.
+		+ Could still use AMPP if required.
+	More specific error reporting required.
+	Further details in assembler/armasm.doc
+
+
+Commands:
+	Simple interactive memory debugger required:
+		Disassembly / ascii / hex.
+		Break points.
+		Register view / alter.
+
+
+Minor Fixes
+===========
+
+	Need to check comments in "Notes and Questions" section of IntrNotes.doc
+
+	hw_arch should set the first few pages that contain execroot, nucleus,
+	kernelroot and config to read only in the MMU. This will probably
+	require the memory base to be set at the first 32k page boundary.
+
+	hw_archx.x files should really be separated into IOC/MEMC/VIDC
+	dependent files, with hw_arch calling the functions it requires.
+
+	<arm.h> should define Archi specific names for INTR_xxx defines.
+
+	If we wanted, THREAD_SLICED, could be split into THREAD_SLICED, and
+	THREAD_PREEMPTED - need to check what effect this would have on
+	Dispatch() + threadps. Ideally, a preempted thread should be placed
+	at the front of its priorities run Q and given the rest of its time
+	slice - (get put at back at present).
+
+	The system clock should be updated in increments of the the timers
+	interrupt period, not a fixed one millisecond: two reasons - 1) timer
+	period will not always be fixed at 1 millisecond, 2) we already allow
+	the timer period to be varied with the SliceQuantum() call. This call
+	will probably work, but the system timer may then be up the spout
+	(see the very start of the timer interrupt handler).
+
+	MMU could be made to protect page 0 from reads as well as writes
+		(inc. exception vectors non user mode stacks)
+		- loose ~32k of RAM for small benefit.
+	module.h Proc struct shouldn't default to __TRAN version.
+
+	Return_address in check_access nccsupport.c is probably wrong for the
+	ARM version -= but we dont have memory checking yet anyway!
+
+	The ARM version of romsupp.c should be used by all processor versions.
+
+	Make KDebugs in ExecErrorHandler() only print if SYSDEB, unless the
+	error is unrecoverable.
+
+	Unify std C40 _backtrace functions with ARM my_backtrace (kstart.c)
+
+	The library.m code doesn't check the initialisation parameter passed.
+
+	Some parts of the assembler need updating (see Asm notes above).
+
+	Linker should support arm codestub generation.
+
+	Convert all occurances of helios.arm to __ARM, etc for all
+	processors. Std defines should be the same for C and AMPP.
+
+	procname() in syslib/procman
+		Need single generic version in kernel.
+		Need checking that they work for the ARM.
+		module.h and module.m do not agree on Proc struct.
+			- should be the same as C40 (no extra xputer gubbins)
+			- ccarm will have to be updated for this change.
+
+
+Documentation
+=============
+
+	Arm Specific document
+		- Differences between ARM and generic Helios.
+		- Arm specific functions.
+		- Arm specific commands provided.
+
+	Helios-ARM Procedure call standard.
+		- The std.
+		- Differences between Helios-APCS and other versions of APCS.
+
+	Helios-ARM C compiler.
+
+	Helios-ARM Assembler.
+

@@ -1,0 +1,146 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- sstart.a								--
+--                                                                      --
+--	Startup code for C server					--
+--                                                                      --
+--	Author:  NHG 28/7/87						--
+--	ARM/C40 updates PAB Dec '91					--
+--                                                                      --
+--------------------------------------------------------------------------
+rcsid[ $Id: sstart.a,v 1.8 1992/09/15 16:01:20 paul Exp $ ]
+
+include basic.m
+include procs.m
+include structs.m
+include debug.m
+include module.m
+include tasks.m
+include message.m
+_if _defp 'helios.arm [
+	include arm.m
+]
+
+	-- Program structure
+
+	StartProgram SStart -1 1001
+
+.stacksize:
+	_test _defp 'helios.TRAN [
+		word	#2000			-- stacksize
+		word 	#1000			-- heap size
+	][
+		word	2000			-- stacksize
+		word 	1000			-- heap size
+	]
+	_test _defp 'helios.C40 [
+		word	(.Server << 2)	-- need byte offset
+	][
+		word	.Server
+	]
+
+--	sccsid [ %W% %G% Copyright (C) 1987, Perihelion Software Ltd.]
+
+
+----------------------------------------------------------
+-- Server						--
+--							--
+-- entry point						--
+--							--
+----------------------------------------------------------
+
+_test _defp 'helios.arm
+[
+	Function Server
+
+	-- update syslib static data pointer with Task pointer
+	-- task pointer passed as first arg to this code.
+	patchinstr(patcharmdt, datamodule(_MyTask),
+		ldr	ip,(dp,#0))		-- module of MyTask
+	patchinstr(patcharmdt, datasymb(_MyTask),
+		str	a1,(ip,#0))		-- save arg1 (Task*) in MyTask
+
+.main:	
+	patchinstr(patcharmdt, datamodule(_main),
+		ldr	ip,(dp,#0))		-- module of main
+	patchinstr(patcharmdt, codesymb(_main),
+		ldr	ip,(ip,#0))		-- pointer to main
+		mov	pc,ip			-- enter main
+][
+	_test _defp 'helios.TRAN [
+		-- Transputer code
+		procsym .Server
+	.Server:
+	--Mark
+		ajw -2				-- space for display
+
+		ldl 3
+		stl 0				-- modtab to display
+
+		ldl 4 				-- set static task pointer
+		ldl 0
+		ldnl 0
+		ldnl @_MyTask
+		stnl _MyTask
+
+		ldlp 0				-- current stack posn
+		ldc .stacksize-2
+		ldpi
+		ldnl 0				-- get stack size
+		sub				-- subtract from present pos
+		ldnlp 10			-- allow for linkage + safety
+		stl 1				-- set vector pointer
+
+
+		ldlp 0				-- display address
+	--Regs
+		call .main
+
+		-- a return from main will terminate the process
+		-- (see TaskInit)
+		ajw 2
+		ret
+
+	.main:	
+		ldl 1				-- display
+		ldnl 0				-- module table
+		ldnl @_main			-- module of main
+		ldnl _main			-- get pointer to main
+		gcall				-- enter
+	][
+		_test _defp 'helios.C40 [
+
+		Function Server
+			-- update syslib static data pointer with Task pointer
+			-- task pointer passed as first arg to this code.
+			PutStaticDataWord R_A1 MyTask
+
+			_test _true [ -- codestub support
+				-- @@@ should be updated when asm support
+				-- for external labels added.
+				patchinstr(PATCHC40MASK24ADD,
+					shift(-2, codestub(.main)),
+					br	0)
+					global .main
+					ref _main
+			][ -- old style externs thru modtab support
+				-- jump to main function through the modtab
+				ExternBranch main
+			]
+		][
+			_report ['Error 'Unknown 'processor 'type]
+			'Error "'Unknown 'processor 'type"
+		]
+	]
+]
+
+	EndModule
+
+
+-- End of sstart.a

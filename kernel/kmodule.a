@@ -1,0 +1,409 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987 - 1993, Perihelion Software Ltd.      --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- kmodule.a								--
+--                                                                      --
+--	Kernel module structure and data section initialisation		--
+--                                                                      --
+--	Author:     NHG 31/7/87						--
+--      Helios-ARM: PAB June 89                                         --
+--      Helios-C40: PAB Sept 91						--
+--	Son of Helios-ARM II (the return of): PAB Oct '92		--
+--	including the 'trap' type additions and unification with std	--
+--	library build mechanism.					--
+--                                                                      --
+--------------------------------------------------------------------------
+--									--
+-- 'trap' type functions are used whenever the kernel accesses private	--
+-- (protected) data such as the RootStruct or ExecRoot, when accessing	--
+-- I/O space, or when the operation is privileged in some way (such as	--
+-- setting the processors interrupt mask).				--
+--									--
+-- Processors that have no concept of privilaged operations, processor	--
+-- modes, traps, protected memory, etc, simply interpret these traps	--
+-- as normal (exported via the module table) 'func'tions.		--
+--									--
+-- @@@ Note that the choice of functions remaining as 'func's has been	--
+-- very conservative, a more thorough investigation would no doubt find	--
+-- other candidate functions that only read the root structures and do	--
+-- not write. These should be converted back to 'func's.		--
+--									--
+--------------------------------------------------------------------------
+rcsid[ $Id: kmodule.a,v 1.40 1993/08/11 13:55:22 nickc Exp $ ]
+
+_test _defp 'helios.TRAN
+	[include procs.m]
+	[include ../gexec.m]
+include library.m
+
+
+Resident
+[
+	name	Kernel
+	slot	1
+	version	2000
+
+
+	_def 'headcode
+	[
+		-- execution of the kernel starts here after booting
+
+		_test _defp 'helios.arm
+		[
+			-- Bootstrap should enter here with arg 1 (a1) pointing
+			-- at link hardware we were booted down (could change to
+			-- link number if required).
+			--
+			-- Code sets up address of nucleus (The address of the
+			-- nucleus will in future be set by the bootstrap as
+			-- arg 2 (a2) as this will be different for ROM booted
+			-- systems.
+			--
+			-- Code points sp at a small temporary stack at end of
+			-- ExecRoot.
+			--
+			-- Entered with interrupts disabled and any memory
+			-- management hardware set to give a linear address
+			-- range.
+
+			-- Entered from bootstrap with:
+			-- a1 = bootlink address.
+			-- a2 = address that nucleus was loaded at.
+
+			mov	mt, 0		-- null module table
+
+			-- Setup initial stack and its base (falling full stack).
+			mov	v1, ExecRoot_base
+			add	use, v1, ExecRoot.StartupStack
+			add	sp, use, STARTUPSTACKSIZE * 4
+
+			mov	fp, 0		-- denotes start of stack
+
+			-- Setup initial values in ExecRoot.
+
+			-- Nucleus address.
+			str	a2, (v1, ExecRoot.Nucleus)
+
+			-- Kernel root structure address.
+			ldr	v2, (a2)	-- get nuc size in bytes
+			add	v2, a2		-- add to nuc start to get end
+			str	v2, (v1, ExecRoot.KernelRoot)
+
+			-- Enter kernel startup - KStart().
+			patchinstr(patcharmjp, labelref(.Kstart),
+				b	0)
+			][
+				_test _defp 'helios.C40
+				[
+					-- C40 startup code
+					-- The bootstrap has already setup the initial
+					-- C PCS conformant environment and interrupts
+					-- are disabled.
+
+					-- jump to C function for kernel startup code
+					patchinstr (PATCHC40MASK24ADD,
+						   shift(-2, labelref(.Kstart)),
+						   br	0)
+				][
+					-- Transputer startup code
+					mint ldnlp #3F0
+					gajw		-- set workspace to top of
+							-- internal ram
+					stl 1		-- save old workspace pointer
+							
+					ldl 1 ldnl 0	-- bootstrap start address
+					stl -2		-- pass as arg 3
+					ldl 1 ldnl 1	-- arg 2 = boot address
+					stl -3
+					ldl 1 ldnl 4	-- arg 1 = boot link
+					stl -4
+					ldc 0		-- fake MT
+					stl -5
+					ldc .Kstart-2	-- kernel startup
+					ldpi
+					stl -6
+					ldl -6 stl -7	-- return link == Kstart
+		
+					ldlp -6		-- point to process
+					runp		-- enter at high priority
+					stopp		-- stop myself
+				]
+			]
+
+			byte "The Helios Parallel Operating System "
+			byte "Copyright (C) 1987-1993, Perihelion Software Ltd."
+		]
+
+		static
+		[
+			-- New functions MUST be APPENDED ONLY
+			extern	func	InitList	--  0 InitList(list)
+			extern	func	PreInsert	--  1 PreInsert(succ,node)
+			extern	func	PostInsert	--  2 PostInsert(pred,node)
+			extern	func	Remove		--  3 node = Remove(node)
+			extern	func	AddHead		--  4 AddHead(list,node)
+			extern	func	AddTail		--  5 AddTail(list,node)
+			extern	func	RemHead		--  6 node = RemHead(list)
+			extern	func	RemTail		--  7 node = RemTail(list)
+			extern	trap	NewPort		--  8 port = NewPort()
+			extern	trap	FreePort	--  9 error = FreePort(port)
+			extern	trap	PutMsg		-- 10 error = PutMsg(mcb)
+			extern	trap	GetMsg		-- 11 error = GetMsg(mcb)
+			extern	trap	PutReady	-- 12 error = PutReady(port)
+			extern	trap	GetReady	-- 13 error = GetReady(port)
+			extern	trap	AbortPort	-- 14 error = AbortPort(port)
+			extern	trap	MultiWait	-- 15 port = MultiWait(ports,timeout)
+			extern	trap	SendException	-- 16 error = SendException(port)
+			extern	trap	InitSemaphore	-- 17 InitSemaphore(semaphore,count)
+			extern	trap	Wait		-- 18 Wait(semaphore)
+			extern	trap	Signal		-- 19 Signal(semaphore)
+			extern	trap	TestSemaphore	-- 20 count = TestSemaphore(semaphore)
+			extern	trap	InitPool	-- 21 InitPool(pool)
+			extern	trap	AllocMem	-- 22 mem = AllocMem(size,destpool)
+			extern	trap	FreeMem		-- 23 error = FreeMem(mem)
+			extern	trap	FreePool	-- 24 FreePool(pool)
+			_test _or _defp 'helios.C40 _defp 'helios.TRAN	-- if ONCHIPMEM avail.
+			[extern	trap	AllocFast]	-- 25 mem = AllocFast(size,destpool)]
+			[
+				_if _not _defp '__SMT 	 -- So magic slot 48 kept in place.
+				[
+					extern word ___dummyslot25___
+				]
+			]
+			extern	trap	TaskInit	-- 26 error = TaskInit(task)
+			extern	trap	KillTask	-- 27 error = KillTask(task)
+			extern	trap	CallException	-- 28 CallException(task,signal)
+			_test _defp 'helios.TRAN
+			[
+				extern	trap	_BootLink	-- 29 error = _BootLink(link,image,config,size)
+			][
+				_if _not _defp '__SMT 	 -- So magic slot 48 kept in place.
+				[
+					extern word ___dummyslot29___
+				]
+			]
+			extern	trap	EnableLink	-- 30 error = EnableLink(link)
+			extern	trap	AllocLink	-- 31 link = AllocLink(linkid)
+			extern	trap	FreeLink	-- 32 error = FreeLink(link)
+			extern	trap	Reconfigure	-- 33 error = Reconfigure(config)
+			extern	trap	Terminate	-- 34 Terminate()
+			extern	trap	LinkData	-- 35 error = LinkData(link,info)
+			extern	trap	Delay		-- 36 Delay(micros)
+			extern	func	_Mark		-- 37 _Mark()
+			extern	func	_Trace		-- 38 _Trace(a,b,c)
+			extern	trap	_Halt		-- 39 _Halt()
+			extern	func	WalkList	-- 40 WalkList(list,fn)
+			extern	func	SearchList	-- 41 node = SearchList(list,fn)
+			extern	trap	InPool		-- 42 result = InPool(mem,pool)
+			extern	func	MachineType	-- 43 type = MachineType()
+			extern	trap	LinkIn		-- 44 rc = LinkIn(size,link,buf,timeout)
+			extern	trap	LinkOut		-- 45 rc = LinkOut(size,link,buf,timeout)
+			extern	trap	SetEvent	-- 46 rc = SetEvent(event)
+			extern	trap	RemEvent	-- 47 rc = RemEvent(event)
+			extern	word	_Task_		-- 48 Ptr to Task structure
+			extern	trap	InitProcess	-- 49 process = InitProcess(stack,entry,exit,nargs)
+			extern	trap	StartProcess	-- 50 StartProcess(process,pri)
+			extern	trap	StopProcess	-- 51 StopProcess()
+			extern	trap	GetPortInfo	-- 52 rc = GetPortInfo(port,info)
+			extern	trap	FreeMemStop	-- 53 FreeMemStop(mem)
+			extern  trap	SignalStop	-- 54 SignalStop(sem)
+			extern	trap	Configure	-- 55 rc = Configure(newconf)
+			_if _defp 'helios.TRAN
+			[
+				extern	trap	SoftReset	-- 56 rc = SoftReset(link)
+			]
+			extern	trap	TestWait	-- 57 bool = TestWait(sem)
+			-- New functions added in Helios v1.2 below here
+			-- Multiple priority support:
+			extern	func	LogToPhysPri	-- word LogToPhysPri(logpri)
+			extern	func	PhysToLogPri	-- word PhysToLogPri(physpri)
+			extern	func	GetPhysPriRange	-- word GetPhysPriRange(void)
+			extern 	func	GetPriority	-- word GetPriority(void)
+			extern	trap	SetPriority	-- word SetPriority(logpri)
+			-- ROMed Helios support:
+			_if _defp 'helios.TRAN		-- left in to maintain module table compatability
+			[
+				extern	trap	GetROMConfig	-- word GetROMConfig(*Config)
+				extern	trap	GetROMItem	-- bool GetROMItem(word *index, char **name, word *size, Matrix *m, char **data)
+			]
+			extern	func	GetNucleusBase	-- word *GetNucleusBase()
+			extern	func	GetRootBase	-- word *GetRootBase()
+			-- Useful extras:
+			extern  func	CallWithModTab	-- word CallWithModTab(mt,WordFnPtr,a,b,c)
+			extern	func	_GetModTab	-- word _GetModTab()
+			_if _not _defp 'helios.arm 	-- left in to maintain module table compatability
+			[
+				extern	trap	Timer		-- word Timer(void)
+			]
+			extern	trap	XchMsg		-- error = XchMsg(txmcb,rxmcb)
+
+			_test _defp 'helios.TRAN
+			[
+				-- Transputer specific functions go here
+			][
+				-- Functions generic to processors other than transputer
+
+				extern	func	SaveCPUState		-- void SaveCPUState(state)
+				extern	func	RestoreCPUState		-- void RestoreCPUState(state)
+
+				-- Device driver support functions
+				extern	trap	AvoidEvents		-- word AvoidEvents(fn, a,b,c)
+				extern	trap	HardenedWait		-- Code HardenedWait(sem)
+				extern	trap	HardenedSignal		-- Code HardenedSignal(sem)
+				extern	trap	System			-- word System(WordFnPtr, ...)
+
+				-- moved from UtilLib to kernel (exec fns)
+				extern trap _cputime    		-- time = _cputime()
+				extern trap _ldtimer			-- rand = _ldtimer(pri)
+
+				-- Extended memory system support
+				extern	trap	StatMem		-- word StatMem(word *totalsize, word *totalfree, word *largestfree, word *percfree)
+				extern	trap	LowAllocMem	-- void *LowAllocMem(word size, Pool *pool)
+
+				extern	trap	TimedWait	-- bool TimedWait(Semaphore *, word timeout);
+				extern	trap	SliceState	-- enable/disable/report if slicing enabled
+				extern	trap	SliceQuantum	-- set size of timeslice
+
+				-- Debugging Aids
+				-- Register capture (used in trace fns)
+				extern	func	_linkreg
+				extern	func	_fpreg
+				extern	func	_spreg
+
+				_if _or _defp 'helios.arm _defp 'helios.C40
+				[
+					-- NCC C40/ARM compiler support fns
+					-- must be in kernel as kernel itself
+					-- requires them
+					_if _defp 'helios.arm
+					[
+						extern	func	__multiply
+						extern	func	_memcpy
+						extern	func	__stack_overflow_1
+					]
+					extern	func	__divtest
+					extern	func	__divide
+					extern	func	__udivide
+					extern	func	__remainder
+					extern	func	__uremainder
+					extern	func	__stack_overflow
+				]
+
+				_if _defp 'helios.C40
+				[
+					extern func	'GetExecRoot	-- return address of ExecRoot struct
+
+					extern func	AllocSpecial	-- carrier = AllocSpecial(size,type,pool);
+
+					extern	func	memcpy
+					extern	func	memset
+
+					extern	func	'C40CAddress	-- same as FuncToDataConvert
+					extern	func	'C40WordAddress	-- same as FuncToDataConvert
+
+					extern	func	JTAGHalt	-- emulator halt fn
+
+					extern  func	_udiv10		-- fast unsigned divide by 10
+					extern  func	_sdiv10		-- fast signed   divide by 10
+					extern  func	_backtrace	-- stack back trace utility function
+
+					extern  func	_DataToFuncConvert	-- data ptr to fn ptr conversion
+					extern  func	_FuncToDataConvert	-- fn ptr to data ptr conversion
+
+					extern	func	GetIDROM	-- returns pointer to saved IDROM structure
+
+					extern	func	_stack_size	-- return number of words left on stack
+
+					extern	func	Accelerate	-- move execution stack onto a Carrier
+
+					extern	func	MP_GetWord	-- read a word from a physical address
+					extern	func	MP_PutWord	-- write a word to a physical address
+					extern	func	MP_GetData	-- read data from a physical region into a C buffer
+					extern	func	MP_PutData	-- write data from a C buffer into a physical region
+					extern	func	MP_ReadLock	-- lock shared memory then read a word
+					extern	func	MP_ReadFPLock	-- lock shared memory then read a float
+					extern	func	MP_WriteUnlock	-- write a word then unlock shared memory
+					extern	func	MP_WriteFPUnlock -- write a float then unlock shared memory
+					extern	func	MP_Signal	-- signal a shared memory semaphore
+					extern	func	MP_BusyWait	-- polled wait on a shared memory semaphore
+
+					_if _false
+					[
+						extern	func	AllocDMA -- word AllocDMA(word timeout)
+						extern	func	FreeDMA	 -- void FreeDMA(word DMAEng)
+					]
+
+					extern	func	MP_LinkIn	-- rc = LinkIn(size,link,wbuf,timeout)
+					extern	func	MP_LinkOut	-- rc = LinkOut(size,link,wbuf,timeout)
+
+					extern	func	GetHWConfig	-- word = GetHWConfig(void)
+					extern	func	ReleaseStack	-- release stack chunks allocated by extender
+				]
+
+				_if _defp '__ABC
+				[
+					-- Helios/ARM specific functions added below here
+					-- Relocatable Memory manager
+					extern	func	MIAlloc		-- word MIAlloc(word size, Pool *src, Pool *dst)
+					extern	func	MIFree		-- void MIFree(void *block)
+					extern	func	MICompact	-- void MICompact(Pool *)
+					extern	func	MILock		-- void *MILock(word handle)
+					extern	func	MIUnLock	-- void MIUnLock(word handle)
+					extern	func	MITrim		-- bool MITrim(word handle, word amount)
+					extern	func	MIInit		-- void MIInit(MIInfo *mi, Pool *free, Pool *dst)
+
+					-- card support fns
+					extern	func	BuildPool	-- Pool *BuildPool(byte *base, word size, bool scavenge)
+					extern	func	RRDPoolInit	-- word RRDPoolInit(MIInfo *mi, Memory *magicbase, Memory *magictop)
+					-- User event functions
+					extern	func	SetUserEvent	-- word SetUserEvent(Event *event);
+					extern	func	RemUserEvent	-- word RemUserEvent(Event *event);
+					extern	func	CauseUserEvent	-- void CauseUserEvent(word vector, word arg);
+
+					-- support for link guardians outside the kernel
+					-- @@@ check if we really need to export these functions
+					extern	func	IntelligentServer	-- void IntelligentServer(LinkInfo *link)
+					extern	func	LinkTx		-- void LinkTx(word size, LinkInfo *link, void *buf)
+					extern	func	LinkRx		-- void LinkRx(word size, LinkInfo *link, void *buf)
+					extern	func	AbortLinkTx	-- SaveState *AbortLinkTx(LinkInfo *link)
+					extern	func	AbortLinkRx	-- SaveState *AbortLinkRx(LinkInfo *link)
+					extern	func	Dispatch	-- void Dispatch(SaveState *p)
+					extern	func	Resume		-- void Resume(SaveState *p)
+				]
+
+				_if _defp 'helios.arm
+				[
+					extern	func	memcpy
+					extern	func	memset
+					extern	trap	IntsOn		-- void IntsOn(void);
+					extern	trap	IntsOff		-- void IntsOff(void);
+					extern	trap	EnterSVCMode	-- void EnterSVCMode(void)
+					extern	func	EnterUserMode	-- void EnterUserMode(void)
+					extern	trap	EnableIRQ	-- void EnableIRQ(void)
+					extern	trap	DisableIRQ	-- void DisableIRQ(void)
+					extern	trap	EnableFIQ	-- void EnableFIQ(void)
+					extern	trap	DisableFIQ	-- void DisableFIQ(void)
+					extern	trap	ClockIntsOn	-- void ClockIntsOn(void);
+					extern	trap	ClockIntsOff	-- void ClockIntsOff(void);
+					extern	func	'GetExecRoot	-- return address of ExecRoot struct
+				]
+
+				_if _defp 'helios.arm
+				[
+					-- tmp debug
+					extern	trap	KDebug
+				]
+
+				-- ^^^^^^^^^ Add new GENERIC functions here ^^^^^^^^^^
+				-- NON transputer versions should have these changes
+				-- reflected in their kernel.d file
+			]
+		]
+
+
+-- End of kmodule.a

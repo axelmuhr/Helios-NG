@@ -1,0 +1,143 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- cstart.a								--
+--                                                                      --
+--	Startup code for C programs					--
+--                                                                      --
+--	Author:  NHG 28/7/87						--
+--                                                                      --
+--                                                                      --
+--	Keep in step with nucleus server startup code & vis/versa	--
+--                                                                      --
+--------------------------------------------------------------------------
+
+
+include basic.m
+include structs.m
+include debug.m
+include module.m
+include tasks.m
+include message.m
+_if _defp 'helios.arm [
+	include arm.m
+]
+
+	-- Program structure
+	StartProgram	CStart		-1 1001
+
+.stacksize:
+	word	2000			-- stacksize
+	word 	8000			-- heap size
+
+	_test _defp 'helios.C40 [
+		word	(.Main << 2) -- convert to byte offset
+	][
+		word	.Main
+	]
+
+--	sccsid [ %W% %G% Copyright (C) 1987, Perihelion Software Ltd.]
+
+	ref	Clib.library		-- force link to Clib
+
+----------------------------------------------------------
+-- Server						--
+--							--
+-- entry point						--
+--							--
+----------------------------------------------------------
+
+_test _defp 'helios.arm [
+	Function Main
+
+	-- update syslib static data pointer with Task pointer
+	-- task pointer passed as first arg to this code.
+	patchinstr(patcharmdt, datamodule(_MyTask), 
+		ldr	ip,(dp,#0))		-- module of MyTask
+	patchinstr(patcharmdt, datasymb(_MyTask), 
+		str	a1,(ip,#0))		-- save arg1 (Task*) in MyTask
+
+	patchinstr(patcharmdt, datamodule(_main), 
+		ldr	a1,(dp,#0))		-- module of user main
+	patchinstr(patcharmdt, codesymb(_main), 
+		ldr	a1,(a1,#0))		-- pointer to user main
+	mov	a2,#0				-- null second arg
+
+	patchinstr(patcharmdt, datamodule(__main), 
+		ldr	ip,(dp,#0))		-- module of clib main
+	patchinstr(patcharmdt, codesymb(__main), 
+		ldr	ip,(ip,#0))		-- pointer to clib main
+	mov	pc,ip				-- enter clib main
+][
+	_test _defp 'helios.C40 [
+	Function Main
+
+		PutStaticDataWord R_A1 MyTask
+		-- pass fp pointer of main() to CLib _main()
+
+		-- codestub support
+		global	.main
+
+		ldabs32	.main R_ADDR1
+		ldi	R_ADDR1, R_A1
+
+		ldi	0, R_A2		-- null second argument
+
+		-- jump to clib _main function through the module table
+		ExternBranch _main
+	][
+		procsym .Main
+	.Main:
+	--Mark
+		ajw -2				-- space for display
+
+		ldl 3
+		stl 0				-- modtab to display
+
+		ldl 4 				-- set static task pointer
+		ldl 0
+		ldnl 0
+		ldnl @_MyTask
+		stnl _MyTask
+
+		ldlp 0				-- current stack posn
+		ldc .stacksize-2
+		ldpi
+		ldnl 0				-- get stack size
+		sub				-- subtract from present pos
+		ldnlp 10			-- allow for linkage + safety
+		stl 1				-- set vector pointer
+
+	-- differs from sstart from here
+
+
+		ldc 0				-- second arg (0 for now)
+		ldl  0				-- modtab
+		ldnl @_main			-- module of main
+		ldnl _main			-- address of main
+		ldlp 0				-- display address
+	--Regs
+		call ._main
+
+		-- a return from main will terminate the process
+		-- (see TaskInit)
+		ajw 2
+		ret
+
+	._main:	
+		ldl 1				-- display
+		ldnl 0				-- module table
+		ldnl @__main			-- module of main
+		ldnl __main			-- get pointer to main
+		gcall				-- enter
+	]
+]
+	EndModule
+
+
+-- End of cstart.a

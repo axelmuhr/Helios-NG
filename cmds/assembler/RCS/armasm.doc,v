@@ -1,0 +1,384 @@
+head	1.3;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	C40_Field_Test_2:1.2;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	93.06.22.16.58.53;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.09.17.16.16.16;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.03.12.21.16.01;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@integrated latest ARM assembler with C40 - made floting point support
+generic. ARM compiler has various fixes and ARM6 mneumonic support
+@
+text
+@ARM Assembler notes
+-------------------
+
+Paul Beskeen
+Dec 1991
+
+
+Compatibility:
+--------------
+
+Other than the special cases descibed below, this assembler implements the
+Helios generic assembler format and the ARM (VL860CXXX) assembler
+syntax as defined in the 'ARM DATA MANUAL' (ISBN 0-13-781618). The additional
+ARM3 (VL860C020) SWP instruction and the co-processor instructions are also
+implemented.
+
+The main incompatibilities with other ARM assemblers is that the Helios-ARM
+assembler supports the standard Helios assembler directives, it produces
+Helios GHOF object files and is required to produce PC relative code.
+The first incompatibility means any use of assembler directives may have to be
+changed in order to port ARM assembler code from older assemblers, the second
+means that directives that require relocation support can not be implemented,
+the later incompatibility means that any label or constant used in an address
+situation will be taken as a PC relative value.
+
+Be aware that code such as:
+	ldr	r0, (pc, 4)
+will produce object code of
+	ldr	r0, (pc, -4)
+As the generic assembler tries to automatically adjust for the pipeline.
+Use of the LEA directive avoids this problem.
+
+For compatibility with other ARM assemblers the line comment character ';'
+can be used in addition to the generic '//' version.
+
+For compatibility with AMPP '(' and ')' (rounded) brackets can be used
+instead of '[' and ']' (square) brackets. All code that is to be passed
+through AMPP will need to use rounded rather than square brackets.
+
+For compatibility with older ARM assemblers, the '#' numeric constant prefix
+may optionally be included. For example, the following source lines are
+equivalent:
+	cmp	r3, 23
+	cmp	r3, #23
+
+Note that '&' does not prefix hex (use 0x), but is used in constant
+expressions as the bitwise AND.
+
+Some ARM assemblers require a ',' (comma) between the last data processing
+opcode and any shift specification. This is not required.
+	e.g.
+		// old format
+		add	r1, r2, r3 , lsl 4
+
+		// new format      ^
+		add	r1, r2, r3 lsl 4
+
+*NOTE* we ought to make this optional syntax! - At the moment we force the
+user to remove it from any old source code.
+
+Register aliases that are allowed are as follows:
+
+FIRQ aliases:
+	r8_fiq = 	r8
+	r9_fiq = 	r9
+	r10_fiq = 	r10
+	r11_fiq = 	r11
+	r12_fiq = 	r12
+	r13_fiq = 	r13
+	r14_fiq = 	r14
+	r15_fiq = 	r15
+
+IRQ aliases:
+	r13_irq = 	r13
+	r14_irq = 	r14
+	r15_irq = 	r15
+
+SVC aliases:
+	r13_svc = 	r13
+	r14_svc = 	r14
+	r15_svc = 	r15
+
+STD aliases:
+	sp = 		r13
+	lr = 		r14
+	lk = 		r14
+	pc = 		r15
+	psr = 		r15
+
+PCS aliases:
+	a1-a4 =		r0-r3
+	v1-v5 =		r4-r8
+	mt/dp = 	r9
+	use/sl =	r10
+	fp =		r11
+	tmp/ip =	r12
+	usp = 		r13
+
+
+Coprocessor register names are cr0-15.
+
+
+Please note that the Generic Helios Object Format (GHOF) to which this
+assembler is targeted, only supports position independent addressing. Therefore
+any code that uses labels in an absolute fashion will not work as expected.
+
+e.g.
+	mov	r1, jumptab	// this will load the pc relative value of
+				// jumptab from this position (r1 = 4).
+				// NOT the absolute address of jumptab.
+  jumptab:
+	word	dothis
+	word	dothat
+
+or:
+	bl	0x100		// branch forward by 0x100 bytes from here
+				// NOT to address 0x100.
+
+
+All uses of labels and constants for single data transfer intructions (LDR and
+STR) result in correctly adjusted PC relative loads and stores. For example,
+the following code loads a value from the address 'First' and stores it at
+address 'Last'.
+
+
+	ldr	r0, First
+	str	r0, Last
+	b	End
+
+First:
+	int	1
+
+Last:
+	int	0
+
+
+
+NOP Pseudo Opcode
+-----------------
+
+	The only safe no-operation code is 'mov r0, r0' as a condition code
+	op 'nv' (never) may be used in future processors as another opcode
+	to extend the instruction set as space is limited. The "nop" pseudo
+	-opcode does precisely that.
+
+	@@@@@@ The assembler should raise a warning if the 'nv' condition is
+	used.
+
+		e.g.
+			nop	// do nothing.
+
+
+LEA Pseudo Opcode
+-----------------
+
+	lea[cc]	reg, constexpr
+
+The arm assembler supports a load effective address opcode. This opcode
+can be used to compute the absolute address of a label at run time. It
+does this by adding or subtracting the relative address (given by the constexpr)
+from the pc, storing the result in the destination register (reg). If the
+relative address cannot be synthesised into an eight bit field plus rotate, then
+an addressibility error is generated.
+
+	e.g.
+			import	.printf
+
+
+			Function HelloWorld
+
+			stmfd	sp!, {lr}	-- save link reg
+
+			lea	r1, message	-- get address of message to
+			bl	.printf		-- print and print it
+			
+			ldmfd	sp!, {pc}	-- return to caller
+
+		message:
+			char	"Hello World", 0
+
+
+
+ARM SPECIFIC PATCHES:
+---------------------
+
+patcharmdt, patcharmdp, patcharmjp, patcharmdplsb, patcharmdpmid and
+patcharmdprest.
+
+Descriptions from linker doc required.
+
+
+
+TODO:
+-----
+
+Update the porting guide in line with experiences porting the assembler to
+the ARM.
+
+Add ARM6 compatibility:
+	mrs/msr opcodes
+	arm6 regs = cpsr, spsr_mode, etc
+	Errors for use of 'p' in ALU ops?
+
+FPU mnemonics (still need hobjasm for fplib/fpdirect.a)
+
+Add ANSI CPP compatible front-end:
+	+ User familiarity
+	+ Share headers with C.
+	+ Could still use AMPP if required.
+
+Or, Add genhdr converter to translate C header files into AMPP.
+
+Make only 'export'ed labels global, not all labels.
+Should 'import' also ref the label? Note that codestubs for the ARM still
+need to be added to the linker. When they are, the assembler should be
+upgraded (pass2_ARM.c COM_PCREL_24) to use them instead of labelrefs.
+
+If value given to mov is negative, then the mvn opcode should be substituted
+for mov (pag 2-72 arm data manual).
+	- -ve mov to mvn, +ve mvn to mov substitution.
+	- -ve and <-> bic +ve : pg 2-57 
+	= -ve add <-> +ve SUB : pg 2-56
+
+Add HS higher than or same (== CS) & LO lower than (== CC)
+	condition codes mnemonics.
+
+Maybe theres a better way to handle all the conditionals?
+
+Extend the lea pseudo-opcode to the assembler.
+	LEA/LEAL/LDCON pseudo-opcodes for long range targets and
+	large constants.
+	- use VLSI ADR/ADRL mnemonics instead of LEA?
+	- see comments and code in armconst.c
+
+does patchintr(patcharmjp, labelref(.fred), b 0) adjust for the
+pipeline correctly?
+
+does patcharmdprest work correctly (ref posixasm.a)
+
+Whenever code is produced, we ought to check that it is word aligned!
+
+Add better error reporting to the assembler:
+
+	Go through the different warnings described in the RISC OS programmers
+	manual volume VI appendix B.
+
+	Warnings for:
+		Shifts of 0
+		If nv condition used (should use NOP).
+
+
+Check comments in kernel/ARM/schedule.doc
+
+
+@
+
+
+1.2
+log
+@updated
+@
+text
+@d17 16
+d36 1
+a36 1
+For compatibility with AMPP '(' and ')' (rounded) brackets be used
+d49 12
+d64 8
+a71 8
+	r8_firq = 	r8
+	r9_firq = 	r9
+	r10_firq = 	r10
+	r11_firq = 	r11
+	r12_firq = 	r12
+	r13_firq = 	r13
+	r14_firq = 	r14
+	r15_firq = 	r15
+d90 10
+d120 37
+d158 25
+d199 18
+a216 4
+Go through the different warnings described in the RISC OS programmers
+manual volume VI appendix B.
+
+Add better error reporting to the assembler.
+a217 2
+Add the lea pseudo-opcode to the assembler.
+
+d220 14
+d239 16
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d8 2
+a9 1
+';' can also be used as a line commment
+d11 19
+d33 16
+d50 13
+a62 2
+Check
+-----
+a63 2
+What are the co-processor opcodes? i.e. for the floating point unit.
+Do we want to implement some general coproc mnemonics?
+d65 3
+a67 1
+Go through book and check for special cases: shifts + use of R15
+d69 7
+d77 3
+a79 2
+DONE
+----
+a81 2
+TODO
+----
+d83 2
+a84 3
+	Lexer
+		make '[' and ']' optional brackets that can be used
+		interchangebly with '(' and ')'?
+d86 2
+a87 6
+	YACC
+		pay closer attention to the encoding of the shifts
+		esp:
+			lsr #0, lsl #32
+			ror #0, RRX
+		indexes with PC(R15), +/- 2 words pipe adjustment
+d89 1
+a89 2
+		add common structure for use by Regs, Patches and Other
+		for transfering info between the lexer and parser
+a90 2
+	pass2
+		COM_ checks
+d93 2
+d99 12
+d112 1
+a112 1
+@

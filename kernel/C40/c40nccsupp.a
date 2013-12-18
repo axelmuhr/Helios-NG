@@ -1,0 +1,637 @@
+-- File:	c40nccsupp.a
+-- Subsystem:	'C40 Helios executive
+-- Author:	P.A.Beskeen / Nick Clifton
+-- Date:	Aug '91
+--
+-- This file is Copyright (c) 1991, 1992 by Perihelion Software Ltd
+-- All Rights Reserved
+--
+-- Description: `C40 Norcroft C support functions.
+--
+--		This file is used in conjunction with nccsupport.c
+--		to provide the norcroft support functions. It also contains
+--		the `C40 assembly language replacments for the C library string
+--		functions that are required by the kernel - they are also
+--		exported.
+--
+--		Implements:
+--			__stack_overflow,
+--			__stack_overflow1,
+--			memcpy
+--			memset
+--			_backtrace
+--			_DataToFuncConvert
+--			C40WordAddress
+--			_FuncToDataConvert
+--			C40CAddress
+--			_SetAddrBase
+--			_GetAddrBase
+--
+--		This file should be kept up to date with respect to
+--
+--		/hsrc/util/C40/c40string.a
+--		snake:/users/nickc/ncc/experimental/src/asm/strings.a & utils.a
+--
+-- RcsId: $Id: c40nccsupp.a,v 1.32 1993/09/28 10:45:26 nickc Exp $
+--
+-- (c) Copyright 1991, 1992 Perihelion Software Ltd.
+--     All Rights Reserved
+-- 
+-- RcsLog: $Log: c40nccsupp.a,v $
+-- Revision 1.32  1993/09/28  10:45:26  nickc
+-- new improved version of C40CAddress()
+--
+-- Revision 1.31  1993/01/25  09:07:38  paul
+-- increased deadmans handle to 256k in backtrace
+--
+-- Revision 1.30  1992/12/04  17:45:44  nickc
+-- improved _backtrace to cope with missing function names, by returning module name
+--
+-- Revision 1.29  1992/11/12  20:54:42  paul
+-- made C40Word/CAddress compatible with IR0 != 0
+--
+-- Revision 1.28  1992/11/12  17:15:50  paul
+-- updated to support c40WordAddress and CAddress macros being converted to
+-- function calls
+--
+-- Revision 1.27  1992/09/25  09:37:18  paul
+-- changed to use gexec.m
+--
+-- Revision 1.26  1992/08/20  17:31:18  paul
+-- added further checks as a bogus FP can make you access global mem
+--
+-- Revision 1.25  1992/08/18  09:55:16  paul
+-- added GetAddrBase and SetAddrBase
+--
+-- Revision 1.24  1992/08/12  18:45:56  paul
+-- fixed for C40WordAddress macro
+--
+-- Revision 1.23  1992/08/06  12:25:14  paul
+-- fixed _backtrace for insanely large pointers
+--
+-- Revision 1.22  1992/08/05  15:49:06  paul
+-- wierd tempory fix to get system out
+--
+-- Revision 1.21  1992/08/05  10:32:46  paul
+-- fixed for insane frame pointers
+--
+-- Revision 1.20  1992/07/30  14:14:11  nickc
+-- fixed more bugs
+--
+-- Revision 1.19  1992/07/30  14:06:42  paul
+-- fixed bugs in _backtrace
+--
+-- Revision 1.18  1992/07/21  08:10:52  nickc
+-- removed stack overflow function
+--
+-- Revision 1.17  1992/07/17  15:31:03  nickc
+-- improved beyong recognition (honest)
+--
+-- Revision 1.16  1992/07/01  09:09:13  paul
+-- added correct macro includes
+--
+-- Revision 1.15  1992/06/30  10:11:11  paul
+-- cause a SIGSTAK signal on stack overflow
+--
+-- Revision 1.14  1992/06/13  14:28:16  nickc
+-- fixed very small memcpys
+--
+-- Revision 1.13  1992/06/12  11:12:36  nickc
+-- added _DataToFuncConvert and _FuncToDataConvert
+--
+-- Revision 1.12  1992/06/10  13:38:15  nickc
+-- fixed bug copying non-aligned data
+--
+-- Revision 1.11  1992/05/20  16:59:32  nickc
+-- changed to be  boolean so that pointer overruns can be detected
+--
+-- Revision 1.10  1992/05/20  08:19:02  nickc
+-- fixed bug in _backtrace
+--
+-- Revision 1.9  1992/05/19  16:35:03  nickc
+-- added _backtrace
+--
+-- Revision 1.8  1992/04/28  08:13:37  nickc
+-- really fixed short word copies
+--
+-- Revision 1.7  1992/04/27  17:15:52  nickc
+-- fixed bug in tail end of memcpy
+--
+-- Revision 1.6  1992/04/10  16:52:49  paul
+-- fixed a small typo
+--
+-- Revision 1.5  1992/04/10  16:38:32  nickc
+-- changed RPTS to RPTB
+--
+-- Revision 1.4  1992/04/08  09:50:29  nickc
+-- added check for 0 length in memset
+--
+-- Revision 1.3  1992/04/08  09:48:58  nickc
+-- fixed typo in previous delta
+--
+-- Revision 1.2  1992/04/08  09:39:46  nickc
+-- added check for count == 0 in memcpy
+--
+-- Revision 1.1  1992/04/08  09:36:30  nickc
+-- Initial revision
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include c40.m
+include c40mtab.m
+include module.m
+include root.m
+
+-- NB/ We do not use the RPTS instruction in this code, even though it may
+-- seem applicable, because it locks out interrupts, and we cannot afford
+-- to loose interrupt latency in real-time applications
+
+------------------------------------------------------------------------------
+-- ncc support functions
+------------------------------------------------------------------------------
+
+_if _defp 'NEVER
+[
+	Function __stack_overflow
+
+	-- Temporarily force SIGSTAK signal
+	-- @@@ update for automatic stack extension.
+	GetStaticDataWord _Task_ R_ATMP
+	ldi	R_ATMP, R_A1
+	ldi	7, R_A2			-- SIGSTAK
+	patchinstr (PATCHC40MASK24ADD,
+		shift(-2, labelref(.CallException)),
+		br	0)
+]
+
+	Function __stack_overflow_1
+
+	-- Temporarily force SIGSTAK signal
+	-- @@@ update for automatic stack extension.
+	GetStaticDataWord _Task_ R_ATMP
+	ldi	R_ATMP, R_A1
+	ldi	7, R_A2			-- SIGSTACK
+	patchinstr (PATCHC40MASK24ADD,
+		shift(-2, labelref(.CallException)),
+		br	0)
+
+
+------------------------------------------------------------------------------
+-- string functions (mainly used by GetMsg()/PutMsg())
+------------------------------------------------------------------------------
+
+Function memset
+--
+--      void * memset( void * pointer, unsigned char val, unsigned long num_bytes );
+--
+-- Upon Entry:
+--	R_A1	byte offset of an area of memory
+--	R_A2	The value to place into the memory
+--	R_A3	The number of bytes to place
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	The same byte pointer as passed in
+--
+-- Corrupts
+--	R_A2, R_A3, R_T1, R_FT1, R_ADDR1, RC, RS, RE, ST
+--
+-- Purpose
+--	Fills an area of memory with a specified value
+--	Does NOT check for NULL pointers
+--
+	CMPI	 0,	  R_A3			-- Check for a count of zero
+	Beq	 R_LR				-- and return if count is zero
+	LSH	-2,       R_A1,     R_ADDR1	-- convert byte offset to word offset
+	ADDI	 R_BASE,  R_ADDR1		-- add in base address register to our pointer
+	MB1	 R_A2,    R_A2			-- copy bottom 8  bits of value into next 8 bits
+	AND3	 3,       R_A1,     R_T1	-- get byte selector
+	BeqD	 set.word_aligned		-- if the pointer is word aligned then shout for joy
+	   LDIne	 *R_ADDR1,  R_FT1 	-- get word at start of string and advance pointer
+	   MH1	 R_A2,    R_A2			-- copy bottom 16 bits of value into top 16 bits
+	   CMPI	 2,       R_T1			-- check byte selector
+	Beq	 set.byte_selector_2		-- if byte selector == 2
+	Bgt	 set.byte_selector_3		-- if byte selector == 3
+	SUBI	 1,       R_A3			-- decrement count
+	Bn	 R_LR				-- nothing to do
+	MB1	 R_A2,    R_FT1			-- no then merge in byte
+set.byte_selector_2:
+	SUBI	 1,       R_A3			-- decrement count
+	Bn	 set.completed			-- have we run out ?
+	MB2	 R_A2,    R_FT1			-- no, then merge in byte
+set.byte_selector_3:
+	SUBI	 1,       R_A3			-- decrement count
+	Bn	 set.completed			-- have we run out ?
+	MB3	 R_A2,    R_FT1			-- no, then merge in byte
+	STI	 R_FT1,  *R_ADDR1++(1)		-- place resulting word and advance pointer
+set.word_aligned:				-- pointer is now word aligned
+	LSH	-2,       R_A3,     R_FT1	-- number of whole words to set
+	BeqD	 set.almost_finished		-- no words left to to do
+	   SUBI3 1,       R_FT1,    RC		-- load number of loops - 1
+	   AND	 3,       R_A3			-- number of bytes remaining to place
+	   LDHI	 0xFF00,  R_FT1			-- load mask
+	RPTB	 set.block1			-- repeat next instruction
+set.block1:
+	STI	 R_A2,   *R_ADDR1++(1)		-- place word and advance pointer
+set.almost_finished:
+	BeqD	 R_LR				-- if none then return (delayed)
+	   SUBI	 3,       R_A3			-- invert count
+	   MPYI	 8,       R_A3			-- convert to bit selector
+	   ASH	 R_A3,    R_FT1			-- adjust mask
+	LDI	*R_ADDR1, R_T1			-- get word at destination
+	AND	 R_FT1,   R_T1			-- mask out bytes to be set
+	BuD	 R_LR				-- return (delayed)
+	   ANDN	 R_FT1,   R_A2			-- mask out bytes in value word
+	   OR	 R_A2,    R_T1			-- move the bytes into the destination word
+	   STI	 R_T1,   *R_ADDR1		-- save word back into memory
+set.completed:
+	STI	 R_FT1,  *R_ADDR1		-- save result
+	Bu	 R_LR				-- return 
+
+
+Function memcpy
+--
+--      void * memcpy( void * dest, const void * source, unsigned long num_bytes );
+--
+-- Upon Entry:
+--	R_A1	byte offset of the destination an area of memory
+--	R_A2	byte offset of the source area of memory
+--	R_A3	The number of bytes to copy from source to destination
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	Unchanged
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, R_ADDR1, R_ADDR2, RC, RS, RE, ST
+--
+-- Purpose
+--	Copies the contents of one area of memory to another area
+--	Does NOT check for overlapping areas.
+--	Does NOT check for NULL pointers
+--
+--	NB/ This function cannot be called _memcpy as this is an internal
+--	function used by the compiler
+--
+	CMPI	 0,	  R_A3			-- Check for a count of zero
+	Beq	 R_LR				-- and return if count is zero
+	LSH3	-2,       R_A1,         R_ADDR1	-- convert dest to word offset
+	XOR3	 R_A1,    R_A2,         R_T1	-- see if the two pointers are aligned
+	AND	 3,       R_T1			-- but only check byte selectors
+	BneD	 mcpy.not_aligned		-- if the pointers are not mutually aligned ...
+	   LSH	-2,       R_A2,         R_ADDR2	-- convert source to word offset
+	   ADDI	 R_BASE,  R_ADDR1		-- convert dest   to word pointer
+	   ADDI	 R_BASE,  R_ADDR2		-- convert source to word pointer
+	--
+	-- pointers are mutually aligned
+	--
+	AND	 3,       R_A2			-- get byte selector
+	Beq	 mcpy.word_aligned		-- pointers are word aligned
+	SUBI	 3,       R_A2			-- invert byte selector (1 => -2,  2 => -1,  3 => 0)
+	ADDI	 R_A2,    R_A3			-- decrement count of bytes to copy
+	SUBI	 1,	  R_A3			-- decrement again
+	Blt	 mcpy.very_small		-- copy with copying only fraction of word
+	MPYI	 8,       R_A2			-- convert byte selector to bit selector
+	LDHI	 0xFF00,  R_FT1			-- load mask
+	ASH	 R_A2,    R_FT1			-- shift mask into position
+	AND3	 R_FT1,  *R_ADDR2++(1), R_A2	-- mask out non-source bytes in source word
+	ANDN3	 R_FT1,  *R_ADDR1,      R_T1	-- mask out source bytes in destination word
+	OR	 R_A2,    R_T1			-- move source bytes into destination word
+	STI	 R_T1,   *R_ADDR1++(1)		-- save word
+mcpy.word_aligned:
+	--
+	-- the two pointers are word aligned
+	--
+	-- REG	CONTENTS ON ENTRY		USED AS
+	--
+	-- R_A1	   byte offset of destination	not changed
+	-- R_A2 				word at source
+	-- R_A3	   number of bytes to copy	number of bytes left to copy
+	-- R_T1					bit selector
+	-- R_FT1				byte mask
+	-- R_TMP3				number of words to copy
+	-- R_ADDR1 word pointer to destination	word pointer to destination
+	-- R_ADDR2 word pointer to source	word pointer to source
+	--
+	LSH3	-2,       R_A3,         R_TMP3	-- get number of words to copy
+	Beq	 mcpy.no_more_words		-- if none then skip next section
+	LDIne	*R_ADDR2++(1),          R_A2	-- get first word
+	SUBI	 2,       R_TMP3		-- decrement count to allow for words copied setting up loop
+	Blt	 mcpy.only_one_word		-- if count is negative then only word need be copied
+	RPTB	 mcpy.block1			-- repeat next instructions
+mcpy.block1:
+	 STI	 R_A2,   *R_ADDR1++(1)		-- save previous word in destination
+	 || LDI	*R_ADDR2++(1),          R_A2	-- and load next word from source
+mcpy.only_one_word:
+	STI	 R_A2,   *R_ADDR1++(1)		-- save final full word
+mcpy.no_more_words:
+	AND	 3,       R_A3			-- final number of bytes to copy
+	Beq	 R_LR				-- no more bytes => return 
+	LDHI	 0xFF00,  R_FT1			-- load mask
+	SUBI	 3,       R_A3			-- invert remaining count
+	MPYI	 8,       R_A3			-- convert to bit selector
+	ASH	 R_A3,    R_FT1			-- move mask into position
+	AND	 R_FT1,  *R_ADDR1,      R_T1	-- extract bytes from destination
+	BuD	 R_LR				-- return (delayed)
+	   ANDN	 R_FT1,  *R_ADDR2,      R_A2	-- extract bytes from source
+	   OR	 R_A2,    R_T1			-- move bytes from source into destination word
+	   STI	 R_T1,   *R_ADDR1		-- save word
+mcpy.not_aligned:
+	--
+	-- The pointers are not mutually aligned
+	--
+	-- REG     CONTENTS ON ENTRY		USED AS
+	--
+	-- R_A1	   - dest   byte offset		not changed
+	-- R_A2	   - source byte offset		dest byte mask
+	-- R_A3	   - number of bytes to copy	bytes left to copy	
+	-- R_T1	   - 				source byte mask
+	-- R_FT1   -				temporary word holding shifted source byte
+	-- R_FT2   -				bits to shift source byte to align with destination byte
+	-- R_TMP3  -				source word
+	-- R_TMP1  -				dest   word
+	-- R_ADDR1 - dest word pointer		dest   word pointer
+	-- R_ADDR2 - source word pointer	source word pointer
+	--
+	AND3	 3,       R_A1,         R_T1	-- get dest   byte selector
+	AND	 3,       R_A2,         R_FT1	-- get source byte selector
+	SUBI3	 R_FT1,   R_T1,         R_FT2	-- calculate (byte) shift factor
+	MPYI	 8,       R_FT2			-- convert byte shift to bit shift
+	LDI     *R_ADDR2++(1),          R_TMP3	-- get word from source
+	LDI	 0xFF,    R_A2			-- load destination mask
+	MPYI	 8,       R_T1			-- convert dest byte selector into bit selector
+	LSH	 R_T1,    R_A2			-- move destination mask into position
+	MPYI3	 8,       R_FT1,        R_TMP1	-- convert source byte selector into bit selector
+	LDI	 0xFF,    R_T1			-- load source mask
+	LSH	 R_TMP1,  R_T1			-- move source mask into position
+	LDI     *R_ADDR1, R_TMP1		-- get word from destination
+mcpy.loop1:
+	AND3	 R_T1,    R_TMP3,       R_FT1	-- get byte from source
+	SUBI	 1,       R_A3			-- decrement count of bytes to copy
+	BeqD	 mcpy.finished			-- if the count has reached 0 we have finished
+	   LSH	 R_FT2,   R_FT1			-- move source byte into position for destination
+	   ANDN	 R_A2,    R_TMP1		-- mask out byte in destination word
+	   OR	 R_FT1,   R_TMP1		-- merge in byte from source word
+	LSH	 8,       R_T1			-- adjust source mask to cover next byte
+	Bne	 mcpy.over			-- if the mask is still present skip the next bit
+	LDI     *R_ADDR2++(1),          R_TMP3	-- get a new word from the source
+	BuD	 mcpy.loop1			-- we know that destination shift will not empty the mask
+	   LDI	 0xFF,    R_T1			-- resetore the source mask (to cover bottom byte)
+	   XOR	 0xE0,    R_FT2			-- correct the bit shift (I love this magic)
+mcpy.over:
+	   LSH	 8,       R_A2			-- adjust destination mask
+	Bne	 mcpy.loop1			-- if it is not empty then carry on loop
+	LDI	 0xFF,    R_A2			-- reset destination mask (to cover bottom byte)
+	BuD	 mcpy.loop1			-- return to loop (delayed)
+	   STI	 R_TMP1, *R_ADDR1++(1)		-- save destination word		
+	   LDI  *R_ADDR1, R_TMP1		-- get new destination word
+	   XOR	 0xE0,    R_FT2			-- correct bit shift
+mcpy.finished:
+	STI	 R_TMP1, *R_ADDR1		-- save the last word
+	Bu	 R_LR				-- return
+mcpy.very_small:
+	--
+	-- The pointers are mutually aligned, but only a fraction of a word is to be copied
+	--
+	LDHI	 0xFF00,  R_FT1			-- load bit mask
+	CMPI	 R_A2,	  R_A3			-- compare byte selector (-1 or -2) with count (-1 or -2)
+	LDIne	-8,	  R_T1			-- if two bytes are to be copied load 'extender' count
+	LDIeq	 0,	  R_T1			-- otherwise use a zero 'extender' count
+	ASH	 R_T1,	  R_FT1			-- extend bit mask if necessary
+	MPYI	 8,	  R_A3			-- convert count overflow to bit selector
+	LSH	 R_A3,	  R_FT1			-- move bit mask into position
+	AND3	 R_FT1,  *R_ADDR2++(1), R_A2	-- mask out non-source bytes in source word
+	BuD	 R_LR				-- return (delayed)
+	   ANDN3 R_FT1,  *R_ADDR1,      R_T1	-- mask out source bytes in destination word
+	   OR	 R_A2,    R_T1			-- move source bytes into destination word
+	   STI	 R_T1,   *R_ADDR1++(1)		-- save word
+
+--
+-- end of memcpy
+--
+
+Function _backtrace
+--
+--	int _backtrace( int * buffer, int frame_pointer )
+--
+-- Upon Entry:
+--      R_A1	byte offset of buffer to contain function name
+--      R_A2	frame pointer of previous function
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	frame pointer of the function whoes name is in buffer or NULL
+--      memory pointed to by R_A1 will have had function name copied into it  
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, R_ADDR2, ST
+--
+-- Purpose
+-- 	Produces a string identifying the parent function of
+--	the previous function identified on the execution stack.
+--	If the frame pointer to the previous function is NULL
+--	then it will use the current frame pointer
+--
+	LDI	   R_A2,	  R_ADDR1		-- copy frame pointer to address register
+	LDIeq	   R_FP,	  R_ADDR1		-- if pointer is NULL then use current frame pointer
+	LSH	   -2, R_A1,	  R_ATMP		-- convert destination byte offset to word offset
+
+	ldhi	   0x2f,	  R_ADDR2		-- sanity check on computed address
+	or	   0xf800,	  R_ADDR2		-- 0x2ff800 is the start of on chip RAM
+	cmpi	   R_ADDR2,       R_ADDR1		-- no address can be below this
+	blo	   b_insane
+
+	-- @@@ *WARNING* the following check is very dubious:
+	--	the trace vector may well stay in the local bus, but code
+	--	may use the global bus in future versions of Helios-C40!
+	--	GetNucRoot R_ADDR2
+	-- ldi   *+R_ADDR2(Root.TraceVec), R_ADDR2
+	-- C40WordAddress            R_ADDR2
+	-- cmpi	   R_ADDR2,       R_ADDR1		-- sanity check on high
+	-- bhi	   b_insane				-- computed address 
+
+	LDI	  *R_ADDR1,       R_A1result		-- get hold of parent's frame pointer
+	LDI	 *-R_ADDR1(1),    R_ADDR1		-- get return address to parent function
+
+	-- cmpi	   R_ADDR2,       R_ADDR1		-- sanity check on high
+	-- bhi	   b_insane				-- computed address 
+
+	-- ldhi	   0x2f,	  R_ADDR2		-- sanity check on low
+	-- or	   0xf800,	  R_ADDR2
+	cmpi	   R_ADDR2,       R_ADDR1		-- computed address
+	blo	   b_insane
+
+	ldi32	   T.Module           R_TMP1		-- load module structure Type constant
+--	ldi	   2048,	      R_ADDR2		-- initialise deadmans handle
+--							-- can handle fns =< 8KB
+	-- Can find fns and modules  upto 64K words (256k bytes) away.
+	ldhi	   1,		      R_ADDR2		-- initialise deadmans handle
+b_loop1:						-- drop through into loop
+	 LDI	  *R_ADDR1\--(1),     R_A2		-- get word
+         CMPI	   R_A2,	      R_TMP1		-- compare against module word
+	 Beq	   b_got_module				-- and branch if found
+	 ASH	  -24,		      R_A2		-- signed move top byte down to bottom byte
+	 CMPI	  -1,		      R_A2		-- a top byte of 0xFF is illegal, and so used as marker
+	DBne	   R_ADDR2,	      b_loop1		-- and loop until 0xFF found or limit exceeded
+	BneD	   R_LR					-- if loop aborted then return
+	   LDIne   0,		      R_A1result	-- if loop aborted return status is FAIL
+	   LBU0	*++R_ADDR1(1),        R_A2		-- get hold of size of function name
+	   LSH	  -2,		      R_A2		-- convert to number of words
+	SUBI3      2,		      R_A2,	RC	-- set up repeat count
+	BltD	   b_over				-- if we are only copying one word then skip loop
+	   SUBI	   R_A2,	      R_ADDR1		-- subtract size of name from pointer
+	   LDI	  *R_ADDR1++(1),      R_A2		-- load first word from source
+b_copy_name:						-- back door entry to name copying code
+	   ADDI	   R_BASE,	      R_ATMP		-- convert buffer address to word pointer
+	RPTB	   b_loop2				-- start loop
+b_loop2:
+	 STI	   R_A2,             *R_ATMP++(1)	-- store word into destination
+	 || LDI	  *R_ADDR1++(1),      R_A2		-- load word from source
+b_over:
+	STI	   R_A2,             *R_ATMP		-- store last word from destination
+	Bu	   R_LR					-- return
+
+b_got_module:						-- found a Module structure
+	LDI	   8 - 1,	      RC		-- Module's name is 8 words long
+	BuD	   b_copy_name				-- jump into name copying code
+	  ADDI	   Module.Name + 1,   R_ADDR1		-- Adjust pointer to Name field of Module structure
+	  ldi32	   0x203a6e69	      R_A2		-- string is "in: "
+
+b_insane:
+	ldi	   0,		  R_A1result		-- NULL return on error
+	b	   R_LR
+--
+-- end of _backtrace
+--
+
+
+--	(void * _DataToFuncConvert)( void * pointer )()
+--	word C40WordAddress(void *Cptr);
+--
+-- Upon Entry:
+--      R_A1	byte offset to be converted
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	word function pointer
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+-- 	Converts a data pointer, (which is a byte offset from
+--	R_BASE) into a function pointer, (which is an
+--	absolute word address).
+--
+
+	Function _DataToFuncConvert
+.C40WordAddress:			-- different name with different (Same)
+					-- typed parameters.
+
+	BuD	 R_LR			-- return (delayed)
+	   LSH	-2,	  R_A1		-- convert to a word offset
+	   ADDI	 R_BASE,  R_A1		-- add in the base address register
+	   NOP				-- padding
+--
+-- end of _DataToFuncConvert
+--
+
+
+--
+--	void * _FuncTodataConvert( (void * func)() )
+--	void *C40CAddress(word wordptr);
+--
+-- Upon Entry:
+--      R_A1	word pointer to be converted
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	byte offset or 0
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+-- 	Converts a functions pointer, (which is a absolute
+--	word address) into a data pointer, (which is a
+--	byte offset from R_BASE).  If the conversion
+--	cannot be done then returns NULL
+--
+
+	Function _FuncToDataConvert
+.C40CAddress:				-- different name with different (Same)
+					-- typed parameters.
+
+_test _defp 'NEVER
+[
+	CMPI	 R_BASE,	R_A1	-- check to see if func pointer < base address
+	LDIlo	 R_BASE,	R_A1	-- if it is then cannot convert
+	SUBI	 R_BASE,	R_A1	-- subtract base address from func pointer
+	BuD	 R_LR			-- return (delayed)
+	   LDIlt 0,		R_A1	-- if the top bit of the result is set then cannot convert
+	   LSH	 2,		R_A1	-- shift up by 2 to convert to byte offset
+	   LDIlo 0,		R_A1	-- if carry was set then conversion has failed
+]
+[
+	SUBI	R_BASE,	R_A1
+	LDHI	0xC000,	R_T1
+	BuD	R_LR
+	  AND	R_A1,	R_T1
+	  LDIne	0,	R_A1
+	  LSH	2,	R_A1
+]
+--
+-- end of _FuncToDataConvert
+--
+
+
+Function _SetAddrBase
+--
+--	void _SetAddrBase(word addrbase)
+--
+-- Upon Entry:
+--      R_A1	word containing word address to set IR0 (C address base reg) to
+--	R_LR	return address
+--	R_BASE	old base address of data RAM
+--
+-- Upon Exit
+--	R_BASE	new base address of data RAM
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Sets C's address base for this thread.
+--
+	ldi	R_A1, R_BASE
+	b	R_LR
+
+
+Function _GetAddrBase
+--
+--	word _GetAddrBase(void)
+--
+-- Upon Entry:
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	base address of data RAM
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Gets C's address base for this thread.
+--
+	ldi	R_BASE, R_A1
+	b	R_LR
+
+
+-- end of c40nccsupp.a

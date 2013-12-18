@@ -1,0 +1,1867 @@
+head     1.1;
+branch   ;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @! @;
+
+
+1.1
+date     91.03.10.23.53.39;  author paul;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@        SUBT Executive microController communications               > lomlink/s
+        ;    Copyright (c) 1991, Active Book Company, Cambridge, United Kingdom
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+	; Microlink Protocol
+        ; ---------------------------------------------------------------------
+	; The first byte of a microlink message to or from the
+	; microcontroller is a header which determines the format of the
+	; rest of the message (if any). There are 3 formats: `short',
+	; `long' and `extended':
+	;
+	; A short message consists of only one byte:
+	; 
+	;   1    4        3
+	;  +-+--------+------+
+	;  |0|  type  | data |
+	;  +-+--------+------+
+	; 
+	; A long message is up to 5 bytes in length:
+	; 
+	;   1     5       2
+	;  +-+---------+-----+
+	;  |1|  type   |lcode|  followed by 1, 2 or 4 data bytes 
+	;  +-+---------+-----+
+	; 
+	;  `lcode' indicates how many data bytes follow the header:
+	; 
+	;   00:  1 byte
+	;   01:  2 bytes
+	;   10:  4 bytes
+	;   11:  (used for extended messages: see below)
+	; 
+	; An extended message is up to 34 bytes long:
+	; 
+	;   1     5       2         3        5
+	;  +-+---------+-----+  +-------+---------+
+	;  |1|  type   | 1 1 |  | 0 0 0 | length  | then (length+1) data bytes
+	;  +-+---------+-----+  +-------+---------+
+	; 
+
+
+	[	(hercules :LOR: activebook)
+	[	(hercmlink)
+	; FIQ is used in the microlink code for Hercules only, and
+	; there only for reception.
+
+        ; ---------------------------------------------------------------------
+	; Microlink FIQ registers
+	; 
+	; DO NOT ALTER THESE REGISTER ALLOCATIONS WITHOUT MAKING 
+	; CORRESPONDING CHANGES TO THE CALL OF local_AttachSFIQ FROM
+	; code_exec_InitBackplane (IN loswi3.s).
+        ; ---------------------------------------------------------------------
+
+	; fiq_r8, fiq_r9 and fiq_r10 are used as work registers.
+
+rxData		RN	fiq_r11		; address of microlink rx data reg
+
+	; The progress of the reception of the current message is held in
+	; two registers: rxBufPtr and rxBufEnd. During reception of a long
+	; or extended message, rxBufEnd holds the address of the byte after
+	; the one which will hold the end of the message, minimising time spent
+	; in the FIQ handler for most bytes. rxBufEnd also has two special
+	; values (which will always be less than the buffer pointer):
+	;   0 when awaiting a header byte, and
+	;  -1 when awaiting the length byte of an extended message
+
+rxBufPtr	RN	fiq_r12		; ptr to position for next byte
+rxBufEnd	RN	fiq_r13		; ptr to byte after expected end of msg
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+	; Microlink FIQ routine
+	; ---------------------
+	; The FIQ routine receives the individual bytes of a microlink
+	; message, raising an IRQ when a complete message has been received.
+	; When an IRQ is raised by the FIQ handler, a one-word argument
+	; (ML_IRQArg) is set up to inform the IRQ handler why it has been
+	; invoked. Values of this argument are:
+
+MLI_NoMsg	*	0		; IRQ not caused by FIQ handler
+					; (Initial value before FIQ enabled)
+MLI_Msg		*	1		; Buffer contains one microlink message
+MLI_SoftBreak	*	2		; Soft break (0 header byte received)
+
+	; This FIQ routine is longer than the 19 words available in
+	; low memory, so has to be split into two pieces. The code
+	; between ML_RxFIQ and ML_RxFIQ_Low_End is copied down
+	; into the fast RAM starting at the FIQ vector, and is
+	; executed there only. The remainder (from ML_FIQ_RaiseIRQ) 
+	; runs in high ROM or RAM, so the branches from the low part
+	; to the high part are fabricated accordingly.
+
+	; Offset applied to branches executed in low memory but
+	; jumping to high memory.
+
+ML_RxFIQ_Branch_Offset	*  (baseAddr + (ML_RxFIQ - (memoryBase + vec_FIQ)))
+
+	; This handler receives bytes from the microcontroller via the
+	; microlink interface and raises an IRQ when it has collected
+	; a complete message of the microlink protocol used between Hercules
+	; and the microcontroller.
+	;
+	; For simplicity and speed there is only one buffer: once a complete
+	; message has been received, the microlink rx FIQ is masked out and
+	; a microlink rx IRQ is raised by using the IRQ Test register.
+	; The IRQ handler re-enables microlink rx FIQs as soon as it has
+	; finished with the buffer.
+	;
+        ; ---------------------------------------------------------------------
+        ; Reception FIQ handler
+        ; ---------------------------------------------------------------------
+ML_RxFIQ
+	; Could check for frame error at this point. However, it is
+	; extremely unlikely that one can occur inside the AB without there
+	; being something fatally wrong which will be detected elsewhere, 
+	; so it is not worth the expense of testing this on every FIQ.
+	;
+	; The code is ordered so that the critical case of handling data bytes
+	; within a long or extended message completes in 4 instructions.
+
+	LDRB	fiq_r8,[rxData]		; Read data byte & clear interrupt
+	STRB	fiq_r8,[rxBufPtr],#1	; Store in buffer and step pointer
+	CMP	rxBufPtr,rxBufEnd	; Received whole message?
+	SUBLTS	pc,fiq_r14,#4		; More to come: exit immediately
+
+	; Is this the final byte of a message? If so, raise IRQ.
+	BEQ	ML_RxFIQ_MsgComplete	; Destination is in low memory
+
+	; At this point rxBufEnd must have one of its special values 0 or -1
+
+	CMP	rxBufEnd,#0		; Is this a header byte?
+	BNE	ML_RxFIQ_LengthByte + ML_RxFIQ_Branch_Offset
+					; No: must be length of extended msg
+
+	; We have received a header byte: test its format
+
+	TST	fiq_r8,#MLHdr_Long	; Long or extended message?
+	BNE	ML_RxFIQ_LongOrExtended + ML_RxFIQ_Branch_Offset ; Yes
+
+	; We have a short message header, or a soft break byte (all zero)
+
+	CMP	fiq_r8,#0		; Soft break byte?
+	MOVEQ	fiq_r8,#MLI_SoftBreak	; Yes: set arg for IRQ handler
+	BEQ	ML_RxFIQ_RaiseIRQ + ML_RxFIQ_Branch_Offset 
+					; Yes: invoke IRQ handler
+	; Not soft break: drop through, leaving rxBufEnd zero
+
+ML_RxFIQ_MsgComplete
+	; Invoke the IRQ handler to process a complete message
+	MOV	fiq_r8,#MLI_Msg		; Set reason in IRQ handler arg word
+	B	ML_RxFIQ_RaiseIRQ + ML_RxFIQ_Branch_Offset
+					; Continue in high memory
+
+ML_RxFIQ_LowEnd
+	; ----------------------------------------------------------
+	; Code below this point is not copied down to the FIQ vector
+	; ----------------------------------------------------------
+
+ML_RxFIQ_RaiseIRQ
+	; Use the Test register to raise an IRQ with MicroLink reception
+	; as the apparent source. The fact that the argument word ML_Rx_IRQArg
+	; is non-zero tells the IRQ handler that the FIQ handler caused
+	; the interrupt.
+	;
+	; fiq_r8 contains the argument for the IRQ handler
+
+	LDR	fiq_r10,=ML_Rx_IRQArg	; Address of argument word
+	STR	fiq_r8,[fiq_r10]	; Store argument to IRQ handler
+
+	MOV	fiq_r9,#INT_regs	; Get base of interrupt control regs
+	LDR	fiq_r10,=hardware_regs	; Base of soft copies of h/w regs
+	LDR	fiq_r8,[fiq_r10,#INTtest_data]; Get soft copy of int Test reg
+	ORR	fiq_r8,fiq_r8,#INT_MRX	; Set microlink rx int flag
+	STR	fiq_r8,[fiq_r10,#INTtest_data] ; Update soft copy
+	STR	fiq_r8,[fiq_r9,#INT_status]; Update Interrupt Test register
+
+	; Mask out microlink reception FIQs before exiting.
+	; The IRQ handler will reenable them as soon as it has set up
+	; another reception buffer.
+	; r10 still contains address of hardware_regs.
+
+	LDR	fiq_r8,[fiq_r10, #FIQ_data]; Get soft copy of FIQ mask register
+	BIC	fiq_r8,fiq_r8,#INT_MRX	; Clear microlink reception int flag
+	STR	fiq_r8,[fiq_r10, #FIQ_data]; Update soft copy
+	MOV	fiq_r8,#INT_MRX		; Bit to clear in FIQ mask register
+	STR	fiq_r8,[fiq_r9,#FIQ_control]; Update FIQ mask register
+
+	SUBS	pc,fiq_r14,#4		; Return from FIQ handler
+	
+	; Decode header byte of long or extended message, setting rxBufEnd:
+	;  fiq_r8:   header byte
+	;  rxBufPtr: points to second byte of buffer
+ML_RxFIQ_LongOrExtended
+	AND	fiq_r8,fiq_r8,#MLHdr_LenCode; Extract length code
+	ADD	fiq_r8,fiq_r8,#1	; Length code now 1 - 4
+	CMP	fiq_r8,#3		; 1&2 OK, 3 means 4, 4 for extended msg
+	MOVEQ	fiq_r8,#4		; Set to 4 if code was 3
+	ADDLE	rxBufEnd,rxBufPtr,fiq_r8; Set rxBufEnd for long message
+	MVNGT	rxBufEnd,#0		; Set rxBufEnd to -1 for extended msg
+	
+	SUBS	pc,fiq_r14,#4		; Return from FIQ
+
+ML_RxFIQ_LengthByte
+	; The received byte is the length byte of an extended message.
+	;
+	; fiq_r8:   length byte
+	; rxBufPtr: points to third byte of buffer
+	AND	fiq_r8,fiq_r8,#MLExt_LenMask; Extract length
+	ADD	fiq_r8,fiq_r8,#1	; Add 1 to get number of bytes
+	ADD	rxBufEnd,rxBufPtr,fiq_r8; Set rxBufEnd for extended message
+	
+	SUBS	pc,fiq_r14,#4		; Return from FIQ
+
+	]	; end (hercmlink)
+	]	; end (hercules :LOR: activebook)
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+	; Microlink IRQ routines
+	; ----------------------
+
+	[	(hercules :LOR: activebook)
+	[	(hercmlink)
+        ; ---------------------------------------------------------------------
+	; The reception IRQ is always a dummy one caused by the rx FIQ
+	; handler to signal the end of a received microlink message or
+	; a soft break. The value of the communication word indicates
+	; the reason for the IRQ.
+ML_Rx_IRQ
+	; in:	SVC mode; IRQs disabled; FIQs undefined.
+	;	svc_r14: current process return address
+	[ 	(newsvc)
+	;	svc_r13: FD stack (containing original SVC r13 and r14)
+	|
+	;	svc_r13: FD stack (containing original svc_r14)
+	]
+	;	All other registers must be preserved
+	;	svc_r14 and svc_r13 should be restored on exit
+
+	STMFD	sp!,{r0,r1,r2,r3,r4,r5}	; Free some work registers
+
+	; Clear the bit in the interrupt test register which the FIQ
+	; routine set to cause this IRQ. Note that this update of register
+	; and soft copy is not FIQ-protected: however microlink should
+	; be the only FIQ source, and its FIQ is masked out at present.
+
+	MOV	r1,#INT_regs		; Get base of interrupt control regs
+	LDR	r2,=hardware_regs	; Get base of soft copies of h/w regs
+	LDR	r0,[r2,#INTtest_data]	; Get soft copy of interrupt Test reg
+	BIC	r0,r0,#INT_MRX		; Clear microlink rx int flag
+	STR	r0,[r2,#INTtest_data]	; Update soft copy
+	STR	r0,[r1,#INT_status]	; Update interrupt Test register
+
+	LDR	r2,=ML_RxBuf_Ptr	; Base address of rx variables
+	LDR	r3,[r2,#(ML_Rx_IRQArg - ML_RxBuf_Ptr)]; Arg word from FIQ rtn
+	CMP	r3,#MLI_SoftBreak	; Has a soft break been received?
+	BEQ	ML_RxIRQ_SoftBreak	; Yes
+	CMP	r3,#MLI_Msg		; Has a complete msg been received?
+	BNE	ML_Exit_IRQ		; No (shouldn't happen)
+
+	; A complete microlink message has been received.
+	; Mask out microlink reception IRQs while we process the message:
+	; this is not strictly necessary at present (as all IRQs are off 
+	; anyway) but provides some defence against message handlers which
+	; inadvertently reenable IRQs. Eventually, these handlers should
+	; be called in a separate SVC thread with interrupts enabled.
+
+	MOV	r1,#INT_regs		; Get base of interrupt control regs
+	LDR	r2,=hardware_regs	; Get base of soft copies of h/w regs
+	LDR	r0,[r2,#IRQ_data]	; Get soft copy of IRQ mask reg
+	BIC	r0,r0,#INT_MRX		; Clear microlink rx int flag
+	STR	r0,[r2,#IRQ_data]	; Update soft copy
+	MOV	r0,#INT_MRX		; Value to clear bit in mask reg 
+	STR	r0,[r1,#IRQ_control]	; Mask out microlink rx IRQ
+
+	; Swap over the pointers to the "current" and "other" 
+	; reception buffers.
+
+	LDR	r2,=ML_RxBuf_Ptr	; Base address of rx variables
+	LDR	r0,[r2,#(ML_Rx_CurBuf - ML_RxBuf_Ptr)]
+	LDR	r1,[r2,#(ML_Rx_OtherBuf - ML_RxBuf_Ptr)]
+	STR	r0,[r2,#(ML_Rx_OtherBuf - ML_RxBuf_Ptr)]
+	STR	r1,[r2,#(ML_Rx_CurBuf - ML_RxBuf_Ptr)]
+
+	; The reception FIQ handler can now be allowed to proceed,
+	; using the other buffer.
+	; First restore the FIQ registers.
+	;  r0 = address of buffer containing received message
+	;  r1 = new current buffer pointer
+
+	MOV	r3,pc			; Save PSR bits
+	TEQP	pc,#(Ibit :OR: FIQmode) ; FIQ mode; IRQs off
+	NOP				; Wait for mode change
+
+	MOV	rxBufPtr,r1		; New current buffer pointer
+	MOV	r1,rxBufEnd		; Save end of message pointer
+	MOV	rxBufEnd,#0		; Waiting for header byte
+
+	TEQP	pc,r3			; Back to previous mode & int state
+	NOP				; Wait for mode change 
+
+	; Reenable the microlink reception FIQ
+	;  r0 = address of buffer containing received message
+	;  r1 = address of first byte after end of message
+
+	MOV	r3,#INT_regs		; Get base of interrupt control regs
+	LDR	r2,=hardware_regs	; Get base of soft copies of h/w regs
+	LDR	r4,[r2,#FIQ_data]	; Get soft copy of FIQ mask reg
+	ORR	r4,r4,#INT_MRX		; Enable microlink rx int flag
+	STR	r4,[r2,#FIQ_data]	; Update soft copy
+	MOV	r4,#INT_MRX
+	ORR	r4,r4,#FIQ_set		; Value to set bit in mask reg 
+	STR	r4,[r3,#FIQ_control]	; Enable microlink rx FIQ
+
+	; Deal with received message, using code shared with FP version
+	;  r0 = address of buffer containing received message
+	;  r1 = address of first byte after end of message
+	B	ML_ProcessRxMsg		; This returns to ML_Complete_Exit
+
+	; Have now finished with this message, so can reenable rx IRQs
+ML_Complete_Exit
+	MOV	r1,#INT_regs		; Get base of interrupt control regs
+	LDR	r2,=hardware_regs	; Get base of soft copies of h/w regs
+	LDR	r0,[r2,#IRQ_data]	; Get soft copy of IRQ mask reg
+	ORR	r0,r0,#INT_MRX		; Enable microlink rx int flag
+	STR	r0,[r2,#IRQ_data]	; Update soft copy
+	MOV	r4,#INT_MRX
+	ORR	r4,r4,#IRQ_set		; Value to set bit in mask reg 
+	STR	r4,[r1,#IRQ_control]	; Enable microlink rx IRQ
+
+	B	ML_Exit_IRQ		; Return from IRQ
+
+ML_RxIRQ_SoftBreak
+	; Disable the microlink interface (as a received hardware break
+	; would have done), then branch to the hard break handler.
+
+	MOV	r1,#MLI_regs		; Base addr of microlink hardware
+	MOV	r0,#MLI_ICP		; Value to disable microlink
+	STRB	r0,[r1,#MLI_CON]	; Disable microlink interface
+
+	; Continue in hardware break handler.
+	; r0 - r5 are stacked.
+
+	B	ML_Break_Common		; Enter hardware break code
+
+        ; ---------------------------------------------------------------------
+
+ML_Tx_IRQ
+	; A transmit interrupt is outstanding on the microlink.
+	; in:	SVC mode; IRQs disabled; FIQs undefined.
+	;	svc_r14: current process return address
+	[ 	(newsvc)
+	;	svc_r13: FD stack (containing original SVC r13 and r14)
+	|
+	;	svc_r13: FD stack (containing original svc_r14)
+	]
+	;	All other registers must be preserved
+	;	svc_r14 and svc_r13 should be restored on exit
+
+	STMFD	sp!,{r0,r1,r2,r3,r4,r5}	; Free some work registers
+	
+	LDR	r2,=ML_TxBuf_Ptr	; Base address of tx variables
+	LDR	r3,[r2]			; Buffer pointer in r3
+	LDR	r4,[r2,#(ML_TxBuf_End - ML_TxBuf_Ptr)]; End of buffer
+
+	; Test for zero-sized buffer TBD
+
+	LDRB	r0,[r3],#1		; Get next byte & step pointer
+	MOV	r1,#MLI_regs		; Base addr of microlink hardware
+	STRB	r0,[r1,#MLI_TXD]	; Write byte to link device
+
+	STR	r3,[r2]			; Store updated buffer pointer
+	CMP	r3,r4			; Reached end of buffer?
+	BLT	ML_Exit_IRQ		; No: exit from IRQ
+
+	; This transmission has finished: disable tx interrupt
+	MOV	r0,#INT_MTX		; Microlink tx int mask
+	MOV	r1,r14			; Preserve link register
+	BL	local_DisableIRQ	; Disable tx IRQ
+	MOV	r14,r1			; Restore link register
+
+	; Resume waiting process: first get SaveState pointer (unsetting it
+	; so break handling code cannot try to use it again).
+	LDR	r1,[r2,#(ML_TxBuf_SaveState - ML_TxBuf_Ptr)]
+	MOV	r0,#0
+	STR	r0,[r2,#(ML_TxBuf_SaveState - ML_TxBuf_Ptr)]; Unset SaveState
+	STR	r0,[r1,#SaveState_r0]	; Set r0 in resumed process to 0
+					; to indicate successful transmission
+
+	LDR	r0,=ROOT_start
+
+	; r0 = `ExecRoot' data structure
+	; r1 = pointer to SaveState of process to be restarted
+	ADD	r3,r0,#ExecRoot_queues	; base of priority 0 process queue
+
+	; Add SaveState to end of referenced queue
+	LDR	r2,[r3,#ProcessQ_tail]	; load the current tail node
+	STR	r1,[r2,#SaveState_next] ; reference the new tail node
+	STR	r1,[r3,#ProcessQ_tail]	; update tail pointer
+
+	B	ML_Exit_IRQ		; Return from IRQ
+
+        ; ---------------------------------------------------------------------
+ML_Break_IRQ
+	; A break packet has been received
+	; in:	SVC mode; IRQs disabled; FIQs undefined.
+	;	svc_r14: current process return address
+	[ 	(newsvc)
+	;	svc_r13: FD stack (containing original SVC r13 and r14)
+	|
+	;	svc_r13: FD stack (containing original svc_r14)
+	]
+	;	All other registers must be preserved
+	;	svc_r14 and svc_r13 should be restored on exit
+
+	STMFD	sp!,{r0,r1,r2,r3,r4,r5}	; Free some work registers
+
+ML_Break_Common
+	; Enter here after receiving a soft break message (with r0-r5 stacked).
+
+	; The microlink interface is automatically disabled when a break
+	; interrupt is received (and is disabled by software on a soft break).
+	; Set the driver's state to fend off any client requests during 
+	; the break protocol.
+
+	LDR	r1,=ML_State		; Get address of driver state word
+	MOV	r0,#ML_State_GotBreak	; Break was sent from other end
+	STR	r0,[r1]			; Update state word
+
+	; Clean up any microlink transmissions and receptions which were
+	; in progress at this end (and disable tx IRQs)
+
+	MOV	r1,r14			; Preserve the link
+	BL	ML_CleanUp		; Abort transmissions and receptions
+	MOV	r14,r1			; Restore the link
+
+	; The break interrupt is cleared by reenabling the microlink
+
+	MOV	r0,#(MLI_ENA :OR: MLI_ICP) ; Enable with internal clock
+	MOV	r1,#MLI_regs		; Base addr of microlink hardware
+	STRB	r0,[r1,#MLI_CON]	; Write microlink control register
+
+	B	ML_Exit_IRQ		; Return from IRQ
+
+        ; ---------------------------------------------------------------------
+ML_CleanUp
+	; Subroutine to abort any outstanding reception and transmission.
+	; in:	SVC mode; IRQs undefined; FIQs undefined.
+	;	r13: FD stack, r14: return link
+	;       Microlink interface is disabled, so no interrupts will occur.
+	; out:  All registers preserved.
+	;	Microlink tx interrupt disabled.
+	;	Process waiting for transmission (if any) resumed with
+	;	an error code.
+	;	Any processes waiting for reception are resumed with error
+	;	codes and the corresponding reception requests are released.
+	;	All other reception requests remain outstanding, but any that
+	;	were previously satisfied are now marked empty again.
+	;	The reception FIQ routine is reset to await a new
+	;	message header.
+
+	STMFD	r13!,{r0,r1,r2,r3,r4,r14}; Save some registers
+
+	; Disable microlink tx interrupt, aborting any transmission in progress
+
+	MOV	r0,#INT_MTX		; Microlink tx int mask
+	BL	local_DisableIRQ	; Disable tx IRQ
+
+	; Resume waiting tx process if any
+
+	LDR	r2,=ML_TxBuf_Ptr	; Get base of tx variables
+	MOV	r0,#0
+	STR	r0,[r2]			; Clear buffer start pointer
+	STR	r0,[r2,#(ML_TxBuf_End - ML_TxBuf_Ptr)]; Clear end pointer
+
+	LDR	r1,[r2,#(ML_TxBuf_SaveState - ML_TxBuf_Ptr)]; SaveState ptr
+	CMP	r1,#0			; Is there a non-0 SaveState pointer?
+	BEQ	ML_CleanUpAbortRx	; No
+
+	; r0 still contains 0
+	STR	r0,[r2,#(ML_TxBuf_SaveState - ML_TxBuf_Ptr)]; Unset SaveState
+	LDR	r0,=(EC_Error+SS_Kernel+EG_Broken+EO_Link)
+					; Set r0 in resumed process to err code
+	STR	r0,[r1,#SaveState_r0]	; to indicate tx aborted by break
+
+	LDR	r0,=ROOT_start
+
+	; r0 = `ExecRoot' data structure
+	; r1 = pointer to SaveState of process to be restarted
+	; r2 = address of ML_TxBuf_Ptr
+	ADD	r0,r0,#ExecRoot_queues	; base of priority 0 process queue
+
+	; Add SaveState to end of referenced queue
+	LDR	r2,[r0,#ProcessQ_tail]	; load the current tail node
+	STR	r1,[r2,#SaveState_next] ; reference the new tail node
+	STR	r1,[r0,#ProcessQ_tail]	; update tail pointer
+
+ML_CleanUpAbortRx
+	; Abort the current reception (if any) by resetting the FIQ registers
+	; to expect a message header byte.
+	; r2 = address of ML_TxBuf_Ptr
+
+	LDR	r0,[r2,#(ML_Rx_CurBuf - ML_TxBuf_Ptr)]; Addr of cur buf ptr
+	MOV	r1,pc			; Save PSR bits
+	TEQP	pc,#(Ibit :OR: FIQmode) ; FIQ mode; IRQs off
+	NOP				; Wait for mode change
+
+	LDR	rxBufPtr,[r0]		; Current buffer pointer
+	MOV	rxBufEnd,#0		; Waiting for header byte
+
+	TEQP	pc,r1			; Back to previous mode & int state
+	NOP				; Wait for mode change 
+
+	; Scan the list of reception requests.
+	; Any which are already satisfied revert to being unsatisfied (so
+	; their handles remain valid).
+	; If a request has a process waiting, then the process is resumed
+	; with an error code, and the request becomes invalid (like a timeout).
+
+	LDR	r1,=ML_RxRequests	; Base of table of requests
+	LDR	r2,=ML_RxRequestsEnd	; End of table
+
+ML_CleanUpCheckReq
+	LDR	r3,[r1,#ML_RxReq_Buf]	; Get buffer pointer
+	CMP	r3,#0
+	BEQ	ML_CleanUpChkSkip	; Zero => unused slot
+
+	MOV	r3,#0
+	STR	r3,[r1,#ML_RxReq_Satisfied]; Clear `satisfied' flag
+	MVN	r3,#0			; Set timeout to -1 so that timeout
+	STR	r3,[r1,#ML_RxReq_TimeLeft]; code will ignore this request
+
+	; Now safe from timeout code in timer interrupt routine
+	LDR	r3,[r1,#ML_RxReq_SaveState]; Get SaveState pointer
+	CMP	r3,#0			; Is a process waiting?
+	BEQ	ML_CleanUpChkSkip	; No
+
+	; Resume the waiting process.
+	; r1: rx request structure
+	; r2: end of rx request array
+
+	; Add SaveState to end of referenced queue
+	LDR	r0,=ROOT_start		; Executive root structure
+	LDR	r4,[r1,#ML_RxReq_SaveState]; Get SaveState pointer
+	LDR	r3,=(EC_Error+SS_Kernel+EG_Broken+EO_Link)
+					; Set r0 in resumed process to err code
+	STR	r3,[r4,#SaveState_r0]	; to indicate rx aborted by break
+	LDR	r3,[r0,#(ExecRoot_queues + ProcessQ_tail)]; current tail node
+	STR	r4,[r3,#SaveState_next] ; reference the new tail node
+	STR	r4,[r0,#(ExecRoot_queues + ProcessQ_tail)]; update tail pointer
+
+	; Mark the reception request as free 
+	; r1 points to request structure.
+	MOV	r3,#0
+	STR	r3,[r1,#ML_RxReq_Buf]	; Zero buffer marks free request slot
+	STR	r3,[r1,#ML_RxReq_SaveState]; Clear other fields for safety
+	STR	r3,[r1,#ML_RxReq_Satisfied]
+	STR	r3,[r1,#ML_RxReq_Handle]
+	STR	r3,[r1,#ML_RxReq_MsgType]
+	; Timeout already set to -1 above
+
+ML_CleanUpChkSkip
+	; r1: rx request structure
+	; r2; end of rx request array
+	ADD	r1,r1,#ML_RxReq_sizeof	; Move on to next slot
+	CMP	r1,r2			; Reached end of table?
+	BLT	ML_CleanUpCheckReq	; No
+
+	; Finished aborting transmission and reception
+
+	LDMFD	r13!,{r0,r1,r2,r3,r4,pc}; Restore regs and return	
+
+	]	; end (hercmlink)
+
+		; ------------------------------------------------------------
+	|	; middle (hercules :LOR: activebook)
+		; ------------------------------------------------------------
+
+	; Functional prototype `microlink' interrupt is actually from
+	; transputer link 0.
+	; At present only IRQ is used for this device to reduce the 
+	; complexity. (Both tx and rx share an interrupt source, so the
+	; FIQ->IRQ downgrade would be messy.)  It would go faster if
+	; FIQ were used as well.
+ML_Interrupt
+	; in:	SVC mode; IRQs disabled; FIQs undefined.
+	;	svc_r14: current process return address
+	[ 	(newsvc)
+	;	svc_r13: FD stack (containing original SVC r13 and r14)
+	|
+	;	svc_r13: FD stack (containing original svc_r14)
+	]
+	;	All other registers must be preserved
+	;	svc_r14 and svc_r13 should be restored on exit
+
+	STMFD	sp!,{r0,r1,r2,r3,r4,r5}	; Free some work registers
+
+	; Determine which direction of link is interrupting.
+	; Note that only one direction is processed per IRQ: this is 
+	; probably unimportant.
+	MOV	r1,#ml_link_base	; link 0 hardware address
+
+        LDRB  	r0,[r1,#link_rstatus]	; rx status register
+        TST  	r0,#linkr_interrupt     ; are RX IRQs enabled
+        TSTNE  	r0,#linkr_data          ; bit set marks ready state
+	BNE	ML_Rx_Interrupt		; handle rx interrupt
+
+        LDRB    r0,[r1,#link_wstatus]	; tx status register
+        TST     r0,#linkw_interrupt     ; are TX interrupts enabled
+        TST     r0,#linkw_data          ; bit set marks ready state
+        BEQ     ML_Exit_IRQ		; no tx interrupt (shouldn't happen)
+	; drop through to tx interrupt handler
+
+	; --------------------------------------------------------------------
+ML_Tx_Interrupt
+	; A transmit interrupt is outstanding on link 0
+	; r0, r2, r3, r4, r5 available as work registers
+	; r1 = base address of link adapter hardware
+	LDR	r2,=ML_TxBuf_Ptr	; Base address of tx variables
+	LDR	r3,[r2]			; Buffer pointer in r3
+	LDR	r4,[r2,#(ML_TxBuf_End - ML_TxBuf_Ptr)]; End of buffer
+
+	; Test for zero-sized buffer / break tx wanted TBD
+
+	LDRB	r0,[r3],#1		; Get next byte & step pointer
+	STRB	r0,[r1,#link_write]	; Write byte to link device
+
+	STR	r3,[r2]			; Store updated buffer pointer
+	CMP	r3,r4			; Reached end of buffer?
+	BLT	ML_Exit_IRQ		; No: exit from IRQ
+
+	; This transmission has finished: disable write interrupt
+	MOV	r0,#0
+	STRB	r0,[r1,#link_wstatus]	; Disable write int in link chip
+
+	; Resume waiting process: first get SaveState pointer (unsetting it
+	; so break handling code cannot try to use it again).
+	LDR	r1,[r2,#(ML_TxBuf_SaveState - ML_TxBuf_Ptr)]
+	MOV	r0,#0
+	STR	r0,[r2,#(ML_TxBuf_SaveState - ML_TxBuf_Ptr)]; Unset SaveState
+	STR	r0,[r1,#SaveState_r0]	; Set r0 in resumed process to 0
+					; to indicate successful transmission
+
+	LDR	r0,=ROOT_start
+
+	; r0 = `ExecRoot' data structure
+	; r1 = pointer to SaveState of process to be restarted
+	ADD	r3,r0,#ExecRoot_queues	; base of priority 0 process queue
+
+	; Add SaveState to end of referenced queue
+	LDR	r2,[r3,#ProcessQ_tail]	; load the current tail node
+	STR	r1,[r2,#SaveState_next] ; reference the new tail node
+	STR	r1,[r3,#ProcessQ_tail]	; update tail pointer
+
+	B	ML_Exit_IRQ		; Return from IRQ
+
+	; --------------------------------------------------------------------
+	; Message reception
+	;
+ML_Rx_Interrupt
+	; A reception interrupt is outstanding on link 0
+	; r0, r2, r3, r4, r5 available as work registers
+	; r1 = base address of link adapter hardware
+	;
+	; Each message is received into the same static buffer in the 
+	; executive: this buffer's address is passed when any registered
+	; message handlers are called. When a client reception request is
+	; satisfied, the message is copied into the client's buffer.
+	; The overhead of this copy is completely insignificant for all
+	; messages except digitiser coordinates arriving at the maximum
+	; rate, and these are processed by a handler rather than reception
+	; requests anyway.
+	;
+	LDRB	r0,[r1,#link_read]	; Read data byte and clear interrupt
+
+	LDR	r2,=ML_RxBuf_Ptr	; Base address of rx variables
+	LDR	r3,[r2]			; Buffer pointer in r3
+	LDR	r4,[r2,#(ML_RxBuf_End - ML_RxBuf_Ptr)]; Buffer end
+
+	; While receiving bytes in the middle of a message, the `buffer end'
+	; pointer points to the byte after the expected end of the message.
+	; This pointer also has two special values (which will always be less
+	; than the buffer pointer):
+	;   0 when awaiting a header byte, and
+	;  -1 when awaiting the length byte of an extended message
+
+	STRB	r0,[r3],#1		; Store in buffer and step pointer
+	STR	r3,[r2]			; Store new buf ptr
+	CMP	r3,r4			; Received whole message?
+	BLT	ML_Exit_IRQ		; More to come: exit
+	BEQ	ML_MsgComplete		; This is the final byte of the msg
+
+	; Here r4 (buffer end) must have one of its special values 0 or -1
+
+	CMP	r4,#0			; Is this a header byte?
+	BNE	ML_LengthByte		; No: must be length of extended msg
+
+	; We have received a header byte: test its format
+
+	TST	r0,#MLHdr_Long		; Long or extended message?
+	BNE	ML_LongOrExtended	; Yes
+
+	; We have a short message header, or a soft break byte (all zero)
+
+	CMP	r0,#0			; Soft break byte?
+	BNE	ML_MsgComplete		; No: have complete short (1 byte) msg
+
+	; Have a soft break byte
+	!	0,"TODO: handling of received soft break byte"
+	B	ML_Exit_IRQ		; Soft break handling TBD
+
+	; Decode header byte of long or extended message, setting end pointer
+	;  r0: header byte
+	;  r2: points to ML_RxBuf_Ptr (updated)
+	;  r3: points to second byte of buffer
+ML_LongOrExtended
+	AND	r0,r0,#MLHdr_LenCode	; Extract length code
+	ADD	r0,r0,#1		; Length code now 1 - 4
+	CMP	r0,#3			; 1&2 OK, 3 means 4, 4 for extended msg
+	MOVEQ	r0,#4			; Set to 4 if code was 3
+	ADDLE	r4,r3,r0		; Set end ptr for long message
+	MVNGT	r4,#0			; Set end ptr to -1 for extended msg
+	STR	r4,[r2,#(ML_RxBuf_End - ML_RxBuf_Ptr)] ; Save end ptr
+	B	ML_Exit_IRQ		; Return from IRQ
+
+ML_LengthByte
+	; The received byte is the length byte of an extended message.
+	;
+	; r0: length byte
+	; r2: points to ML_RxBuf_Ptr (updated)
+	; r3: points to third byte of buffer
+	;
+	AND	r0,r0,#MLExt_LenMask	; Extract length
+	ADD	r0,r0,#1		; Add 1 to get number of bytes
+	ADD	r4,r3,r0		; Set end ptr for extended message
+	STR	r4,[r2,#(ML_RxBuf_End - ML_RxBuf_Ptr)] ; Save end ptr
+	B	ML_Exit_IRQ		; Return from IRQ
+
+ML_MsgComplete
+	; The buffer now contains a complete message.
+	; Disable reception interrupts while the message is processed:
+	; this should not be necessary, but offers some defence
+	; against handlers which enable interrupts.
+	; r2: points to ML_RxBuf_Ptr (updated)
+	; r4: points to byte after end of message
+	;
+	MOV	r1,#ml_link_base	; Link 0 hardware address
+	MOV	r0,#0
+	STRB	r0,[r1,#link_rstatus]	; Disable rx int while calling hdlrs
+
+	LDR	r0,=ML_RxBuffer1	; Get start of exec's rx buffer
+	MOV	r1,r4			; Put end addr in expected register
+	B	ML_ProcessRxMsg		; Use common code to process message
+					; This returns to ML_Complete_Exit
+
+ML_Complete_Exit
+	; Finished processing complete message.
+	; Reset buffer pointer and end for next message, and reenable
+	; reception interrupt.
+	LDR	r2,=ML_RxBuf_Ptr	; Base address of tx variables
+	LDR	r0,=ML_RxBuffer1	; Start of reception buffer
+	STR	r0,[r2]			; Reset ptr to start of buffer
+	MOV	r0,#0			; Set end ptr to 0 (awaiting msg hdr)
+	STR	r0,[r2,#(ML_RxBuf_End - ML_RxBuf_Ptr)]; Store end ptr
+
+	MOV	r1,#ml_link_base	; Link 0 hardware address
+	MOV	r0,#linkr_interrupt	; Rx interrupt enable bit
+	STRB	r0,[r1,#link_rstatus]	; Reenable rx interrupt
+
+	B	ML_Exit_IRQ		; Return from interrupt
+	]	; end (hercules :LOR: activebook)
+
+        ; ---------------------------------------------------------------------
+	; Code common to FP and Hercules microlink drivers
+
+	[	(fpmlink :LOR: hercmlink)
+ML_ProcessRxMsg
+	; The buffer now contains a complete message.
+	; First call any interested message handlers, then see whether
+	; the message satisfies any reception request.
+	;
+	; The break acknowledgement message from the microcontroller (MSQbreak)
+	; is treated specially. If a break has just occurred, then all
+	; other messages are discarded, and the reply to MSQbreak is 
+	; generated here. If there has not been a break, then an MSQbreak
+	; message is not expected, so no reply is issued. (However, it is
+	; treated as a normal message, so could be received by a handler
+	; or reception request.)
+	;
+	; On entry:
+	;  r0: pointer to first byte of message
+	;  r1: pointer to byte after last of message
+	;  r2,r3,r4,r5 are available as work registers
+	;
+	; This common code is not a subroutine: it exits by branching
+	; to ML_Complete_Exit.
+
+	LDRB	r2,[r0]			; Get header byte of message
+	LDR	r3,=ML_State		; Get driver's state address
+	LDR	r4,[r3]			; Get current state
+	CMP	r4,#ML_State_Normal	; If not in normal state, then discard
+	BNE	ML_ProcessMSQbreak	; all msgs except MSQbreak
+
+	; r2: message header byte
+	TST	r2,#MLHdr_Long		; Is is a long/extended msg?
+	MOVNE	r4,#MLHdr_LTypeMask	; Yes: set mask for long msg type field
+	MOVEQ	r4,#MLHdr_STypeMask	; No: set mask for short msg type field
+	AND	r2,r2,r4		; Extract the type field
+
+	; r2 now contains just the type of the message.
+	; r4 holds the mask for the message type
+	; Look through the list of message handlers.
+	LDR	r3,=ML_MsgHdlrList	; Address of start of list
+	LDR	r3,[r3]			; Pointer to first msg handler struct
+	B	ML_MHdlrLoopTest	; Jump to test at end of loop
+
+ML_MHdlrLoop
+	; r0: pointer to first byte of message
+	; r1: pointer to byte after end of message
+	; r2: type of received message (masked)
+	; r3: current message handler structure
+	; r4: mask for message type
+	LDRB	r5,[r3,#ML_MsgHdlr_MsgType]; Get type byte of message handler
+	AND	r5,r5,r4		; Mask out the non-type fields
+	CMP	r2,r5			; Is this a suitable handler?
+	BNE	ML_MHdlrSkip		; This handler doesn't want the msg
+
+	; Have found a message handler to be called.
+	; r0, r1, r2, r3, r12 and r14 may get corrupted during a standard PCS
+	; call. r9, r10 and r11 need to contain sensible values. 
+	; Save all the registers to be on the safe side.
+	STMFD	sp!,{r0,r1,r2,r3,r4,r5,r6,r7,r8,dp,sb,fp,ip,lk}
+	LDR	dp,[r3,#ML_MsgHdlr_ModTab]; Use registered module table ptr
+	MOV	fp,#&00000000		; No stack-frame structure
+	LDR	sb,=bottom_SVCStack	; Stack limit (no spare room)
+	; We call func(buf, arg);				
+	; r0 already points to buffer containing received msg
+	LDR	r1,[r3,#ML_MsgHdlr_Arg] ; Registered argument for call
+	LDR	r5,[r3,#ML_MsgHdlr_Func]; Function address
+	MOV	lk,pc			; remember return address
+	MOV	pc,r5			; call function with current mode/psr
+	; Return from message handler
+	LDMFD	sp!,{r0,r1,r2,r3,r4,r5,r6,r7,r8,dp,sb,fp,ip,lk}
+
+ML_MHdlrSkip
+	LDR	r3,[r3,#ML_MsgHdlr_Next]; Get next handler on list
+ML_MHdlrLoopTest
+	CMP	r3,#0			; Null msg handler pointer?
+	BNE	ML_MHdlrLoop		; No - process next one
+	
+	; Have called all interested message handlers.
+	; Now look through the reception requests to see if this message
+	; satisfies any of them.
+	; r0: pointer to first byte of message
+	; r1: pointer to byte after end of message
+	; r2: type of received message
+
+	LDR	r3,=ML_RxRequests	; Base of table of requests
+	LDR	r5,=ML_RxRequestsEnd	; End of table
+
+ML_CheckRxReq
+	LDR	r4,[r3,#ML_RxReq_Buf]	; Get buffer pointer
+	CMP	r4,#0
+	BEQ	ML_CheckRxSkip		; Zero => unused slot
+	LDR	r4,[r3,#ML_RxReq_Satisfied]; Has req been satisfied already?
+	CMP	r4,#0			; Zero if not satisfied
+	BNE	ML_CheckRxSkip		; Already satisfied
+	LDRB	r4,[r3,#ML_RxReq_MsgType]; Get msg type wanted (already masked)
+	CMP	r4,r2			; Same as type of recvd msg?
+	BEQ	ML_RxReqFound		; Yes - use this rx request
+
+ML_CheckRxSkip
+	ADD	r3,r3,#ML_RxReq_sizeof	; Move on to next slot
+	CMP	r3,r5			; Reached end of table?
+	BLT	ML_CheckRxReq		; No
+
+	; No rx request found
+	B	ML_Complete_Exit	; Finished with this received message
+
+ML_RxReqFound
+	; We have found an rx request which wants this message.
+	; r0: start of executive's reception buffer
+	; r1: pointer to byte after end of message
+	; r3: rx request structure
+	; r5; end of rx request array
+
+	; Copy the message into the client's buffer.
+	LDR	r2,[r3,#ML_RxReq_Buf]	; Get client buffer address
+
+ML_RxMsgCopy
+	LDRB	r4,[r0],#1		; Get byte and step pointer
+	STRB	r4,[r2],#1		; Store byte and step pointer
+	CMP	r0,r1			; Copied whole message?
+	BLT	ML_RxMsgCopy		; No
+
+	; If a process is waiting for this reception (i.e. SaveState pointer
+	; is non-null), then reschedule it and release this rx request
+	; structure.
+	; Otherwise, just mark the rx request as being satisfied.
+
+	LDR	r1,[r3,#ML_RxReq_SaveState]; Get SaveState pointer
+	CMP	r1,#0			; Is a process waiting?
+	BEQ	ML_RxMsgNoSaveState	; No
+
+	; Resume waiting process
+	LDR	r0,=ROOT_start
+
+	; r0 = `ExecRoot' data structure
+	; r1 = pointer to SaveState of process to be restarted
+	; Set r0 in resumed process to 0 to show timeout did not occur
+	MOV	r2,#0
+	STR	r2,[r1,#SaveState_r0]	; Set saved r0 to 0
+
+	; Add SaveState to end of referenced queue
+	ADD	r5,r0,#ExecRoot_queues	; base of priority 0 process queue
+	LDR	r2,[r5,#ProcessQ_tail]	; load the current tail node
+	STR	r1,[r2,#SaveState_next] ; reference the new tail node
+	STR	r1,[r5,#ProcessQ_tail]	; update tail pointer
+
+	; Mark the reception request as free 
+	; r3 points to request structure.
+	MOV	r0,#0
+	STR	r0,[r3,#ML_RxReq_Buf]	; Zero buffer marks free request slot
+	STR	r0,[r3,#ML_RxReq_SaveState]; Clear other fields for safety
+	STR	r0,[r3,#ML_RxReq_Handle]
+	STR	r0,[r3,#ML_RxReq_MsgType]
+	MVN	r0,#0
+	STR	r0,[r3,#ML_RxReq_TimeLeft]	; Set timeout to -1
+
+ML_ProcessRx_Exit
+	B	ML_Complete_Exit	; Finished with this received message
+
+ML_RxMsgNoSaveState
+	; r3: rx request structure
+	MOV	r0,#1			; Set `Satisfied' flag in req struct
+	STR	r0,[r3,#ML_RxReq_Satisfied];
+	B	ML_Complete_Exit	; Finished with this received message
+
+ML_ProcessMSQbreak
+	; The driver is not in `normal' state, and is waiting for an MSQbreak
+	; message from the microcontroller after a break.
+	; Any other message is a protocol error and is ignored.
+	; r2: message header byte
+	; r3: address of driver's state word
+	; r4: current state
+
+	[	(hercules :LOR: activebook)
+	AND	r5,r2,#MLHdr_STypeMask	; Get message type & format
+	CMP	r5,#MLHdr_MSQbreak	; Is it a break acknowledgement?
+	BNE	ML_Complete_Exit	; No: ignore it
+
+	; Generate an appropriate ASYbreak reply to the MSQbreak.
+	; Since the driver is not in `normal' state, the transmitter must
+	; be idle so the single byte message can simply be written to
+	; the tx data register. There is no need to enable tx interrupts:
+	; the next client transmission will be delayed until this 
+	; byte has been sent.
+
+	CMP	r4,#ML_State_SentBreak	; Did this end send the break?
+	MOVEQ	r4,#MLHdr_ASYbreak_local; Yes: admit that we did it
+	MOVNE	r4,#MLHdr_ASYbreak_remote; No: deny it 
+	MOV	r5,#MLI_regs		; Base addr of microlink hardware
+	STRB	r4,[r5,#MLI_TXD]	; Write msg byte to link device
+
+	MOV	r4,#ML_State_Normal	; Break protocol finished, so
+	STR	r4,[r3]			; revert to normal state
+	| ; middle (hercules :LOR: activebook)
+	; No support for break reply on FP
+	] ; end (hercules :LOR: activebook)
+
+	B	ML_Complete_Exit	; Exit
+
+	; ---------------------------------------------------------------------
+	; Routine called from clock interrupt routine (in loint.s) to see 
+	; if any microlink receptions have timed out. It is called every
+	; ML_TickInterval ticks of the main system clock.
+ML_Timer
+	; in:	SVC mode; IRQs disabled; FIQs undefined.
+	; r0:      `ExecRoot' data structure
+	; svc_r13: FD stack
+	; svc_r14: return link
+	; r1, r2, r3 and r4 may be corrupted.
+	; All other registers must be preserved.
+
+	LDR	r1,=ML_RxRequests	; Base of table of requests
+	LDR	r2,=ML_RxRequestsEnd	; End of table
+
+ML_TimerCheckReq
+	LDR	r3,[r1,#ML_RxReq_Buf]	; Get buffer pointer
+	CMP	r3,#0
+	BEQ	ML_TimerChkSkip		; Zero => unused slot
+	LDR	r3,[r1,#ML_RxReq_SaveState]; Get SaveState pointer
+	CMP	r3,#0			; Is a process waiting?
+	BEQ	ML_TimerChkSkip		; No
+	LDR	r3,[r1,#ML_RxReq_TimeLeft]; Get remaining timeout
+	CMP	r3,#0			; Negative if no timeout
+	BLT	ML_TimerChkSkip		; No timeout
+
+	; This request has an active timeout, so decrement it by
+	; the number of microseconds between calls of this routine.
+	SUBS	r3,r3,#(ML_TickInterval * TickSize); Reduce time left & check
+	STRGT	r3,[r1,#ML_RxReq_TimeLeft]; Still +ve: store remaining time
+	BGT	ML_TimerChkSkip		;              go on to next req
+
+	; The timeout on the current request has just expired.
+	; Resume the waiting process.
+	; r0: `ExecRoot' data structure
+	; r1: rx request structure
+	; r2: end of rx request array
+
+	; Add SaveState to end of referenced queue
+	LDR	r4,[r1,#ML_RxReq_SaveState]; Get SaveState pointer
+	LDR	r3,=(EC_Error+SS_Kernel+EG_Timeout+EO_Link)
+					; Set r0 in resumed process to err code
+	STR	r3,[r4,#SaveState_r0]	; to indicate timeout
+	LDR	r3,[r0,#(ExecRoot_queues + ProcessQ_tail)]; current tail node
+	STR	r4,[r3,#SaveState_next] ; reference the new tail node
+	STR	r4,[r0,#(ExecRoot_queues + ProcessQ_tail)]; update tail pointer
+
+	; Mark the reception request as free 
+	; r1 points to request structure.
+	MOV	r3,#0
+	STR	r3,[r1,#ML_RxReq_Buf]	; Zero buffer marks free request slot
+	STR	r3,[r1,#ML_RxReq_SaveState]; Clear other fields for safety
+	STR	r3,[r1,#ML_RxReq_Handle]
+	STR	r3,[r1,#ML_RxReq_MsgType]
+	MVN	r3,#0
+	STR	r3,[r1,#ML_RxReq_TimeLeft]	; Set timeout to -1
+
+ML_TimerChkSkip
+	; r0: `ExecRoot' data structure
+	; r1: rx request structure
+	; r2; end of rx request array
+	ADD	r1,r1,#ML_RxReq_sizeof	; Move on to next slot
+	CMP	r1,r2			; Reached end of table?
+	BLT	ML_TimerCheckReq	; No
+
+	; Exit from ML_Timer
+	MOV	pc,svc_r14		; Return
+	]	; end (fpmlink :LOR: hercmlink)
+
+	; ---------------------------------------------------------------------
+	; Common exit from microlink IRQ routines.
+ML_Exit_IRQ	
+	LDMFD	sp!,{r0,r1,r2,r3,r4,r5}	; Restore work regs
+	B	Return_From_IRQ		; Continue IRQ processing
+
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+	; Power Management functions:
+	; ---------------------------
+	;
+	;    o	Battery low warning
+	;	Signal hi-level process which can display suitable information
+	;	on the screen.
+	;
+	;    o  Battery OK signal
+	;	Signal hi-level process which can update the battery low
+	;	message.
+	;
+	;    o  Idle detection in Executive (no uController activity)
+	;    o  Idle request from uController (in-activity)
+	;	Save processor state and sleep (with screen enabled) until
+	;	any interrupt occurs.
+	;
+	;    o  Shut-down request from user
+	;    o  Shut-down request from uController (in-activity)
+	;    o  Emergency power-down (battery failing).
+	;	Disable all DMAs (inc. screen) and Hercules based IRQ sources
+	;	other than uController. Save processor state. Sleep until
+	;	uController wakes us.
+	;
+
+	!	0,"TODO: Power management functions to be coded"
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; JEIDA ver.4 compliance
+        ; ======================
+        ;
+        ; AB1 specific CARDs should have the following CIS information:
+        ;
+        ; Level 1:
+        ;   Device information structure (multiple areas)
+        ;       Speed   currently unused by AB1 - but required by JEIDA v.4
+        ;       Type    non-extended types only
+        ;       Size    of common memory
+        ;   Optional CIS CheckSum structure
+	;   Optional Level 1 version structure
+	;	Version number major		0x04
+	;	Version number minor		0x00
+	;	Optional Manufacturer string	ISO 646 IRV string
+	;	Optional Product Information	ISO 646 IRV string
+	;	Optional Product Information 2	ISO 646 IRV string
+	;	Optional Product Information 3	ISO 646 IRV string
+        ;
+        ; Level 2:      
+        ;   Level 2 version structure
+        ;       Structure version       0x00
+        ;       Compliance Level        0x00
+        ;       Data Index              Offset to Level 4 structures
+        ;       Reserved field          0x0000
+        ;       Vendor specific         ABC - hardware/processor identity
+        ;       CIS copies              0x01
+	;	Vendor name		"Active Book Company"
+	;	CARD information	<format type|program that initialised>
+        ;   CARD initialisation date structure (ie. when CIS created)
+        ;   Battery replacement date structure (for RAM CARDs only) 
+        ;
+        ; Level 3:
+        ;   Format structure
+        ;       Memory-like single partition (level 4 structure)
+        ;   Byte order structure
+        ;       Little-endian
+        ;       Byte 0 is LSB
+        ;   Organisation structure for each area
+        ;       ABC CARD type
+        ;          ROMITEM structure
+        ;          Helios Heap
+        ;          RAMFS structure
+        ;       ABC CARD name
+        ;          NULL terminated ASCII CARD name (perverted use of the
+	;	   data organisation string)
+        ;
+        ; Level 4:
+        ;   Multiple contiguous areas of AB1 types:
+        ;       ROM                     ROMitem structure
+        ;       FlashEPROM              ROMitem structure
+        ;       RAM (volatile)          Helios Heap
+        ;       RAM (non-volatile)      RAMFS structure
+        ;       
+        ;
+        ; NOTES: FlashEPROM, PROM and EPROM are all treated like masked-ROM.
+        ;        IO devices are not currently supported.
+        ;        DRAM is not yet supported by the hardware specification (ie.
+        ;        use of the "refresh signal).
+        ;        Battery presence/failure is present (for selecting Heap or
+        ;        RAMFS usage of RAM CARDs).
+        ;
+        ;        Hopefully FlashEPROM CARDs will contain a small section of
+        ;        ROM attribute memory, otherwise sizing FlashEPROM CARDs will
+        ;        be a nightmare.
+	;
+	;	 If the level 2 vendor specific bytes (processor identity)
+	;	 contains an unknown value, code will not be executed from
+	;	 the CARD.
+        ; ---------------------------------------------------------------------
+        ; Default CARD event handler. This is called by the microController
+        ; IRQ handler when a CARD bay door open/close event occurs.
+        ;
+        ; Read the comments in "ABClib.s" for a fuller description of the
+        ; CARD handler sub-system.
+        ;
+defaultCARDHandler
+        ; in:   SVC mode; IRQs disabled; FIQs undefined
+        ;       r0  = 0=OPENED (removal); -1=CLOSED (insertion)
+        ;       r14 = current process return address
+        ;       r13 = FD stack (containing original svc_r14 and r0)
+        ; out:  SVC mode; IRQs disabled; FIQs undefined
+        ;       r14 = current process return address
+        ;       r13 = FD stack (containing original svc_r14)
+        ; NOTE: IRQs should not be enabled during this call at the moment.
+        ;
+        ; THIS COULD TAKE A VERY LONG TIME WITH IRQs DISABLED
+        ; WE PROBABLY NEED THE INTERRUPTABLE SVC THREADS IF THE SYSTEM
+        ; IS GOING TO HAVE ANY BANDWIDTH LEFT.
+        ;
+        ; This function calls the relevant registered CARD handlers
+        ; (as defined using "CardDefineEventHandler").
+	;
+        ; This handler is called after either of two events:
+        ;
+        TEQ     r0,#&00000000
+        BNE     CARDdoor_closed
+CARDdoor_open
+        ; CASE 1 = CARD BAY DOOR OPENED (entry r0 = 0)
+        ; --------------------------------------------
+        ; At this point we do not know if the user is going to insert or
+        ; remove a CARD. We should immediately start emitting a noticeable
+        ; tone to attract the users attention to the fact that the door is
+        ; open. We then need to call ALL the CARD handlers with remove
+        ; events for ALL the slots. These handlers are exactly like direct
+        ; IRQ handlers and should execute quickly. Ideally their only function
+        ; will be to signal suitable semaphores. The processes waiting on
+        ; these semaphores should de-link any code/data that they are
+        ; referencing on the relevant CARD. They should then call either the
+        ; function "CardAcceptExtraction" to notify the system of successful
+        ; completion, or "CardRefuseExtraction" after displaying a suitable
+        ; screen message to notify failure. IF THE USER REMOVEs A CARD WHILE
+        ; THE TONE IS PRESENT THE SYSTEM IS COMPROMISED AND A FULL RESET WILL
+        ; PROBABLY BE REQUIRED.
+        ;
+
+        LDMFD   sp!,{r0}                                ; recover entry r0
+        STMFD   sp!,{r0,r1,r2,r3,r4,r5,r9,r10,r11,r12,lk}
+
+        !       0,"TODO: Start tone generation"
+
+        MOV     r4,#loc_CARD1                   ; first CARD slot to look at
+nextCARDslot_open
+        CMP     r4,#(loc_limit + 1)             ; all the CARDs checked
+        LDMCSFD sp!,{r0,r1,r2,r3,r4,r5,r9,r10,r11,r12,lk}
+        BCS     Return_From_IRQ                 ; end Exit this handler thread
+
+        ; Verify CARD presence in this slot with the hardware.
+        ; Call verifyCARD to check that the CARD is formatted correctly
+        ; and return the bitmask of area types on the CARD.
+        !       0,"TODO: CARD presence and verification to be done"
+
+        ; "ExecRoot_cardevents" references the start of the handler chain.
+        LDR     r5,=ROOT_start
+        LDR     r5,[r5,#ExecRoot_cardevents]
+nextCARDhandler_open
+        TEQ     r5,#&00000000                   ; any handlers left?
+        BEQ     nextCARDslot_open               ; and go on to the next slot
+        ; If no handler is defined then there are no CARD users, and hence
+        ; it doesn't matter if the door is open or closed. However, if a
+        ; handler is attached and the door is open, we should tell the user
+        ; to close the door so that the CARDs can be installed (This case is
+        ; handled by the higher level handler attach routines).
+        ;
+        ; r4 = slot number we are currently dealing with
+        ; r5 = "CardEvent *" of first handler
+
+        ; Call handler function with:
+        ; a1:r0     insert/removal state                        (entry r0)
+        ; a2:r1     slot number dealing with
+        ; a3:r2     bitmask of CARD type                        (derived)
+        ; dp:r9     loaded from (CardEvent *) structure
+        ; sl:r10    as current
+        ; fp:r11    frame-pointer (&00000000)
+        ; ip:r12    undefined
+        ; sp:r13    as current
+        MOV     r0,#&00000000                   ; remove event
+        MOV     r1,r5                           ; CARD slot
+        LDR     r2,[r5,#CardEvent_Type]         ; type this handler wants
+
+        LDR     dp,[r5,#CardEvent_ModTab]       ; module table
+        MOV     fp,#&00000000                   ; empty frame-pointer
+        LDR     ip,[r5,#CardEvent_Handler]      ; handler address
+        MOV     lk,pc                           ; remember return address
+        MOV     pc,ip                           ; and call handler
+
+        ; and move onto the next registered handler
+        LDR     r5,[r5,#CardEvent_Node_Next]
+        B       nextCARDhandler_open
+
+noCARDname      =       "no_card_name",&00
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+
+CARDdoor_closed
+        ; CASE 2 = CARD BAY DOOR CLOSED (entry r0 = -1)
+        ; ---------------------------------------------
+        ; We can immediately turn off the warning tone (if present), and then
+        ; call all the CARD handlers with insert events for the slots
+        ; containing CARDs of the correct type. We should then exit
+        ; immediately. (See comments attached to "RefuseCardExtraction"
+        ; for special case). The CARD hardware and contents are memory mapped.
+        ; If the hardware marks a CARD as present, a check for the CARD/ROM
+        ; header will take place. If there is no header, then it will be
+        ; assumed to be a RAM CARD. At this point, auto-sizing of the RAM
+        ; should occur, with a suitable header being written into the CARD.
+        ; Unless there is a hardware key, it will not be possible to tell the
+        ; difference between volatile and non-volatile RAM CARDs.
+
+        ; Search all slots, calling the handlers
+        LDMFD   sp!,{r0}                                ; recover entry r0
+        STMFD   sp!,{r0,r1,r2,r3,r4,r5,r9,r10,r11,r12,lk}
+
+        !       0,"TODO: turn off tone generator"
+
+        MOV     r4,#loc_CARD1                   ; first CARD slot to look at
+nextCARDslot_closed
+        CMP     r4,#(loc_limit + 1)             ; all the CARDs checked
+        LDMCSFD sp!,{r0,r1,r2,r3,r4,r5,r9,r10,r11,r12,lk}
+        BCS     Return_From_IRQ                 ; end Exit this handler thread
+
+        ; Verify CARD presence in this slot with the hardware.
+        ; Call verifyCARD to check that the CARD is formatted correctly
+        ; and return the bitmask of area types on the CARD.
+        !       0,"TODO: CARD presence and verification to be done"
+
+        ; "ExecRoot_cardevents" references the start of the handler chain.
+        LDR     r5,=ROOT_start
+        LDR     r5,[r5,#ExecRoot_cardevents]
+nextCARDhandler_closed
+        TEQ     r5,#&00000000                   ; any handlers left?
+        BEQ     nextCARDslot_closed             ; and go on to the next slot
+
+        ; Check if this handler needs to be called for this CARD type.
+        ; NO - then goto "nextCARDhandler_closed"
+
+        ; Call handler function with:
+        ; a1:r0     insert/removal state                        (entry r0)
+        ; a2:r1     slot number dealing with
+        ; a3:r2     bitmask of CARD type                        (derived)
+        ; dp:r9     loaded from (CardEvent *) structure
+        ; sl:r10    as current
+        ; fp:r11    frame-pointer (&00000000)
+        ; ip:r12    undefined
+        ; sp:r13    as current
+        MOV     r0,#&FFFFFFFF                   ; insert CARD
+        MOV     r1,r5                           ; CARD slot
+	; r2 = CARD type
+        LDR     dp,[r5,#CardEvent_ModTab]       ; module table
+        MOV     fp,#&00000000                   ; empty frame-pointer
+        LDR     ip,[r5,#CardEvent_Handler]      ; handler address
+        MOV     lk,pc                           ; remember return address
+        MOV     pc,ip                           ; and call handler
+        ; and move onto the next registered handler
+        LDR     r5,[r5,#CardEvent_Node_Next]
+        B       nextCARDhandler_closed
+
+        ; ---------------------------------------------------------------------
+        ; PC CARD access functions (see "include/abcARM/asm/PCcard.h" for full
+        ; description of PC CARD layout).
+        ; In the following AREA refers to a contiguous block of mapped memory
+        ; of a particular type. 
+        ;
+        ; NOTE: The hardware is constructed such that the attribute and
+        ;       common memory share the same address space. A hardware toggle
+        ;       must be used to switch between the memory sections. The
+        ;       attribute memory should only ever be switched-in within the
+        ;       following functions (this requires that these functions
+        ;       execute with IRQs disabled or be made hi-priority (since we
+        ;       cannot allow other threads to be activated)).
+
+		GBLL	carddebug
+carddebug	SETL	{FALSE}		; Output debugging messages
+
+        [       (activebook)
+        ; ---------------------------------------------------------------------
+	; This code should possibly be moved into one of the "loswiX.s" files
+	; (Since that is where all the other SWI handlers live).
+local_VerifyCARD
+	STMFD	sp!,{r11,r12}		; work registers
+	; This entry assumes IRQs are already disabled
+	B	over_VerifyCARDentry	; jump over the SWI entry code
+code_exec_VerifyCARD
+        ; in:   r0  = CARD slot number
+	;	r11 = undefined (work register)
+	;	r12 = undefined (work register)
+	;	r13 = FD stack (containing entry r11 and r12)
+	;	r14 = callers return address
+        ; out:  V clear : r0 = bitmask of AREA types within the CARD
+        ;                 r1 = number of AREAs in CARD
+        ;       V set   : r0 = "CARDerr" error code
+        ;                 r1 = undefined
+        ;
+        ; This function can return:
+        ;       CARDerr_badslot		- invalid slot number
+	;	CARDerr_nocard		- no CARD present in the slot
+        ;       CARDerr_badformat	- invalid CIS
+        ;       CARDerr_badsum		- failed checksum on CIS
+        ;
+        ; This code is NOT interested in CARD hardware information (devices,
+        ; speed, programming etc.) only in spotting valid JEIDA ver.4 CARDs and
+        ; discovering the CARD AREAs.
+
+	; Disable IRQs (or much better, make hi-priority).
+	; This is required since we do not want any other threads accessing
+	; the CARD memory space whilst we have the attribute memory mapped
+	; in.
+	MOV	r12,lk			; preserve "lk" register
+	BL	local_disableIRQs	; disable IRQs
+	MOV	lk,r12			; recover "lk" register
+
+over_VerifyCARDentry
+        CMP     r0,#&01                 ; 0 is an invalid slot number
+        RSBGES  r1,r0,#CARD_limit       ; and check against the upper limit
+        MOVLT   r0,#CARDerr_badslot     ; invalid CARD slot number
+	LDMLTFD	sp!,{r11,r12}		; recover work registers
+        ORRLTS  pc,lk,#Vbit             ; return with V set
+
+        STMFD   sp!,{r2,r3,r4}		; preserve work registers
+
+	; At the moment the hardware only has support for controlling a single
+	; CARD slot (ie. CARD detect, WPS state, voltage level, etc.). This
+	; code may require changing in the future.
+	MOV	r3,#CONTROL_base	; base of hardware control registers
+	LDRB	r1,[r3,#STATUS_reg]	; various status flags
+	TST	r1,#STATUS_MCD		; CARD detection (active low)
+        MOVNE   r0,#CARDerr_nocard      ; CARD not present in slot
+        LDMNEFD sp!,{r2,r3,r4,r11,r12}	; recover work registers
+        ORRNES  pc,lk,#Vbit             ; and return V set
+
+        ; We have validated the CARD slot number range above
+        ADRL    r2,(CARD_address_table - word)
+        LDR     r2,[r2,r0,LSL #2]       ; r2 = base address of CARD slot r0
+	[	(carddebug)
+	STMFD	sp!,{r0,lk}
+	ADR	r0,ccctxt
+	BL	local_Output
+	MOV	r0,r2
+	BL	local_WriteHex8
+	BL	local_NewLine
+	LDMFD	sp!,{r0,lk}
+	B	cccovr
+ccctxt	=	"Card base address = &",&00
+	ALIGN
+cccovr
+	]
+
+	; We have also checked that a CARD is present in this slot
+        MOV     r0,#&00000000           ; bitmask of CARD types
+        MOV     r1,#&00000000           ; number of AREAs in the CARD
+
+	; Switch to attribute memory: Note: we can update the soft-copy and
+	; hardware register directly since we are currently executing with
+	; IRQs disabled.
+	LDR	r11,=hardware_regs	; base of soft-copies
+	LDRB	r4,[r11,#Control_data]	; control register soft-copy
+	ORR	r4,r4,#CONTROL_MCR	; bit set to access attribute memory
+	STRB	r4,[r11,#Control_data]	; updating the soft-copy
+	STRB	r4,[r3,#CONTROL_reg]	; and the TRUE copy
+
+        ; A "CISTPL_DEVICE" structure MUST be the first descriptor in the
+        ; attribute memory. This contains a "Device Info" structure for
+        ; each distinct AREA within a CARD.
+        LDRB    r3,[r2],#&02            ; "even" bytes only in attribute memory
+        TEQ     r3,#CISTPL_DEVICE       ; structure we are looking for
+        MOVNE   r0,#CARDerr_badformat   ; invalid CARD format
+        LDMNEFD sp!,{r2,r3,r4,r11,r12}	; recover work registers
+        ORRNES  pc,lk,#Vbit             ; and return V set
+
+        LDRB    r3,[r2],#&02            ; load the link to the next structure
+        TEQ     r3,#&FF                 ; check for CIS chain end
+        ADDNE   r12,r2,r3,LSL #1        ; address the next CIS entry
+        MOVEQ   r12,#&00000000          ; no next CIS entry
+verifyCARD_loop
+	[	(carddebug)
+	STMFD	sp!,{r0,lk}
+	ADR	r0,eeetxt
+	BL	local_Output
+	MOV	r0,r12
+	BL	local_WriteHex8
+	BL	local_NewLine
+	LDMFD	sp!,{r0,lk}
+	B	eeeovr
+eeetxt	=	"Link to address &",&00
+	ALIGN
+eeeovr
+	]
+
+        CMP     r2,r12                  ; check for the end of this structure
+        BCS     verifyCARD_loop_completed
+
+        LDRB    r4,[r2],#&02            ; load the DeviceID byte
+        TEQ     r4,#&FF                 ; Device Info list terminator
+        BEQ     verifyCARD_loop_completed
+
+	[	(carddebug)
+	STMFD	sp!,{r0,lk}
+	ADR	r0,dddtxt
+	BL	local_Output
+	MOV	r0,r4
+	BL	local_WriteHex8
+	BL	local_NewLine
+	LDMFD	sp!,{r0,lk}
+	B	dddovr
+dddtxt	=	"DeviceTypeSpeed byte = &",&00
+	ALIGN
+dddovr
+	]
+
+        ; r4 = Device ID bitfield
+        ; Even though we are not interested in the speed information, we must
+        ; check for speed extension bytes (and step over them).
+        AND     r11,r4,#DeviceSpeed_mask
+        [       (DeviceSpeed_shift <> 0)        ; in-case the spec. changes
+        MOV     r11,r11,LSR #DeviceSpeed_shift
+        ]
+        TEQ     r11,#DS_Extend          ; check for speed extension byte
+        BNE     verifyCARD_devicetype
+        ; load DeviceSpeed extension bytes
+verifyCARD_devicespeed_loop
+        CMP     r2,r12                  ; check for the end of this structure
+        BCS     verifyCARD_loop_completed
+        LDRB    r11,[r2],#&02
+        TST     r11,#SpeedExtend_bit     
+        BNE     verifyCARD_devicespeed_loop     ; another DeviceSpeed byte
+        ; and fall through to process the device type
+verifyCARD_devicetype
+        [       (DeviceType_shift <> 0)	; in-case the specification changes
+        MOV     r11,r4,LSR #DeviceType_shift
+        ]
+        AND     r11,r11,#DeviceType_mask
+        TEQ     r11,#DT_EXTEND
+        BNE     verifyCARD_devicetype_process
+        ; Step over DeviceType extension bytes. We ignore unrecognised types
+        ; (ie. do not set any bits in the bitmask), but we must still count
+        ; them.
+verifyCARD_devicetype_loop
+        CMP     r2,r12                  ; check for the end of this structure
+        BCS     verifyCARD_loop_completed
+
+        LDRB    r11,[r2],#&02
+        TST     r11,#TypeExtend_bit      
+        BNE     verifyCARD_devicetype_loop      ; another DeviceType byte
+
+        MOV     r11,#DT_Null            ; we do not know the type of this area
+        ; and fall through to process the device type
+verifyCARD_devicetype_process
+        ; set the relevant bit in the bitmask (apart from DT_Null)
+        TEQ     r11,#DT_Null            ; since we don't know its type
+        MOVNE   r3,#&01                 ; single bit
+        ORRNE   r0,r0,r3,LSL r11        ; r0 = r0 | (1 << r11)
+verifyCARD_devicesize
+        CMP     r2,r12                  ; check for the end of this structure
+        BCS     verifyCARD_loop_completed
+        LDRB    r4,[r2],#&02            ; load the DeviceSize byte
+        ; r4 = Device Size bitfield (which we don't care about for the moment)
+
+        ADD     r1,r1,#&01              ; increment the area count
+        B       verifyCARD_loop         ; and go around for the next area
+
+verifyCARD_loop_completed
+        MOVS    r2,r12                  ; address the next CIS entry
+        LDMEQFD sp!,{r2,r3,r4,r11,r12}	; no more CIS entries
+        BICEQS  pc,lk,#Vbit             ; return with V clear
+
+        [       {FALSE}
+        ; Check the rest of the CIS chain.
+        ; Switch to "common" memory if a suitable LONG_LINK is found.
+        ; If there is a "CISTPL_CHECKSUM" structure then validate.
+        ... todo ...
+        ]
+	!	0,"TODO: switch CARD back to common memory"
+
+        LDMFD   sp!,{r2,r3,r4,r11,r12}	; recover work registers
+        BICS    pc,lk,#Vbit             ; return with V clear
+
+	; ---------------------------------------------------------------------
+	; The internal FlashEPROM address is held in the word before the
+	; normal table start, since its ID is not in the CARD slot range.
+
+	&	FLASH_base		; start of internal FlashEPROM image
+CARD_address_table
+	&	CARD_base		; start of CARD_size area for slot 1
+CARD_address_table_end
+        ASSERT  (((CARD_address_table_end-CARD_address_table)/4) = CARD_limit)
+
+        ; ---------------------------------------------------------------------
+	|	; middle (activebook)
+        ; ---------------------------------------------------------------------
+	; We only provide CARD support on true Active Book hardware
+code_exec_VerifyCARD
+	MOV	r0,#CARDerr_badformat
+	LDMFD	sp!,{r11,r12}		; recover work registers
+	ORRS	pc,lk,#Vbit		; return with V set
+        ]       ; (activebook)
+
+        ; ---------------------------------------------------------------------
+
+	[	(activebook)
+	; Another SWI that should possibly be moved into a "loswiX.s" file.
+local_CARDAreaInfo
+	STMFD	sp!,{r11,r12}		; work registers
+	; This entry assumes IRQs are already disabled
+	B	over_CARDAreaInfo_entry	; jump over the SWI entry code
+code_exec_CARDAreaInfo
+        ; in:   r0  = CARD slot number
+	;	r1  = AREA number to examine
+	;	r11 = undefined (work register)
+	;	r12 = undefined (work register)
+	;	r13 = FD stack (containing entry r11 and r12)
+	;	r14 = callers return address
+        ; out:  V clear : r0 = bitmask of AREA type (single bit)
+        ;                 r1 = size of the AREA in bytes
+	;		  r2 = base address of the AREA
+        ;       V set   : r0 = "CARDerr" error code
+        ;                 r1 = undefined
+	;		  r2 = undefined
+        ;
+        ; This function can return:
+        ;       CARDerr_badslot		- invalid slot number
+	;	CARDerr_nocard		- no CARD present in the slot
+        ;       CARDerr_badformat	- invalid CIS
+        ;       CARDerr_badsum		- failed checksum on CIS
+        ;
+
+	[	(carddebug)
+	STMFD	sp!,{r0,lk}
+	ADR	r0,CAItxta
+	BL	local_Output
+	LDMFD	sp,{r0}
+	BL	local_WriteHex8
+	ADR	r0,CAItxtb
+	BL	local_Output
+	MOV	r0,r1
+	BL	local_WriteHex8
+	BL	local_NewLine
+	LDMFD	sp!,{r0,lk}
+	B	CAIovr
+CAItxta	=	"exec_CARDAreaInfo: r0 (slot) = &",&00
+CAItxtb	=	" r1 (area) = &",&00
+	ALIGN
+CAIovr
+	]
+
+	; Disable IRQs (or much better, make hi-priority).
+	; This is required since we do not want any other threads accessing
+	; the CARD memory space whilst we have the attribute memory mapped
+	; in.
+	MOV	r12,lk			; preserve "lk" register
+	BL	local_disableIRQs	; disable IRQs
+	MOV	lk,r12			; recover "lk" register
+
+over_CARDAreaInfo_entry
+
+        CMP     r0,#&01                 ; 0 is an invalid slot number
+        RSBGES  r12,r0,#CARD_limit      ; and check against the upper limit
+        MOVLT   r0,#CARDerr_badslot     ; invalid CARD slot number
+	LDMLTFD	sp!,{r11,r12}		; recover work registers
+        ORRLTS  pc,lk,#Vbit             ; return with V set
+
+        STMFD   sp!,{r3,r4}		; preserve work registers
+
+	; At the moment the hardware only has support for controlling a single
+	; CARD slot (ie. CARD detect, WPS state, voltage level, etc.). This
+	; code may require changing in the future.
+	MOV	r3,#CONTROL_base	; base of hardware control registers
+	LDRB	r11,[r3,#STATUS_reg]	; various status flags
+	TST	r11,#STATUS_MCD		; CARD detection (active low)
+        MOVNE   r0,#CARDerr_nocard      ; CARD not present in slot
+        LDMNEFD sp!,{r3,r4,r11,r12}	; recover work registers
+        ORRNES  pc,lk,#Vbit             ; and return V set
+
+        ; We have validated the CARD slot number range above
+        ADRL    r4,(CARD_address_table - word)
+        LDR     r4,[r4,r0,LSL #2]       ; r4 = base address of CARD slot r0
+	; We have also checked that a CARD is present in this slot
+	MOV	r0,#1			; number of AREA reached
+					; r1 = number of AREA we want
+
+	; Switch to attribute memory: Note: we can update the soft-copy and
+	; hardware register directly since we are currently executing with
+	; IRQs disabled.
+	LDR	r11,=hardware_regs	; base of soft-copies
+	LDRB	r2,[r11,#Control_data]	; control register soft-copy
+	ORR	r2,r2,#CONTROL_MCR	; bit set to access attribute memory
+	STRB	r2,[r11,#Control_data]	; updating the soft-copy
+	STRB	r2,[r3,#CONTROL_reg]	; and the TRUE copy
+
+        ; A "CISTPL_DEVICE" structure MUST be the first descriptor in the
+        ; attribute memory. This contains a "Device Info" structure for
+        ; each distinct AREA within a CARD.
+        LDRB    r3,[r4],#&02            ; "even" bytes only in attribute memory
+        TEQ     r3,#CISTPL_DEVICE       ; structure we are looking for
+        MOVNE   r0,#CARDerr_badformat   ; invalid CARD format
+        LDMNEFD sp!,{r3,r4,r11,r12}	; recover work registers
+        ORRNES  pc,lk,#Vbit             ; and return V set
+
+        LDRB    r3,[r4],#&02            ; load the link to the next structure
+        TEQ     r3,#&FF                 ; check for CIS chain end
+        ADDNE   r12,r4,r3,LSL #1        ; address the next CIS entry
+        MOVEQ   r12,#&00000000          ; no next CIS entry
+AreaInfo_loop				; process the CISTPL_DEVICE structure
+        CMP     r4,r12                  ; check for the end of this structure
+        BCS     AreaInfo_skip_loop_completed
+
+        LDRB    r2,[r4],#&02            ; load the DeviceID byte
+        TEQ     r2,#&FF                 ; Device Info list terminator
+        BEQ     AreaInfo_loop_completed
+
+	; r0 = current AREA number
+	; r1 = AREA we are looking for
+        ; r2 = Device ID bitfield
+
+	TEQ	r0,r1			; is this the AREA we are interested in
+	BEQ	AreaInfo_process
+AreaInfo_skip
+        ; Even though we are not interested in the speed information, we must
+        ; check for speed extension bytes (and step over them).
+        AND     r11,r2,#DeviceSpeed_mask
+        [       (DeviceSpeed_shift <> 0)        ; in-case the spec. changes
+        MOV     r11,r11,LSR #DeviceSpeed_shift
+        ]
+        TEQ     r11,#DS_Extend          ; check for speed extension byte
+        BNE     AreaInfo_devicetype_skip
+        ; load DeviceSpeed extension bytes
+AreaInfo_devicespeed_skip_loop
+        CMP     r4,r12                  ; check for the end of this structure
+        BCS     AreaInfo_skip_loop_completed
+
+        LDRB    r11,[r4],#&02
+        TST     r11,#SpeedExtend_bit     
+        BNE     AreaInfo_devicespeed_skip_loop	; another DeviceSpeed byte
+AreaInfo_devicetype_skip
+        [       (DeviceType_shift <> 0)	; in-case the specification changes
+        MOV     r11,r2,LSR #DeviceType_shift
+        ]
+        AND     r11,r11,#DeviceType_mask
+        TEQ     r11,#DT_EXTEND
+        BNE     AreaInfo_devicetype_skip_over
+        ; Step over DeviceType extension bytes. We ignore unrecognised types
+        ; (ie. do not set any bits in the bitmask), but we must still count
+        ; them.
+AreaInfo_devicetype_skip_loop
+        CMP     r4,r12                  ; check for the end of this structure
+        BCS     AreaInfo_skip_loop_completed
+
+        LDRB    r11,[r4],#&02
+        TST     r11,#TypeExtend_bit      
+        BNE     AreaInfo_devicetype_skip_loop	; another DeviceType byte
+AreaInfo_devicetype_skip_over
+        CMP     r4,r12                  ; check for the end of this structure
+        BCS     AreaInfo_skip_loop_completed
+
+        LDRB    r2,[r4],#&02            ; load the DeviceSize byte
+        ADD     r0,r0,#&01              ; increment the AREA count
+        B       AreaInfo_loop           ; and go around for the next area
+
+AreaInfo_skip_loop_completed
+	; The CISTPL_DEVICE structure has ended prematurely
+	MOV	r0,#CARDerr_badformat	; bad CIS data
+	LDMFD	sp!,{r3,r4,r11,r12}
+        ORRS    pc,lk,#Vbit             ; return with V set
+
+AreaInfo_loop_completed
+	; The CISTPL_DEVICE structure has ended without us finding our AREA
+	MOV	r0,#CARDerr_badarea	; CIS AREA not found
+	LDMFD	sp!,{r3,r4,r11,r12}
+        ORRS    pc,lk,#Vbit             ; return with V set
+
+AreaInfo_process			; process the desired AREA information
+	; r0  = AREA number count
+	; r1  = AREA number we are looking for (should be same as r0)
+	; r2  = workspace (undefined)
+	; r3  = TPL_LINK value for the CISTPL_DEVICE structure
+	; r4  = current attribute memory address (next byte)
+	; r11 = workspace (undefined)
+	; r12 = calculated end address of the CISTPL_DEVICE structure
+
+	[	(carddebug)
+	MOV	r11,lk
+	ADR	r0,CAItxt2
+	BL	local_Output
+	MOV	lk,r11
+	B	CAIovr2
+CAItxt2	=	"AreaInfo_process: AREA numbers matched",&0A,&00
+	ALIGN
+CAIovr2
+	]
+
+        ; Even though we are not interested in the speed information, we must
+        ; check for speed extension bytes (and step over them).
+        AND     r11,r2,#DeviceSpeed_mask
+        [       (DeviceSpeed_shift <> 0)        ; in-case the spec. changes
+        MOV     r11,r11,LSR #DeviceSpeed_shift
+        ]
+        TEQ     r11,#DS_Extend          ; check for speed extension byte
+        BNE     AreaInfo_devicetype_process
+AreaInfo_devicespeed_loop
+        CMP     r4,r12                  ; check for the end of this structure
+        BCS     AreaInfo_skip_loop_completed
+
+        LDRB    r11,[r4],#&02
+        TST     r11,#SpeedExtend_bit     
+        BNE     AreaInfo_devicespeed_loop	; another DeviceSpeed byte
+AreaInfo_devicetype_process
+        [       (DeviceType_shift <> 0)
+        MOV     r11,r2,LSR #DeviceType_shift
+        ]
+        AND     r11,r11,#DeviceType_mask
+        TEQ     r11,#DT_EXTEND
+        BNE     AreaInfo_devicetype_found
+        ; Step over DeviceType extension bytes. We ignore unrecognised types
+        ; (ie. do not set any bits in the bitmask), but we must still count
+        ; them.
+AreaInfo_devicetype_loop
+        CMP     r4,r12                  ; check for the end of this structure
+        BCS     AreaInfo_skip_loop_completed
+
+        LDRB    r11,[r4],#&02
+        TST     r11,#TypeExtend_bit      
+        BNE     AreaInfo_devicetype_loop	; another DeviceType byte
+AreaInfo_devicetype_found
+        ; set the relevant bit in the bitmask (apart from DT_Null)
+        TEQ     r11,#DT_Null            ; since we don't know its type
+        MOVNE   r3,#&01                 ; single bit
+	MOVNE	r0,r3,LSL r11		; in the correct mask position
+
+        CMP     r4,r12                  ; check for the end of this structure
+        BCS     AreaInfo_skip_loop_completed
+
+        LDRB    r11,[r4],#&02            ; load the DeviceSize byte
+	AND	r1,r11,#SizeMantissa_mask		; r1 = MT
+	ADD	r1,r1,#(1 :SHL: SizeMantissa_shift)	; r1 = MT + 1
+	ASSERT	(SizeMantissa_shift <= 9)		; for following
+	MOV	r1,r1,LSL #(9 - SizeMantissa_shift)	; r1 = (MT + 1) * 512
+	AND	r11,r11,#SizeExponent_mask		; r11 = EXP
+	ASSERT	(SizeExponent_shift <= 1)		; for following
+	MOV	r11,r11,LSL #(1 - SizeExponent_shift)	; r11 = EXP * 2
+	MOV	r3,#&01
+	MOV	r11,r3,LSL r11
+	MUL	r1,r11,r1
+	[	{TRUE}
+	; -- cheat on the data AREA base address --
+	; -- it should actually be held in information in the CIS --
+	BIC	r1,r1,#(word - 1)	; word-align the AREA size (down)
+	ADD	r2,r12,#(word - 1)	; word-align the AREA address (up)
+	BIC	r2,r2,#(word - 1)
+	|
+	... we do not yet calculate the correct starting offset ...
+	]
+
+	[	{FALSE}
+	... this code needs to take into account the CIS structure ...
+	... when calculating the AREA start and size               ...
+	]
+
+	!	0,"TODO: switch CARD back to common memory"
+	; r0 = bitmask of AREA type (single bit)
+	; r1 = AREA size in bytes
+	; r2 = AREA base address
+        LDMFD   sp!,{r3,r4,r11,r12}	; recover work registers
+        BICS    pc,lk,#Vbit             ; return with V clear
+
+        ; ---------------------------------------------------------------------
+	|	; middle (activebook)
+        ; ---------------------------------------------------------------------
+	; We only provide CARD support on true Active Book hardware
+code_exec_CARDAreaInfo
+	MOV	r0,#CARDerr_badformat
+	LDMFD	sp!,{r11,r12}		; recover work registers
+	ORRS	pc,lk,#Vbit		; return with V set
+	]	; (activebook)
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        LNK     loswi1.s
+@

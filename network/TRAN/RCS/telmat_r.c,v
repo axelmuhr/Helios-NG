@@ -1,0 +1,525 @@
+head	1.2;
+access;
+symbols
+	Helios1_3:1.2
+	Helios13_beta:1.2
+	Helios1_2_2_Fault:1.2
+	Helios1_2_2_Native:1.2
+	Helios1_2_2_native_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	90.11.25.19.55.05;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.13.12.51.08;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@These drivers now work, and have been tested on a real T.Node
+@
+text
+@/*------------------------------------------------------------------------
+--									--
+--			H E L I O S					--
+--			-----------					--
+--									--
+--		Copyright (C) 1990, Perihelion Software Ltd.		--
+--		Copyright (C) 1990, Telmat Informatique			--
+--			All Rights Reserved.				--
+--									--
+--	telmat_ra.c							--
+--		Reset/analyse driver for the Telmat T.Node		--
+--									--
+--	Authors : BLV, 15.8.90						--
+--		  Caroline Burrer, Telmat Informatique			--
+--									--
+------------------------------------------------------------------------*/
+
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/TRAN/RCS/telmat_r.c,v 1.1 90/09/13 12:51:08 bart Exp Locker: bart $";
+
+#define	VersionNumber	"1.00"
+
+#pragma -s1		/* switch off stack checking			*/
+#pragma -f0		/* switch off vector stack			*/
+#pragma -g0		/* and do not put the names into the code	*/
+
+#include <syslib.h>
+#include <device.h>
+#include <codes.h>
+#include <root.h>
+#include <gsp.h>
+#include <module.h>
+#include <stdarg.h>
+#include <string.h>
+#include "private.h"
+#include "rmlib.h"
+#include "netaux.h"
+
+#ifdef Malloc
+#undef Malloc
+#endif
+
+#define		ControlStream	Spare[0]
+#define		Prefix		Spare[1]
+#define		TC_Prefix	0x0001	/* from tcontrol.h */
+#define		TC_Reset	0x0004
+#define		TC_Analyse	0x0005
+/**
+*** Machine independent routines.
+**/
+static void	DeviceOperate(DCB *, DriverRequest *);
+static word	DeviceClose(DCB *);
+
+/**
+*** Machine specific routines
+**/
+static void	driver_Initialise(	NetworkDCB *, DriverRequest *);
+static void	driver_Reset(		NetworkDCB *, DriverRequest *);
+static void	driver_Analyse(		NetworkDCB *, DriverRequest *);
+static void	driver_TestReset(	NetworkDCB *, DriverRequest *);
+static void	driver_Boot(		NetworkDCB *, DriverRequest *);
+static void	driver_ConditionalReset(NetworkDCB *, DriverRequest *);
+
+DCB	*DevOpen(Device *dev, NetworkDCB *network_dcb)
+{
+  network_dcb->DCB.Device	= dev;
+  network_dcb->DCB.Operate	= &DeviceOperate;
+  network_dcb->DCB.Close	= &DeviceClose;
+  return(&(network_dcb->DCB));  
+}
+
+static void DeviceOperate(DCB *device, DriverRequest *request)
+{ NetworkDCB	*network_dcb = (NetworkDCB *) device;
+
+  switch(request->FnRc)
+   {
+   	case	ND_Initialise	: 
+   		driver_Initialise(network_dcb, request); break;
+	case	ND_Reset	:
+		driver_Reset(network_dcb, request); break;
+	case	ND_Analyse	:
+		driver_Analyse(network_dcb, request); break;
+	case	ND_TestReset	:
+		driver_TestReset(network_dcb, request); break;
+	case	ND_Boot		:
+		driver_Boot(network_dcb, request); break;	
+	case	ND_ConditionalReset :
+		driver_ConditionalReset(network_dcb, request); break;
+	default	:
+		request->FnRc = EC_Error + SS_NetServ + EG_WrongFn;
+   }
+}
+
+static word DeviceClose(DCB *device)
+{ NetworkDCB	*network_dcb = (NetworkDCB *) device;
+  Stream	*controller  = (Stream *) network_dcb->ControlStream;
+  if (controller ne Null(Stream)) Close(controller);
+  return(Err_Null);
+}
+
+/**
+*** Access to routines in the network server, if needed
+**/
+static void driver_report(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+  
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->report))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+static void driver_fatal(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+  
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->fatal))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+#if 0	/* Not needed in this driver, for now */
+static RmProcessor driver_LookupProcessor(NetworkDCB *device, char *name)
+{ RmNetwork	Network = device->Net;
+  NetworkFuncs	*Functions  = device->Functions;
+  word		temp;
+  
+  temp = (*(Functions->LookupProcessor))(Network, name);
+  return((RmProcessor) temp);
+}
+
+static word driver_rexec(NetworkDCB *device, RmProcessor processor, 
+	Object *code, Environ *env, word delay)
+{ NetworkFuncs	*Functions	= device->Functions;
+  word		rc;
+  
+  rc = (*(Functions->rexec))(processor, code, env, delay);
+  return(rc);
+}
+#endif
+
+/**
+*** Initialisation. First of all it is necessary to open a stream to the
+*** /Tcontrol server, otherwise nothing can be done. For now it is
+*** necessary to obtain a prefix number for this network server, though
+*** hopefully this will disappear eventually. Then every processor is
+*** initialised with an sid number to match the old network server way of
+*** doing things.
+**/
+
+static	void	initialise_aux1(RmProcessor, int *, NetworkDCB *);
+static	word	determine_prefix(Stream *, NetworkDCB *);
+
+static void	driver_Initialise(NetworkDCB *device, DriverRequest *request)
+{ int			sequence_number = 1;
+  RmHardwareFacility	*hardware;  
+  Stream		*controller;
+  Object		*control_obj;
+  int			i;
+      
+  driver_report(device, "telmat_ra.d driver version %s", VersionNumber);
+
+  control_obj = Locate(Null(Object), "/Tcontrol");
+  if (control_obj eq Null(Object))
+   driver_fatal(device, "telmat_ra.d driver, failed to locate /Tcontrol");
+
+  controller = Open(control_obj, Null(char), O_ReadOnly);
+  if (controller eq Null(Stream))
+   driver_fatal(device,
+   		"telmat_ra.d driver, failed to open /Tcontrol, fault %x", 
+		Result2(control_obj));
+
+  device->ControlStream	= (int) controller;
+
+  device->Prefix	= determine_prefix(controller, device);
+  
+  hardware = device->HardwareFacility;
+  if (strlen(hardware->Option) ne 0)
+   driver_report(device, "telmat_ra.d driver, ignoring option %s", 
+   		hardware->Option);
+  for (i = 0; i < hardware->NumberProcessors; i++)
+   { RmProcessor Processor = hardware->Processors[i];
+     initialise_aux1(Processor, &sequence_number, device);
+   }   
+   
+  request->FnRc = Err_Null;
+}
+
+/**
+*** For every processor, figure out an sid.
+**/
+static void	initialise_aux1(RmProcessor Processor, int *sequence_number,
+		NetworkDCB *device)
+{ ProcessorEntry	*proc_entry;
+  int			i;
+        
+  if (RmGetProcessorPurpose(Processor) eq RmP_IO) return;
+  if (Processor eq device->RootProcessor) return;
+  
+ 	/* find the correct driver */
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+  for (i = 0; i < proc_entry->NumberDrivers; i++)
+   if (proc_entry->DriverEntry[i].Hardware eq device->HardwareFacility)
+    { 
+ 	/* The telmat driver offers full reset over all its processors	*/
+      proc_entry->DriverEntry[i].Flags |= DriverFlags_DefiniteReset;
+
+ 	/* It is necessary to determine an id matching the old sid.	*/
+      if (Processor eq device->RootProcessor)
+       proc_entry->DriverEntry[i].Aux1 = 0;
+	/* Check for the special boards which are given special id's	*/
+	/* This is horrible.						*/
+      elif (RmIsAProcessorAttribute(Processor, "MEM0") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 200;
+      elif (RmIsAProcessorAttribute(Processor, "MEM1") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 201;
+      elif (RmIsAProcessorAttribute(Processor, "MEM2") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 202;
+      elif (RmIsAProcessorAttribute(Processor, "MEM3") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 203;
+      elif (RmIsAProcessorAttribute(Processor, "SPC0") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 210;
+      elif (RmIsAProcessorAttribute(Processor, "SPC1") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 211;
+      elif (RmIsAProcessorAttribute(Processor, "SPC2") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 212;
+      else
+       { proc_entry->DriverEntry[i].Aux1 = *sequence_number;
+         *sequence_number += 1;
+       }
+      proc_entry->DriverEntry[i].Aux1 += device->Prefix;
+      break;
+    }              
+}
+
+/**
+*** Given a name such as Cluster1, determinate a network prefix. Hopefully
+*** this will disappear soon.
+**/
+
+static word	determine_prefix(Stream	*control, NetworkDCB *device)
+{ char		*name = "1";
+  MCB		mcb;
+  word		rc;
+  word		result;
+  
+  mcb.MsgHdr.Dest	= control->Server;
+  mcb.MsgHdr.Reply	= control->Reply;
+  mcb.MsgHdr.FnRc	= FC_Private + TC_Prefix;
+  mcb.MsgHdr.Flags	= MsgHdr_Flags_preserve;
+  mcb.MsgHdr.DataSize	= strlen(name) + 1;
+  mcb.MsgHdr.ContSize	= 0;
+  mcb.Timeout		= 20 * OneSec;
+  mcb.Data		= name;
+  rc = PutMsg(&mcb);
+  if (rc ne Err_Null)
+   driver_fatal(device,
+   	 "telmat_ra.d, failed to communicate with /Tcontrol, fault %x", rc);
+
+  mcb.MsgHdr.Dest	= control->Reply;
+  mcb.Timeout		= 20 * OneSec;
+  mcb.Data		= (BYTE *) &result;
+  rc = GetMsg(&mcb);
+  if (rc < Err_Null)
+   driver_fatal(device,
+   	"telmat_ra.d, failed to communicate with /Tcontrol, fault %x", rc);
+  return(result);
+}
+
+/**
+*** Reset involves sending a message to the /Tcontrol device.
+**/
+static void	driver_Reset(NetworkDCB *device, DriverRequest *request)
+{ MCB			mcb;
+  Port			reply		= NewPort();
+  WORD			vec[10];
+  WORD			*real_vec	= vec;
+  int			i, j;
+  int			retries;
+  Stream		*controller	= (Stream *) device->ControlStream;
+  RmHardwareFacility	*hardware	= device->HardwareFacility;
+
+  if (request->NumberProcessors > 10)
+   { real_vec = (WORD *) Malloc(sizeof(WORD) * request->NumberProcessors);
+     if (real_vec eq Null(WORD))
+      { request->FnRc = EC_Error + SS_NetServ + EG_NoMemory + EO_Message;
+        goto done;
+      }
+   }
+  for (i = 0; i < request->NumberProcessors; i++)
+   { RmProcessor	Processor  = request->Processor[i];
+     ProcessorEntry	*proc_entry;
+     proc_entry  = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+     for (j = 0; j < proc_entry->NumberDrivers; j++)
+      if (proc_entry->DriverEntry[j].Hardware eq hardware)   
+       real_vec[i] = proc_entry->DriverEntry[j].Aux1 - 1;
+      }
+
+  for (retries = 0; retries < 2; retries++)
+   { mcb.Data			= (BYTE *) real_vec;
+     mcb.Control		= Null(WORD);
+     mcb.Timeout		= 10 * OneSec;
+     mcb.MsgHdr.DataSize	= sizeof(WORD) * request->NumberProcessors;
+     mcb.MsgHdr.ContSize	= 0;
+     mcb.MsgHdr.Flags		= MsgHdr_Flags_preserve;
+     mcb.MsgHdr.Dest		= controller->Server;
+     mcb.MsgHdr.Reply		= reply;
+     mcb.MsgHdr.FnRc		= FC_Private + TC_Reset;
+     if ((request->FnRc	= PutMsg(&mcb)) < Err_Null)
+       { ReOpen(controller); continue; }
+     mcb.MsgHdr.Dest		= mcb.MsgHdr.Reply;
+     mcb.Timeout		= 10 * OneSec;
+     request->FnRc = GetMsg(&mcb);
+     if (request->FnRc eq Err_Null)
+      { for (i = 0; i < request->NumberProcessors; i++)
+         { RmProcessor	Processor = request->Processor[i];
+           int		state = RmGetProcessorState(Processor);
+           state |= RmS_Reset;
+           (void) RmSetProcessorState(Processor, state);
+         }
+        break;
+      }
+     if (retries eq 0) ReOpen(controller);
+   }
+
+done:
+  if ((real_vec ne vec) && (real_vec ne Null(WORD))) Free(real_vec);    
+  if (reply ne NullPort) FreePort(reply);
+}
+
+/**
+*** so does analyse
+**/
+static void	driver_Analyse(NetworkDCB *device, DriverRequest *request)
+{ MCB			mcb;
+  Port			reply		= NewPort();
+  WORD			vec[10];
+  WORD			*real_vec	= vec;
+  int			i, j;
+  int			retries;
+  Stream		*controller	= (Stream *) device->ControlStream;
+  RmHardwareFacility	*hardware	= device->HardwareFacility;
+  
+  if (request->NumberProcessors > 10)
+   { real_vec = (WORD *) Malloc(sizeof(WORD) * request->NumberProcessors);
+     if (real_vec eq Null(WORD))
+      { request->FnRc = EC_Error + SS_NetServ + EG_NoMemory + EO_Message;
+        goto done;
+      }
+   }
+  for (i = 0; i < request->NumberProcessors; i++)
+   { RmProcessor	Processor  = request->Processor[i];
+     ProcessorEntry	*proc_entry;
+     proc_entry  = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+     for (j = 0; j < proc_entry->NumberDrivers; j++)
+      if (proc_entry->DriverEntry[j].Hardware eq hardware)   
+       real_vec[i] = proc_entry->DriverEntry[j].Aux1 - 1;
+   }
+
+  for (retries = 0; retries < 2; retries++)
+   { mcb.Data			= (BYTE *) real_vec;
+     mcb.Control		= Null(WORD);
+     mcb.Timeout		= 10 * OneSec;
+     mcb.MsgHdr.DataSize	= sizeof(WORD) * request->NumberProcessors;
+     mcb.MsgHdr.ContSize	= 0;
+     mcb.MsgHdr.Flags		= MsgHdr_Flags_preserve;
+     mcb.MsgHdr.Dest		= controller->Server;
+     mcb.MsgHdr.Reply		= reply;
+     mcb.MsgHdr.FnRc		= FC_Private + TC_Analyse;
+     if ((request->FnRc	= PutMsg(&mcb)) < Err_Null)
+       { ReOpen(controller); continue; }
+     mcb.MsgHdr.Dest		= mcb.MsgHdr.Reply;
+     mcb.Timeout		= 10 * OneSec;
+     request->FnRc = GetMsg(&mcb);
+     if (request->FnRc eq Err_Null)
+      { for (i = 0; i < request->NumberProcessors; i++)
+         { RmProcessor	Processor = request->Processor[i];
+           int		state = RmGetProcessorState(Processor);
+           state |= RmS_Reset;
+           (void) RmSetProcessorState(Processor, state);
+         }
+        break;
+      }
+     if (retries eq 0) ReOpen(controller);
+   }
+
+done:
+  if ((real_vec ne vec) && (real_vec ne Null(WORD))) Free(real_vec);    
+  if (reply ne NullPort) FreePort(reply);
+}
+
+/**
+*** The telmat driver always has full reset over all the processors, so this
+*** routine should never be called.
+**/
+static void	driver_TestReset(NetworkDCB *device, DriverRequest *request)
+{ driver_fatal(device, "telmat_ra.d, driver TestReset routine called illegally");
+  request = request;
+}
+
+/**
+*** The telmat driver does not set the special bootstrap flag, so this routine
+*** should never get called.
+**/
+static void	driver_Boot(NetworkDCB *device, DriverRequest *request)
+{ driver_fatal(device, "telmat_ra.d, driver bootstrap routine called illegally");
+  request = request;
+}
+
+/**
+*** The telmat driver sets the full reset flag so this routine should never
+*** get called.
+**/
+static void driver_ConditionalReset(NetworkDCB *device, DriverRequest *request)
+{ driver_fatal(device,
+               "telmat_ra.d, driver conditional reset routine called illegally");
+  request = request;
+}
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/telmat_r.c,v 1.1 90/09/12 15:09:53 jon Exp Locker: bart $";
+d185 1
+a219 2
+	/* BLV - the old telmat_ra.c occasionally subtracts 1 from sid's */
+	/* BLV I am not sure why					 */
+a221 3
+      else
+       proc_entry->DriverEntry[i].Aux1 = *sequence_number++;
+
+d224 1
+a224 1
+      if (RmIsAProcessorAttribute(Processor, "MEM0"))
+d226 1
+a226 1
+      elif (RmIsAProcessorAttribute(Processor, "MEM1"))
+d228 1
+a228 1
+      elif (RmIsAProcessorAttribute(Processor, "MEM2"))
+d230 1
+a230 1
+      elif (RmIsAProcessorAttribute(Processor, "MEM3"))
+d232 1
+a232 1
+      elif (RmIsAProcessorAttribute(Processor, "SPC0"))
+d234 1
+a234 1
+      elif (RmIsAProcessorAttribute(Processor, "SPC1"))
+d236 1
+a236 1
+      elif (RmIsAProcessorAttribute(Processor, "SPC2"))
+d238 4
+a241 1
+
+d243 1
+d253 1
+a253 1
+{ char		*name = device->NetworkName;
+a277 1
+   	
+d293 1
+a293 1
+  
+d307 2
+a308 2
+       real_vec[i] = proc_entry->DriverEntry[j].Aux1;
+   }
+d368 1
+a368 1
+       real_vec[i] = proc_entry->DriverEntry[j].Aux1;
+@

@@ -1,0 +1,149 @@
+Helios/ARM SMT C Compiler test results
+PAB 6/6/90
+
+Hi Arthur,
+
+Here are the latest observations on the SMT C compiler.
+
+Please always test the C compiler with some example C code and pass the
+resulting object code through the 'objdump' program to see if it is
+valid. This would help to cut down the number of iterations.
+
+Following bug numbers refer to previous bug lists.
+
+
+C1 	(Fatal Error Message) - Fixed (now refers to anonymous 'dealer').
+
+
+C2	(Help Message) - Fixed. However is notes that -Z<options> is valid,
+	but -z will only take one option at a time.
+
+
+C3	(Change default header path) - Fixed.
+
+
+C4	(automatic array variables defined within function)
+	Still causes fatal error both in non SMT mode and in SMT mode. No
+	error is caused in -zr mode, but then again a warning SHOULD be
+	output as there is no way to initialise these variables with -zr mode.
+
+
+C5	(Enable switch for short offset mode and generate long offsets as std)
+	What is the switch to enable short offset mode (long should be the
+	default)? What are the new patches you require support for in the
+	linker? What are their actual numbers? You seem to have done some
+	stange patches for fn pointer access that are not required (see
+	below), but the patches to access the static data area have not changed
+	from their short offset versions:
+				MVN     a1,#&00000000      /* val to assign */
+		PATCHARMDT	LDR     a2,[dp,#0]         DATAMODULE _variable
+		PATCHARMDPLSB	ADD     a2,a2,#&00000000   DATASYMB _variable
+		PATCHARMDPREST	ADD     a2,a2,#&00000000   DATASYMB _variable
+				STR     a1,[a2,#0]	   /* assign it */
+
+	Please inform me of what patches you require adding to the linker to
+	support long offsets within the static data area.
+
+
+
+C6	(Place compiler version number in module header) Done, but strangely
+	the compiler was called ncc345 and the inserted version number was 346!
+
+
+
+SMT1	(Module header incorrectly constructed for SMT) The module header
+	still appears wrong, but in a new fashion. SMT module header:
+
+		typedef struct Module {
+				       word Type ;
+				       word Size ;
+				       char Name[32] ;
+				       word Id ;
+				       word Version ;
+				       word MaxData ;
+				       RPTR Init ;
+				       word MaxCodeP ;
+				      } Module ;
+
+	We now get an invalid directive at the RPTR Init position. I take it
+	that this is actually the MaxCodeP value without the previous CODE
+	directive incremented to take it into account? If this is so it is
+	in the wrong position as it should be inserted at the end of
+	the module header after Init. Remember that it should be inserted via
+	a "CODE 4" directive.
+
+
+SMT2	(Initialisation code ignoring the parameter passed into the init
+	chain) The init code now takes notice of the init parameter, however
+	the initcode is still wrong in some respects:
+
+	SMT2.1	You currently index into the module table with:
+			PATCHARMDT LDR ip,[dp,#0] PATCH SHIFT BY 2 MODNUM
+		This should now SHIFT by 3 as both the static data area pointer
+		AND the code table pointer are stored here. i.e. you should
+		index into it by 8 rather than 4.
+
+		In addition to extract the code table pointer, you should
+		add four to this value.
+
+		e.g.
+		     to get a pointer to the static data area of this module
+		     use:
+
+			PATCHARMDT LDR ip,[dp,#0] PATCH SHIFT BY 3 MODNUM
+
+		     to get a pointer to the code table area of this module
+		     use:
+
+			PATCHARMDT LDR ip,[dp,#4] PATCH SHIFT BY 3 MODNUM
+
+		This point is not only true in initialisation code, BUT
+		IN ALL CODE THAT IS GENERATED that accesses either the static
+		data area or the code pointer table. i.e. if you are accessing
+		an external static. Please fix.
+
+
+	SMT2.2	Further more, in non SMT code, you still check against an
+		init parameter of 2 for function pointer initialisation,
+		this will never be called in a non SMT system! You should
+		not need to check the init parameter in non SMT systems.
+
+
+SMT3	(Stub functions incorrectly generated)
+	The stubs now have strange unknown patch directives #8 & #9 in
+	them! We do not need to extend the addressing of the code pointer
+	table as the current ARMPATCHDT will cope will up to 1024 functions
+	per module - ABC have agreed that this will be enough.
+
+	e.g. For an external call to "printf()":
+
+		.printf
+			LDR	ip,[dp,#0]	; "DATAMODULE _printf" patch
+			LDR	ip,[ip,#0]	; "CODESYMB _printf" patch
+			MOV	pc,ip		; call function
+
+	"DATAMODULE _printf" will return the offset within the module table
+	that points to the code table that contains printf. There is no need to
+	add 4 to this value as the linker knows what symbols are code
+	symbols and will do this automatically.
+
+
+SMT4	(Optimise initialisation code) Not done.
+
+
+SMT5	Please note: Where ever you access the static data area, do not forget
+	to index into the module table by a factor of 8 rather than 4.
+
+	i.e.
+		PATCHARMDT LDR ip,[dp,#0] PATCH SHIFT BY 3 MODNUM
+
+
+SMT6	When placing the address of an external function into a function
+	pointer, you still use the address of a stub to that function
+	rather than the true address from the external modules code ptr
+	table.
+
+
+Cheers
+Paul.
+

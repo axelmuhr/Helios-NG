@@ -1,0 +1,1630 @@
+echo list.c
+cat >list.c <<'@@@ Fin de list.c'
+/*
+ * List a tar archive.
+ *
+ * Also includes support routines for reading a tar archive.
+ *
+ * Pubic Domain version written 26 Aug 1985 by John Gilmore (ihnp4!hoptoad!gnu).
+ *
+ * @(#)list.c 1.31 11/5/87 Public Domain - gnu
+ */
+#include <stdio.h>
+#include <ctype.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#ifndef	MSDOS
+#include <sys/file.h>
+#endif	/* MSDOS */
+
+#ifdef USG
+#include <sys/sysmacros.h>	/* major() and minor() defined here */
+#endif
+
+char *ctime();				/* From libc.a */
+
+#define	isodigit(c)	( ((c) >= '0') && ((c) <= '7') )
+
+#include "tar.h"
+#include "port.h"
+
+long from_oct();			/* Decode octal number */
+void demode();				/* Print file mode */
+
+union record *head;			/* Points to current archive header */
+struct stat hstat;			/* Stat struct corresponding */
+int head_standard;			/* Tape header is in ANSI format */
+
+void print_header();
+void skip_file();
+
+
+/*
+ * Main loop for reading an archive.
+ */
+void
+read_and(do_something)
+	void (*do_something)();
+{
+	int status = 3;			/* Initial status at start of archive */
+	int prev_status;
+
+	name_gather();			/* Gather all the names */
+	open_archive(1);		/* Open for reading */
+
+	for(;;) {
+		prev_status = status;
+		status = read_header();
+		switch (status) {
+
+		case 1:			/* Valid header */
+			/* We should decode next field (mode) first... */
+			/* Ensure incoming names are null terminated. */
+			head->header.name[NAMSIZ-1] = '\0';
+			
+			if (!name_match(head->header.name)) {
+				/* Skip past it in the archive */
+				userec(head);
+				/* Skip to the next header on the archive */
+				skip_file((long)hstat.st_size);
+				continue;
+			}
+
+			(*do_something)();
+			continue;
+
+			/*
+			 * If the previous header was good, tell them
+			 * that we are skipping bad ones.
+			 */
+		case 0:			/* Invalid header */
+			userec(head);
+			switch (prev_status) {
+			case 3:		/* Error on first record */
+				annorec(stderr, tar);
+				fprintf(stderr,
+				"Hmm, this doesn't look like a tar archive.\n");
+				/* FALL THRU */
+			case 2:		/* Error after record of zeroes */
+			case 1:		/* Error after header rec */
+				annorec(stderr, tar);
+				fprintf(stderr,
+					"Skipping to next file header...\n");
+			case 0:		/* Error after error */
+				break;
+			}
+			continue;
+
+		case 2:			/* Record of zeroes */
+			userec(head);
+			status = prev_status;	/* If error after 0's */
+			if (f_ignorez)	
+				continue;
+			/* FALL THRU */
+		case EOF:		/* End of archive */
+			break;
+		}
+		break;
+	};
+
+	close_archive();
+	names_notfound();		/* Print names not found */
+}		
+
+
+/*
+ * Print a header record, based on tar options.
+ */
+void
+list_archive()
+{
+
+	/* Save the record */
+	saverec(&head);
+
+	/* Print the header record */
+	if (f_verbose) {
+		if (f_verbose > 1)
+			decode_header(head, &hstat, &head_standard, 0);
+		print_header(stdout);
+	}
+
+	/* Skip past it in the archive */
+	saverec((union record **) 0);	/* Unsave it */
+	userec(head);
+
+	/* Skip to the next header on the archive */
+	skip_file((long)hstat.st_size);
+}
+
+
+/*
+ * Read a record that's supposed to be a header record.
+ * Return its address in "head", and if it is good, the file's
+ * size in hstat.st_size.
+ *
+ * Return 1 for success, 0 if the checksum is bad, EOF on eof,
+ * 2 for a record full of zeros (EOF marker).
+ *
+ * You must always userec(head) to skip past the header which this
+ * routine reads.
+ */
+int
+read_header()
+{
+	register int	i;
+	register long	sum, recsum;
+	register char	*p;
+	register union record *header;
+
+	header = findrec();
+	head = header;		/* This is our current header */
+	if (NULL == header) return EOF;
+
+	recsum = from_oct(8,  header->header.chksum);
+
+	sum = 0;
+	p = header->charptr;
+	for (i = sizeof(*header); --i >= 0;) {
+		/*
+		 * We can't use unsigned char here because of old compilers,
+		 * e.g. V7.
+		 */
+		sum += 0xFF & *p++;
+	}
+
+	/* Adjust checksum to count the "chksum" field as blanks. */
+	for (i = sizeof(header->header.chksum); --i >= 0;)
+		sum -= 0xFF & header->header.chksum[i];
+	sum += ' '* sizeof header->header.chksum;	
+
+	if (sum == recsum) {
+		/*
+		 * Good record.  Decode file size and return.
+		 */
+		if (header->header.linkflag == LF_LINK)
+			hstat.st_size = 0;	/* Links 0 size on tape */
+		else
+			hstat.st_size = from_oct(1+12, header->header.size);
+		return 1;
+	}
+
+	if (sum == 8*' ') {
+		/*
+		 * This is a zeroed record...whole record is 0's except
+		 * for the 8 blanks we faked for the checksum field.
+		 */
+		return 2;
+	}
+
+	return 0;
+}
+
+
+/* 
+ * Decode things from a file header record into a "struct stat".
+ * Also set "*stdp" to !=0 or ==0 depending whether header record is "Unix
+ * Standard" tar format or regular old tar format.
+ *
+ * read_header() has already decoded the checksum and length, so we don't.
+ *
+ * If wantug != 0, we want the uid/group info decoded from Unix Standard
+ * tapes (for extraction).  If == 0, we are just printing anyway, so save time.
+ *
+ * decode_header should NOT be called twice for the same record, since the
+ * two calls might use different "wantug" values and thus might end up with
+ * different uid/gid for the two calls.  If anybody wants the uid/gid they
+ * should decode it first, and other callers should decode it without uid/gid
+ * before calling a routine, e.g. print_header, that assumes decoded data.
+ */
+decode_header(header, st, stdp, wantug)
+	register union record	*header;
+	register struct stat	*st;
+	int	*stdp;
+	int	wantug;
+{
+
+	st->st_mode = from_oct(8,  header->header.mode);
+	st->st_mtime = from_oct(1+12, header->header.mtime);
+	
+	if (0==strcmp(header->header.magic, TMAGIC)) {
+		/* Unix Standard tar archive */
+		*stdp = 1;
+		if (wantug) {
+#ifdef NONAMES
+			st->st_uid = from_oct(8,  header->header.uid);
+			st->st_gid = from_oct(8,  header->header.gid);
+#else
+			st->st_uid = finduid(header->header.uname);
+			st->st_gid = findgid(header->header.gname);
+#endif
+		}
+		switch  (header->header.linkflag) 
+		case LF_BLK: case LF_CHR:
+		    st->st_rdev = makedev(from_oct(8, header->header.devmajor),
+			 		  from_oct(8, header->header.devminor));
+	} else {
+		/* Old fashioned tar archive */
+		*stdp = 0;
+		st->st_uid = from_oct(8,  header->header.uid);
+		st->st_gid = from_oct(8,  header->header.gid);
+		st->st_rdev = 0;
+	}
+}
+
+
+/*
+ * Quick and dirty octal conversion.
+ *
+ * Result is -1 if the field is invalid (all blank, or nonoctal).
+ */
+long
+from_oct(digs, where)
+	register int	digs;
+	register char	*where;
+{
+	register long	value;
+
+	while (isspace(*where)) {		/* Skip spaces */
+		where++;
+		if (--digs <= 0)
+			return -1;		/* All blank field */
+	}
+	value = 0;
+	while (digs > 0 && isodigit(*where)) {	/* Scan til nonoctal */
+		value = (value << 3) | (*where++ - '0');
+		--digs;
+	}
+
+	if (digs > 0 && *where && !isspace(*where))
+		return -1;			/* Ended on non-space/nul */
+
+	return value;
+}
+
+
+/*
+ * Actually print it.
+ *
+ * Plain and fancy file header block logging.
+ * Non-verbose just prints the name, e.g. for "tar t" or "tar x".
+ * This should just contain file names, so it can be fed back into tar
+ * with xargs or the "-T" option.  The verbose option can give a bunch
+ * of info, one line per file.  I doubt anybody tries to parse its
+ * format, or if they do, they shouldn't.  Unix tar is pretty random here
+ * anyway.
+ *
+ * Note that print_header uses the globals <head>, <hstat>, and
+ * <head_standard>, which must be set up in advance.  This is not very clean
+ * and should be cleaned up.  FIXME.
+ */
+#define	UGSWIDTH	11		/* min width of User, group, size */
+#define	DATEWIDTH	19		/* Last mod date */
+static int	ugswidth = UGSWIDTH;	/* Max width encountered so far */
+
+void
+print_header(outfile)
+	FILE *outfile;
+{
+	char modes[11];
+	char *timestamp;
+	char uform[11], gform[11];	/* These hold formatted ints */
+	char *user, *group;
+	char size[24];		/* Holds a formatted long or maj, min */
+	long longie;		/* To make ctime() call portable */
+	int	pad;
+
+	annofile(outfile, (char *)NULL);
+
+	if (f_verbose <= 1) {
+		/* Just the fax, mam. */
+		fprintf(outfile, "%s\n", head->header.name);
+		return;
+	} else {
+		/* File type and modes */
+		modes[0] = '?';
+		switch (head->header.linkflag) {
+		case LF_NORMAL:
+		case LF_OLDNORMAL:
+		case LF_LINK:
+				modes[0] = '-'; 
+				if ('/' == head->header.name[strlen(head->header.name)-1])
+					modes[0] = 'd';
+				break;
+		case LF_DIR:	modes[0] = 'd'; break;
+		case LF_SYMLINK:modes[0] = 'l'; break;
+		case LF_BLK:	modes[0] = 'b'; break;
+		case LF_CHR:	modes[0] = 'c'; break;
+		case LF_FIFO:	modes[0] = 'p'; break;	
+		case LF_CONTIG:	modes[0] = 'C'; break;
+		}
+
+		demode((unsigned)hstat.st_mode, modes+1);
+
+		/* Timestamp */
+		longie = hstat.st_mtime;
+		timestamp = ctime(&longie);
+		timestamp[16] = '\0';
+		timestamp[24] = '\0';
+
+		/* User and group names */
+		if (*head->header.uname && head_standard) {
+			user  = head->header.uname;
+		} else {
+			user = uform;
+			(void)sprintf(uform, "%d", (int)hstat.st_uid);
+		}
+		if (*head->header.gname && head_standard) {
+			group = head->header.gname;
+		} else {
+			group = gform;
+			(void)sprintf(gform, "%d", (int)hstat.st_gid);
+		}
+
+		/* Format the file size or major/minor device numbers */
+		switch (head->header.linkflag) {
+		case LF_CHR:
+		case LF_BLK:
+			(void)sprintf(size, "%d,%d",
+					major(hstat.st_rdev),
+					minor(hstat.st_rdev));
+			break;
+
+		default:
+			(void)sprintf(size, "%ld", (long)hstat.st_size);
+		}
+
+		/* Figure out padding and print the whole line. */
+		pad = strlen(user) + strlen(group) + strlen(size) + 1;
+		if (pad > ugswidth) ugswidth = pad;
+
+		fprintf(outfile, "%s %s/%s %*s%s %s %s %.*s",
+			modes,
+			user,
+			group,
+			ugswidth - pad,
+			"",
+			size,
+			timestamp+4, timestamp+20,
+			sizeof(head->header.name),
+			head->header.name);
+
+		switch (head->header.linkflag) {
+		case LF_SYMLINK:
+			fprintf(outfile, " -> %s\n", head->header.linkname);
+			break;
+
+		case LF_LINK:
+			fprintf(outfile, " link to %s\n", head->header.linkname);
+			break;
+
+		default:
+			fprintf(outfile, " unknown file type '%c'\n",
+				head->header.linkflag);
+			break;
+
+		case LF_OLDNORMAL:
+		case LF_NORMAL:
+		case LF_CHR:
+		case LF_BLK:
+		case LF_DIR:
+		case LF_FIFO:
+		case LF_CONTIG:
+			putc('\n', outfile);
+			break;
+		}
+	}
+}
+
+/*
+ * Print a similar line when we make a directory automatically.
+ */
+void
+pr_mkdir(pathname, length, mode, outfile)
+	char *pathname;
+	int length;
+	int mode;
+	FILE *outfile;
+{
+	char modes[11];
+
+	if (f_verbose > 1) {
+		/* File type and modes */
+		modes[0] = 'd';
+		demode((unsigned)mode, modes+1);
+
+		annofile(outfile, (char *)NULL);
+		fprintf(outfile, "%s %*s %.*s\n",
+			modes,
+			ugswidth+DATEWIDTH,
+			"Creating directory:",
+			length,
+			pathname);
+	}
+}
+
+
+/*
+ * Skip over <size> bytes of data in records in the archive.
+ */
+void
+skip_file(size)
+	register long size;
+{
+	union record *x;
+
+	while (size > 0) {
+		x = findrec();
+		if (x == NULL) {	/* Check it... */
+			annorec(stderr, tar);
+			fprintf(stderr, "Unexpected EOF on archive file\n");
+			exit(EX_BADARCH);
+		}
+		userec(x);
+		size -= RECORDSIZE;
+	}
+}
+
+
+/*
+ * Decode the mode string from a stat entry into a 9-char string and a null.
+ */
+void
+demode(mode, string)
+	register unsigned mode;
+	register char *string;
+{
+	register unsigned mask;
+	register char *rwx = "rwxrwxrwx";
+
+	for (mask = 0400; mask != 0; mask >>= 1) {
+		if (mode & mask)
+			*string++ = *rwx++;
+		else {
+			*string++ = '-';
+			rwx++;
+		}
+	}
+
+	if (mode & S_ISUID)
+		if (string[-7] == 'x')
+			string[-7] = 's';
+		else
+			string[-7] = 'S';
+	if (mode & S_ISGID)
+		if (string[-4] == 'x')
+			string[-4] = 's';
+		else
+			string[-4] = 'S';
+	if (mode & S_ISVTX)
+		if (string[-1] == 'x')
+			string[-1] = 't';
+		else
+			string[-1] = 'T';
+	*string = '\0';
+}
+@@@ Fin de list.c
+echo names.c
+cat >names.c <<'@@@ Fin de names.c'
+/*
+ * Look up user and/or group names.
+ *
+ * This file should be modified for non-unix systems to do something
+ * reasonable.
+ *
+ * @(#)names.c 1.3 10/30/87 Public Domain - gnu
+ */ 
+#include <sys/types.h>
+#include "tar.h"
+
+extern	char	*strncpy();
+
+#ifndef NONAMES
+/* Whole module goes away if NONAMES defined.  Otherwise... */
+#include <pwd.h>
+#include <grp.h>
+
+static int	saveuid = -993;
+static char	saveuname[TUNMLEN];
+static int	my_uid = -993;
+
+static int	savegid = -993;
+static char	savegname[TGNMLEN];
+static int	my_gid = -993;
+
+#define myuid	( my_uid < 0? (my_uid = getuid()): my_uid )
+#define	mygid	( my_gid < 0? (my_gid = getgid()): my_gid )
+
+/*
+ * Look up a user or group name from a uid/gid, maintaining a cache.
+ * FIXME, for now it's a one-entry cache.
+ * FIXME2, the "-993" is to reduce the chance of a hit on the first lookup.
+ *
+ * This is ifdef'd because on Suns, it drags in about 38K of "yellow
+ * pages" code, roughly doubling the program size.  Thanks guys.
+ */
+void
+finduname(uname, uid)
+	char	uname[TUNMLEN];
+	int	uid;
+{
+	struct passwd	*pw;
+	extern struct passwd *getpwuid ();
+
+	if (uid != saveuid) {
+		saveuid = uid;
+		saveuname[0] = '\0';
+		pw = getpwuid(uid); 
+		if (pw) 
+			strncpy(saveuname, pw->pw_name, TUNMLEN);
+	}
+	strncpy(uname, saveuname, TUNMLEN);
+}
+
+int
+finduid(uname)
+	char	uname[TUNMLEN];
+{
+	struct passwd	*pw;
+	extern struct passwd *getpwnam();
+
+	if (uname[0] != saveuname[0]	/* Quick test w/o proc call */
+	    || 0!=strncmp(uname, saveuname, TUNMLEN)) {
+		strncpy(saveuname, uname, TUNMLEN);
+		pw = getpwnam(uname); 
+		if (pw) {
+			saveuid = pw->pw_uid;
+		} else {
+			saveuid = myuid;
+		}
+	}
+	return saveuid;
+}
+
+
+void
+findgname(gname, gid)
+	char	gname[TGNMLEN];
+	int	gid;
+{
+	struct group	*gr;
+	extern struct group *getgrgid ();
+
+	if (gid != savegid) {
+		savegid = gid;
+		savegname[0] = '\0';
+		(void)setgrent();
+		gr = getgrgid(gid); 
+		if (gr) 
+			strncpy(savegname, gr->gr_name, TGNMLEN);
+	}
+	(void) strncpy(gname, savegname, TGNMLEN);
+}
+
+
+int
+findgid(gname)
+	char	gname[TUNMLEN];
+{
+	struct group	*gr;
+	extern struct group *getgrnam();
+
+	if (gname[0] != savegname[0]	/* Quick test w/o proc call */
+	    || 0!=strncmp(gname, savegname, TUNMLEN)) {
+		strncpy(savegname, gname, TUNMLEN);
+		gr = getgrnam(gname); 
+		if (gr) {
+			savegid = gr->gr_gid;
+		} else {
+			savegid = mygid;
+		}
+	}
+	return savegid;
+}
+#endif
+@@@ Fin de names.c
+echo diffarch.c
+cat >diffarch.c <<'@@@ Fin de diffarch.c'
+/*
+ * Diff files from a tar archive.
+ *
+ * Written 30 April 1987 by John Gilmore, ihnp4!hoptoad!gnu.
+ *
+ * @(#) diffarch.c 1.10 87/11/11 Public Domain - gnu
+ */
+
+#include <stdio.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
+#ifdef BSD42
+#include <sys/file.h>
+#endif
+
+#ifdef USG
+#include <fcntl.h>
+#endif
+
+/* Some systems don't have these #define's -- we fake it here. */
+#ifndef O_RDONLY
+#define	O_RDONLY	0
+#endif
+#ifndef	O_NDELAY
+#define	O_NDELAY	0
+#endif
+
+extern int errno;			/* From libc.a */
+extern char *valloc();			/* From libc.a */
+
+#include "tar.h"
+#include "port.h"
+
+extern union record *head;		/* Points to current tape header */
+extern struct stat hstat;		/* Stat struct corresponding */
+extern int head_standard;		/* Tape header is in ANSI format */
+
+extern void print_header();
+extern void skip_file();
+
+char *filedata;				/* Pointer to area for reading
+					   file contents into */
+
+/*
+ * Initialize for a diff operation
+ */
+diff_init()
+{
+
+	/*NOSTRICT*/
+	filedata = (char *) valloc((unsigned)blocksize);
+	if (!filedata) {
+		fprintf(stderr,
+		"tar: could not allocate memory for diff buffer of %d bytes\n",
+			blocking);
+		exit(EX_ARGSBAD);
+	}
+}
+
+/*
+ * Diff a file against the archive.
+ */
+void
+diff_archive()
+{
+	register char *data;
+	int fd, check, namelen, written;
+	int err, firsttime;
+	long size;
+	struct stat filestat;
+	char linkbuf[NAMSIZ+3];
+
+	errno = EPIPE;			/* FIXME, remove perrors */
+
+	saverec(&head);			/* Make sure it sticks around */
+	userec(head);			/* And go past it in the archive */
+	decode_header(head, &hstat, &head_standard, 1);	/* Snarf fields */
+
+	/* Print the record from 'head' and 'hstat' */
+	if (f_verbose)
+		print_header(stdout);
+
+	switch (head->header.linkflag) {
+
+	default:
+		annofile(stderr, tar);
+		fprintf(stderr,
+		   "Unknown file type '%c' for %s, diffed as normal file\n",
+			head->header.linkflag, head->header.name);
+		/* FALL THRU */
+
+	case LF_OLDNORMAL:
+	case LF_NORMAL:
+	case LF_CONTIG:
+		/*
+		 * Appears to be a file.
+		 * See if it's really a directory.
+		 */
+		namelen = strlen(head->header.name)-1;
+		if (head->header.name[namelen] == '/')
+			goto really_dir;
+
+		fd = open(head->header.name, O_NDELAY|O_RDONLY);
+
+		if (fd < 0) {
+			if (errno == ENOENT) {
+				/* Expected error -- to stdout */
+				annofile(stdout, (char *)NULL);
+				fprintf(stdout, "%s: does not exist\n",
+					head->header.name);
+			} else {
+				annofile(stderr, (char *)NULL);
+				perror(head->header.name);
+			}
+			skip_file((long)hstat.st_size);
+			goto quit;
+		}
+
+		err = fstat(fd, &filestat);
+		if (err < 0) {
+			annofile(stdout, (char *)NULL);
+			fprintf(stdout, "Cannot fstat file ");
+			perror(head->header.name);
+			skip_file((long)hstat.st_size);
+			goto qclose;
+		}
+
+		if ((filestat.st_mode & S_IFMT) != S_IFREG) {
+			annofile(stdout, (char *)NULL);
+			fprintf(stdout, "%s: not a regular file\n",
+				head->header.name);
+			skip_file((long)hstat.st_size);
+			goto qclose;
+		}
+
+		filestat.st_mode &= ~S_IFMT;
+		if (filestat.st_mode != hstat.st_mode)
+			sigh("mode");
+		if (filestat.st_uid  != hstat.st_uid)
+			sigh("uid");
+		if (filestat.st_gid  != hstat.st_gid)
+			sigh("gid");
+		if (filestat.st_size != hstat.st_size) {
+			sigh("size");
+			skip_file((long)hstat.st_size);
+			goto qclose;
+		}
+		if (filestat.st_mtime != hstat.st_mtime)
+			sigh("mod time");
+
+		firsttime = 0;
+
+		for (size = hstat.st_size;
+		     size > 0;
+		     size -= written) {
+			/*
+			 * Locate data, determine max length
+			 * writeable, write it, record that
+			 * we have used the data, then check
+			 * if the write worked.
+			 */
+			data = findrec()->charptr;
+			if (data == NULL) {	/* Check it... */
+				annorec(stderr, tar);
+				fprintf(stderr, "Unexpected EOF on archive file\n");
+				break;
+			}
+			written = endofrecs()->charptr - data;
+			if (written > size) written = size;
+			errno = 0;
+			check = read (fd, filedata, written);
+			/*
+			 * The following is in violation of strict
+			 * typing, since the arg to userec
+			 * should be a struct rec *.  FIXME.
+			 */
+			userec(data + written - 1);
+			if (check == written) {
+				/* The read worked, now compare the data */
+				if (bcmp(data, filedata, check) == 0)
+					continue;	/* It compares */
+				if (firsttime++) {
+					annofile(stdout, (char *)NULL);
+					fprintf(stdout, "%s: data differs\n",
+						head->header.name);
+				}
+			}
+
+			/*
+			 * Error in reading from file.
+			 * Print it, skip to next file in archive.
+			 */
+			annofile(stderr, tar);
+			fprintf(stderr,
+	"Tried to read %d bytes from file, could only read %d:\n",
+				written, check);
+			perror(head->header.name);
+			skip_file((long)(size - written));
+			break;	/* Still do the close, mod time, chmod, etc */
+		}
+
+	qclose:
+		check = close(fd);
+		if (check < 0) {
+			annofile(stderr, tar);
+			fprintf(stderr, "Error while closing ");
+			perror(head->header.name);
+		}
+		
+	quit:
+		break;
+
+	case LF_LINK:
+		check = 1;	/* FIXME deal with this */
+		/* check = link (head->header.linkname,
+			      head->header.name); */
+		/* FIXME, don't worry uid, gid, etc... */
+		if (check == 0)
+			break;
+		annofile(stderr, tar);
+		fprintf(stderr, "Could not link %s to ",
+			head->header.name);
+		perror(head->header.linkname);
+		break;
+
+#ifdef S_IFLNK
+	case LF_SYMLINK:
+		check = readlink(head->header.name, linkbuf,
+				 (sizeof linkbuf)-1);
+		
+		if (check < 0) {
+			if (errno == ENOENT) {
+				annofile(stdout, (char *)NULL);
+				fprintf(stdout,
+					"%s: no such file or directory\n",
+					head->header.name);
+			} else {
+				annofile(stderr, tar);
+				fprintf(stderr, "Could not read link");
+				perror(head->header.name);
+			}
+			break;
+		}
+
+		linkbuf[check] = '\0';	/* Null-terminate it */
+		if (strncmp(head->header.linkname, linkbuf, check) != 0) {
+			annofile(stdout, (char *)NULL);
+			fprintf(stdout, "%s: symlink differs\n",
+				head->header.linkname);
+		}
+		break;
+#endif
+
+	case LF_CHR:
+		hstat.st_mode |= S_IFCHR;
+		goto make_node;
+
+#ifdef S_IFBLK
+	/* If local system doesn't support block devices, use default case */
+	case LF_BLK:
+		hstat.st_mode |= S_IFBLK;
+		goto make_node;
+#endif
+
+#ifdef S_IFIFO
+	/* If local system doesn't support FIFOs, use default case */
+	case LF_FIFO:
+		hstat.st_mode |= S_IFIFO;
+		hstat.st_rdev = 0;		/* FIXME, do we need this? */
+		goto make_node;
+#endif
+
+	make_node:
+		/* FIXME, deal with umask */
+		
+		check = 1; /* FIXME, implement this */
+		/* check = mknod(head->header.name, (int) hstat.st_mode,
+			(int) hstat.st_rdev); */
+		if (check != 0) {
+			annofile(stderr, tar);
+			fprintf(stderr, "Could not make ");
+			perror(head->header.name);
+			break;
+		};
+		break;
+
+	case LF_DIR:
+		/* Check for trailing / */
+		namelen = strlen(head->header.name)-1;
+	really_dir:
+		while (namelen && head->header.name[namelen] == '/')
+			head->header.name[namelen--] = '\0';	/* Zap / */
+		
+		check = 1; /* FIXME, implement this */
+		/* check = mkdir(head->header.name, 0300 | (int)hstat.st_mode); */
+		if (check != 0) {
+			annofile(stderr, tar);
+			fprintf(stderr, "Could not make directory ");
+			perror(head->header.name);
+			break;
+		}
+		
+		break;
+
+	}
+
+	/* We don't need to save it any longer. */
+	saverec((union record **) 0);	/* Unsave it */
+}
+
+/*
+ * Sigh about something that differs.
+ */
+sigh(what)
+	char *what;
+{
+
+	annofile(stdout, (char *)NULL);
+	fprintf(stdout, "%s: %s differs\n",
+		head->header.name, what);
+}
+@@@ Fin de diffarch.c
+echo port.c
+cat >port.c <<'@@@ Fin de port.c'
+/*
+ * @(#)port.c 1.15	87/11/05	Public Domain, by John Gilmore, 1986
+ *
+ * These are routines not available in all environments.
+ *
+ * I know this introduces an extra level of subroutine calls and is
+ * slightly slower.  Frankly, my dear, I don't give a damn.  Let the
+ * Missed-Em Vee losers suffer a little.  This software is proud to
+ * have been written on a BSD system.
+ */
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <signal.h>
+#include <errno.h>
+
+#ifdef	MSDOS
+#include <fcntl.h>
+#else
+#include <sys/file.h>
+#endif
+
+#include "tar.h"
+
+extern char **environ;
+
+#ifndef NULL
+#define NULL 0
+#endif
+
+/*
+ * Some people (e.g. V7) don't have a #define for these.
+ */
+#ifndef	O_BINARY
+#define	O_BINARY	0
+#endif
+#ifndef	O_RDONLY
+#define	O_RDONLY	0
+#endif
+
+
+#include "port.h"
+
+
+/*
+ * Some computers are not so crass as to align themselves into the BSD
+ * or USG camps.  If a system supplies all of the routines we fake here,
+ * add it to the list in the #ifndefs below and it'll all be skipped.
+ * Make sure to add a matching #endif at the end of the file!
+ *
+ * We are avoiding #if defined() here for the sake of Minix, which comes
+ * with the severely broken Amsterdam Compiler Kit.  Thanks, Andy!
+ */
+#ifndef mc300
+#ifndef mc500
+#ifndef mc700
+
+
+#ifndef BSD42
+/*
+ * lstat() is a stat() which does not follow symbolic links.
+ * If there are no symbolic links, just use stat().
+ */
+int
+lstat (path, buf)
+	char *path;
+	struct stat *buf;
+{
+	extern int stat ();
+	return (stat (path, buf));
+}
+
+/*
+ * valloc() does a malloc() on a page boundary.  On some systems,
+ * this can make large block I/O more efficient.
+ */
+char *
+valloc (size)
+	unsigned size;
+{
+	extern char *malloc ();
+	return (malloc (size));
+}
+
+/*
+ *				NMKDIR.C
+ *
+ * Written by Robert Rother, Mariah Corporation, August 1985. 
+ *
+ * I wrote this out of shear disgust with myself because I couldn't
+ * figure out how to do this in /bin/sh.
+ *
+ * If you want it, it's yours.  All I ask in return is that if you
+ * figure out how to do this in a Bourne Shell script you send me
+ * a copy.
+ *					sdcsvax!rmr or rmr@uscd
+*
+* Severely hacked over by John Gilmore to make a 4.2BSD compatible
+* subroutine.	11Mar86; hoptoad!gnu
+*
+* Modified by rmtodd@uokmax 6-28-87 -- when making an already existing dir,
+* subroutine didn't return EEXIST.  It does now.
+*/
+
+/*
+ * Make a directory.  Compatible with the mkdir() system call on 4.2BSD.
+ */
+#ifndef	MSDOS
+int
+mkdir(dpath, dmode)
+	char *dpath;
+	int dmode;
+{
+	int cpid, status;
+	struct stat statbuf;
+	extern int errno;
+
+	if (stat(dpath,&statbuf) == 0) {
+		errno = EEXIST;		/* Stat worked, so it already exists */
+		return -1;
+	}
+
+	/* If stat fails for a reason other than non-existence, return error */
+	if (errno != ENOENT) return -1; 
+
+	switch (cpid = fork()) {
+
+	case -1:			/* Error in fork() */
+		return(-1);		/* Errno is set already */
+
+	case 0:				/* Child process */
+		/*
+		 * Cheap hack to set mode of new directory.  Since this
+		 * child process is going away anyway, we zap its umask.
+		 * FIXME, this won't suffice to set SUID, SGID, etc. on this
+		 * directory.  Does anybody care?
+		 */
+		status = umask(0);	/* Get current umask */
+		status = umask(status | (0777 & ~dmode)); /* Set for mkdir */
+		execl("/bin/mkdir", "mkdir", dpath, (char *)0);
+		_exit(-1);		/* Can't exec /bin/mkdir */
+	
+	default:			/* Parent process */
+		while (cpid != wait(&status)) ;	/* Wait for kid to finish */
+	}
+
+	if (TERM_SIGNAL(status) != 0 || TERM_VALUE(status) != 0) {
+		errno = EIO;		/* We don't know why, but */
+		return -1;		/* /bin/mkdir failed */
+	}
+
+	return 0;
+}
+#endif	/* MSDOS */
+#endif
+
+/* This next bit is called "doing OR on Minix cpp", e.g. without defined(). */
+#undef WANTSTRING
+#ifdef USG
+#define WANTSTRING
+#endif
+#ifdef MSDOS
+#define WANTSTRING
+#endif
+
+#ifdef WANTSTRING
+/*
+ * Translate V7 style into Sys V style.
+ */
+#include <string.h>
+#include <memory.h>
+
+char *
+index (s, c)
+	char *s;
+	int c;
+{
+	return (strchr (s, c));
+}
+
+void
+bcopy (s1, s2, n)
+	char *s1, *s2;
+	int n;
+{
+	(void) memcpy (s2, s1, n);
+}
+
+void
+bzero (s1, n)
+	char *s1;
+	int n;
+{
+	(void) memset(s1, 0, n);
+}
+
+int
+bcmp(s1, s2, n)
+	char	*s1, *s2;
+	int	n;
+{
+	return memcmp(s1, s2, n);
+}
+#endif
+
+#ifdef MINIX
+/* Minix has bcopy but not bzero, and no memset.  Thanks, Andy. */
+void
+bzero (s1, n)
+	register char *s1;
+	register int n;
+{
+	while (n--) *s1++ = '\0';
+}
+
+/* It also has no bcmp() */
+int
+bcmp (s1, s2, n) 
+	register char *s1,*s2;
+	register int n;
+{
+	for ( ; n-- ; ++s1, ++s2) {
+		if (*s1 != *s2) return *s1 - *s2;
+	}
+	return 0;
+}
+
+/*
+ * Groan, Minix doesn't have execlp either!
+ *
+ * execlp(file,arg0,arg1...argn,(char *)NULL)
+ * exec a program, automatically searching for the program through
+ * all the directories on the PATH.
+ *
+ * This version is naive about variable argument lists, it assumes
+ * a straightforward C calling sequence.  If your system has odd stacks
+ * *and* doesn't have execlp, YOU get to fix it.
+ */
+int
+execlp(filename, arg0)
+	char *filename, *arg0;
+{
+	extern char *malloc(), *getenv(), *index();
+	extern int errno;
+	register char *p, *path;    
+	char **argstart = &arg0;
+	register char *fnbuffer;
+	struct stat statbuf;
+
+	if ((p = getenv("PATH")) == NULL) {
+		/* couldn't find path variable -- try to exec given filename */
+		return execve(filename, argstart, environ);
+	}
+
+	/*
+	 * make a place to build the filename.  We malloc larger than we
+	 * need, but we know it will fit in this.
+	 */
+	fnbuffer = malloc( strlen(p) + 1 + strlen(filename) );
+	if (fnbuffer == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
+
+	/*
+	 * try each component of the path to see if the file's there
+	 * and executable.
+	 */
+	for (path = p ; path ; path = p) {
+		/* construct full path name to try */
+		if ((p = index(path,':')) == NULL) {
+			strcpy(fnbuffer, path);
+		} else {
+			strncpy(fnbuffer, path, p-path);
+			fnbuffer[p-path] = '\0';
+			p++;		/* Skip : for next time */
+		}
+		if (strlen(fnbuffer) != 0)
+			strcat(fnbuffer,"/");
+		strcat(fnbuffer,filename);
+
+		/* check to see if file is there and is a normal file */
+		if (stat(fnbuffer, &statbuf) < 0) {
+			if (errno == ENOENT)
+				continue; /* file not there,keep on looking */
+			else
+				goto fail; /* failed for some reason, return */
+		}
+		if ( (statbuf.st_mode & S_IFMT) != S_IFREG) continue;
+
+		if (execve(fnbuffer, argstart, environ) < 0
+		    && errno != ENOENT
+		    && errno != ENOEXEC) {
+			/* failed, for some other reason besides "file
+			 * not found" or "not a.out format"
+			 */
+			goto fail;
+		}
+
+		/*
+		 * If we got error ENOEXEC, the file is executable but is
+		 * not an object file.  Try to execute it as a shell script,
+		 * returning error if we can't execute /bin/sh.
+		 *
+		 * FIXME, this code is broken in several ways.  Shell
+		 * scripts should not in general be executed by the user's
+		 * SHELL variable program.  On more mature systems, the
+		 * script can specify with #!/bin/whatever.  Also, this
+		 * code clobbers argstart[-1] if the exec of the shell
+		 * fails.
+		 */
+		if (errno == ENOEXEC) {
+			char *shell;
+
+			/* Try to execute command "sh arg0 arg1 ..." */
+			if ((shell = getenv("SHELL")) == NULL)
+				shell = "/bin/sh";
+			argstart[-1] = shell;
+			argstart[0] = fnbuffer;
+			execve(shell, &argstart[-1], environ);
+			goto fail;	/* Exec didn't work */
+		}
+
+		/* 
+		 * If we succeeded, the execve() doesn't return, so we
+		 * can only be here is if the file hasn't been found yet.
+		 * Try the next place on the path.
+		 */
+	}
+
+	/* all attempts failed to locate the file.  Give up. */
+	errno = ENOENT;
+
+fail:
+	free(fnbuffer);
+	return -1;
+}
+#endif /* MINIX */
+
+
+#ifdef EMUL_OPEN3
+#include "open3.h"
+/*
+ * open3 -- routine to emulate the 3-argument open system
+ * call that is present in most modern Unix systems.
+ * This version attempts to support all the flag bits except for O_NDELAY
+ * and O_APPEND, which are silently ignored.  The emulation is not as efficient
+ * as the real thing (at worst, 4 system calls instead of one), but there's
+ * not much I can do about that.
+ *
+ * Written 6/10/87 by rmtodd@uokmax
+ *
+ * open3(path, flag, mode)
+ * Attempts to open the file specified by
+ * the given pathname.  The following flag bits (#defined in tar.h)
+ * specify options to the routine:
+ *	O_RDONLY	file open for read only
+ *	O_WRONLY	file open for write only
+ *	O_RDWR		file open for both read & write
+ * (Needless to say, you should only specify one of the above).
+ * 	O_CREAT		file is created with specified mode if it needs to be.
+ *	O_TRUNC		if file exists, it is truncated to 0 bytes
+ *	O_EXCL		used with O_CREAT--routine returns error if file exists
+ * Function returns file descriptor if successful, -1 and errno if not.
+ */
+
+/*
+ * array to give arguments to access for various modes
+ * FIXME, this table depends on the specific integer values of O_XXX,
+ * and also contains integers (args to 'access') that should be #define's.
+ */
+static int modes[] =
+	{
+		04, /* O_RDONLY */
+		02, /* O_WRONLY */
+		06, /* O_RDWR */
+		06, /* invalid but we'd better cope -- O_WRONLY+O_RDWR */
+	};
+
+/* Shut off the automatic emulation of open(), we'll need it. */
+#undef open
+
+int
+open3(path, flags, mode)
+char *path;
+int flags, mode;
+{
+	extern int errno;
+	int exists = 1;
+	int call_creat = 0;
+	int fd;
+	/*
+	 * We actually do the work by calling the open() or creat() system
+	 * call, depending on the flags.  Call_creat is true if we will use 
+	 * creat(), false if we will use open().
+	 */
+
+	/*
+	 * See if the file exists and is accessible in the requested mode. 
+	 *
+	 * Strictly speaking we shouldn't be using access, since access checks
+	 * against real uid, and the open call should check against euid.
+	 * Most cases real uid == euid, so it won't matter.   FIXME.
+	 * FIXME, the construction "flags & 3" and the modes table depends
+	 * on the specific integer values of the O_XXX #define's.  Foo!
+	 */
+	if (access(path,modes[flags & 3]) < 0) {
+		if (errno == ENOENT) {
+			/* the file does not exist */
+			exists = 0;
+		} else {
+			/* probably permission violation */
+			if (flags & O_EXCL) {
+				/* Oops, the file exists, we didn't want it. */
+				/* No matter what the error, claim EEXIST. */
+				errno = EEXIST;
+			}
+			return -1;
+		}
+	}
+
+	/* if we have the O_CREAT bit set, check for O_EXCL */
+	if (flags & O_CREAT) {
+		if ((flags & O_EXCL) && exists) {
+			/* Oops, the file exists and we didn't want it to. */
+			errno = EEXIST;
+			return -1;
+		}
+		/*
+		 * If the file doesn't exist, be sure to call creat() so that
+		 * it will be created with the proper mode.
+		 */
+		if (!exists) call_creat = 1;
+	} else {
+		/* If O_CREAT isn't set and the file doesn't exist, error. */
+		if (!exists) {
+			errno = ENOENT;
+			return -1;
+		}
+	}
+
+	/*
+	 * If the O_TRUNC flag is set and the file exists, we want to call
+	 * creat() anyway, since creat() guarantees that the file will be
+	 * truncated and open()-for-writing doesn't.
+	 * (If the file doesn't exist, we're calling creat() anyway and the
+	 * file will be created with zero length.)
+	 */
+	if ((flags & O_TRUNC) && exists) call_creat = 1;
+	/* actually do the call */
+	if (call_creat) {
+		/*
+		 * call creat.  May have to close and reopen the file if we
+		 * want O_RDONLY or O_RDWR access -- creat() only gives
+		 * O_WRONLY.
+		 */
+		fd = creat(path,mode);
+		if (fd < 0 || (flags & O_WRONLY)) return fd;
+		if (close(fd) < 0) return -1;
+		/* Fall out to reopen the file we've created */
+	}
+
+	/*
+	 * calling old open, we strip most of the new flags just in case.
+	 */
+	return open(path, flags & (O_RDONLY|O_WRONLY|O_RDWR|O_BINARY));
+}
+#endif
+
+#endif /* MASSCOMP mc700 */
+#endif /* MASSCOMP mc500 */
+#endif /* MASSCOMP mc300 */
+
+
+
+#ifdef	MSDOS
+/* Fake mknod by complaining */
+int
+mknod(path, mode, dev)
+	char		*path;
+	unsigned short	mode;
+	dev_t		dev;
+{
+	extern int	errno;
+	int		fd;
+	
+	errno = ENXIO;		/* No such device or address */
+	return -1;		/* Just give an error */
+}
+
+/* Fake links by copying */
+int
+link(path1, path2)
+	char		*path1;
+	char		*path2;
+{
+	char	buf[256];
+	int	ifd, ofd;
+	int	nrbytes;
+	int	nwbytes;
+
+	fprintf(stderr, "%s: %s: cannot link to %s, copying instead\n",
+		tar, path1, path2);
+	if ((ifd = open(path1, O_RDONLY|O_BINARY)) < 0)
+		return -1;
+	if ((ofd = creat(path2, 0666)) < 0)
+		return -1;
+	setmode(ofd, O_BINARY);
+	while ((nrbytes = read(ifd, buf, sizeof(buf))) > 0) {
+		if ((nwbytes = write(ofd, buf, nrbytes)) != nrbytes) {
+			nrbytes = -1;
+			break;
+		}
+	}
+	/* Note use of "|" rather than "||" below: we want to close
+	 * the files even if an error occurs.
+	 */
+	if ((nrbytes < 0) | (0 != close(ifd)) | (0 != close(ofd))) {
+		unlink(path2);
+		return -1;
+	}
+	return 0;
+}
+
+/* everyone owns everything on MS-DOS (or is it no one owns anything?) */
+int
+chown(path, uid, gid)
+	char	*path;
+	int	uid;
+	int	gid;
+{
+	return 0;
+}
+
+int
+geteuid()
+{
+	return 0;
+}
+#endif	/* MSDOS */
+@@@ Fin de port.c
+echo wildmat.c
+cat >wildmat.c <<'@@@ Fin de wildmat.c'
+/*
+ * @(#)wildmat.c 1.3 87/11/06	Public Domain.
+ *
+From: rs@mirror.TMC.COM (Rich Salz)
+Newsgroups: net.sources
+Subject: Small shell-style pattern matcher
+Message-ID: <596@mirror.TMC.COM>
+Date: 27 Nov 86 00:06:40 GMT
+
+There have been several regular-expression subroutines and one or two
+filename-globbing routines in mod.sources.  They handle lots of
+complicated patterns.  This small piece of code handles the *?[]\
+wildcard characters the way the standard Unix(tm) shells do, with the
+addition that "[^.....]" is an inverse character class -- it matches
+any character not in the range ".....".  Read the comments for more
+info.
+
+For my application, I had first ripped off a copy of the "glob" routine
+from within the find(1) source, but that code is bad news:  it recurses
+on every character in the pattern.  I'm putting this replacement in the
+public domain.  It's small, tight, and iterative.  Compile with -DTEST
+to get a test driver.  After you're convinced it works, install in
+whatever way is appropriate for you.
+
+I would like to hear of bugs, but am not interested in additions; if I
+were, I'd use the code I mentioned above.
+*/
+/*
+**  Do shell-style pattern matching for ?, \, [], and * characters.
+**  Might not be robust in face of malformed patterns; e.g., "foo[a-"
+**  could cause a segmentation violation.
+**
+**  Written by Rich $alz, mirror!rs, Wed Nov 26 19:03:17 EST 1986.
+*/
+
+/*
+ * Modified 6Nov87 by John Gilmore (hoptoad!gnu) to return a "match"
+ * if the pattern is immediately followed by a "/", as well as \0.
+ * This matches what "tar" does for matching whole subdirectories.
+ *
+ * The "*" code could be sped up by only recursing one level instead
+ * of two for each trial pattern, perhaps, and not recursing at all
+ * if a literal match of the next 2 chars would fail.
+ */
+#define TRUE		1
+#define FALSE		0
+
+
+static int
+Star(s, p)
+    register char	*s;
+    register char	*p;
+{
+    while (wildmat(s, p) == FALSE)
+	if (*++s == '\0')
+	    return(FALSE);
+    return(TRUE);
+}
+
+
+int
+wildmat(s, p)
+    register char	*s;
+    register char	*p;
+{
+    register int 	 last;
+    register int 	 matched;
+    register int 	 reverse;
+
+    for ( ; *p; s++, p++)
+	switch (*p) {
+	    case '\\':
+		/* Literal match with following character; fall through. */
+		p++;
+	    default:
+		if (*s != *p)
+		    return(FALSE);
+		continue;
+	    case '?':
+		/* Match anything. */
+		if (*s == '\0')
+		    return(FALSE);
+		continue;
+	    case '*':
+		/* Trailing star matches everything. */
+		return(*++p ? Star(s, p) : TRUE);
+	    case '[':
+		/* [^....] means inverse character class. */
+		if (reverse = p[1] == '^')
+		    p++;
+		for (last = 0400, matched = FALSE; *++p && *p != ']'; last = *p)
+		    /* This next line requires a good C compiler. */
+		    if (*p == '-' ? *s <= *++p && *s >= last : *s == *p)
+			matched = TRUE;
+		if (matched == reverse)
+		    return(FALSE);
+		continue;
+	}
+
+    /* For "tar" use, matches that end at a slash also work. --hoptoad!gnu */
+    return(*s == '\0' || *s == '/');
+}
+
+
+#ifdef	TEST
+#include <stdio.h>
+
+extern char	*gets();
+
+
+main()
+{
+    char	 pattern[80];
+    char	 text[80];
+
+    while (TRUE) {
+	printf("Enter pattern:  ");
+	if (gets(pattern) == NULL)
+	    break;
+	while (TRUE) {
+	    printf("Enter text:  ");
+	    if (gets(text) == NULL)
+		exit(0);
+	    if (text[0] == '\0')
+		/* Blank line; go back and get a new pattern. */
+		break;
+	    printf("      %d\n", wildmat(text, pattern));
+	}
+    }
+    exit(0);
+}
+#endif	/* TEST */
+@@@ Fin de wildmat.c
+exit 0

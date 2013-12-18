@@ -1,0 +1,415 @@
+$Header: faxdial,v 1.5 91/01/31 13:50:56 charles Locked $
+$Source: /server/usr/users/b/charles/world/microlink/RCS/docs/faxdial,v $
+ 
+;--------------------------------------------------------------------------
+;                           The Microlink Interface to the Telephone line
+;--------------------------------------------------------------------------
+
+Charles Reindorf
+Active Book Company
+
+Log
+
+ 4th January 1991 : Started
+ 9th January 1991 : Phone_Channel used throughout rather than
+                    Phone_Control in some places and Phone_Channel in others.
+14th January 1991 : Paul's modificatins incorporated. Additional calls and
+                    some calls cancelled.
+
+;--------------------------------------------------------------------------
+;                                                                Overview
+;--------------------------------------------------------------------------
+
+This document describes the interface supplied by the microlink for the
+  fax software and any software concerned with controlling the telphone
+  line to use.
+
+The microlink protocol provides means to communicate with the microcontroller
+  in the following areas with regard the `phone interface:
+  
+  1. Detect an incoming call.
+  2. Take the `phone on/off the hook.
+  3. Initializing and Refreshing a dead man's handle.
+  3. Dial a number (pulse- or tone- dialling).
+
+The microlink server task is the task which pools and arbitrates requests to
+  use the microlink, and also provides stream-type interfaces for specific
+  microlink functions, e.g. "/microlink/digitiser" is a stream-type interface
+  providing stylus events. In addition the microlink server provides a stream-
+  type interface "/microlink/general" which provides for general-purpose
+  communication over the microlink: Another task may open a stream to that
+  "file" and send and receive messages using the stream GetInfo(),
+  SetInfo() and event- mechanism as if the microlink belonged to itself only.
+
+Functions are provided in an ABC-specific library to open to this stream and
+  implement phone-line control operations. Declarations of these functions
+  will be provided in an ABC-specific header file. The functions are 
+  described below. The library ".def" file is found in 
+  "/helios/lib/abcphone.def", with the library binary located in "/helios/
+  lib/ABCphone" and the header file for the library will be located in
+  "/helios/include/abcARM/phone.h".
+
+;--------------------------------------------------------------------------
+;                                                            Interlocking
+;--------------------------------------------------------------------------
+
+The current state of affairs is that it is not advisable that more than
+   one `phone channel is open at a time. The current state of affairs is
+   that this particular interlock is not enforced by the `phone line control
+   routines: The interlock would have to be implemented at the level of the
+   microlink server which currently implements an interlock at a lower
+   level (i.e. interlocking of general request/reply conversations with
+   the microcontroller, which is important).
+
+;--------------------------------------------------------------------------
+;                               Open a channel to the `phone line control
+;--------------------------------------------------------------------------
+
+This function opens a stream to "/microlink/general" (or an appropriate
+   alternative path - see below), and sets up other contextual information
+   and returns with a 'handle': Namely a pointer to the appropriate
+   control structure. This 'handle' is used to control further `phone
+   line requests.
+
+Prototype:
+
+Phone_Channel *Phone_OpenChannel(char *name,word *err);
+
+Description:
+
+name:            If non-NULL specifies the file-name of the stream to
+                   be opened over which microlink requests re. `phone
+                   control are to be sent. If NULL defaults to
+                   "/microlink/general" or some standard location. The
+                   idea eventually is to specify which "phone" is to be
+                   used, hence this string should ultimately arrive from
+                   some application. If the string is zero-length the
+                   default action is also taken.
+err:             If non-NULL and if an error occured, the error code is
+                   stored in *err: It will be a standard Helios-type
+                   error.
+
+Returns:         A pointer to the appropriate phone-control structure.
+                    NULL if some system error occured in trying to create
+                    the structure, in which case *err, if err is non-NULL,
+                    will contain the number of the error.
+
+;--------------------------------------------------------------------------
+;                                        Refreshing the dead man's handle
+;--------------------------------------------------------------------------
+
+The following function is used to refresh the dead-man's-handle, ie. to
+  keep it alive. The funciton returns a status to indicate whether the
+  dead man's handle had been in a state of expiry just prior to it being
+  refreshed by this call: This allows the client to ensure that they are
+  refreshing the dead man's handle properly: It provides an interlocked 
+  continuity from one refresh operation to the next.
+
+Prototype :
+
+word Phone_RefreshDeadmanTimeout ( Phone_Channel *channel );
+
+Description :
+
+Returns :  Phone_Ok   => Dead man's handle refreshed.
+           Phone_Dead => Dead man's handle had expired just prior to call.
+                           (handle nevertheless refreshed).
+           <0         => Some system error encoded Helios-style.
+
+;--------------------------------------------------------------------------
+;                                         To poll "`phone ringing" status
+;--------------------------------------------------------------------------
+
+This function returns a value indicating whether the phone is ringing or not.
+
+Prototype :
+
+word Phone_IsRinging ( Phone_Channel *channel );
+
+Description :
+
+Returns :      Phone_No  => Is not ringing
+               Phone_Yes => Is ringing
+  negative value => Helios-type error
+  
+Phone_No  is guaranteed to be of value 0
+Phone_Yes is guaranteed to be of value 1
+
+;--------------------------------------------------------------------------
+;                                        To poll "`phone off hook" status
+;--------------------------------------------------------------------------
+
+This function returns a value indicating whether the phone is on or off hook.
+
+Prototype :
+
+word Phone_IsOnHook ( Phone_Channel *channel );
+
+Description :
+
+Returns :      Phone_No  => Is off-hook
+               Phone_Yes => Is on -hook
+  negative value => Helios-type error
+
+Phone_No  is guaranteed to be of value 0
+Phone_Yes is guaranteed to be of value 1
+
+;--------------------------------------------------------------------------
+;                                        To poll "`phone dialling" status
+;--------------------------------------------------------------------------
+
+This function returns a value indicating whether the phone is currently
+  dialling a number or not
+  
+Prototype :
+ 
+word Phone_IsDialling ( Phone_Channel *channel );
+
+Description :
+
+Returns :      Phone_No  => Is not dialling
+               Phone_Yes => Is dialling
+             <0  => Some Error : Helios encoding
+
+Phone_No  is guaranteed to be of value 0
+Phone_Yes is guaranteed to be of value 1
+
+;--------------------------------------------------------------------------
+;                                 To wait for the `phone to start ringing
+;--------------------------------------------------------------------------
+
+This function blocks for as long as the `phone is not ringing, or until a
+   specified timeout has elapsed: The timeout can be set to "infinity".
+
+NOTE: It is not required that the dead man's handle be refreshed whilst
+    waiting for the `phone to ring, however it is advisable to refresh
+    the dead man's handle then actively issue a "put `phone on hook"
+    request before initiating the process to wait for `phone off-hook.
+
+Prototype :
+
+word Phone_AwaitRing ( word timeout );
+
+Description:
+
+timeout:        Timeout in microseconds.  -1 => No timeout
+Returns:        Phone_Ok        => Phone started ringing
+                Phone_TimedOut  => The function timed-out
+                Phone_UnBlocked => The process was unblocked (see below)
+                <0              => Error (e,g, microlink server not installed)
+
+;--------------------------------------------------------------------------
+;                                                 To take `phone off hook
+;--------------------------------------------------------------------------
+
+This funciton takes the `phone off the hook.
+
+Prototype :
+
+word Phone_TakeOffHook   ( Phone_Channel *channel );
+
+Description:
+
+Returns:  Phone_Ok     : Operation sucessful
+          Phone_Dead   : Dead man's handle has expired.
+          <0           : Error encoded Helios-style.
+
+;--------------------------------------------------------------------------
+;                                          To put the `phone back on-hook
+;--------------------------------------------------------------------------
+
+This function puts the `phone back on-hook.
+
+Prototype :
+
+word Phone_PutOnHook ( Phone_Channel *channel );
+
+Description :
+
+Returns:      Phone_Ok  => Operation sucessful.
+              <  0      => Error (e.g. microlink server not installed)
+
+;--------------------------------------------------------------------------
+;                                                 Set pulse/tone dialling
+;--------------------------------------------------------------------------
+
+The following two calls set the default dialling method: pulse or tone
+  dialling, to be impleneted by the number-dialling command.
+  
+void Phone_SelectPulseDialling(Phone_Channel *channel);
+void Phone_SelectToneDialling (Phone_Channel *channel);
+
+Note : The default pulse/tone dialling option on a newly opened channel
+         is not specified, and may be either pulse or tone dialling.
+
+;--------------------------------------------------------------------------
+;                                                           Set PABX code
+;--------------------------------------------------------------------------
+
+The following selection of calls controls the PABX options : The first call
+   sets the PABX code which must be a sequence of only digits or the "#" or
+   "*" codes, and may be no longer that 20 characters in length. The second and
+   third calls are used to switch beteen PABX and PSTN modes: In PABX mode
+   any `phone number dialled will be prefixed by the specified Pabx code.
+   In Pstn mode this does not occur.
+
+Phone_SetPabxCode will return an error status if the string passed to it is 
+   too long or if it contains characters other than the digits, '#', and '*'. 
+   If the Phone_DialNumber command is called and the number turns out to be 
+   a pulse-dialled number with the Pabx option enabled, and the Pabx code 
+   contains either of the characters '#' or '*' in it, then the 
+   Phone_DialNumber function will return with an error code.
+   
+Prototype :
+
+word Phone_SetPabxNumber ( Phone_Channel *channel, char *PabxCode );
+
+Returns :   Phone_Ok      => Operation sucessful
+            Phone_BadNum  => Bad Pabx string (too long or bad characters)
+
+Prototype :
+
+word Phone_SelectPabx ( Phone_Channel *channel );
+word Phone_SelectPstn ( Phone_Channel *channel );
+
+;--------------------------------------------------------------------------
+;                                        To dial a number (pulse or tone)
+;--------------------------------------------------------------------------
+
+A call provided that, given an ASCII string, will dial the number indicated
+   by that ASCII string using pulse or tone dialling.
+
+The ASCII string may be prexifed by a string containing an optional "pulse/
+   tone" override character and an optional "Pabx/Pstn" override character
+   in either order. The "pulse/tone" override character (if present) is
+   an upper or lower case P or T which overrides the default selection for
+   pulse- or tone- dialling in an obvious way. The "pabx/pstn" override
+   character (if present) is an upper or lower case I or X. If an I or i,
+   (standing for "Internal") the Pstn option is automatically set. If
+   an X or x (standing for "eXternal") the Pabx option is automatically set.
+   The idea is that 'I' can be used to explicitly select an internal-exchange
+   number on a pabx system.
+The remainder of the characters in the string supplied must be mebers of the
+    following character set.
+
+   space       : no effect
+round brackets : no effect
+   hyphen      : A pause of about 1 second in the dialing
+   digit       : A digit to be dialled
+   '*'         : Tone dialling only : A special tone.
+   '#'         : Tone dialling only : A special tone.
+   
+It should be remembered that the quantity of characters signifying a number,
+   special tone or digit (combined also with the Pabx characters if Pabx
+   is chosen) is limited by microcontroller software - see Paul. The
+   limitation is expected to be at the worst 20 characters. If the limitation
+   is exceeded, the microcontroller will reject the number supplied.
+
+The call returns before dialling is complete: It simply takes enough time
+  to set up the number, which should be a "short" time, and returns. The
+  client must continue refreshing the dead-man's handle subsequently, and
+  a function is provided below to block until a timeout or dialling
+  complete.
+
+Prototype :
+
+word Phone_DialNumber(Phone_Channel *channel, char *number);
+
+Description :
+
+number :        ASCII phone number string (see below)
+Returns:        >= 0 : Various statuses regarding sucess/failure.
+                <  0 : System error (e.g. microlink server not installed).
+
+The currently selected non-negative return code allocations are:
+
+Phone_Ok          => Phone number dialled sucessfully
+Phone_BadNum      => Phone number string is invalid
+Phone_RejectedNum => Microcontroller rejected `phone number string
+Phone_GaveUp      => Microcontroller gave up on dialling the number   
+
+The BNF rules for the `phone number string are:
+
+phone-number-string ->  opt-prefix number-body
+opt-prefix          -> (empty string)
+                    |  pt-specifier opt-ix-specifier
+                    |  ix-specifier opt-pt-specifier
+opt-pt-specifier    -> (empty string)
+                    |  pt-specifier
+pt-specifier        -> "p"
+                    |  "P"
+                    |  "t"
+                    |  "T"
+opt-ix-specifier    -> (empty string)
+                    |  ix-specifier
+ix-specifier        -> "i"
+                    |  "I"
+                    |  "x"
+                    |  "X"
+number-body         -> body-character
+                    |  number-body body-character
+body-character      -> " " | "(" | ")" | "-"
+                    |  "0" | "1" | "2" | "3" | "4"
+                    |  "5" | "6" | "7" | "8" | "9"
+                    |  "*" | "#"
+
+Restrictions:
+"#" and "*" are forbidden in any non-tone-dialling number.
+If the pabx option is implictly or explicitly selected, the current pabx
+  string is chosen and inserted between the optional prefix and the
+  number-body. The total number of "0"-"9", "*", "#" and "-" characters
+  in the resulting string may not exceed a microcontroller-imposed limit.
+
+;--------------------------------------------------------------------------
+;                                        Waiting for dialling to complete
+;--------------------------------------------------------------------------
+
+The following function blocks until dialling is complete with an optional
+  timeout. The timeout should be used as the dead-man's handle must be 
+  refreshed normally whilst dialling occurs.
+
+Prototype :
+
+word Phone_AwaitDialComplete ( Phone_Channel *channel , word timout );
+
+Description:
+
+timeout   : In microseconds, or -1 for no timeout
+
+Returns   : Phone_Ok        => Dialling Complete
+            Phone_TimedOut  => Timed out
+            Phone_UnBlocked => Un-blocked by another process (see below)
+            <0              => Error (Helios-style)
+
+;--------------------------------------------------------------------------
+;                                                  Unblocking the channel
+;--------------------------------------------------------------------------
+
+The following function causes processes blocked on a phone channel to
+   un-block, namely the function to wait for a ringing tone or the function
+   to wait for dialling to complete.
+
+Prototype :
+
+word Phone_UnblockChannel ( Phone_Channel *channel );
+
+Description :
+
+Returns : Phone_Ok   => Operation sucessful
+          <0         => Error, Helios-style
+
+;--------------------------------------------------------------------------
+;                                                       Closing a channel
+;--------------------------------------------------------------------------
+
+The following function is used to close a channel. The process which closes
+  the channel should ensure that there are no other processes attempting to
+  use the channel for any purposes.
+
+word Phone_CloseChannel ( Phone_Channel *channel );
+
+Description :
+
+Returns : Phone_Ok   => Operation sucessful
+          <0         => Error, encoded Helios style.
+

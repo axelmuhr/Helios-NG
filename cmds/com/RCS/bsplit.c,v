@@ -1,0 +1,556 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	94.02.24.10.48.57;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.10.12.15.33.27;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.07.24.16.22.30;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.04.02.14.23.52;	author martyn;	state Exp;
+branches;
+next	;
+
+
+desc
+@old RCS version knackered
+@
+
+
+1.4
+log
+@added folding and fixed for compilation on MS-DOS
+@
+text
+@/*{{{  Header */
+
+/*
+ * bsplit.c - binary version of the UNIX split command
+ *
+ * Copyright (c) 1994 Perihelion Software Ltd.
+ * All rights reserved.
+ *
+ * Author:		N Clifton
+ * Version:		$Revision: 1.3 $
+ * Date:		$Date: 1992/10/12 15:33:27 $
+ * Split Author:	John Ffitch
+ *
+ */
+
+#ifdef __TRAN
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/bsplit.c,v 1.3 1992/10/12 15:33:27 bart Exp $";
+#endif
+
+/*}}}*/
+/*{{{  Includes */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdarg.h>
+#include <ctype.h>
+
+/*}}}*/
+/*{{{  Variables */
+
+static long int	split_size = 1024L * 700L;	/* number of bytes per file */
+static char *	ProgName   = NULL;		/* name of the program */
+static int	dbg        = 0;			/* non-zero for debugging */
+
+/*}}}*/
+/*{{{  Code */
+
+/*{{{  debug() */
+
+void
+debug( const char * format, ... )
+/*
+ * print a debugging message
+ */
+{
+	va_list	args;
+	
+
+	va_start( args, format );
+
+	if (dbg)
+ 	{	
+		if (ProgName)
+			fprintf( stderr, "%s: ", ProgName );
+		
+		vfprintf( stderr, format, args );
+	
+		fprintf( stderr, "\n" );
+	
+		fflush( stderr );
+	}
+	
+	va_end( args );
+	
+	return;
+	
+} /* debug */
+
+/*}}}*/
+/*{{{  usage() */
+
+void
+usage( void )
+/*
+ * print a usage description
+ */
+{
+	fprintf( stderr, "Usage: " );
+
+	if (ProgName)
+		fprintf( stderr, "%s ", ProgName );
+	else
+		fprintf( stderr, "bsplit " );
+		
+	fprintf( stderr, "\n" );
+	fprintf( stderr, "    [-<number>[K/M]] (number of [kilo/mega]bytes per file)\n" );
+	fprintf( stderr, "    [-d]             (enable debugging)\n" );
+	fprintf( stderr, "    [-j]             (join files)\n" );
+	fprintf( stderr, "    <file name>      (name of input (for split) or output (for join) file)\n" );
+	fprintf( stderr, "    [<file name>]    (name of output (for split) or input (for join) file(s))\n" );
+	
+	return;
+	
+} /* usage */
+
+/*}}}*/
+/*{{{  open_file() */
+
+FILE *
+open_file(
+	char *	name,
+	int 	number,
+	char *	mode )
+/*
+ * attempts to open the named file with the given extension
+ * returns a file handle to the open file or NULL upon failure
+ */
+{
+	char		newname[ 256 ];		/* XXX */
+	register FILE *	ans;
+	register int 	i;
+
+
+	debug( "open_file: called with name = %s number = %d", name, number );
+
+	strcpy( newname, name );
+
+	i = strlen( name );
+
+	newname[ i++ ] = ('a'+ (number / 26));
+	newname[ i++ ] = ('a'+ (number % 26));
+	newname[ i   ] = '\0';
+
+	debug( "open_file: Opening file %s", newname );
+
+	ans = fopen( newname, mode );
+
+	if (ans == NULL)
+	{
+		debug( "open_file: Cannot open file %s", newname );
+	}
+
+	return ans;
+
+} /* open_file */
+
+/*}}}*/
+/*{{{  main() */
+
+int
+main(
+	int 	argc,
+	char **	argv )
+/*
+ * the main body of the bsplit program
+ */
+{
+	FILE *		inf;
+	FILE *		outf;
+	char *		arg;
+	char *		in_file;
+	char *		out_file;
+	char *		split_name;
+	int		join = 0;
+	int		file_number;
+	int 		ch;
+ 	long int 	byte_count;
+
+
+	ProgName = argv[ 0 ];
+
+	if ((arg = strrchr( ProgName, '/' )) != NULL)
+	  {
+	    ProgName = arg + 1;
+	  }
+	else if ((arg = strrchr( ProgName, '\\' )) != NULL)
+	  {
+	    ProgName = arg + 1;
+	  }
+
+	arg = *++argv;
+
+	/* process command line arguments */
+	
+	while (arg != NULL && arg[ 0 ] == '-' && arg[ 1 ] != '\0')
+	{
+		if (arg[ 1 ] == 'd')
+		{
+			++dbg;
+		}
+		else if (arg[ 1 ] == 'j')
+		{
+			++join;
+		}
+		else if (arg[ 1 ] == 'h')
+		{
+			usage();
+			
+			return 0;
+		}
+		else if (isdigit( arg[ 1 ] ))
+		{
+			long int	save = split_size;
+			char		unit;			
+		
+			/* Set new split rate */
+
+			unit = arg[ strlen( arg ) - 1 ];
+			
+			sscanf( arg, "-%ld", &split_size);
+
+			if (unit == 'k' || unit == 'K')
+				split_size *= 1024L;
+			else if (unit == 'm' || unit == 'M')
+				split_size *= 1024L * 1024L;
+ 
+			if (split_size == 0)
+				split_size = save;
+				
+			debug( "Splitsize reset to %ld (from %s)",
+				split_size, arg );
+		}
+
+		arg = *++argv;
+		argc--;
+	}
+
+	if (argc < 2 || argc > 3)
+	{
+		usage();
+		
+		return 1;
+	}
+	
+	in_file = arg;
+		
+	if (arg[ 0 ] == '-' && arg[ 1 ] == '\0')
+	{
+		/* Take current input */
+		
+		if (join)
+			inf = stdout;
+		else
+    			inf = stdin;
+  	}
+	else
+	{
+  		if (join)
+  			inf = fopen( arg, "wb" );
+  		else
+  			inf = fopen( arg, "rb" );
+  		
+    		if (inf == NULL)
+    		{
+      			debug( "Cannot open %s file %s",
+      				join ? "output" : "input", arg );
+      			
+      			return 1;
+		}
+	}
+	
+	if (argc == 3)
+	{
+		/* set split name */
+		
+		out_file = split_name = *++argv;
+
+		debug( "Split name reset to %s", split_name );	
+  	}
+	else
+	{
+		out_file = split_name = "x";
+	}
+
+	/*
+	 * NB/ we do not check to see if the input and output names
+	 * refer to the same file
+	 */
+
+	file_number = 0;
+	byte_count  = 0;
+	
+	if (join)
+	{
+		/*
+		 * NB/ when joining 'inf' is the ouput file
+		 * and 'outf' itterates through the input files
+		 */
+		 
+		while ((outf = open_file( split_name, file_number++, "rb" )) != NULL)
+		{
+			++byte_count;
+			
+			while ((ch = getc( outf )) != EOF)
+			{
+    				putc( ch, inf );
+    			}
+
+			fclose( outf );
+		}
+
+		if (byte_count == 0)
+		{
+			/* 
+			 * no input files found - this usually means
+			 * that the command line arguments were the
+			 * wrong way around - try to (silently)
+			 * correct this
+			 */
+			 
+			if (in_file[ 0 ] != '-' && in_file[ 1 ] != '\0')
+			{
+				fclose( inf );
+				remove( in_file );
+				
+				split_name  = in_file;
+				file_number = 0;
+				
+				if (out_file[ 0 ] == '-' && out_file[ 1 ] == '\0')
+				{
+					outf = stdout;
+				}
+				else
+				{
+					outf = fopen( out_file, "wb" );
+					
+					if (outf == NULL)
+					{
+						debug( "Unable to open output file %s", out_file );
+						
+						return 1;
+					}					
+				}
+				
+				/* OK try again */
+				
+				while ((inf = open_file( split_name, file_number++, "rb" )) != NULL)
+				{
+					while ((ch = getc( inf )) != EOF)
+					{
+    						putc( ch, outf );
+    					}
+
+					fclose( inf );
+				}
+				
+				inf = outf;
+			}
+			else
+			{
+				debug( "Cannot join multiple copies of stdin" );
+				
+				return 1;
+			}
+		}
+		
+		fclose( inf );
+	}
+	else
+	{	
+		outf = open_file( split_name, file_number, "wb" );
+	
+		while ((ch = getc( inf )) != EOF)
+		{
+    			putc( ch, outf );
+    		
+    			++byte_count;
+    		
+			if (byte_count == split_size)
+			{
+				fclose( outf );
+			
+				ch = getc( inf );
+			
+				if (ch == EOF)
+				{
+					break;
+				}
+			
+				outf = open_file( split_name, ++file_number, "wb" );
+
+				ungetc( ch, inf );
+				
+				byte_count = 0;
+			}
+		}
+	
+		fclose( outf );
+	}
+	
+	return 0;
+
+} /* main */
+
+/*}}}*/
+
+/*}}}*/
+
+/* end of bsplit.c */
+@
+
+
+1.3
+log
+@Fixed potential NULL access
+@
+text
+@d1 2
+d6 1
+a6 1
+ * Copyright (c) 1990 Perihelion Software Ltd.
+d10 2
+a11 2
+ * Version:		$Revision: 1.2 $
+ * Date:		$Date: 1992/07/24 16:22:30 $
+d16 6
+a21 1
+static char *rcsid = "$Header: /users/bart/hsrc/cmds/com/RCS/bsplit.c,v 1.2 1992/07/24 16:22:30 bart Exp bart $";
+a22 10
+/*
+ * $Log: bsplit.c,v $
+ * Revision 1.2  1992/07/24  16:22:30  bart
+ * Fixed diagnostics message when joining.
+ *
+ * Revision 1.1  1991/04/02  14:23:52  martyn
+ * Initial revision
+ *
+ */
+ 
+a24 1
+#include <syslib.h>
+d27 4
+d32 1
+a32 1
+static int	split_size = 1024 * 700;	/* number of bytes per file */
+d36 2
+d39 2
+d70 2
+d87 5
+a91 5
+	fprintf( stderr, "    [-<number>]   (number of bytes per file)\n" );
+	fprintf( stderr, "    [-d]          (enable debugging)\n" );
+	fprintf( stderr, "    [-j]          (join files)\n" );
+	fprintf( stderr, "    <file name>   (name of input (for split) or output (for join) file)\n" );
+	fprintf( stderr, "    [<file name>] (name of output (for split) or input (for join) file(s))\n" );
+d97 2
+d138 2
+d149 10
+a158 10
+	FILE *	inf;
+	FILE *	outf;
+	char *	arg;
+	char *	in_file;
+	char *	out_file;
+	char *	split_name;
+	int	join       = 0;
+	int 	file_number;
+	int 	ch;
+ 	int 	byte_count;
+d162 10
+a171 1
+	
+d192 1
+a192 1
+		else
+d194 2
+a195 2
+			int	save = split_size;
+			
+d199 3
+a201 1
+			sscanf( arg, "-%d", &split_size);
+d203 5
+d211 2
+a212 1
+			debug( "Splitsize reset to %d", split_size );
+d385 6
+@
+
+
+1.2
+log
+@Fixed diagnostics message when joining.
+@
+text
+@d8 2
+a9 2
+ * Version:		$Revision: 1.1 $
+ * Date:		$Date: 1991/04/02 14:23:52 $
+d14 1
+a14 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/bsplit.c,v 1.1 1991/04/02 14:23:52 martyn Exp bart $";
+d18 3
+d157 1
+a157 1
+	while (arg[ 0 ] == '-' && arg[ 1 ] != '\0')
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d8 2
+a9 2
+ * Version:		$Revision$
+ * Date:		$Date$
+d14 1
+a14 1
+static char *rcsid = "$Header$";
+d17 4
+a20 1
+ * $Log$
+d120 1
+a120 1
+		debug( "open_file: Cannot open output file" );
+@

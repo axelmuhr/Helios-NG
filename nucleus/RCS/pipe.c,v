@@ -1,0 +1,842 @@
+head	1.12;
+access;
+symbols
+	Helios_1_3_1:1.12
+	Helios_C40_1_3_Official_Release:1.11
+	Alenia_release:1.11
+	Helios1_3:1.8
+	C40_Field_Test_2:1.8
+	C40_Field_Test_R1:1.7
+	Helios13_beta:1.7
+	Helios1_2_2:1.5
+	Helios1_2_2Beta:1.5
+	Helios1_2_1:1.4
+	Helios1_2:1.4
+	V1_2Beta0:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.12
+date	93.07.27.08.34.12;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.11.20.17.42.53;	author nick;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.11.17.11.45.14;	author paul;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.11.12.16.56.35;	author paul;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.08.14.15.13.23;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.05.18.14.15.50;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.05.18.14.15.05;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.06.17.12.46.21;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.01.16.44.44;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.05.18.20.58;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.05.13.07.29;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.13.06.29;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@Pipe connection server
+@
+
+
+1.12
+log
+@added cast of GetSysBase() to word* to remove compiler error message
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     	H E L I O S   S E R V E R                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- pipe.c								--
+--                                                                      --
+--	Point-to-point pipe handler.					--
+--	This merely acts as a rendezvous point for the communicators.	--
+--                                                                      --
+--	Author:  NHG 16/8/87						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId:	 %W%	%G% Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: pipe.c,v 1.11 1992/11/20 17:42:53 nick Exp nickc $ */
+
+#include <helios.h>	/* standard header */
+
+#define __in_pipe 1	/* flag that we are in this module */
+
+#define SA 0		/* set to 1 for Stand Alone	*/
+
+
+#include <syslib.h>
+#include <servlib.h>
+#include <string.h>
+#include <root.h>
+
+#define Code_Connect	0xa1
+#define Code_Timeout	0xa2
+#define Code_Close	0xa3
+#define Code_Connect1	0xa4
+
+
+#define State_Mask	0xFFFFFFF0L
+
+typedef struct Pipe {
+	ObjNode		ObjNode;
+	Port		Connect;
+	bool		Finish;
+} Pipe;
+#define Users	ObjNode.Size
+#define State	ObjNode.Account
+
+DirNode		Root;
+
+word		pipeno = 1;
+
+NameInfo PipeInfo =
+{
+	NullPort,
+	Flags_StripName,
+	DefNameMatrix,
+	(word *)NULL
+};
+
+static void do_open(ServInfo *servinfo);
+static void do_create(ServInfo *servinfo);
+static void do_delete(ServInfo *servinfo);
+static void do_closeobj(ServInfo *servinfo);
+
+static DispatchInfo PipeDInfo = {
+	(DirNode *)&Root,
+	NullPort,
+	SS_Pipe,
+	NULL,
+	{ NULL,	0 },
+	{
+		{ do_open,	2000 },
+		{ do_create,	2000 },
+		{ DoLocate,	2000 },
+		{ DoObjInfo,	2000 },
+		{ InvalidFn,	2000 },
+		{ do_delete,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ do_closeobj,	2000 },
+		{ DoRevoke,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 }
+	}
+};
+
+extern word Fork(int stacksize, VoidFnPtr fn, int args_size, ...);
+
+Pipe *NewPipe(DirNode *d,char *name);
+void PipeConnect(Pipe *p);
+
+int main(void)
+{
+
+	Object *nte = Null(Object);
+	bool	in_nucleus;
+
+#if SA	
+	Environ env;
+	GetEnv(MyTask->Port,&env);
+#endif
+
+#ifdef __TRAN
+	in_nucleus = (((word) &main) < (word) GetRoot());
+#else
+# ifdef __C40
+	  {
+	    MPtr base = GetSysBase();	/* returns word address on C40 */
+
+	    in_nucleus = (
+			  (base < (MPtr)main) &&
+			  ((MPtr)main < MRTOA_(base) )
+			  );
+	  }
+# else
+	  {
+	    word *	base = (word *)GetSysBase();
+	    
+	    in_nucleus = (
+			  (base < (word *)main) &&
+			  ((word *)main < base + *base)
+			  );
+	  }
+# endif
+#endif
+	
+	InitNode( (ObjNode *)&Root, "pipe", Type_Directory, 0, DefRootMatrix );
+	InitList( &(Root.Entries) );
+	Root.Nentries = 0;
+
+	PipeInfo.Port = 
+	PipeDInfo.ReqPort = MyTask->Port;
+
+	/* .. of root is a link to our machine root	*/
+	{
+		Object *o;
+		LinkNode *Parent;
+		char mcname[100];
+
+		
+		MachineName(mcname);
+		
+		o = Locate(NULL,mcname);
+
+		Parent = (LinkNode *)Malloc(sizeof(LinkNode) + (word)strlen(mcname));
+		
+		InitNode( &Parent->ObjNode, "..", Type_Link, 0, DefLinkMatrix );
+		
+		Parent->Cap = o->Access;
+		
+		strcpy(Parent->Link,mcname);
+		
+		Root.Parent = (DirNode *)Parent;
+
+#if !(SA)
+		if (in_nucleus)
+#endif
+  		  nte = Create(o,"pipe",Type_Name,sizeof(NameInfo),
+			(byte *)&PipeInfo);
+		
+		Close(o);
+	}
+
+	if (in_nucleus)
+	 { MCB	m;
+	   InitMCB(&m, 0, MyTask->Parent, NullPort, 0x456);
+
+	   (void) PutMsg(&m);
+	 }
+
+	Dispatch(&PipeDInfo);
+
+	if (nte != NULL)
+ 	 Delete(nte, NULL);
+
+	return 0;
+}
+
+
+static void do_create(ServInfo *servinfo)
+{
+	DirNode *d;
+	Pipe *p;
+	MsgBuf *r;
+	MCB *m = servinfo->m;
+	IOCCreate *req = (IOCCreate *)(m->Control);	
+	char *pathname = servinfo->Pathname;
+
+	
+	d = GetTargetDir(servinfo);
+	
+	if( d == NULL )
+	{
+		ErrorMsg(m,EO_Directory);
+		return;
+	}
+	
+	p = (Pipe *)GetTargetObj(servinfo);
+	
+	
+	if( p != NULL )
+	{
+		ErrorMsg(m,EC_Error+EG_Create+EO_Pipe);
+		return;
+	}
+	
+	unless( CheckMask(req->Common.Access.Access,AccMask_W) ) 
+	{
+		ErrorMsg(m,EC_Error+EG_Protected+EO_Directory);
+		return;
+	}
+
+	r = New(MsgBuf);
+
+	if( r == Null(MsgBuf) )
+	{
+		ErrorMsg(m,EC_Error|EG_NoMemory|EO_Pipe);
+		return;
+	}
+
+	p = NewPipe(d,objname(pathname));
+	
+	/* give creator full access rights */
+	
+	req->Common.Access.Access = AccMask_Full;
+	
+	FormOpenReply(r,m,&p->ObjNode,0,pathname);
+	
+	PutMsg(&r->mcb);
+	
+	Free(r);
+
+	return;	
+}
+
+static void do_open(ServInfo *servinfo)
+{
+	MCB *m = servinfo->m;
+	MsgBuf *r;
+	IOCMsg2 *req = (IOCMsg2 *)(m->Control);
+	char *pathname = servinfo->Pathname;
+	DirNode *d;
+	Pipe *p;
+
+	r = New(MsgBuf);
+
+	if( r == Null(MsgBuf) )
+	{
+		ErrorMsg(m,EC_Error+EG_NoMemory);
+		return;
+	}
+
+	d = GetTargetDir(servinfo);
+	
+	if( d == NULL )
+	{
+		ErrorMsg(m,EO_Directory);
+		Free(r);
+		return;
+	}
+	
+	p = (Pipe *)GetTargetObj(servinfo);
+	
+	if( p == NULL )
+	{
+		p = NewPipe(d,objname(pathname));
+		/* transfer lock to new pipe */
+		Wait( &p->ObjNode.Lock );
+		Signal( &servinfo->Target->Lock );
+		servinfo->Target = &p->ObjNode;
+	}
+	
+	if( p == NULL )
+	{
+		ErrorMsg(m,EC_Error|EG_NoMemory|EO_Pipe);
+		Free(r);
+		return;
+	}
+
+	unless( CheckMask(req->Common.Access.Access,(int)(req->Arg.Mode & Flags_Mode)) ) 
+	{
+		ErrorMsg(m,EC_Error+EG_Protected+EO_Pipe);
+		Free(r);
+		return;
+	}
+
+	if( p->ObjNode.Type == Type_Directory )
+	{
+		Port reqport = NewPort();
+		FormOpenReply(r,m,&p->ObjNode,Flags_Closeable, pathname);
+		r->mcb.MsgHdr.Reply = reqport;
+		PutMsg(&r->mcb);
+		Free(r);
+		DirServer(servinfo,m,reqport);
+		FreePort(reqport);
+		return;
+	}
+	else {
+		unless( servinfo->FnCode & FF_ReOpen ) p->Users++;
+		FormOpenReply(r,m,&p->ObjNode,Flags_Closeable, pathname);
+
+		r->mcb.MsgHdr.Reply = p->Connect;
+		PutMsg(&r->mcb);
+		Free(r);
+		return;
+	}
+}
+
+static void do_delete(ServInfo *servinfo)
+{
+	MCB *m = servinfo->m;
+	DirNode *d;
+	Pipe *p;
+
+	d = GetTargetDir(servinfo);
+	
+	if( d == NULL )
+	{
+		ErrorMsg(m,EO_Directory);
+		return;
+	}
+
+	p = (Pipe *)GetTargetObj(servinfo);
+
+	if( p != NULL  && p->ObjNode.Parent != NULL )
+	{
+		if( p->Users <= 1 )
+		{
+			p->Finish = TRUE;
+			AbortPort(p->Connect,Code_Close);
+		}
+		if( p->Users == 0 )
+		{
+			Unlink(&p->ObjNode,FALSE);
+			Free(p);
+			servinfo->TargetLocked = FALSE;
+		}
+	}
+	
+	m->MsgHdr.FnRc = Err_Null;
+	ErrorMsg(m,0);
+}
+
+static void do_closeobj(ServInfo *servinfo)
+{
+	MCB *m = servinfo->m;
+	DirNode *d;
+	Pipe *p;
+
+	d = GetTargetDir(servinfo);
+	
+	if( d == NULL )
+	{
+		ErrorMsg(m,EO_Directory);
+		return;
+	}
+
+	p = (Pipe *)GetTargetObj(servinfo);
+
+	if( p != NULL  && p->ObjNode.Parent != NULL )
+	{
+		p->Users--;
+
+		if( p->Users <= 1 )
+		{
+			p->Finish = TRUE;
+			SendException(p->Connect,Code_Close);
+		}
+		if( p->Users == 0 )
+		{
+			Unlink(&p->ObjNode,FALSE);
+			Free(p);
+		}
+	}
+	m->MsgHdr.FnRc = Err_Null;
+	ErrorMsg(m,0);
+}
+
+
+Pipe *
+NewPipe(
+	DirNode *	d,
+	char *		name )
+{
+  Pipe *	p = New( Pipe );
+		
+
+  if (p == NULL)
+    return NULL;
+
+  InitNode( &p->ObjNode, name, Type_Pipe,
+	   Flags_Selectable | Flags_OpenOnGet | Flags_CloseOnSend, DefFileMatrix );
+
+  p->Connect = NewPort();
+  p->Finish  = FALSE;
+
+  Insert( d, &p->ObjNode, TRUE);
+  
+  if (! Fork( 2000, PipeConnect, 4, p ))
+    {
+      Unlink( &p->ObjNode, TRUE );	/* XXX - added by Bart, 14/08/92 */
+	  
+      Free( p );
+      
+      p = Null( Pipe );
+    }
+		
+  return p;
+
+} /* NewPipe */
+
+
+void PipeConnect(Pipe *p)
+{
+	MCB m;
+	word e;
+	Port port1 = NullPort;
+	Port port2 = NullPort;
+
+	until( p->Finish )
+	{
+		InitMCB(&m,0,p->Connect,NullPort,0);
+		m.Timeout = -1;
+
+		p->State &= State_Mask;
+		p->State |= 1;
+		
+		e = GetMsg(&m);
+
+		if( e != 0 ) continue;
+
+		port1 = m.MsgHdr.Reply;
+
+		m.Timeout = IOCTimeout/2;
+
+		p->State &= State_Mask;		
+		p->State |= 2;	
+		e = GetMsg(&m); 
+
+		if( e < 0 )
+		{
+			InitMCB(&m,0,port1,NullPort,Code_Timeout);
+			PutMsg(&m);
+			port1 = NullPort;
+			continue;
+		}
+		elif( e == Code_Close )
+		{
+			InitMCB(&m,0,port1,NullPort,Code_Close);
+			PutMsg(&m);
+			break;
+		}
+		
+		port2 = m.MsgHdr.Reply;
+		p->State &= State_Mask;
+		p->State |= 3;	
+
+		InitMCB(&m,MsgHdr_Flags_preserve,port1,port2,Code_Connect);
+		e = PutMsg(&m);
+
+		InitMCB(&m,MsgHdr_Flags_preserve,port2,port1,Code_Connect1);
+		e = PutMsg(&m);
+
+		p->State += 16;     /* increment no. of connects */
+		port1 = port2 = NullPort;			
+	}
+	FreePort(p->Connect);
+}
+
+/* -- End of pipe.c */
+
+@
+
+
+1.11
+log
+@in_nucleus code for C40 now uses MPtr's.
+@
+text
+@d18 1
+a18 1
+/* $Id: pipe.c,v 1.9 1992/11/12 16:56:35 paul Exp $ */
+d120 1
+a120 1
+	    word *	base = GetSysBase();
+@
+
+
+1.10
+log
+@nucleus now returned as a word pointer in C40 versions
+@
+text
+@d99 1
+a99 5
+	bool	in_nucleus
+#ifdef __TRAN
+	  = (((word) &main) < (word) GetRoot())
+#endif
+	    ;
+d106 3
+a108 1
+#ifndef __TRAN
+d111 1
+a111 1
+	    word base = GetSysBase();	/* returns word address on C40 */
+d114 2
+a115 2
+			  (base < (word)main) &&
+			  ((word)main < base + WP_GetWord(base, 0))
+@
+
+
+1.9
+log
+@fixed parameter types
+,.
+@
+text
+@d18 1
+a18 1
+/* $Id: pipe.c,v 1.8 1992/08/14 15:13:23 nickc Exp paul $ */
+d111 1
+d113 9
+a122 1
+
+a124 4
+#ifdef __C40
+			  (base < (word *)_FuncToDataConvert( (VoidFnPtr)main )) &&
+			  ((word *)_FuncToDataConvert( (VoidFnPtr)main ) < base + *base)
+#else
+a126 1
+#endif
+d129 1
+@
+
+
+1.8
+log
+@added fix for bug found by Bart
+@
+text
+@d18 1
+a18 1
+/* $Id: pipe.c,v 1.7 1992/05/18 14:15:50 nickc Exp nickc $ */
+d117 2
+a118 2
+			  (base < (word *)C40CAddress( main )) &&
+			  ((word *)C40CAddress( main ) < base + *base)
+@
+
+
+1.7
+log
+@oops, fixed buglet in previous delta
+@
+text
+@d18 1
+a18 1
+/* $Id: pipe.c,v 1.6 1992/05/18 14:15:05 nickc Exp nickc $ */
+a286 2
+
+
+d379 5
+a383 1
+Pipe *NewPipe(DirNode *d,char *name)
+d385 1
+a385 1
+	Pipe *p = New(Pipe);
+d387 6
+a392 1
+	if( p == NULL ) return NULL;
+d394 2
+a395 2
+	InitNode(&p->ObjNode,name,Type_Pipe,
+	  Flags_Selectable|Flags_OpenOnGet|Flags_CloseOnSend,DefFileMatrix);
+d397 10
+a406 2
+	p->Connect = NewPort();
+	p->Finish = FALSE;
+d408 1
+a408 1
+	Insert( d, &p->ObjNode, TRUE);
+d410 2
+a411 8
+	if (! Fork(2000,PipeConnect,4,p))
+	{
+		Free(p);
+		p = Null(Pipe);
+	}
+		
+	return p;
+}
+@
+
+
+1.6
+log
+@fixed test for in_nucleus to work with C40
+@
+text
+@d18 1
+a18 1
+/* $Id: pipe.c,v 1.5 1991/06/17 12:46:21 bart Exp nickc $ */
+d123 1
+a123 1
+			  )
+@
+
+
+1.5
+log
+@Two changes:
+ 1) the binary can now be embedded in the nucleus.
+ 2) in do_delete() there is an UnlockTarget to prevent memory corruption.
+@
+text
+@d18 1
+a18 1
+/* $Id: pipe.c,v 1.4 1990/11/01 16:44:44 nick Exp bart $ */
+d99 5
+a103 1
+	bool	in_nucleus = (((word) &main) < (word) GetRoot());
+d109 17
+a133 1
+
+d140 1
+d142 1
+d145 2
+a146 1
+		Parent = (LinkNode *)Malloc(sizeof(LinkNode) + strlen(mcname));	
+d148 1
+d150 1
+d152 1
+d160 1
+d167 1
+d189 1
+d199 2
+a200 1
+/*IOdebug("Pipe Create %s",pathname);*/
+d224 1
+d228 1
+d230 1
+d232 2
+a244 2
+/*IOdebug("Pipe Open %s %x",m->Data,req->Arg.Mode);*/
+
+d280 1
+a280 1
+	unless( CheckMask(req->Common.Access.Access,req->Arg.Mode&Flags_Mode) ) 
+d303 1
+a303 1
+/*IOdebug("Pipe Connect %s %x",pathname,p->Connect);*/
+d365 1
+a365 1
+/*IOdebug("Pipe Close, users %d",p->Users);*/
+d386 1
+a386 1
+/*IOdebug("NewPipe %s",name);*/
+a410 1
+/*IOdebug("pipe connect %s",p->ObjNode.Name);*/
+d420 1
+a420 1
+/*IOdebug("GetMsg1 %x",e);*/
+d430 1
+a430 1
+/*IOdebug("GetMsg2 %x",e);*/
+@
+
+
+1.4
+log
+@does not increment pipe use count on reopen.
+@
+text
+@d18 1
+a18 1
+/* $Id: pipe.c,v 1.3 90/09/05 18:20:58 nick Exp $ */
+a51 1
+#if SA
+a58 1
+#endif
+d97 5
+a101 2
+#if SA
+	Object *nte;
+a102 1
+	
+a109 1
+#if SA
+a110 1
+#endif	
+d129 4
+a132 2
+#if SA
+		nte = Create(o,"pipe",Type_Name,sizeof(NameInfo),
+a133 1
+#endif
+d137 6
+d144 4
+a147 3
+#if 0	
+	Delete(nte, NULL);
+#endif	
+d305 1
+@
+
+
+1.3
+log
+@revoke added
+@
+text
+@d18 1
+a18 1
+/* $Id$ */
+d262 1
+a262 1
+		p->Users++;
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@a19 1
+
+d85 4
+a88 1
+		{ do_closeobj,	2000 }
+d423 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 1
+a18 5
+/* $Id$
+ *
+ * $Log$
+ *
+ */
+@

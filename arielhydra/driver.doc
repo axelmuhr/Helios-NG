@@ -1,0 +1,1042 @@
+From inmos.co.uk!ariel.com!tpa@ganymede.inmos.co.uk Fri Sep 25 02:02:42 1992
+Return-Path: <inmos.co.uk!ariel.com!tpa@ganymede.inmos.co.uk>
+Received: from ganymede.inmos.co.uk by  (4.0/SMI-4.0)
+	id AA15695; Fri, 25 Sep 92 02:02:40 BST
+Received: from ben.uknet.ac.uk by ganymede.inmos.co.uk; Fri, 25 Sep 92 00:46:54 BST
+Received: from RUTGERS.EDU by ben.uknet.ac.uk via EUnet with SMTP (PP) 
+          id <sg.07182-0@ben.uknet.ac.uk>; Fri, 25 Sep 1992 00:38:01 +0100
+Received: from master.UUCP by rutgers.edu (5.59/SMI4.0/RU1.4/3.08) with UUCP 
+          id AA22981; Thu, 24 Sep 92 18:40:46 EDT
+Received: by master.ariel.com (4.1/SMI-4.1) id AA05363;
+          Thu, 24 Sep 92 18:31:12 EDT
+Message-Id: <9209242231.AA05363@master.ariel.com>
+From: tandre@ariel.com (Timothy Andre)
+Date: Thu, 24 Sep 1992 18:31:11 EDT
+X-Mailer: Mail User's Shell (7.2.0 10/31/90)
+To: paul@perihelion.co.uk
+Subject: driver documentation
+Status: OR
+
+Paul,
+
+Here is some preliminary documentation on the driver.  Please note the
+following: 
+
+1) The driver is fairly dependent on the presence of HydraMon.  This
+is not necessarily a bad thing.  The host functions of HydraMon are
+interrupt driven, thus HydraMon does not need to continuously "run".
+It does mean, however, that you must reserve the first 3K or so of the
+local SRAM - this is where the HydraMon host functions reside.  All
+the rest of SRAM is free, as is the processor's internal RAM.  Just
+keep in mind that when you make calls to write() and read() that the
+DSP will be taking an interrupt.  If, after loading the OS to the DSP,
+you only need to communciate with the shared DRAM, you can then
+overwrite HydraMon.  However, if you call a function requiring
+HydraMon's services at that point, you will likely crash the entire
+host (thanks, VIC & VAC).
+
+2) The top of DRAM is reserved for use by the HydraMon Host functions,
+as follows:
+
+2-Processor Board:
+	Top of DRAM-> +---------------------------+
+(highest address)     | Host Interrupt Semaphore  |
+		      |     (one word)            |
+		      +---------------------------+
+		      | DSP 1 Command Buffer      |
+		      |  (15 words)               |
+                      +---------------------------+
+		      | DSP 2 Command Buffer      |
+		      |  (16 words)               |
+                      +---------------------------+
+		      | DSP 1 Data Transfer Area  |
+		      |  (1K words)               |
+                      +---------------------------+
+		      | DSP 2 Data Transfer Area  |
+		      |  (1K words)               |
+                      +---------------------------+
+
+4-Processor Board:
+	Top of DRAM-> +---------------------------+
+(highest address)     | Host Interrupt Semaphore  |
+		      |     (one word)            |
+		      +---------------------------+
+		      | DSP 1 Command Buffer      |
+		      |  (15 words)               |
+                      +---------------------------+
+		      | DSP 2 Command Buffer      |
+		      |  (16 words)               |
+                      +---------------------------+
+		      | DSP 3 Command Buffer      |
+		      |  (16 words)               |
+                      +---------------------------+
+		      | DSP 4 Command Buffer      |
+		      |  (16 words)               |
+                      +---------------------------+
+		      | DSP 1 Data Transfer Area  |
+		      |  (1K words)               |
+                      +---------------------------+
+		      | DSP 2 Data Transfer Area  |
+		      |  (1K words)               |
+                      +---------------------------+
+		      | DSP 3 Data Transfer Area  |
+		      |  (1K words)               |
+                      +---------------------------+
+		      | DSP 4 Data Transfer Area  |
+		      |  (1K words)               |
+                      +---------------------------+
+
+3) The following documentation talks about the VC40ATTACH and
+VC40DETACH ioctl()'s.  These are not yet implemented.
+
+4) The environment variable VC40DSP should point to the base directory
+of the software heirarch, ie:
+	setenv VC40DSP /usr/local/hydra
+
+5) There is a complete demo program at the end of the document showing how
+the driver is used.  I will email the source and C40 executable separate.
+You will not be able to recompile the C40 source, as the program is dependent
+on our math library for the FFT routine.
+
+With that said, here's the documentation:
+
+=============================================================================
+
+X.  V-C40 HYDRA DEVICE DRIVER AND UTILITY LIBRARY
+
+This chapter  documents the  SunOS device  driver, VC40DSP,  that is supplied
+with the  V-C40 Hydra.   Please  refer to  the release notes accompanying the
+software distribution for the most up-to-date information.
+
+The Hydra device driver is a `loadable device driver', which means that it is
+not necessary  to reconfigure  the SunOS  kernel in  order to  use the device
+driver. Rather, a simple run-time command loads the driver into the operating
+system and  makes it  immediately available  to users.  Please note, however,
+that there  is a  known bug  in SunOS 4.1.1 that prevents the use of loadable
+device drivers on VME systems.  We recommend that you upgrade to SunOS 4.1.2.
+The alternative  is to  configure the  driver into  the  kernel,  a  somewhat
+unpleasant task.
+
+This chapter describes basic techniques for writing C programs which make use
+of the  driver to  interact with  the Hydra.   The  include file  HYDRA.H  is
+discussed, and descriptions are provided for each of the C-callable functions
+in the VC40 utility library.
+
+
+
+   X.Y  COMPILING CONSIDERATIONS
+
+The C include file hyhomon.h contains structure and constant definitions used
+by your  C program  to communicate with the driver. This file can be found in
+the ${VC40DSP}/include directory.
+
+All C  source files  that make  calls to  the driver  should incorporate  the
+statement
+
+     #include "hyhomon.h"
+
+in order to define these constants and structures.
+
+Instead of  making calls  directly to  the driver,  you may choose to use the
+vc40 utility  library instead.   This  library  provides  many  functions  to
+simplify communication  with the  Hydra.  The source code for this library is
+provided in  the directory  ${VC40DSP}/lib/src.   The distribuion  provides a
+pre-compiled version  of the  library, but  you are  encouraged to modify and
+rebuild the library to suit your own needs.
+
+When compiling files that include hyhomon.h, the compiler command line should
+include the  -I ${VC40DSP}/include  option so  that the compiler can find the
+header files.  To link with the vc40 utility library, the command line should
+include the -L${VC40DSP}/lib -lvc40 options so that the compiler can find the
+library.
+   X.Y  DRIVER PROGRAMMING MODEL
+
+The standard  UNIX system calls open(), close(), read(), write(), and ioctl()
+are used  to interact  with the  Hydra. Please  refer to  the manual pages on
+these system  calls in  Chapter 2  of the  SunOS Programming  Manual for more
+complete information.
+
+Two issues  that users  of DSP devices on multi-tasking systems often face is
+how to  determine whether  a device  is available, and how to start a program
+running on  the DSP  processor, and  then close  and later  reopen the device
+without  disturbing  the  DSP  program.  These  issues  are  handled  by  the
+VC40ATTACH and  VC40DETACH ioctl()  functions which change the way the open()
+and close() system calls behave.  This behavior described next.
+
+
+      x.y.z  Symmetric Access
+
+The driver  is designed  so that a user program treats each DSP of a Hydra as
+an individual  entity.   The character  special files  created  in  the  /dev
+directory when  the driver is installed give the user access to each DSP of a
+Hydra in  a symmetric fashion.  That is, from the user's perspective all DSPs
+of a  Hydra are  treated equally.   Note  that at the hardware level, all the
+DSPs are  not equally  capable.   For example,  DSP 1 boots from the EPROM on
+board, while  DSPs 2,  3, and  4 must be booted through DSP 1.  Thus, certain
+driver functions  transparantly access  DSP 1 in order to produce the desired
+effect on  the selected  DSP.   These functions  will be  noted below  in the
+function descriptions.
+
+The /dev  files are  named according  to the  pattern /dev/vc40XY. The `X' is
+indicates the  board number  (in the  order listed in the configuration file,
+vc40.conf) and is a lowercase letter of the alphabet (thus `a' represents the
+first Hydra,  `b' the  second Hydra, etc).  The `Y' represents the DSP number
+and is  one of  the digits  `1', `2',  `3', or `4'.  For example, /dev/vc40b2
+would access DSP 2 on the second Hydra listed in the configuration file.
+
+
+      Host Interrupts
+
+Each DSP  of a  Hydra has  the ability  to generate  an interrupt to the host
+computer. This  host interrupt  is under  the control  of the VIC chip on the
+Hydra. The  VIC can  control all  seven VME  interrupt levels  and specify an
+interrupt vector  for each  level.  For each interrupt level, the VIC has one
+byte to  specify the interrupt vector for that level.  There is an eight byte
+that is written to actually fire the interrupt.  This looks as follows:
+
+VIC Address    Description
+
+VIRSR          Interrupt control byte
+VIRSR + 1      Interrupt vector for interrupt level 1
+VIRSR + 2      Interrupt vector for interrupt level 2
+VIRSR + 3      Interrupt vector for interrupt level 3
+VIRSR + 4      Interrupt vector for interrupt level 4
+VIRSR + 5      Interrupt vector for interrupt level 5
+VIRSR + 6      Interrupt vector for interrupt level 6
+VIRSR + 7      Interrupt vector for interrupt level 7
+
+
+The interrupt  control byte  contains one bit for each interrupt level and an
+enable bit.   To  generate an interrupt to the host, the DSP must first write
+the vector  number to  the vector  byte  for  the  interrupt  level  it  will
+generate.   Then it  must set  the interrupt  level bit and enable bit in the
+interrupt control byte.  The C instructions to do this looks as follows:
+
+     
+     u_long *VIRSR = (u_long *) 0xbfff0020;
+     int int_level, int_vec;
+     
+     *(VIRSR + int_level) = int_vec;
+     *(VIRSR) = (( 1 << int_level) + 1 );
+     
+The interrupt  level and  vector that  the DSP  uses must be the same as that
+specified in  the configuration  file.   HyHoMon provides  a function for DSP
+programs to  easily generate host interrupts.  This function is invoked via a
+software trap  (trap 7) so that DSP programs are not dependent on the version
+of HyHoMon that is in use.
+
+The driver  informs HyHoMon of the interrupt level and vector to use when the
+VC40ENINT ioctl()  is  called  (see  below).    The  VC40DSINT  ioctl()  sets
+HyHoMon's interrupt  level  and  vector  to  0,  effectively  disabling  host
+interrupts.
+
+Note that  a possible  conflict can occur if all DSPs of a Hydra use the same
+interrupt level  but different vectors.  They can not all generate their host
+interrupt simultaneously.   HyHoMon anticpates this by setting up a semaphore
+in the  DRAM (this  is the very last word of the DRAM).  When any DSP invokes
+the host  interrupt function, HyHoMon on that DSP first checks the semaphore.
+If the  semaphore is clear, it is set, the interrupt generated, then cleared.
+If it  is set  (indicating another  DSP is  generating an interrupt), HyHoMon
+waits for it to clear before generating the interrupt.
+
+It is  perfectly valid  for all DSPs to generate interrupts on the same level
+with the  same vector.   In  this case,  it is  up to  the  user  process  to
+determine which DSP acutally caused the interrupt by polling them.
+
+
+      x.y.z  Attachment States
+
+Two ioctl() functions, called VC40ATTACH and VC40DETACH, make it possible for
+each member  in a  set of  cooperating host  programs to  request a  DSP,  to
+reserve access  to it  if it is available, and determine who else is using it
+if it is not available.  These ioctl() functions are fully described below.
+
+Whether or  not the open() and close() system calls affect the state of a DSP
+on the  Hydra depends  on the  DSP's attachment  state, which  can be  either
+ATTACHED or  DETACHED. When  attached, an arbitrary (user defined) attachment
+code is  associated with  the DSP.   This  attachment code  can  be  used  to
+identify the  program that  performed the  attach (for  example, by using the
+programs process ID, retrieved with the getpid() system call).
+
+The attachment state and code of each DSP on a Hydra are kept internal to the
+driver.   The attachment  state is  initially set to DETACHED for each DSP of
+the Hydra  when the  driver is loaded.  The VC40ATTACH and VC40DETACH ioctl()
+functions are used to change the attachment state for a DSP.
+
+If the attachment state for the DSP is DETACHED, then open() and close() will
+halt and reset the DSP processor, and disable interrupts from it.
+
+If the attachment state for the DSP is ATTACHED, then open() and close() will
+not affect  the state  of the DSP at all.  The VC40DETACH ioctl() can be used
+to find out if the DSP has been attached without detaching it.
+
+
+      x.y.z  open() System Call
+
+The open()  system call associates a file descriptor with a single DSP on the
+Hydra. This  file descriptor  is required  by all  subsequent system calls to
+communicate with that DSP.  The flags parameter should be specified as O_RDWR
+to allow  reading and  writing from  the device (defined in the system header
+file <fcntl.h>,  see the  man page  for OPEN(3V)  for more information).  The
+path parameter  specifies the character special file for the DSP to be opened
+as described above.
+
+The DSP device may be opened by more than one process at a time, or more than
+once by  a single  process. When  the device  is opened,  if it  is currently
+attached, or  is already open, the open call will have NO effect on the state
+or environment of the DSP processor. If the device is not attached AND is not
+currently open,  the open call will execute the HALT function of HyHoMon (see
+the VC40HALT  ioctl() below for more information) and disable interrupts from
+the  DSP   (see  the   VC40ENINT  and  VC40DSINT  ioctl()'s  below  for  more
+information)0.
+
+
+      x.y.z  close() System Call
+
+The close()  system call  dis-associates a  file descriptor from a DSP.  When
+the device is closed, if it is currently attached (as described above), or is
+still open  (as the  result of  multiple simultaneous  open calls), the close
+call will have NO effect on the state or environment of the DSP processor. In
+particular, the  close WILL NOT detach the device. The only exception to this
+rule is that if this is the final close call, interrupts from the device will
+be disabled.
+
+
+      x.y.z mmap() System Call
+
+The mmap() system call is used to "map-in" Hydra's DRAM to the user's address
+space.   mmap() returns a pointer that references the requested block of DRAM
+on Hydra.   Since  the DRAM  is shared  by all DSPs of a Hydra, it would be a
+waste of system resources to map the same block of DRAM from multiple DSPs of
+the same  Hydra.   This system  call does  not invoke  any HyHoMon functions.
+Note that  the VC40  utility library  provides a  function to  map  the  dram
+(c40_map_dram()) that  is easire  to use  than the  raw mmap()  system  call.
+c40_map_dram() is described below.
+
+
+      x.y.z  Setting Transfer Address for read() and write()
+
+The lseek()  system call  is normally  used to  specify a  file  position  or
+transfer address  for a  device that  will be  used in  subsequent read() and
+write() system  calls.   However, since  the offset parameter to lseek() is a
+signed long,  lseek() does not allow seeking to addresses for a DSP's DRAM or
+global SRAM  (the former starting at DSP address 0x8D000000 and the latter at
+0xC0000000) since  these addresses  would be interpreted as negative numbers.
+Instead, the  VC40SETADDR ioctl()  is used  to set the DSP's transfer address
+for read()'s and write()'s.
+
+
+      x.y.z  write() System Call
+
+The write() system call allows the user program to write data into any memory
+bank on  the Hydra,  including any  DSP's global  and local SRAM.  The driver
+does this  by first  copying the  data into  the Hydra's  DRAM, then invoking
+HyHoMon's CopyStuff function on the desired DSP.  The CopyStuff function then
+copies the data from the DRAM to the desired destination address.  The driver
+automatically breaks  up writes larger than 1K words (4K bytes) into multiple
+transfers of 1K words each.
+
+The DSP's memory address to write to should first be set with the VC40SETADDR
+ioctl().   If consecutive  calls to  write() or  read() are  made without  an
+intervening VC40SETADDR,  the operation  proceeds from the DSP memory address
+following where  the previous  operation finished.   Thus, two write() system
+calls in sequence will write to a contiguous memory block on the DSP.
+
+The size  of the  buffer to write must be specified in bytes, but must always
+be a  multiple of  four since  HyHoMon's CopyStuff function only copies long-
+words.
+
+
+      x.y.z  read() System Call
+
+The read()  system call  is similar  to the  write() system  call, but allows
+reading from  any memory  bank on  the Hydra.   It operates by first invoking
+HyHoMon's CopyStuff  function on  the desired  DSP to  copy the data from the
+source address to Hydra's DRAM; then the data is copied to the user's buffer.
+As with writes, the driver automatically breaks up reads larger than 1K words
+(4K bytes) into multiple transfers of 1K words each.
+
+As with  writes, the  DSP's memory  address to  read from should first be set
+with the  VC40SETADDR ioctl().  If consecutive calls to read() or write() are
+made without  an intervening VC40SETADDR, the operation proceeds from the DSP
+memory address  following where  the previous  operation finished.  Thus, two
+read() system  calls in  sequence will read from a contiguous memory block on
+the DSP.
+The size  of the  buffer to write must be specified in bytes, but must always
+be a  multiple of  four since  HyHoMon's CopyStuff function only copies long-
+words.
+
+
+      x.y.z  ioctl() System Call
+
+As with  most devices,  the ioctl()  call is  used to  issue  device-specific
+instructions to the S-32C, and request device-specific state information. The
+ioctl() function  call takes  at least  two, and  sometimes three parameters.
+The first  is the  file descriptor  returned by  the open() system call.  The
+second is  the function  identifier that  indicates what  function is  to  be
+performed.   The third  is an  optional parameter that may be required by the
+function.  This parameter is always passed as a pointer.  In most cases, this
+parameter is  a pointer  to a basic C type, such as an integer or a long.  In
+some cases,  the parameter  is a  pointer to  one of three structures.  These
+structures are described in the following sections.
+
+The possible return values from ioctl() are as follows
+
+Zero If the control operation was performed successfully, otherwise a
+    standard ioctl() error code.
+
+EINVAL    If the ioctl() request is not implemented, or data passed to
+    ioctl() is invalid.
+
+
+
+
+          x.y.z.q  ioctl() functions
+
+The following  list describes the ioctl() requests implemented by the S32CDSP
+driver. These requests are defined in s32c.h.
+
+VC40SETADDR
+    Parameter: (unsigned long *)dsp_address
+    
+    Description: This ioctl() is used to specify the DSP's memory address for
+    data transfers with subsequent read() and write() system calls.  This
+    function requires one parameter which is a pointer to an unsigned long
+    that specifies the address.
+    
+    Example:
+    This example writes a block of data (consecutive integers) to the global
+    SRAM of DSP 1 of the first Hydra installed in the system.
+     
+          int  vc40, i;
+          unsigned long  dsp_addr = 0xc0000000;
+          long data[64];
+     
+          for (i=0; i<64; i++) {
+               data[i] = i;
+          }
+          vc40 = open("/dev/vc40a1", O_RDWR);
+          ioctl(vc40, VC40SETADDR, &dsp_addr);
+          write(vc40, data, 64*sizeof(long));
+     
+VC40RUN
+    Parameter: (unsigned long *)dsp_addr;
+    
+    Description: This ioctl() invokes HyHoMon's RunForHost function.  The
+    effect is a jump to the given address.
+
+VC40HALT
+    Parameter: none.
+    
+    Description: This ioctl() invokes HyHoMon's Halt function.  This function
+    is merely a jump to a "do-nothing" loop within HyHoMon.  It is important
+    to call VC40HALT before loading a new program.  If the new program
+    overlaps the currently executing program, the effect can be disasterous
+    (to the point of crashing the host system).
+
+VC40RESET
+    Parameter: none.
+    
+    Description: This ioctl() resets and reboots the selected DSP.  This can
+    only happen for DSPs 2, 3, and 4 of the current revision of Hydra.  DSP 1
+    can not be reset.
+
+VC40ENINT
+    Parameter: (int *) signum
+    
+    Description: This ioctl() enables HyHoMon's host interrupt function by
+    informing HyHoMon of the selected interrupt priority level and vector
+    number as defined in the configuration file.  A program running on the
+    DSP can then issue an interrupt to the host using the host interrupt trap
+    defined by HyHoMon (trap 7).  When the driver receives the interrupt, the
+    given signal number will be delivered to the user's process.  See the
+    discussion of interrupts above for more information.
+
+VC40DSINT
+    Parameter: none.
+    
+    Description: This ioctl() disables HyHoMon's host interrupt function by
+    clearing HyHoMon's notion of the interrupt priority and interrupt vector.
+
+VC40GETINFO
+    Parameter: (struct vc40info *) vc40info
+    
+    Description:  This ioctl() returns information about the DSP and the
+    Hydra it resides on.  The information returned fills a vc40info
+    structure, which is as follows:
+    
+     struct vc40info {
+          u_long    intpri;
+          u_long    intvec;
+          u_long    dram_base;
+          u_long    dram_size;
+          u_long    numdsp;
+     }
+
+    These fields are as follows:
+    u_long intpri;
+    The interrupt priority of the DSP, as defined in the configuration file.
+    
+    u_long intvec;
+    The interrupt vector of the DSP, as defined in the configuration file.
+    
+    u_long dram_base;
+    The base address of the DRAM (in VME address space).
+    
+    u_long dram_size;
+    The size of the DRAM (in bytes).
+    
+    u_long numdsp;
+    The number of DSPs on the Hydra (either 2 or 4).
+
+
+   X.Y VC40 UTILITY LIBRARY
+
+The  vc40   utility  library   (libvc40.a)  provides  the  following  utility
+functions:
+
+c40_load(vc40fd, coff_file, eaddr, num_sym, sym_names, symtab)
+    int vc40fd;
+    char *coff_file;
+    u_long *eaddr;
+    int num_sym;
+    char *sym_names[];
+    struct symtab *symtab[];
+    
+    Description: c40_load() parses and loads the given COFF file to the
+    specified DSP.  The load is done using the vc40_write_long() function.
+    It will also extract symbol addresses or values from the COFF file.  The
+    addresses extracted can be used to transfer data between the host and the
+    DSP.
+    
+    Parameters:
+    int vc40fd:     File descriptor returned by open().  If this value is -1,
+    then only symbols are extracted from the COFF file, the program will not
+    be loaded.
+    
+    char *coff_file:     The name of the COFF file to be loaded to the DSP.
+    The file may be in the current directory, or in any of the directories
+    specified by the VC40PATH environment variable.
+    
+    u_long *eaddr:  On return, this variable is the entry address of the
+    program loaded.  This value would then be used in the VC40RUN ioctl() to
+    start the program running.
+    
+    int num_syms:   The number of symbols to be extracted from the COFF file.
+    If 0, then no symbols are extracted.  If non-zero, the names of the
+    symbols to be extracted are given by the sym_names array.
+    
+    char *sym_names[]:   Array of symbol names whose values are to be
+    extracted from the COFF file.  The size of this array must be equal to
+    num_syms.
+    
+    struct symtab *symtab[]:  Array of symbol entries, one for every symbol
+    listed in the sym_names array.  THis structure looks as follows:
+    
+     struct symtab {
+          char *sname;
+          union {
+               u_long l;
+               float f;
+          } val;
+          short type;
+          char class;
+     }
+
+    The sname field copies the pointer from the sym_names array.  The value
+    of the symbol can be either a float or a long, hence the union.  The type
+    specifies whether the symbol is float or long and the class represents
+    the storage class.
+    
+    See the example program at the end of this section for the usage of this
+    function and symbols.
+
+char *c40_map_dram(vc40fd, dram_offs, len)
+    int vc40fd;
+    u_long dram_offs;
+    u_long len;
+    
+    Description: This function maps the given region of the Hydra's DRAM into
+    the user's virtual address space.  It returns a character pointer to this
+    region.  If an error occurs, a NULL pointer is returned.
+    
+    Parameters:
+    vc40fd:    File descriptor returned by open()
+    
+    dram_offs: Offset from the beginning of DRAM to start the mapping (in
+    bytes!).
+    
+    len:  Size of the region of DRAM to map, in bytes.
+
+c40_write_long(vc40fd, dsp_addr, buf, len)
+    int vc40fd;
+    u_long dsp_addr;
+    u_long *buf;
+    int len;
+    
+    Description: Writes the given buffer of data to the specified address of
+    the selected DSP. This is performed as a VC40SETADDR ioctl() followed by
+    a write().
+    
+    Parameters:
+    vc40fd:    File descriptor returned by open()
+    
+    dsp_addr:  The DSP address to write to.
+    
+    buf:  Data buffer to write to the DSP
+    
+    len:  Number of longs (not bytes!) to write.
+
+c40_read_long(vc40fd, dsp_addr, buf, len)
+    int vc40fd;
+    u_long dsp_addr;
+    u_long *buf;
+    int len;
+    
+    Description: Reads data from the given DSP address and writes it to the
+    given buffer.  This is performed as a VC40SETADDR followed by a read().
+    
+    Parameters:
+    vc40fd:    File descriptor returned by open()
+    
+    dsp_addr:  The DSP address to read from.
+    
+    buf:  Data buffer.
+    
+    len:  Number of longs (not bytes!) to read.
+
+c40_put_long(vc40fd, dsp_addr, lval)
+    int vc40fd;
+    u_long dsp_addr;
+    u_long lval;
+    
+    Description: Writes a single long word to the specified address of the
+    selected DSP.  This is performed as a VC40SETADDR followed by a write().
+    
+    Parameters:
+    vc40fd:    File descriptor returned by open()
+    
+    dsp_addr:  The DSP address to read from.
+    
+    lval: Long word to write.  Note this is passed by value not by reference!
+
+c40_get_long(vc40fd, dsp_addr, lval)
+    int vc40fd;
+    u_long dsp_addr;
+    u_long *lval;
+    
+    Description: Reads a single long word from the specified address of the
+    selected DSP.  This is performed as a VC40SETADDR followed by a read().
+    
+    Parameters:
+    vc40fd:    File descriptor returned by open()
+    
+    dsp_addr:  The DSP address to read from.
+    
+    lval: Address of a long word to receive the word read.
+
+c40_put_float(vc40fd, dsp_addr, fval)
+    int vc40fd;
+    u_long dsp_addr;
+    float fval;
+    
+    Description: Writes a single floating point value to the specified
+    address of the selected DSP.  This is similar to c40_put_long(), but with
+    the float data type.  Note that this functions assumes that the DSP will
+    do the conversion from IEEE floating point format to TI format.  To have
+    the host do the conversion, use c40_put_dsp_float().
+
+c40_get_float(vc40fd, dspadd, fval)
+    int vc40fd;
+    u_long dsp_addr;
+    float *fval;
+    
+    Description: Reads a single floating point value from the specified
+    address of the selected DSP.  This is similar to c40_get_long(), but the
+    the float data type.  Note that this function assumes that the DSP has
+    done the conversion from TI floating point format to IEEE format.  To
+    have the host do the conversion, use c40_get_dsp_float().
+
+c40_put_dsp_float(vc40fd, dsp_addr, fval)
+    int vc40fd;
+    u_long dsp_addr;
+    float fval;
+    
+    Description: Writes a single floating point value to the specified
+    address of the selected DSP.  The host converts the value to the TI
+    floating-point format before writing the value to the DSP..  This is
+    performed as a VC40SETADDR followed by a write().
+    
+    Parameters:
+    vc40fd:    File descriptor returned by open()
+    
+    dsp_addr:  The DSP address to read from.
+    
+    fval: Floating point value to write.  Note this is passed by value not by
+    reference!
+
+c40_get_dsp_float(vc40fd, dsp_addr, fval)
+    int vc40fd;
+    u_long dsp_addr;
+    float *fval;
+    
+    Description: Reads a single floating point value from the specified
+    address of the selected DSP.  The host reads a long word from the DSP
+    then converts this value to the IEEE floating point format.  This is
+    performed as a VC40SETADDR followed by a write().
+    
+    Parameters:
+    vc40fd:    File descriptor returned by open()
+    
+    dsp_addr:  The DSP address to read from.
+    
+    fval: Address of a float word to receive the data read.
+
+u_long ieee2dsp(fval)
+    float fval;
+    
+    Description: Converts the given IEEE floating point number to the TI
+    floating point format.
+
+float dsp2ieee(lval)
+    u_long lval;
+    
+    Description: Converts the given TI format floating point value to the
+    IEEE floating point format.
+
+
+
+   EXAMPLE PROGRAM
+
+This program is provided on the software release in the "fft" directory.  The
+DSP side program calculates the FFT of the data loaded to it by the host.
+
+First, the  DSP-side program.   Note  the we make use of Ariel's math library
+for the 'C40, pythag.lib:
+
+
+
+     #include "pythag.h"
+     #include <math.h>
+     #include <stdlib.h>
+     
+     /*
+      * some handy macros for controlling the C40's timer
+      */
+     #define ELAPSED_TIME( start, end ) (((end) - (start))*0.0000001)
+     
+     #define GET_TIMER   (*(unsigned long *)0x00100024)
+     #define RESET_TIMER (*(unsigned long*)0x00100020 |= 960)
+     
+     #define SET_PERIOD(X)    (*(unsigned long *)0x00100028 = (unsigned long)
+               X)
+     
+     /*
+      * this is a temporary kludge since the HostInterrupt function of
+               HyHoMon
+      * is not working at the moment
+      */
+     int intvec, intpri;
+     unsigned long *VIC_virsr = (unsigned long *) 0xbfff0020;
+     #define   HOST_INTERRUPT()              \
+          *(VIC_virsr + intpri) = intvec;         \
+          *(VIC_virsr) = ((1 << intpri) + 1);     \
+     
+     /*
+      * for speed, keep the input data in RAMBLK0 and output data in RAMBLK1
+      */
+     float *in_addr = (float *)0x2ff800;
+     complex *out_addr = (complex *)0x2ffc00;
+     
+     /*
+      * Host will set the start flag when there is data ready to process
+      */
+     int start_flag=0;
+     
+     /*
+      * Host will set the FFTSize so I know how big an FFT to compute
+      */
+     int FFTSize;
+     
+     /*
+      * Host will read the elapsed time when I'm done
+      */
+     float elapsed_time=0;
+     
+     main()
+     {
+         int i;
+         unsigned long timerStart,timerEnd;
+     
+         GIEOn();   /* enable interrupts so that HyHoMon can work */
+     
+         SET_PERIOD(0xFFFFFFFF);    /* set timer period */
+     
+         /*
+          * Process an FFT whenever the start_flag is set
+          */
+         while( 1 ) {
+          /*
+           * wait for start flag to be set
+           */
+          while( !start_flag );
+     
+          RESET_TIMER;
+          timerStart = GET_TIMER;
+     
+          /*
+           * do the real FFT
+           */
+          rfft(in_addr, out_addr, FFTSize, 1);
+     
+          timerEnd = GET_TIMER;   /* get timer value */
+     
+          elapsed_time = ELAPSED_TIME(timerStart,timerEnd);
+     
+          start_flag = 0;         /* clear for next time */
+          
+             HOST_INTERRUPT();   /* send interrupt to host to signal
+               completion */
+         }
+     }
+
+
+Now the host-side program:
+
+
+
+     #include <stdio.h>
+     #include <math.h>       /* need this for sin() and fabs() to work! */
+     #include <signal.h>
+     #include "hyhomon.h"    /* Hydra defintions, etc. */
+     
+     #define   POINTS    512     /* size of FFT to perform */
+     
+     /*
+      * Notice that the number of symbols to extract from the COFF file is
+      * defined in terms of the size of the symnames array.  This way new
+      * symbols and be added to symnames with a minimum of fuss.
+      */
+     #define   NUMSYMS   (sizeof(symnames)/sizeof(char *))
+     
+     /*
+      * These are the indices of the symbols within the symnames array, and
+      * therefore in the symtab array
+      */
+     #define   INPUT     0
+     #define   OUTPUT    1
+     #define   START     2
+     #define   ELTIME    3
+     #define   FFTSIZE   4
+     #define INTPRI  5
+     #define INTVEC  6
+     
+     /*
+      * notice that symbol names have a leading "_" - the TI C compiler does
+               this,
+      * as do most compilers.
+      */
+     char *symnames[] = {
+         "_in_addr",
+         "_out_addr",
+         "_start_flag",
+         "_elapsed_time",
+         "_FFTSize",
+         "_intpri",
+         "_intvec"
+     };
+     struct symtab  symtab[NUMSYMS];   /* symbol table entries */
+     
+     /*
+      * Complex data type for FFT result - in TI float format!
+      */
+     typedef struct {
+          u_long x, y;
+     } COMPLEX;
+     
+     /*
+      * input to the FFT will consist of two mixed sine functions, thus the
+      * the output will have two well defined peaks.
+      */
+     #define   N1   (POINTS/4)
+     #define   N2   (POINTS/3)
+     
+     /*
+      * signal handler stuff
+      */
+     void c40_handler();
+     int done_flag = 0;
+     
+     main(argc, argv)
+     int argc;
+     char *argv[];
+     {
+         int vc40_fd;  /* file descriptor for the DSP we will use */
+         int signum = SIGUSR1;   /* Grab this signal for the DSP */
+         u_long entry_address;   /* Program start address returned by
+               c40_load() */
+         u_long inp_addr;        /* address of input array */
+         u_long out_addr;        /* address of the output array */
+         int i, undef = 0;
+         u_long sflag;
+         float pi = 4.0*atan(1.0);
+         float f1, f2, real, imag, etime;
+         u_long sig[POINTS];    /* input signal in TI float format */
+         COMPLEX fft[POINTS];   /* fft result */
+         struct vc40info vc40info;   /* information about the Hydra */
+     
+         /*
+          * open the DSP
+          */
+         vc40_fd = open("/dev/vc40a1", O_RDWR);
+     
+         /*
+          * always halt the DSP before loading, lest we load overtop another
+          * executing program!
+          */
+         ioctl(vc40_fd, VC40HALT);
+     
+         /*
+          * get information about this Hydra
+          */
+         ioctl(vc40_fd, VC40GETINFO, &vc40info);
+         printf("This Hydra has %d DSPs and its DRAM is %d MWords\n",
+             vc40info.numdsp, vc40info.dram_size/1024/1024/4);
+     
+         /*
+          * load the program to the DSP
+          */
+         if (c40_load(vc40_fd, "fftdsp.x40", &entry_address, NUMSYMS,
+               symnames,
+                symtab) == 0) {
+          printf("cofferr is: `%s'\n", cofferr);
+          exit(1);
+         }
+         printf("entry address: 0x%lx\n", entry_address);
+     
+         /*
+          * quick check to make sure all symbols are defined
+          */
+         for (i=0; i<NUMSYMS; i++) {
+          if (symtab[i].type == T_UNDEF) {
+              printf("Symbol `%s' is undefined!\n", symnames[i]);
+              undef = 1;
+          }
+         }
+         if (undef) exit(1);
+     
+         /*
+          * NOTE: This is a temporary kludge as the HyHoMon host interrupt
+          * function is not working.
+          * upload the interrupt vector and interrupt priority (level).
+          */
+         c40_put_long(vc40_fd, symtab[INTPRI].val.l, vc40info.intpri);
+         c40_put_long(vc40_fd, symtab[INTVEC].val.l, vc40info.intvec);
+     
+         /*
+          * now grab the signal and enable interrupts from Hydra
+          */
+         signal(signum, c40_handler);
+         ioctl(vc40_fd, VC40ENINT, &signum);
+     
+         /*
+          * start the program running - once started, it waits for the start
+          * flag to be set before computation.
+          */
+         c40_run(vc40_fd, entry_address);
+     
+         /*
+          * the DSP program needs to know the size of the FFT to be
+               calculated
+          */
+         c40_put_long(vc40_fd, symtab[FFTSIZE].val.l, POINTS);
+     
+         /*
+          * The DSP program dynamically allocates the input and output
+               buffers.
+          * So, we get the addresses of the pointers from the COFF file, then
+          * read the values of the pointers to get the buffer addresses.
+          */
+         c40_get_long(vc40_fd, symtab[INPUT].val.l, &inp_addr);  /* input
+               buffer */
+         c40_get_long(vc40_fd, symtab[OUTPUT].val.l, &out_addr); /* output
+               buffer */
+     
+         printf("input address is 0x%x\n", inp_addr);
+         printf("output address is 0x%x\n", out_addr);
+         printf("start flag is 0x%x\n", symtab[START].val.l);
+     
+         /*
+          * calculate input signal - mixed sine waves.  Note that we
+          * convert to TI floating point format on the fly here.
+          */
+         f1 = N1 * 2.0*pi/POINTS;
+         f2 = N2 * 2.0*pi/POINTS;
+         for (i=0; i<POINTS; i++) {
+          sig[i] = ieee2dsp(sin(i*f1) + 0.5*sin(i*f2));
+         }
+         printf("\nFFT Size: %d\n", POINTS);
+         printf("Expect peaks at %d and %d\n\n", N1, N2);
+     
+         /*
+          * download the input data to the DSP
+          */
+         c40_write_long(vc40_fd, inp_addr, sig, POINTS);
+     
+         /*
+          * set the start flag to start the computation
+          */
+         c40_put_long(vc40_fd, symtab[START].val.l, 1L);
+     
+         /*
+          * when the DSP is done, it will send an interrupt which the driver
+          * will receive, the driver will then send me SIGUSR1, which will
+          * set the done_flag.
+          */
+         while (!done_flag) ;
+     
+         /*
+          * now get the results (their complex!).  Since we are doing a real
+          * FFT, there are only half the number points to read back, but they
+          * are complex, so its double the number of words.  In short, its
+          * the same amount of data that we wrote!
+          */
+         c40_read_long(vc40_fd, out_addr, fft, POINTS);
+     
+         /*
+          * now just print out the peaks
+          */
+         for (i=0; i<POINTS/2; i++) {
+          real = dsp2ieee(fft[i].x);
+          imag = dsp2ieee(fft[i].y);
+          if (fabs(real) > 0.01 || fabs(imag) > 0.01) {
+              printf("%d) %.2f + j * %.2f\n", i, real, imag);
+          }
+         }
+     
+         /*
+          * The DSP even calculates the amount of time it took to perform the
+          * FFT!
+          */
+         c40_get_dsp_float(vc40_fd, symtab[ELTIME].val.l, &etime);
+         printf("\n\nelapsed time: %f usec\n", 1e6*etime);
+     
+         /*
+          * that's all there is to it!
+          */
+         return (0);
+     }
+     
+     void c40_handler()
+     {
+         printf("Got signal!\n");
+         done_flag = 1;
+     }
+     
+
+-- 
+Timothy Andre			voice: (908) 249-2900
+Ariel Corporation		fax:   (908) 249-2123
+433 River Road			bbs:   (908) 249-2124 
+Highland Park, N.J. 08904	email: tpa@ariel.com, ariel@ariel.com
+

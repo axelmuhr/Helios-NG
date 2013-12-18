@@ -1,0 +1,3205 @@
+head	1.24;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.22
+	Alenia_release:1.19
+	Helios1_3:1.19
+	C40_Field_Test_2:1.16
+	C40_Field_Test_R1:1.14
+	Helios13_beta:1.14
+	Helios1_2_2_Fault:1.10
+	Helios1_2_2_Native:1.9
+	Helios1_2_2_native_beta:1.9
+	Helios1_2_2:1.8
+	Helios1_2_2Beta:1.8
+	Helios1_2_1:1.6
+	Helios1_2:1.5;
+locks; strict;
+comment	@ * @;
+
+
+1.24
+date	93.08.17.11.36.22;	author bart;	state Exp;
+branches;
+next	1.23;
+
+1.23
+date	93.08.11.10.34.39;	author bart;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	93.01.26.16.41.35;	author bart;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	93.01.08.12.32.45;	author bart;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	92.12.20.16.36.06;	author bart;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	92.10.26.19.15.00;	author bart;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	92.10.26.17.45.11;	author bart;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.10.23.14.16.38;	author bart;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.09.30.16.02.45;	author bart;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.07.21.11.01.08;	author bart;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.06.10.14.52.58;	author bart;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.06.07.16.29.13;	author bart;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.05.08.16.36.25;	author bart;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.03.25.18.24.54;	author bart;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.01.15.11.04.39;	author bart;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.06.13.14.22.24;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.05.18.12.06.30;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.02.27.16.35.56;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.12.02.13.57.37;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.12.01.15.33.55;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.11.25.20.01.47;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.11.01.14.51.26;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.14.38.11;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.24
+log
+@Fixed typo
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- netmon.c								--
+--                                                                      --
+--	The monitor module of the Network Server			--
+--                                                                      --
+--	Author:  BLV 18/8/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/*$Header: /hsrc/network/RCS/netmon.c,v 1.23 1993/08/11 10:34:39 bart Exp bart $*/
+
+/*{{{  headers and compile-time options */
+#define	__Netboot_Module
+#define __NetworkServer
+
+#include <stdio.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <sem.h>
+#include <codes.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <posix.h>
+#include <ctype.h>
+#include <nonansi.h>
+#include <link.h>
+#include <root.h>
+#include "exports.h"
+#include "private.h"
+#include "netutils.h"
+#include "rmlib.h"
+#include "netaux.h"
+#include "session.h"
+/*}}}*/
+/*{{{  forward declarations and statics */
+static	void		Monitor_Thread(void);
+static	void		StartProblemHandler(void);
+static	void		ProblemHandler(void);
+	int		Monitor_Delay;
+static	Semaphore	ProblemHandlerLock;
+static	bool		ProblemHandlerRunning;
+static	void		scan_network(RmNetwork network, bool locked);
+static	void		scan_processor(RmProcessor);
+static	void 		HandleIOChange(RmProcessor IO, int mode, int state);
+#if Joinnet_Supported
+static	void 		LostExternalNetwork(RmProcessor from, int link);
+static	void		HandleIOExternal(RmProcessor IO);
+static	void		CopeWithExternalSubnet(RmNetwork);
+#endif
+
+void InitMonitor(void)
+{ 
+  InitSemaphore(&ProblemHandlerLock, 1);
+  ProblemHandlerRunning	= FALSE;
+
+	/* Work out the delay between monitor loops. This should	*/
+	/* be no more than 30 minutes, to avoid time overflows. If it	*/
+	/* is a negative number then the monitor thread is suppressed	*/
+	/* completely.							*/
+  Monitor_Delay = get_int_config("monitor_interval", nsrc_environ);
+  if (Monitor_Delay eq Invalid_config)
+   Monitor_Delay = 30;
+  elif (Monitor_Delay > (30 * 60))
+   Monitor_Delay = 30 * 60;
+
+  if (Monitor_Delay >= 0)
+   if (!Fork(Monitor_Stack, &Monitor_Thread, 0))
+    fatal("not enough memory to initialise network monitoring");
+}
+/*}}}*/
+
+/*{{{  continuous monitoring of the network */
+/**
+*** Network monitoring. This module is responsible for implementing the
+*** fault tolerance aspects of the Network Server. It includes a thread
+*** spawned off to monitor the whole network. When this thread detects
+*** a problem of any sort a separate thread is responsible for cleaning
+*** things up. The monitor thread runs without locking the network,
+*** but the cleaning thread does not.
+***/
+
+/*{{{  the monitoring thread */
+/**
+*** The monitor thread. This runs continuously checking every processor
+*** in the network. There is a system parameter controlling the delay
+*** between checks, settable in the nsrc file.
+***
+*** To cope with sub-networks the implementation involves calling a
+*** scan_network() routine which can recurese. The locking is as follows.
+*** This thread runs asynchronously to anything else in the network,
+*** so the global MRSW locks have to be used. However the routines must
+*** not run permanently with a read lock since that would permanently block
+*** anything trying to get a read lock. In fact the routines regularly
+*** unlock and relock, to allow other threads to get a write lock. 
+*** Note that MRSW_GetRead() suspends if anything else is trying to get a
+*** write lock.
+**/
+
+static	void	Monitor_Thread(void)
+{
+  forever
+   { scan_network(Net, FALSE);
+     Delay(Monitor_Delay * OneSec);
+   }
+}
+/*}}}*/
+/*{{{  scan_network() */
+static void	scan_network(RmNetwork network, bool locked)
+{ int		uid;
+  RmProcessor	processor;
+
+  unless(locked) MRSW_GetRead();
+
+  processor = RmFirstProcessor(network);
+
+  forever
+   { if (ProblemHandlerRunning) break;
+
+     if (RmIsNetwork(processor))
+      scan_network((RmNetwork) processor, TRUE);
+     else
+      scan_processor(processor);
+
+     processor	= RmNextProcessor(processor);
+     if (processor eq NULL) break;
+
+	/* Do not delay for subnets, only for processors	*/
+     if (RmIsNetwork(processor)) continue;
+
+	/* Remember the Uid for the next processor		*/
+     uid = processor->Uid;
+
+	/* Allow other threads to get a write lock		*/
+     MRSW_FreeRead();
+     MRSW_GetRead();
+
+	/* Check that the processor is still there. If not then	*/
+	/* the system is in a state of flux and it is a good	*/
+	/* idea to abort this particular run of the monitor.	*/
+     processor = RmFindProcessor(Net, uid);
+     if (processor eq (RmProcessor) NULL)
+      break;
+   }
+  unless(locked) MRSW_FreeRead();
+}
+/*}}}*/
+/*{{{  scan_processor() */
+/**
+*** scan_processor(). This performs a very basic test that the processor
+*** is still accessible and that all its links are in a sensible state.
+*** This involves locating the processor, locating the processor manager,
+*** performing a ServerInfo, and scanning the links. This routine can only
+*** be called from the single monitor thread.
+**/
+static void scan_processor(RmProcessor processor)
+{ Object	*proc_obj	= Null(Object);
+  Object	*procman	= Null(Object);
+  static BYTE	servinfo_buf[IOCDataMax];
+  ProcStats	*procstats	= (ProcStats *) servinfo_buf;
+  int		purpose;
+  bool		proc_ok		= TRUE;
+  int		state;
+int rc;
+
+	/* Native processors and routers cannot be checked.		*/
+  purpose	= RmGetProcessorPurpose(processor) & RmP_Mask;
+  if ((purpose eq RmP_Native) || (purpose eq RmP_Router))
+   return;
+
+	/* Unless the processor is believed to be running, ignore it	*/
+  state = RmGetProcessorState(processor);
+  unless(state & RmS_Running) return;
+	/* Processors in the middle of being booted are guaranteed dodgy*/
+  if (state & RmS_Booting) return;
+
+  Debug(dbg_Monitor, ("checking processor %P", processor));
+  
+  proc_obj	= NetMapProcessorToObject(processor);
+  if (proc_obj eq Null(Object)) 
+    { proc_ok = FALSE; goto done; }
+
+	/* For I/O processors, check for the error logger.		*/
+  if (purpose eq RmP_IO)
+   { Object	*logger = Locate(proc_obj, "logger");
+     if (logger eq Null(Object))
+      proc_ok = FALSE;
+     else
+      Close(logger);
+     goto done;
+   }
+
+  procman	= Locate(proc_obj, "tasks");
+  if (procman eq Null(Object))
+   { proc_ok = FALSE; goto done; }
+
+	/* Clear the buffer to avoid possible confusion			*/
+  memset(servinfo_buf, 0, sizeof(servinfo_buf));
+
+	/* This request is guaranteed not to be handled by the cache	*/
+  if ((rc = ServerInfo(procman, servinfo_buf)) < Err_Null)
+   { proc_ok = FALSE; goto done; }
+
+  if (procstats->NLinks eq 0)
+   { report("confused system, ServerInfo(%P) has succeeded but NLinks is 0", processor);
+     proc_ok = FALSE;
+     goto done;
+   }
+
+  { int	number_links	= RmCountLinks(processor);
+    int	i;
+
+    if (number_links ne procstats->NLinks)
+     { report("processor %P claims to have %d links instead of %d", processor, procstats->NLinks, number_links);
+       proc_ok	= FALSE;
+       goto	done;
+     }
+
+    for (i = 0; i < number_links; i++)
+     { RmProcessor	neighbour;
+       int		destlink;
+       LinkConf		linkconf = procstats->Link[i].Conf;
+
+       neighbour = RmFollowLink(processor, i, &destlink);
+       if (neighbour eq RmM_NoProcessor)
+        { if ((linkconf.Mode ne Link_Mode_Null) 
+              && (linkconf.Mode ne Link_Mode_Dumb))
+            MarkLink(processor, i);
+	  continue;
+        }
+       if (neighbour eq RmM_ExternalProcessor)
+        { if (linkconf.Mode ne Link_Mode_Intelligent)
+	    MarkLink(processor, i);
+	  elif ((linkconf.State ne Link_State_Running) &&
+		(linkconf.State ne Link_State_Dead))
+	    MarkLink(processor, i);
+	  continue;
+	}
+	/* must be a real processor	*/
+	{ int its_purpose = RmGetProcessorPurpose(neighbour) & RmP_Mask;
+	  int its_running = RmGetProcessorState(neighbour) & (RmS_Running + RmS_Booting);
+
+		/* If the neighbour is an I/O processor then the link	*/
+		/* should always be intelligent, pending if the I/O	*/
+		/* processor is not running, else running.		*/
+	  if (its_purpose eq RmP_IO)
+           { if (linkconf.Mode ne Link_Mode_Intelligent)
+	      { MarkLink(processor, i); continue; }
+	     if (its_running)
+              { if (linkconf.State ne Link_State_Running)
+		 MarkLink(processor, i);
+	      }
+	     else
+	      { if (linkconf.State ne Link_State_Dead)
+	  	 MarkLink(processor, i);
+	      }
+	     continue;
+	   }
+
+		/* If the neighbour is native then the link mode should	*/
+		/* be dumb or not connected.				*/
+	  if (its_purpose eq RmP_Native)
+	   { if ((linkconf.Mode ne Link_Mode_Dumb) &&
+		 (linkconf.Mode ne Link_Mode_Null))
+	      MarkLink(processor, i);
+	     continue;
+	   }
+
+		/* If the neighbour is a router I do not know what to	*/
+		/* do yet.						*/
+	  if (its_purpose eq RmP_Router)
+	   continue;
+
+		/* If the neighbour is not a Helios node, HELP!!!	*/
+	  if (its_purpose ne RmP_Helios)
+	   continue;
+
+		/* If the neighbour is a Helios node that is being	*/
+		/* booted then there is little I can guarantee about	*/
+		/* this node.						*/
+          if ((its_running & RmS_Booting) ne 0)
+	   continue;
+
+		/* Otherwise the link must be intelligent, running if	*/
+		/* the processor is, otherwise dead.			*/
+          if (linkconf.Mode ne Link_Mode_Intelligent)
+	   { MarkLink(processor, i); continue; }
+
+	  if (its_running)
+	   { if (linkconf.State ne Link_State_Running)
+	      MarkLink(processor, i);
+	   }
+	  else
+	   { if (linkconf.State ne Link_State_Dead)
+	      MarkLink(processor, i);
+	   }
+	  {	/* It is OK, reset the suspicious flag	*/
+	    RmLink *rm_link = RmFindLink(processor, i);
+	    rm_link->Flags &= ~RmF_Suspicious;
+	  }
+        }
+     }
+   }
+
+	/* BLV - other checks. The processor should not be owned by	*/
+	/* the cleaners for too long a time, its state should not be	*/
+	/* funny for too long a time, if dead there should still	*/
+	/* be a reboot attempt every 20 minutes or so, etc.		*/
+
+done:
+  unless(proc_ok) 
+   { Debug(dbg_Monitor, ("processor %P failed its regular checkup", processor));
+     MarkProcessor(processor, TRUE);
+   }
+  if (procman ne Null(Object))	Close(procman);
+  if (proc_obj ne Null(Object))	Close(proc_obj);
+  return;
+}
+/*}}}*/
+/*}}}*/
+/*{{{  MarkProcessor() */
+/**
+*** MarkProcessor(). This routine is called when something appears to have
+*** gone wrong with a particular processor. It performs some checks on
+*** that processor and, if it has reason to believe that there is a problem,
+*** a ProblemHandler() gets invoked to clean up the mess.
+***
+*** The second argument indicates that the processor has almost certainly
+*** died because either the processor or the processor manager could not
+*** be located, an rexec failed, or some other serious failure. If this
+*** second argument is FALSE then something may have gone wrong with the
+*** processor, but it is not obvious what.
+**/
+void		MarkProcessor(RmProcessor processor, bool locate_failed)
+{ int	state = RmGetProcessorState(processor);
+
+  if (Monitor_Delay < 0)
+   { Debug(dbg_Problem, ("monitoring disabled, ignoring potential problem on %P", processor));
+     return;
+   }
+
+  if (!locate_failed)
+   { if (ProblemHandlerRunning)
+      { Debug(dbg_Problem, ("leaving problem on %P to existing problem handler", processor));
+	return;
+      }
+     elif (CheckProcessor(processor))
+      { Debug(dbg_Problem, ("cannot find reported problem on %P", processor));
+        return;
+      }
+   }
+ 
+  unless (state & RmS_Running) return;
+
+  Debug(dbg_Problem, ("problem reported on processor %P", processor));
+  
+  state &= ~(RmS_Running | RmS_Crashed | RmS_Dead);
+  state |= RmS_Suspicious;
+  RmSetProcessorState(processor, state);
+
+  StartProblemHandler();   
+}
+/*}}}*/
+/*{{{  MarkLink() */
+void		MarkLink(RmProcessor processor, int link)
+{ RmLink	*rm_link = RmFindLink(processor, link);
+  RmProcessor	neighbour;
+  int		destlink;
+  int		purpose;
+  int		mode;
+
+  if (Monitor_Delay < 0)
+   { Debug(dbg_Problem, ("monitoring disabled, ignoring potential problem on link %d of  %P", link, processor));
+     return;
+   }
+
+	/* Check if this report is already being handled	*/
+  if (rm_link->Flags & RmF_Suspicious) return;
+
+  Debug(dbg_Problem, ("investigating link problem on processor %P, link %d", \
+		processor, link));
+
+	/* If there is a problem handler running already, wait	*/
+  if (ProblemHandlerRunning)
+   { Debug(dbg_Problem, ("leaving link problem to existing problem handler"));
+     return;
+   }
+
+  rm_link->Flags |= RmF_Suspicious;
+
+  unless(CheckProcessor(processor))
+   { StartProblemHandler(); goto done; }
+  mode = GetLinkMode(processor, link);
+
+  purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+  if (purpose ne RmP_Helios) goto done;
+   
+  neighbour = RmFollowLink(processor, link, &destlink);
+  if (neighbour eq RmM_NoProcessor)
+   { SetLinkMode(processor, link, RmL_NotConnected);
+     goto done;
+   }
+  if (neighbour eq RmM_ExternalProcessor)
+   { switch(mode)
+       { case RmL_Dead		: SetLinkMode(processor, link, RmL_NotConnected);
+	 case RmL_NotConnected	:
+	 case RmL_Dumb		: SetLinkMode(processor, link, RmL_Pending);
+				  break;
+       } 
+     goto done;
+   }
+
+  Debug(dbg_Problem, ("processor %P, link %d, goes to %P, link %d, current setting %L",\
+		processor, link, neighbour, destlink, mode));
+
+  purpose = RmGetProcessorPurpose(neighbour) & RmP_Mask;
+  if (purpose eq RmP_IO)
+   { if (mode ne RmL_Intelligent)
+      { SetLinkMode(processor, link, RmL_NotConnected);
+        SetLinkMode(processor, link, RmL_Pending);
+      }
+     goto done;
+   }
+
+  if (purpose eq RmP_Native)
+   { if ((mode ne RmL_NotConnected) && (mode ne RmL_Dumb))
+      SetLinkMode(processor, link, RmL_NotConnected);
+     goto done;
+   }
+
+  if (purpose eq RmP_Router)
+   {
+     goto done;
+   }
+
+  if ((RmGetProcessorState(neighbour) & (RmS_Suspicious | RmS_Crashed | RmS_Dead))
+	|| !CheckProcessor(neighbour))
+   { MarkProcessor(neighbour, TRUE);
+     SetLinkMode(processor, link, RmL_Dead);
+     goto done;
+   }
+
+  SetLinkMode(processor, link,		RmL_NotConnected);
+  SetLinkMode(neighbour, destlink,	RmL_NotConnected);
+  SetLinkMode(processor, link,		RmL_Pending);
+  SetLinkMode(neighbour, destlink,	RmL_Intelligent);
+
+done:
+  rm_link->Flags &= ~RmF_Suspicious;
+}
+/*}}}*/
+/*{{{  CheckProcessor() */
+/**
+*** This routine performs a detailed check of a processor, but ignoring
+*** the link connections.
+**/
+bool		CheckProcessor(RmProcessor processor)
+{ Object	*proc;
+  int		purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+
+	/* It is not possible to check native processors, so assumed to	*/
+	/* be OK.							*/
+  if (purpose eq RmP_Native)
+   return(TRUE);
+
+	/* BLV - router support						*/
+  if (purpose eq RmP_Router)
+   return(TRUE);
+
+	/* For I/O and Helios processors, attempt to locate the		*/
+	/* processor.							*/
+  proc = NetMapProcessorToObject(processor);
+  if (proc eq Null(Object)) return(FALSE);
+
+	/* For I/O processors, the only sensible test is to check for	*/
+	/* the error logger.						*/
+  if (purpose eq RmP_IO)
+   { Object	*logger = Locate(proc, "logger");
+     Close(proc);
+     if (logger eq Null(Object))
+      return(FALSE);
+     else
+      return(TRUE);
+   }
+
+	/* For Helios nodes, check the following:			*/
+	/* 1) existence of procman /tasks				*/
+	/* 2) existence of /loader					*/
+	/* 3) existence of /tasks/ProcMan.0				*/
+	/* 4) existence of /loader/Kernel				*/
+  { Object	*procman	= Null(Object);
+    Object	*loader		= Null(Object);
+    Object	*procman_entry	= Null(Object);
+    Object	*kernel_entry	= Null(Object);
+    bool	result		= FALSE;
+    if ((procman	= Locate(proc, "tasks"))	 eq Null(Object))
+     goto done;
+    if ((loader		= Locate(proc, "loader"))	 eq Null(Object))
+     goto done;
+    if ((procman_entry	= Locate(procman, "ProcMan.0")) eq Null(Object)) 
+     goto done;
+    if ((kernel_entry	= Locate(loader, "Kernel"))	 eq Null(Object))
+     goto done;
+
+    result = TRUE;
+done:
+    if (procman ne Null(Object)) Close(procman);
+    if (loader ne Null(Object))  Close(loader);
+    if (procman_entry ne Null(Object))	Close(procman_entry);
+    if (kernel_entry ne Null(Object))	Close(kernel_entry);
+    Close(proc);
+    return(result);
+  }
+}
+/*}}}*/
+/*{{{  HandleReportProcessor() */
+/**
+*** This routine is called when a client such as a TFM reports a problem.
+**/
+void	HandleReportProcessor(NsConn connection, int job_id,
+			RmRequest *request, RmReply *reply)
+{ RmProcessor	processor = RmFindProcessor(Net, request->Uid);
+
+  if (processor ne (RmProcessor) NULL)
+   { Debug(dbg_Problem, ("a client has reported a problem on %P", processor));
+     MarkProcessor(processor, FALSE);
+   }
+  reply->FnRc = RmE_Success;
+  ReplyRmLib(connection, job_id, reply);
+}
+/*}}}*/
+
+/*{{{  the Problem handler */
+/**----------------------------------------------------------------------------
+*** Problem Handler(). This is the big one. Whenever there is a problem
+*** this routine gets invoked and has to sort it out, somehow...
+***
+*** The first step is to determine the extent of the problem. This requires
+*** a breadth-first search of the network starting at the root processor.
+*** Note that, courtesy of the single and double buffering code in the
+*** kernel, the failure of a single node may affect links not directly
+*** connected to that node. The Private2 field of each processor is used
+*** to hold the current state. As each processor is reached its name table
+*** is cleared, to bypass crashed links. 
+***
+*** Once the breadth-first search has finished the network can be scanned
+*** to work out which processors, if any, should be rebooted. This involves
+*** starting a bootstrap job and waiting for it to finish.
+**/
+
+/*{{{  StartProblemHandler() */
+static void StartProblemHandler(void)
+{ Wait(&ProblemHandlerLock);
+  if (ProblemHandlerRunning)
+   { Debug(dbg_Problem, ("leaving it to existing problem handler thread"));
+   }
+  else
+   { if (Fork(Problem_Stack, &ProblemHandler, 0))
+      { ProblemHandlerRunning	= TRUE;
+        Debug(dbg_Problem, ("started up a problem handler thread"));
+        Delay(OneSec / 10);	/* to let the problem handler start */
+      }
+     else
+      { Debug(dbg_Problem, ("failed to start problem handler thread"));
+      }
+   }
+  Signal(&ProblemHandlerLock);
+}
+/*}}}*/
+
+
+#define	PH_NotFound	0
+#define	PH_Found	1
+#define PH_Suspicious	2
+#define PH_Ignore	3
+
+typedef struct	BreadthFirstNode {
+	RmProcessor	Processor;
+	Object		*Object;
+} BreadthFirstNode;
+
+static int	Problem_aux1(RmProcessor processor, ...);
+static int	Problem_aux2(RmProcessor processor, ...);
+static int	Problem_aux3(RmProcessor processor, ...);
+static int	Problem_aux4(RmProcessor processor, ...);
+static int	Problem_aux5(RmProcessor processor, ...);
+static int	Problem_auxReclaim(RmProcessor processor, ...);
+static void	Problem_search(void);
+
+static void	ProblemHandler(void)
+{ int		to_find;
+  BootstrapJob	*reboot = Null(BootstrapJob);
+
+  Debug(dbg_Problem, ("ProblemHandler thread running, waiting for lock"));
+  MRSW_GetWrite();
+
+  Debug(dbg_Problem, ("scanning network"));
+
+  to_find  = RmApplyProcessors(Net, &Problem_aux1);
+  Debug(dbg_Problem, ("%d processors should be running", to_find));
+  Problem_search();
+
+  (void) RmApplyProcessors(Net, &Problem_auxReclaim);
+  to_find -= RmApplyProcessors(Net, &Problem_aux2);
+
+  Debug(dbg_Problem, ("%d processors inaccessible", to_find));
+
+	/* Did the search fail to find any of the processors...	*/ 
+  if (to_find <= 0)
+   goto done;
+
+  reboot = NewBootstrapJob();
+  if (reboot eq Null(BootstrapJob))
+   goto done;
+
+  (void) RmApplyProcessors(Net, &Problem_aux3, reboot);
+  (void) RmApplyProcessors(Net, &Problem_aux4);
+
+  Debug(dbg_Problem, ("starting reboot"));
+
+  if (StartBootstrapJob(reboot))
+   WaitBootstrapJob(reboot);
+  else
+   AbortBootstrapJob(reboot);
+
+  (void ) RmApplyProcessors(Net, &Problem_aux5);
+
+done:
+  MRSW_FreeWrite();
+
+	/* this delay lets the world settle down a bit		*/
+  Delay(2 * OneSec);
+
+  Wait(&ProblemHandlerLock);
+  ProblemHandlerRunning = FALSE;
+  Signal(&ProblemHandlerLock);
+
+  KickSessionManager();
+
+  Debug(dbg_Problem, ("ProblemHandler done"));
+}
+
+static	int Problem_aux1(RmProcessor processor, ...)
+{ int	purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+  int	state	= RmGetProcessorState(processor);
+
+  if ((purpose eq RmP_Native) || (purpose eq RmP_Router) || (state & RmS_Dead))
+   { RmSetProcessorPrivate2(processor, PH_Ignore);
+     return(0);
+   }
+
+  RmSetProcessorPrivate2(processor, PH_NotFound);
+  return(1);
+}
+
+	/* If a processor has not been found and the controlling device	*/
+	/* driver has set the reclaim flag then all processors		*/
+	/* controlled by this driver are set to NotFound. The Network	*/
+	/* Server will then attempt to reboot all of them.		*/
+static	int Problem_auxReclaim(RmProcessor processor, ...)
+{ int			 result	= RmGetProcessorPrivate2(processor);
+  ProcessorEntry	*proc_entry;
+  int			 i, j;
+  DriverEntry		*driver_entry;
+  RmHardwareFacility	*hardware;
+  RmProcessor		 other;
+  int			 purpose;
+
+  if (result ne PH_NotFound) return(0);
+  unless(processor->Control & RmC_Reclaim) return(0);
+
+  proc_entry = GetProcEntry(processor);
+  for (i = 0; i < proc_entry->NumberDrivers; i++)
+   { driver_entry	= &(proc_entry->DriverEntry[i]);
+     hardware		= driver_entry->Hardware;
+     if (driver_entry->Flags & DriverFlags_Reclaim)
+      { for (j = 0; j < hardware->NumberProcessors; j++)
+         { other = hardware->Processors[j];
+ 	   if (other eq RootProcessor)
+	    continue;
+	   purpose = RmGetProcessorPurpose(other) & RmP_Mask;
+	   if ((purpose eq RmP_IO) || (purpose eq RmP_Router))
+	    continue;
+	   RmSetProcessorPrivate2(other, PH_NotFound);
+	 }
+	break;
+      }
+   }
+  return(0);
+}
+
+static	int Problem_aux2(RmProcessor processor, ...)
+{ int	result = RmGetProcessorPrivate2(processor);
+
+  if (result eq PH_Found)
+   { RmSetProcessorState(processor, RmS_Running);
+     return(1);
+   }
+  elif (result eq PH_NotFound)
+   RmSetProcessorState(processor, RmS_Crashed);
+  return(0);
+}
+
+#if Joinnet_Supported
+/*{{{  Problem_aux3_aux */
+static void Problem_aux3_aux(RmNetwork subnet)
+{ MRSW_GetRead();
+  CopeWithExternalSubnet(subnet);
+  MRSW_FreeRead();
+}
+/*}}}*/
+#endif
+
+static	int Problem_aux3(RmProcessor processor, ...)
+{ va_list	args;
+  BootstrapJob	*reboot;
+  RmProcessor	neighbour;
+  int		destlink;
+  int		number_links, i;
+
+  va_start(args, processor);
+  reboot = va_arg(args, BootstrapJob *);
+  va_end(args);
+
+  if (RmGetProcessorPrivate2(processor) ne PH_NotFound) return(0);
+
+#if Joinnet_Supported
+	/* Check whether or not this processor is part of an	*/
+	/* external network. If so do not attempt to reboot	*/
+	/* it, instead lose the external network.		*/
+  { RmNetwork	parent, current;
+    for (parent = RmParentNetwork(processor), current = NULL;
+	 parent ne Net;
+	 parent = RmParentNetwork((RmProcessor) parent))
+     current = parent;
+    if (current ne NULL)
+     { ExternalNetwork *ext_net = (ExternalNetwork *)RmGetNetworkPrivate(current);
+       if (ext_net ne NULL)
+        { if (ext_net->Reported eq FALSE)
+	   { ext_net->Reported = TRUE;
+             Fork(ProblemAux3_Stack, Problem_aux3_aux, 4, current);
+	   }
+	  RmSetProcessorPrivate2(processor, PH_Ignore);
+          goto skip_bootstrap;
+	}
+     }
+  }
+#endif
+	/* Rebooting I/O processors is difficult.			*/
+	/* BLV - more work needed to set the link to pending.		*/
+  if ((RmGetProcessorPurpose(processor) & RmP_Mask) eq RmP_IO)
+   { report("I/O processor %P appears to have failed", processor);
+     goto skip_bootstrap;
+   }
+
+  report("processor %P appears to have crashed, attempting a reboot", processor);
+
+  number_links = RmCountLinks(processor);
+  for (i = 0; i < number_links; i++)
+   { neighbour = RmFollowLink(processor, i, &destlink);
+     if ((neighbour eq RmM_NoProcessor) || (neighbour eq RmM_ExternalProcessor))
+      continue;
+     if ((RmGetProcessorPurpose(neighbour) & RmP_Mask) ne RmP_Helios)
+      continue;
+     unless(RmGetProcessorState(neighbour) & RmS_Running)
+      continue;
+     (void) SetLinkMode(neighbour, destlink, RmL_NotConnected);
+   }
+
+  AddProcessorToBootstrapJob(reboot, processor);
+
+skip_bootstrap:
+  RemNetworkAgent(processor);
+  return(0);
+}
+
+	/* To cope with the case of a TFM processor crashing, ownership	*/
+	/* problems have to be resolved after all affected processors	*/
+	/* have been marked as crashed.					*/
+static int Problem_aux4(RmProcessor processor, ...)
+{
+	/* Only deal with processors that the search could not find	*/
+  if (RmGetProcessorPrivate2(processor) ne PH_NotFound) return(0);
+
+  if (RmGetProcessorState(processor) eq RmS_Crashed)
+   { RemConnection(processor, RmR_Crashed);
+     processor->ObjNode.Account = RmO_Graveyard;
+   }
+  return(0);
+}
+
+static int Problem_aux5(RmProcessor processor, ...)
+{ 
+  if (RmGetProcessorPrivate2(processor) ne PH_NotFound) return(0);
+
+  if (RmGetProcessorState(processor) eq RmS_Crashed)
+   { report("failed to reboot processor %P", processor);
+     RmSetProcessorState(processor, RmS_Dead);
+   }
+  else
+   { if ((RmGetProcessorPurpose(processor) & RmP_System) eq 0)
+      processor->ObjNode.Account = RmO_FreePool;
+     else
+      processor->ObjNode.Account = RmO_System;
+   }
+  return(0);
+}
+
+static	void Problem_search(void)
+{ BreadthFirstNode	*search_table		= Null(BreadthFirstNode);
+  int			search_tail, search_head;
+
+  search_table = Malloc(NumberProcessors * sizeof(BreadthFirstNode));
+  if (search_table eq Null(BreadthFirstNode))
+   goto done;
+
+  search_head = 0;
+  search_tail = 0;
+
+  search_table[search_tail].Processor	= RootProcessor;
+  search_table[search_tail].Object	= NetMapProcessorToObject(RootProcessor);
+  if (search_table[search_tail].Object eq Null(Object))
+   goto done;
+  search_tail++;
+  RmSetProcessorPrivate2(RootProcessor, PH_Found);
+
+  for ( ;search_head < search_tail; search_head++)
+   { RmProcessor	processor = search_table[search_head].Processor;
+     RmProcessor	neighbour;
+     int		destlink;
+     int		number_links;
+     int		i;
+     char		name_buf[8];
+     Object		*neighbour_obj;
+
+     strcpy(name_buf, "link.x");
+     ClearNames(processor);
+
+     number_links = RmCountLinks(search_table[search_head].Processor);
+     for (i = 0; i < number_links; i++)
+      { neighbour = RmFollowLink(processor, i, &destlink);
+        if ((neighbour eq RmM_NoProcessor) || (neighbour eq RmM_ExternalProcessor))
+         continue;
+
+		/* Ignore processors we have already found or that	*/
+		/* should be ignored.					*/
+        if (RmGetProcessorPrivate2(neighbour) ne PH_NotFound) continue;
+
+	name_buf[5]	= i + '0';
+	neighbour_obj	= Locate(search_table[search_head].Object, name_buf);
+	if (neighbour_obj eq Null(Object))
+	 { Debug(dbg_Problem, ("failed to access processor %P via link %d of %P",\
+			neighbour, i, processor));
+           continue;
+	 }
+	unless(CheckProcessor(neighbour))
+	 { Close(neighbour_obj); 
+           Debug(dbg_Problem, ("processor %P failed its checkup", neighbour));
+           continue;
+         }
+	RmSetProcessorPrivate2(neighbour, PH_Found);
+	search_table[search_tail].Processor	= neighbour;
+	search_table[search_tail].Object	= neighbour_obj;
+	search_tail++;
+      }
+     Close(search_table[search_head].Object);
+   } 
+
+done:
+  if (search_table ne Null(BreadthFirstNode)) Free(search_table);
+}
+/*}}}*/
+
+/*{{{  link changes */
+/**-----------------------------------------------------------------------------
+*** Link Change Handling.
+***
+*** It is possible to request a processor manager to report state
+*** changes on any or all of its links. This is one of the main ways
+*** of detecting crashed processors: processor A attempts to send a
+*** message to or through processor B, which has crashed; the link I/O
+*** fails, so processor A marks the connecting link as crashed and
+*** reports this to the network server.
+***
+*** The data structure is as follows:
+*** IOCCommon	:	string /ns, no capability, 5 words of control vector
+*** index into data vector for reporting processor name
+*** word for link number
+*** word for link mode
+*** word for link state
+**/
+
+#if Joinnet_Supported
+/*{{{  ForwardLinkChange() */
+/**
+*** Forward a message to the right network server. This means finding the
+*** network server. First, the reported processor is located and put into a
+*** table. Then the table is searched: for every processor, check for a
+*** network server, and then check all four links. This is much the same
+*** as the work done by findns, findsm, etc.
+**/
+#if 1
+static void ForwardLinkChange(char *name, ServInfo *info)
+{ name = name; info = info;
+}
+#else
+
+	/* BLV - in Helios 1.3 this ForwardLinkChange() fails.	*/
+	/* The search of the network returns invalid names.	*/
+	/* With the fault-tolerance features of 1.3 this should	*/
+	/* not be too serious a problem.			*/
+static	void ForwardLinkChangeAux(Object *, ServInfo *);
+
+static	void ForwardLinkChange(char *name, ServInfo *info)
+{ Object	*first_processor = Locate(Null(Object), name);
+  Object	**procvec;
+  int		max_processors;
+  int		next_proc = 0;
+  int		cur_proc;
+  char		linkbuf[10];
+  char		*temp;
+  int		len = 2;
+  int		number_links;
+
+  Debug(dbg_Links, ("link change has to be forwarded"));
+
+  if (first_processor eq Null(Object)) return;
+
+	/* Only follow processors that have the right base name */
+	/* E.g name = /ClusterA/xx, only compare 10 characters  */
+  for (temp = &(name[1]); *temp ne '/'; temp++) len++;
+  
+  procvec = (Object **) Malloc(16 * sizeof(Object *));
+  if (procvec eq Null(Object *))
+   { Close(first_processor); return; }
+   
+  max_processors = 16;
+  procvec[next_proc++] = first_processor;
+  strcpy(linkbuf, "link.");
+
+  for (cur_proc = 0; cur_proc < next_proc; cur_proc++)
+   { Object	*current = procvec[cur_proc];
+     Object	*ns = Locate(current, "ns");
+     Object	*next;
+     int	i;   
+
+     if (ns ne Null(Object))
+      { ForwardLinkChangeAux(ns, info); 
+        Close(ns);
+        goto done; 
+      }
+
+     number_links = Util_CountLinks(current);
+     for (i = 0; i < number_links; i++)
+      { 
+        linkbuf[5] = '\0';
+        if (i eq 0)
+         strcat(linkbuf, "0");
+        else
+         addint(linkbuf, i);
+
+        next = Locate(current, linkbuf);
+
+        if (next ne Null(Object))
+         { int j;
+		/* Check we are still in the right network */
+	   if (strncmp(next->Name, name, len)) 
+	    goto skip;
+	    
+	   	/* Check that this processor has not been found already */
+           for (j = 0; j < next_proc; j++)
+            if (!strcmp(procvec[j]->Name, next->Name))
+             goto skip;
+             
+           if (next_proc eq max_processors)
+            { Object **temp = Malloc(2 * max_processors * sizeof(Object *));
+              if (temp eq Null(Object *)) goto done;
+              memcpy(temp, procvec, max_processors * sizeof(Object *));
+              Free(procvec);
+              procvec = temp;
+              max_processors *= 2;
+            }
+           procvec[next_proc++] = next;
+         }
+skip:
+	continue;
+      }
+   }
+
+done:
+  for (cur_proc = 0; cur_proc < next_proc; cur_proc++)
+   Close(procvec[cur_proc]);
+  Free(procvec);
+}
+
+/**
+*** Given a network server and a link change message that has been wrongly
+*** addressed, send the message again. See nucleus/procman.c for more details.
+**/
+static	void ForwardLinkChangeAux(Object *ns, ServInfo *info)
+{ MsgBuf	*m = New(MsgBuf);
+  MCB		*old = info->m;
+  char		*name;
+  int		link;
+  int		state;
+  int		mode;
+  word		controlvec[10];
+
+  if (m eq Null(MsgBuf)) return;
+
+  m->mcb.Control	= controlvec;
+  m->mcb.Data		= m->data;
+  
+  name  = &(old->Data[(old->Control[5])]);
+  link  = old->Control[6];
+  mode  = old->Control[7];
+  state = old->Control[8];
+  
+  InitMCB(&m->mcb, MsgHdr_Flags_preserve, NullPort, NullPort,
+  		FC_GSP | SS_NetServ | FG_NetStatus);
+  MarshalWord(&m->mcb, -1);
+  MarshalString(&m->mcb, ns->Name);
+  MarshalWord(&m->mcb, 1);
+  MarshalWord(&m->mcb, -1);
+  MarshalWord(&m->mcb, -1);
+
+  MarshalString(&m->mcb, name);
+  MarshalWord(&m->mcb, link);
+  MarshalWord(&m->mcb, mode);
+  MarshalWord(&m->mcb, state);
+
+  Debug(dbg_Links, ("sending link change on to %s", ns->Name));
+    
+  SendIOC(&m->mcb);  
+  Free(m);
+}
+#endif
+/*}}}*/
+#endif
+
+void	HandleLinkChange(ServInfo *servinfo)
+{ char		*name;
+  RmProcessor	reporter;
+  int		link;
+  int		state;
+  int		mode;
+  MCB		*m = servinfo->m;
+  RmProcessor	neighbour;
+  int		destlink;
+
+  MRSW_GetRead();
+  
+  name = &(m->Data[(m->Control[5])]);  
+
+  link  = m->Control[6];
+  mode  = m->Control[7];
+  state = m->Control[8];
+
+  Debug(dbg_Links, ("link change reported on processor %s, link %d, new mode %d, state %d",\
+	name, link, mode, state));
+
+  reporter = RmLookupProcessor(Net, name);
+#if Joinnet_Supported
+  if (reporter eq (RmProcessor) NULL)  
+   { ForwardLinkChange(name, servinfo); goto done; }
+#else
+  goto done;
+#endif
+	/* Unless there is a real processor at the other end of this	*/
+	/* link, ignore the change message.				*/
+  neighbour = RmFollowLink(reporter, link, &destlink);
+  if ((neighbour eq RmM_NoProcessor) ||
+      (neighbour eq RmM_ExternalProcessor))
+   goto done;
+
+	/* For I/O Processors all changes are important.		*/   
+  if ((RmGetProcessorPurpose(neighbour) & RmP_Mask) eq RmP_IO)
+   { HandleIOChange(neighbour, mode, state);  goto done; }
+
+	/* If the link report says that the link is now running, ignore	*/
+	/* the message. It is the incoming network's responsibility to	*/
+	/* request a service.						*/
+  if ((state eq Link_State_Running) && (mode eq Link_Mode_Intelligent))
+   goto done;
+
+	/* if the link is set back to pending mode, ignore it	*/
+  if ((state eq Link_State_Dead) && (mode eq Link_Mode_Intelligent))
+   goto done;
+      
+	/* Check whether the link is internal or external to the network */
+  { ProcessorEntry 	*proc_entry;
+    RmLink		*default_link;
+    
+    proc_entry = GetProcEntry(reporter);
+    default_link = &(proc_entry->StandardLinks[link]);
+    if (default_link->Target ne RmL_ExtUid) 
+     { MarkLink(reporter, link); goto done; }
+#if Joinnet_Supported
+    else
+	/* OK, an external network of some sort has been disconnected.	*/
+     LostExternalNetwork(reporter, link);
+#endif
+  }
+
+done:
+  Debug(dbg_Links, ("link change on processor %s, link %d, handled",\
+		name, link));
+  MRSW_FreeRead();
+}
+
+
+/*}}}*/
+/*{{{  I/O Processor link changes */
+/**
+*** Changes to an I/O processor. There are three cases to consider
+*** 1) an outside I/O processor has connected in. In that case
+***    a suitable window should be created and registered.
+*** 2) an outside I/O processor has been disconnected. In that case
+***    any sessions using that I/O Server must be aborted.
+*** 3) the I/O processor is part of an external network. In that case
+***    the whole external network must be disconnected.
+**/
+
+/*{{{  I/O processor connecting in */
+/**
+*** If an I/O Processor connects it, first it must be updated. This takes
+*** care of getting the name right, sorting out capabilities, etc. Then
+*** a window server is located inside the I/O Processor, and a console
+*** window is created. This is registered with the Session Manager
+**/
+static	void	HandleIOConnecting(RmProcessor IO)
+{ Object	*real_processor = Null(Object);
+  Object	*window_server = Null(Object);
+  Object	*console_window = Null(Object);
+  Stream	*window_stream = Null(Stream);
+  word		error;
+
+  Debug(dbg_Problem, ("I/O Processor %P has connected in", IO));
+  
+  UpdateIOProcessor(IO, FALSE);
+  
+  real_processor = NetMapProcessorToObject(IO);
+  if (real_processor eq Null(Object))
+   { report("warning, failed to start session in I/O Processor %P", IO);
+     return;
+   }
+  window_server = Locate(real_processor, "window");
+  if (window_server eq Null(Object))
+   { report("warning, I/O Processor %P is not running a window server", IO);
+     goto done;
+   }
+  console_window = Create(window_server, "Login", Type_Stream, 0, Null(BYTE));
+  if (console_window eq Null(Object))
+   { report("warning, failed to create login window in I/O Processor %P", IO);
+     goto done;
+   }
+  window_stream = Open(console_window, Null(char), O_ReadWrite);
+  if (window_stream eq Null(Stream))
+   { report("warning, failed to open login window in I/O Processor %P", IO);
+     goto done;
+   }
+
+  unless(RmRegisterWindow(window_server, window_stream, Null(char), &error))
+   { report("warning, failed to register login window in I/O Processor %P, fault %x",
+   		IO, error);
+     goto done;
+   }
+  RmSetProcessorState(IO, RmS_Running);
+  IO->ObjNode.Dates.Modified	=
+  IO->ObjNode.Dates.Access	= GetDate();
+    
+done:
+  if (window_stream  ne Null(Stream)) Close(window_stream);
+  if (console_window ne Null(Object)) Close(console_window);
+  if (window_server  ne Null(Object)) Close(window_server);
+  if (real_processor ne Null(Object)) Close(real_processor);
+}
+/*}}}*/
+/*{{{  I/O processor disconnecting */
+/**
+*** If an I/O Processor disconnects from the network, because the I/O Server
+*** exits, the machine is switched off, or something similar, then
+*** it is necessary to do some tidying up. In particular, the
+*** Session Manager must be informed that this processor is no longer
+*** active so that any sessions running inside its /window server are
+*** aborted. Next the link on the neighbouring processor must be put
+*** back into a sensible state.
+**/
+static	void	HandleIODisconnecting(RmProcessor IO)
+{ RmProcessor	neighbour;
+  int		destlink;
+
+  Debug(dbg_Problem, ("I/O Processor %P has disconnected", IO));
+  
+  neighbour = RmFollowLink(IO, 0, &destlink);
+
+  RmSetProcessorState(IO, RmS_Dead);
+  IO->ObjNode.Dates.Modified	=
+  IO->ObjNode.Dates.Access	= GetDate();
+
+  Delay(5 * OneSec);	/* to let the world settle down */
+  if ((neighbour ne RmM_NoProcessor) && (neighbour ne RmM_ExternalProcessor))
+   { SetLinkMode(neighbour, destlink, RmL_NotConnected);
+     SetLinkMode(neighbour, destlink, RmL_Pending);  
+   }   
+  ClearNames(RootProcessor);
+
+  KickSessionManager();
+}
+/*}}}*/
+
+static	void HandleIOChange(RmProcessor IO, int mode, int state)
+{
+#if Joinnet_Supported
+	/* For case 3, a flag will be set in the ObjNode sub-structure */
+  if (IO->ObjNode.Flags & NsFlags_NotInResourceMap)
+   { if ((mode eq Link_Mode_Intelligent) && (state eq Link_State_Running))
+      return;
+     HandleIOExternal(IO);
+     return;
+   }	
+#endif
+
+  if ((mode eq Link_Mode_Intelligent) && (state eq Link_State_Running))
+   HandleIOConnecting(IO);
+  elif ((mode eq Link_Mode_Intelligent) && (state eq Link_State_Dead))
+   return;
+  else
+   HandleIODisconnecting(IO);
+}
+/*}}}*/
+/*{{{  external networks (joinnet etc) */
+#if Joinnet_Supported
+/**
+*** Now for external networks. The most likely time for a lost external
+*** network to be noticed is when the I/O Server is shut down. The
+*** remaining processors are still accessible through the links, but
+*** must not be used any more.
+***
+*** There are four routines to cope with external networks.
+*** 1) HandleAcceptNetwork(). This is an RmLib-style request sent by
+***    another Network Server which has had enough of life and wants to
+***    hand over responsibility for all its processors. Details of the
+***    network are read in, as usual. 
+***
+*** 2) HandleJoinNetwork(). This is the other side of AcceptNetwork. It
+***    is generated by the joinnet command.
+***
+*** 3) HandleIOExternal(). An I/O Processor in an external network has
+***    disappeared, i.e. the I/O Server has stopped running. It is
+***    necessary to get rid of the whole external network.
+***
+*** 4) LostExternalNetwork(). This is when a whole external network has
+***    disappeared, typically because its power has been switched off.
+**/
+
+/*{{{  HandleAcceptNetwork() */
+static	int	HandleAcceptAux(RmProcessor processor, ...);
+static	int	HandleAcceptAux2(RmProcessor processor, ...);
+static	int	HandleAcceptAux3(RmProcessor processor, ...);
+
+void	HandleAcceptNetwork(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ Stream		*pipe = connection->Pipe_ctos;
+  RmNetwork		subnet;
+  RmProcessor		connector;
+  RmProcessor		neighbour;
+  int			link;
+  char			*procname; 
+  int			its_uid;
+  int			destlink;
+  ExternalNetwork	*ext_net;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  Debug(dbg_Problem, ("accepting external network"));
+
+  procname	= (char *) request->VariableData;
+  link		= request->Arg1;
+  its_uid	= request->Arg2;
+  destlink	= request->Arg3;
+  
+  connector = RmLookupProcessor(Net, procname);
+  if (connector eq RmM_NoProcessor)
+   { report("internal error 2 receiving network");
+     goto fail;
+   }
+
+  subnet		= request->Network;
+  request->Network	= NULL;		
+
+	/* prepare to make the link connection.				*/
+  neighbour = RmFindProcessor(subnet, its_uid);
+  if (neighbour eq RmM_NoProcessor)
+   { report("internal error 4 accepting network");
+     RmFreeNetwork(subnet);
+     goto fail;
+   }
+
+	/* incorporate the external subnet into the main network	*/
+  if (RmAddtailProcessor(Net, (RmProcessor) subnet) eq (RmProcessor) NULL)
+   { report("internal error 5 accepting network");
+     RmFreeNetwork(subnet);
+     goto fail;
+   }
+  NumberProcessors = RmCountProcessors(Net);
+  
+	/* Read in ProcessorEntry structures for every processor	*/
+	/* N.B. The hardware facilities will have been thrown away	*/
+	/* N.B. This must be done after the subnet has been added.	*/
+	/* BLV - remember the hardware					*/
+  if (RmApplyProcessors(subnet, &HandleAcceptAux, pipe) ne 0)
+   { report("internal error 6 accepting network");
+     RmRemoveProcessor((RmProcessor) subnet);
+     RmFreeNetwork(subnet);
+     goto fail;
+   }
+
+	/* make the connection between the main and external network	*/   
+  RmBreakLink(connector, link);
+  RmBreakLink(neighbour, destlink);
+  RmMakeLink(connector, link, neighbour, destlink);
+  { RmLink *link_entry = RmFindLink(connector, link);
+    link_entry->Flags |= RmF_Suspicious;
+  }
+  
+	/* fill in an ExternalNetwork structure to allow future recovery */
+  ext_net = New(ExternalNetwork);
+  if (ext_net eq Null(ExternalNetwork)) goto done;
+  ext_net->Connector	= connector;
+  ext_net->Link		= link;
+  ext_net->Reported	= FALSE;
+  RmSetNetworkPrivate(subnet, (int) ext_net);
+ 
+	/* Update the processors.	*/  
+  (void) RmApplyProcessors(subnet, &HandleAcceptAux2);
+  (void) RmApplyProcessors(subnet, &HandleAcceptAux3);
+
+	/* and send back a reply. The remote Network Server will now exit */
+done:
+  reply->FnRc	= RmE_Success;
+  ReplyRmLib(connection, job_id, reply);
+  MRSW_SwitchRead();
+  return;
+
+fail:
+  AbortConnection(connection);
+  MRSW_SwitchRead();
+}
+
+static	int HandleAcceptAux(RmProcessor processor, ...)
+{ va_list		args;
+  Stream		*pipe;
+  ProcessorEntry	*proc_entry;
+  int			size;
+  int			hardware_count;
+      
+  va_start(args, processor);
+  pipe = va_arg(args, Stream *);
+  va_end(args);
+
+  if (FullRead(pipe, (BYTE *) &size, sizeof(int), -1) ne sizeof(int))
+   return(1);
+
+  proc_entry = (ProcessorEntry *) Malloc(size);
+  if (proc_entry eq Null(ProcessorEntry))
+   return(1);
+  if (FullRead(pipe, (BYTE *) proc_entry, size, -1) < size)
+   return(1);
+
+  hardware_count		= proc_entry->NumberDrivers;
+  proc_entry->NumberDrivers	= 0;
+  proc_entry->StandardLinks	= (RmLink *) 
+   ( (BYTE *) proc_entry + sizeof(ProcessorEntry) + (hardware_count * sizeof(DriverEntry)));
+  proc_entry->Netagent		= Null(Stream);
+  proc_entry->NetagentCount	= 0;
+  proc_entry->NetagentDate	= 0;
+  InitSemaphore(&(proc_entry->NetagentLock), 1);
+  proc_entry->Processor		= processor;
+  RmSetProcessorPrivate(processor, (int) proc_entry);
+  return(0);  		
+}   
+
+/**
+*** Update the names for all the processors in the external subnet.
+*** Also update the PUID entry in the object's attributes.
+**/
+static	int	HandleAcceptAux2(RmProcessor processor, ...)
+{ int	purpose;
+  char  full_name[IOCDataMax];
+  
+  purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+  if (purpose eq RmP_IO)
+   UpdateIOProcessor(processor, TRUE);
+  elif (purpose eq RmP_Helios)
+   UpdateProcessor(processor, TRUE);
+
+  { char *tmp = RmGetObjectAttribute((RmObject) processor, "PUID", TRUE);
+    if (tmp ne Null(char))
+     RmRemoveObjectAttribute((RmObject) processor, &(tmp[-5]), TRUE);
+  }
+
+  strcpy(full_name, "PUID=");
+  BuildName(&(full_name[5]), processor);
+  RmAddObjectAttribute((RmObject) processor, full_name, TRUE);
+  
+  return(0);
+}
+
+/**
+*** Clear the names for all the processors in the external subnet
+**/
+static	int	HandleAcceptAux3(RmProcessor processor, ...)
+{ int	purpose;
+
+  purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+  if (purpose eq RmP_Helios)
+   ClearNames(processor);
+  return(0);
+}
+/*}}}*/
+/*{{{  HandleJoinnet() */
+/**
+*** This routine is called when the joinnet program is running. It
+*** performs the following:
+*** 1) get various bits of information about the network it is supposed
+***    to join.
+*** 2) open a connection to the remote network server
+*** 3) send the information needed by HandleAcceptNetwork()
+*** 4) terminate the Network Server
+**/
+
+static	int	HandleJoinnetAux(RmProcessor processor, ...);
+static	int	joinnet_filter(RmProcessor, RmProcessor);
+static	int	joinnet_netfilter(RmNetwork, RmNetwork);
+
+void	HandleJoinNetwork(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ char			*sockserv_name;
+  char			*connector_name;
+  char			*neighbour_name;
+  int			connector_link;
+  int			neighbour_link;
+  int			neighbour_uid;
+  int			rc = Err_Null;
+  RmServer		server;
+  RmJob			job;
+  RmFilterStruct	filter;
+  RmRequest		out_request;
+  RmReply		out_reply;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  sockserv_name		= (char *) request->VariableData;
+  connector_name	= sockserv_name + strlen(sockserv_name) + 1;
+  neighbour_name	= connector_name + strlen(connector_name) + 1;  
+  connector_link	= request->Arg1;
+  neighbour_link	= request->Arg2;
+
+  { RmProcessor	neighbour = RmLookupProcessor(Net, neighbour_name);
+    if (neighbour eq RmM_NoProcessor)
+     { rc = RmE_BadProcessor; goto done; }
+    neighbour_uid = neighbour->Uid;
+  }
+
+  rc = RmOpenServer(sockserv_name, ".NS_ctos", Null(Capability), &server);
+  if (rc ne RmE_Success) goto done;
+
+  rc = RmNewJob(&server, &job);
+  if (rc ne RmE_Success) goto done;
+
+  Clear(out_request); Clear(out_reply);
+  out_request.FnRc		= RmC_AcceptNetwork;
+  out_request.Arg1		= connector_link;
+  out_request.Arg2		= neighbour_uid;
+  out_request.Arg3		= neighbour_link;
+  out_request.VariableSize	= strlen(connector_name) + 1;
+  out_request.VariableData	= connector_name;
+  out_request.Filter		= &filter;
+  filter.Network		= &joinnet_netfilter;
+  filter.Processor		= &joinnet_filter;
+  filter.Task			= NULL;
+  filter.Taskforce		= NULL;
+  filter.SendHardware		= TRUE;
+  out_request.Network		= Net;
+
+  rc = RmTx(job, &out_request);
+  if (rc ne RmE_Success) goto done;
+  
+  rc = RmSearchProcessors(Net, &HandleJoinnetAux, job->Server->Pipe_ctos);
+  if (rc ne RmE_Success) 
+   { RmUnlockWrite(job); goto done; }
+
+  rc = RmRx(job, &out_reply);
+  if (rc ne RmE_Success) goto done;
+
+  reply->FnRc	= rc;
+  ReplyRmLib(connection, job_id, reply);
+
+  if (rc eq RmE_Success)  
+   TerminateNetworkServer();
+  else
+   { MRSW_SwitchRead(); return; }
+  
+done:  
+  AbortConnection(connection);
+  MRSW_SwitchRead();
+  report("internal error in HandleJoinnet");
+}
+
+static	int	HandleJoinnetAux(RmProcessor processor, ...)
+{ va_list		args;
+  Stream		*pipe;
+  ProcessorEntry	*proc_entry;
+  int			size;
+    
+  va_start(args, processor);
+  pipe = va_arg(args, Stream *);
+  va_end(args);
+  
+  proc_entry = GetProcEntry(processor);
+  
+  size = sizeof(ProcessorEntry) + 
+         (proc_entry->NumberDrivers * sizeof(DriverEntry)) +
+         (RmCountLinks(processor) * sizeof(RmLink));
+  if (Write(pipe, (BYTE *) &size, sizeof(int), -1) ne sizeof(int))
+   return(RmE_CommsBreakdown);
+  if (Write(pipe, (BYTE *) proc_entry, size, -1) ne size)
+   return(RmE_CommsBreakdown);
+
+  return(0);
+}
+         
+static	int joinnet_filter(RmProcessor real, RmProcessor copy)
+{ real = real;
+  copy->ObjNode.Flags |= NsFlags_NotInResourceMap;
+  return(RmE_Success);
+}
+
+static	int joinnet_netfilter(RmNetwork real, RmNetwork copy)
+{ real = real;
+  if (real eq Net)
+   strcpy(copy->DirNode.Name, NetworkName);
+  copy->DirNode.Flags |= NsFlags_NotInResourceMap;
+  return(RmE_Success);
+}
+/*}}}*/
+/*{{{  External I/O processor has been lost */
+/**
+*** An I/O Processor inside an external network has been lost.
+*** It is necessary to work out the whole external subnet, and disconnect
+*** it. This is fairly easy, since external subnets are always added at
+*** the top level.
+**/
+
+static	void HandleIOExternal(RmProcessor IO)
+{ RmNetwork	current	= RmParentNetwork(IO);
+  RmNetwork	parent;
+
+  for (parent = RmParentNetwork((RmProcessor) current);
+       parent ne Net;
+       parent = RmParentNetwork((RmProcessor) current))
+   current = parent;
+   
+  CopeWithExternalSubnet(current);
+}
+/*}}}*/
+/*{{{  Processor in an external network has been lost */
+static	void	LostExternalNetwork(RmProcessor reporter, int link)
+{ RmProcessor	neighbour;
+  int		destlink;
+  RmNetwork	current;
+  RmNetwork	parent;
+
+  neighbour = RmFollowLink(reporter, link, &destlink);
+  if (neighbour eq RmM_NoProcessor) return;
+  current = RmParentNetwork(neighbour);
+  
+  for (parent = RmParentNetwork((RmProcessor) current);
+       parent ne Net;
+       parent = RmParentNetwork((RmProcessor) current))
+   current = parent;
+
+  CopeWithExternalSubnet(current);  
+}
+/*}}}*/
+/*{{{  CopeWithExternalSubnet() - this does the necessary cleaning up */
+/**
+*** Cope with an external network that has gone away.
+*** 1) for every processor in the external network, report it to the
+***    Session Manager
+*** 2) find the connecting link and break it.
+*** 3) remove the external network, and free it.
+*** 4) reset the connecting link to pending
+**/
+static	int ExternalCopeAux(RmProcessor, ...);
+
+static	void CopeWithExternalSubnet(RmNetwork subnet)
+{ ExternalNetwork	*ext_net;
+  RmProcessor		connector	= RmM_NoProcessor;
+  ProcessorEntry	*proc_entry;
+  int			conn_link;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  if (subnet->DirNode.Parent ne &(Net->DirNode))
+   { MRSW_SwitchRead(); return; }
+
+  Debug(dbg_Problem, ("external network %N has disconnected", subnet));
+  
+  RmApplyProcessors(subnet, &ExternalCopeAux);
+
+  ext_net = (ExternalNetwork *) RmGetNetworkPrivate(subnet);
+  if (ext_net ne Null(ExternalNetwork))
+  { connector  = ext_net->Connector;
+    conn_link  = ext_net->Link;
+    proc_entry = GetProcEntry(connector);
+    RmBreakLink(connector, conn_link);
+    RmMakeLink(connector, conn_link, RmM_ExternalProcessor,
+      proc_entry->StandardLinks[conn_link].Destination);
+  }
+
+  if (RmRemoveProcessor((RmProcessor) subnet) ne (RmProcessor) subnet)
+   { report("error, failed to remove external subnet");
+     subnet = NULL;
+   }
+
+  NumberProcessors = RmCountProcessors(Net);   
+
+  if (connector ne RmM_NoProcessor)
+   { SetLinkMode(connector, conn_link, RmL_NotConnected);
+     SetLinkMode(connector, conn_link, RmL_Pending);
+   }
+  ClearNames(RootProcessor);
+
+  MRSW_SwitchRead();
+
+  KickSessionManager();
+
+	/* BLV - do not free the subnet for a while just in case other	*/
+	/* threads have got pointers to it.				*/
+  MRSW_FreeRead();
+  Delay(120 * OneSec);
+  MRSW_GetRead();
+  if (subnet ne NULL)
+   RmFreeNetwork(subnet);
+}
+
+static int ExternalCopeAux(RmProcessor processor, ...)
+{ ProcessorEntry	*proc_entry;
+
+	/* Remove the processor from any other lists it might be on	*/
+  RemNetworkAgent(processor);
+  RemConnection(processor, RmR_Crashed);
+
+  proc_entry = GetProcEntry(processor);
+  Free(proc_entry);
+  RmSetProcessorPrivate(processor, 0);
+  return(0);
+}
+/*}}}*/
+#endif
+/*}}}*/
+
+@
+
+
+1.23
+log
+@1) stack sizes now declared in netaux.h
+2) joinnet is now supported only on particular processor types
+3) monitor_interval == -1 now completely disables the fault tolerance
+@
+text
+@d16 1
+a16 1
+/*$Header: /hsrc/network/RCS/netmon.c,v 1.22 1993/01/26 16:41:35 bart Exp $*/
+d747 1
+a747 1
+             Fork(ProblemAux3_stack, Problem_aux3_aux, 4, current);
+@
+
+
+1.22
+log
+@Improved the error message relating to invalid ServerInfo() replies
+when monitoring the network.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.21 1993/01/08 12:32:45 bart Exp $*/
+a42 2
+#define	MonitorStack	1500
+#define ProblemStack	2500
+d46 1
+a46 1
+static	int		Monitor_Delay;
+d52 1
+d56 1
+a72 1
+#if 1
+d74 1
+a74 1
+   if (!Fork(MonitorStack, &Monitor_Thread, 0))
+a75 1
+#endif
+d343 5
+d378 5
+d564 1
+a564 1
+   { if (Fork(ProblemStack, &ProblemHandler, 0))
+d710 1
+d718 1
+d733 1
+d747 1
+a747 1
+             Fork(2000, Problem_aux3_aux, 4, current);
+d754 1
+a754 1
+
+d899 1
+d1045 1
+d1069 1
+d1072 3
+a1074 1
+
+d1104 1
+d1108 1
+d1220 1
+d1228 1
+d1239 1
+d1671 1
+@
+
+
+1.21
+log
+@Under weird circumstances the monitoring code was still attempting to
+reboot an I/O processor
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.20 1992/12/20 16:36:06 bart Exp $*/
+d172 1
+d205 3
+d209 1
+a209 1
+  if (ServerInfo(procman, servinfo_buf) < Err_Null)
+d212 6
+d222 1
+a222 1
+     { report("processor %P has grown some new links", processor);
+@
+
+
+1.20
+log
+@Fixed null pointer access
+@
+text
+@d16 1
+a16 1
+/*$Header: /hsrc/network/RCS/netmon.c,v 1.19 1992/10/26 19:15:00 bart Exp $*/
+d677 1
+d734 7
+d774 1
+@
+
+
+1.19
+log
+@Added support for rebooting an entire network if a single processor has
+failed, useful for systems with a global reset only.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.17 1992/10/23 14:16:38 bart Exp $*/
+d124 2
+a125 1
+  while (processor ne (RmProcessor) NULL)
+d132 1
+d134 1
+@
+
+
+1.18
+log
+@Improved the behaviour when external networks disappear. Also eliminated
+some calls to MRSW_SwitchWrite()
+@
+text
+@d572 1
+d587 2
+d639 35
+@
+
+
+1.17
+log
+@1) when a processor failed the links affected only had their state
+   changed, not their mode. This stopped the pipes from reopening.
+2) improved the debug message for when an application reports an error
+   that is already being handled.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.16 1992/09/30 16:02:45 bart Exp $*/
+d1199 2
+a1200 1
+  MRSW_SwitchWrite();
+d1378 2
+a1379 1
+  MRSW_SwitchWrite();
+a1533 1
+	/* BLV - this code is dubious... */
+d1540 1
+a1540 1
+  
+d1552 3
+a1554 3
+   report("error, failed to remove external subnet");
+  else
+   RmFreeNetwork(subnet);
+d1567 8
+a1590 6
+
+
+
+
+
+
+@
+
+
+1.16
+log
+@Fixed various potential buglets revealed by C40 C compiler
+@
+text
+@d16 1
+a16 1
+/*$Header: /hsrc/network/RCS/netmon.c,v 1.15 1992/07/21 11:01:08 bart Exp $*/
+d333 9
+a341 4
+   if (CheckProcessor(processor))
+    { Debug(dbg_Problem, ("cannot find reported problem on %P", processor));
+      return;
+    }
+d703 1
+a703 1
+     (void) SetLinkMode(neighbour, destlink, RmL_Dead);
+@
+
+
+1.15
+log
+@1) tidied up the diagnostics.
+2) switched from NetLookupProcessor to RmLookupProcessor
+3) preloaded netagent code is now protected so that it cannot be deleted
+   during cleaning.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.14 1992/06/10 14:52:58 bart Exp $*/
+d1520 1
+a1520 1
+  RmProcessor		connector;
+d1552 4
+a1555 2
+  SetLinkMode(connector, conn_link, RmL_NotConnected);
+  SetLinkMode(connector, conn_link, RmL_Pending);
+@
+
+
+1.14
+log
+@Simplified the cleaners. There is no longer a separate thread
+responsible for starting cleaning threads at suitable intervals,
+because there is no longer any need for intervals with the new netagent
+communication code.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.13 1992/06/07 16:29:13 bart Exp $*/
+d67 1
+a67 1
+  Monitor_Delay = get_int_config("monitor_interval", environ);
+d181 1
+a181 1
+  Debug(dbg_Monitor, ("checking processor %s", Procname(processor)));
+d209 1
+a209 1
+     { report("processor %s has grown some new links", Procname(processor));
+d307 1
+a307 1
+   { Debug(dbg_Monitor, ("processor %s failed its regular checkup", Procname(processor)));
+d334 1
+a334 1
+    { Debug(dbg_Problem, ("cannot find reported problem on %s", Procname(processor)));
+d340 1
+a340 1
+  Debug(dbg_Problem, ("problem reported on processor %s", Procname(processor)));
+d360 2
+a361 2
+  Debug(dbg_Problem, ("investigating link problem on processor %s, link %d", \
+		Procname(processor), link));
+d393 2
+a394 2
+  Debug(dbg_Problem, ("processor %s, link %d, goes to %s, link %d, current setting %L",\
+		Procname(processor), link, Procname(neighbour), destlink, mode));
+d505 1
+a505 1
+   { Debug(dbg_Problem, ("a client has reported a problem on %s", Procname(processor)));
+d687 1
+a687 2
+  report("processor %s appears to have crashed, attempting a reboot",
+		Procname(processor));
+d727 1
+a727 1
+   { report("failed to reboot processor %s", Procname(processor));
+d782 2
+a783 2
+	 { Debug(dbg_Problem, ("failed to access processor %s via link %d of %s",\
+		Procname(neighbour), i, Procname(processor)));
+d788 1
+a788 1
+           Debug(dbg_Problem, ("processor %s failed its checkup", Procname(neighbour)));
+d990 1
+a990 1
+  reporter = LookupProcessor(Net, &(name[1]));
+d1061 1
+a1061 1
+  Debug(dbg_Problem, ("I/O Processor %s has connected in", Procname(IO)));
+d1067 1
+a1067 1
+   { report("warning, failed to start session in I/O Processor %s", Procname(IO));
+d1072 1
+a1072 2
+   { report("warning, I/O Processor %s is not running a window server",
+   		Procname(IO));
+d1077 1
+a1077 2
+   { report("warning, failed to create login window in I/O Processor %s",
+   		Procname(IO));
+d1082 1
+a1082 2
+   { report("warning, failed to open login window in I/O Processor %s",
+   		Procname(IO));
+d1087 2
+a1088 2
+   { report("warning, failed to register login window in I/O Processor %s, fault %x",
+   		Procname(IO), error);
+d1116 1
+a1116 1
+  Debug(dbg_Problem, ("I/O Processor %s has disconnected", Procname(IO)));
+d1203 1
+a1203 1
+  connector = LookupProcessor(Net, &(procname[1]));
+d1380 1
+a1380 1
+  { RmProcessor	neighbour = LookupProcessor(Net, &(neighbour_name[1]));
+d1531 1
+a1531 1
+  Debug(dbg_Problem, ("external network %s has disconnected", Netname(subnet)));
+@
+
+
+1.13
+log
+@Fixed various problems with joinnet.
+1) link change messages are no longer forwarded. Under certain
+   conditions the nucleus can return invalid processor names, causing
+   this code to go into a loop. The forwarding is no longer essential
+   given the network monitoring code.
+2) the Network Server could not always cope with external subnets
+   disconnecting - it attempted to reboot the processors rather than
+   discard them.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.12 1992/05/08 16:36:25 bart Exp $*/
+a705 1
+  RemCleaners(processor);
+a1569 1
+  RemCleaners(processor);
+@
+
+
+1.12
+log
+@1) changed the communication between netserv and netagent from pipes to
+   client-server message passing
+2) folded the network server sources
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.11 1992/03/25 18:24:54 bart Exp $*/
+d645 8
+d666 21
+d703 2
+d833 10
+d968 1
+d1257 1
+d1484 1
+a1484 1
+  
+d1529 6
+a1534 1
+  MRSW_SwitchWrite();
+@
+
+
+1.11
+log
+@Various changes including:
+1) first attempt at C40 support
+2) RmLib execute support (not yet fully tested)
+3) faster bootstrap, taskforce load, and better mapping
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.10 1992/01/15 11:04:39 bart Exp $*/
+d18 1
+d41 2
+a42 10
+
+/**
+*** Network monitoring. This module is responsible for implementing the
+*** fault tolerance aspects of the Network Server. It includes a thread
+*** spawned off to monitor the whole network. When this thread detects
+*** a problem of any sort a separate thread is responsible for cleaning
+*** things up. The monitor thread runs without locking the network,
+*** but the cleaning thread does not.
+***/
+
+d51 6
+d73 1
+d77 1
+d79 1
+d81 1
+d83 10
+a107 3
+static void scan_network(RmNetwork network, bool locked);
+static void scan_processor(RmProcessor);
+
+d115 2
+a116 1
+
+d152 2
+a153 1
+
+d314 4
+a317 2
+
+/**-----------------------------------------------------------------------------
+d348 2
+a349 1
+
+d431 2
+a432 1
+
+d495 2
+a496 1
+
+d504 3
+a506 8
+  if (!connection->FullAccess)
+   reply->FnRc	= RmE_NoAccess;
+  else
+   { if (processor ne (RmProcessor) NULL)
+      { Debug(dbg_Problem, ("a client has reported a problem on %s", Procname(processor)));
+        MarkProcessor(processor, FALSE);
+      }
+     reply->FnRc = RmE_Success;
+d508 1
+d511 1
+d513 1
+d531 1
+d549 1
+d551 1
+d773 1
+d775 1
+d794 1
+a794 69
+static	void ForwardLinkChange(char *name, ServInfo *info);
+static	void HandleIOChange(RmProcessor IO, int mode, int state);
+static	void LostExternalNetwork(RmProcessor from, int link);
+
+void	HandleLinkChange(ServInfo *servinfo)
+{ char		*name;
+  RmProcessor	reporter;
+  int		link;
+  int		state;
+  int		mode;
+  MCB		*m = servinfo->m;
+  RmProcessor	neighbour;
+  int		destlink;
+
+  MRSW_GetRead();
+  
+  name = &(m->Data[(m->Control[5])]);  
+
+  link  = m->Control[6];
+  mode  = m->Control[7];
+  state = m->Control[8];
+
+  Debug(dbg_Links, ("link change reported on processor %s, link %d, new mode %d, state %d",\
+	name, link, mode, state));
+
+  reporter = LookupProcessor(Net, &(name[1]));
+  if (reporter eq (RmProcessor) NULL)  
+   { ForwardLinkChange(name, servinfo); goto done; }
+
+	/* Unless there is a real processor at the other end of this	*/
+	/* link, ignore the change message.				*/
+  neighbour = RmFollowLink(reporter, link, &destlink);
+  if ((neighbour eq RmM_NoProcessor) ||
+      (neighbour eq RmM_ExternalProcessor))
+   goto done;
+
+	/* For I/O Processors all changes are important.		*/   
+  if ((RmGetProcessorPurpose(neighbour) & RmP_Mask) eq RmP_IO)
+   { HandleIOChange(neighbour, mode, state);  goto done; }
+
+	/* If the link report says that the link is now running, ignore	*/
+	/* the message. It is the incoming network's responsibility to	*/
+	/* request a service.						*/
+  if ((state eq Link_State_Running) && (mode eq Link_Mode_Intelligent))
+   goto done;
+
+	/* if the link is set back to pending mode, ignore it	*/
+  if ((state eq Link_State_Dead) && (mode eq Link_Mode_Intelligent))
+   goto done;
+      
+	/* Check whether the link is internal or external to the network */
+  { ProcessorEntry 	*proc_entry;
+    RmLink		*default_link;
+    
+    proc_entry = GetProcEntry(reporter);
+    default_link = &(proc_entry->StandardLinks[link]);
+    if (default_link->Target ne RmL_ExtUid) 
+     { MarkLink(reporter, link); goto done; }
+    else
+	/* OK, an external network of some sort has been disconnected.	*/
+     LostExternalNetwork(reporter, link);
+  }
+
+done:
+  Debug(dbg_Links, ("link change on processor %s, link %d, handled",\
+		name, link));
+  MRSW_FreeRead();
+}
+
+d927 1
+d929 68
+d1007 1
+a1007 22
+static	void HandleIOConnecting(RmProcessor IO);
+static	void HandleIODisconnecting(RmProcessor IO);
+static	void HandleIOExternal(RmProcessor IO);
+
+static	void HandleIOChange(RmProcessor IO, int mode, int state)
+{
+	/* For case 3, a flag will be set in the ObjNode sub-structure */
+  if (IO->ObjNode.Flags & NsFlags_NotInResourceMap)
+   { if ((mode eq Link_Mode_Intelligent) && (state eq Link_State_Running))
+      return;
+     HandleIOExternal(IO);
+     return;
+   }	
+
+  if ((mode eq Link_Mode_Intelligent) && (state eq Link_State_Running))
+   HandleIOConnecting(IO);
+  elif ((mode eq Link_Mode_Intelligent) && (state eq Link_State_Dead))
+   return;
+  else
+   HandleIODisconnecting(IO);
+}
+
+d1064 2
+a1065 2
+
+
+d1096 1
+d1098 9
+d1108 9
+d1140 1
+d1257 1
+a1257 1
+  proc_entry->NetagentPipe	= Null(Stream);
+d1303 2
+a1304 1
+
+d1429 2
+a1430 1
+
+a1436 1
+static	void CopeWithExternalSubnet(RmNetwork);
+d1449 2
+a1450 4
+
+/**
+*** This is much the same.
+**/
+d1468 2
+a1469 1
+
+d1531 9
+@
+
+
+1.10
+log
+@Major update of networking sources, to incorporate the fault-tolerance
+work as demonstrated at the IED meeting 10.1.92
+@
+text
+@d16 1
+a16 1
+/*$Header: /usr/perihelion/Helios/network/RCS/netmon.c,v 1.5 90/12/02 13:57:37 bart Exp $*/
+d365 1
+a365 1
+   { SetLinkMode(processor, link, RmL_NotConnected | RmL_Report);
+d372 1
+a372 1
+	 case RmL_Dumb		: SetLinkMode(processor, link, RmL_Pending | RmL_Report);
+d378 2
+a379 7
+  Debug(dbg_Problem, ("processor %s, link %d, goes to %s, link %d, current setting %s",\
+		Procname(processor), link, Procname(neighbour), destlink, \
+		(mode eq RmL_NotConnected) ?	"not connected" : \
+		(mode eq RmL_Dumb) ?		"dumb" : \
+		(mode eq RmL_Intelligent) ?	"intelligent" : \
+		(mode eq RmL_Pending) ? 	"pending" : \
+		(mode eq RmL_Dead) ?		"dead" : "unknown"));
+d385 1
+a385 1
+        SetLinkMode(processor, link, RmL_Pending | RmL_Report);
+d392 1
+a392 1
+      SetLinkMode(processor, link, RmL_NotConnected | RmL_Report);
+d675 1
+a675 1
+static int Problem_aux5(RmProcessor processor)
+@
+
+
+1.9
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d16 1
+a17 2
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/netmon.c,v 1.3 1991/08/20 14:14:39 bart Exp $";
+
+d33 1
+d41 18
+d60 17
+a76 1
+{
+d79 20
+a98 1
+void		StartMonitor(RmProcessor processor)
+d100 4
+d106 34
+a139 2
+void		StopMonitor(RmProcessor processor)
+{
+d142 15
+a156 2
+void		MarkProcessor(RmProcessor Processor)
+{ int	state = RmGetProcessorState(Processor);
+d158 166
+d325 2
+d330 32
+a361 1
+  RmSetProcessorState(Processor, state);
+d363 57
+a419 2
+  Debug(dbg_Problem, ("investigating suspected problem with processor %s",\
+  		Processor->ObjNode.Name));
+d422 5
+a426 1
+bool		CheckProcessor(RmProcessor Processor)
+d428 1
+d430 3
+a432 2
+	/* It is not possible to check native processors */
+  if ((RmGetProcessorPurpose(Processor) & RmP_Mask) eq RmP_Native)
+d435 48
+a482 5
+  proc = NetMapProcessorToObject(Processor);
+  if (proc eq Null(Object))
+   return(FALSE);
+  Close(proc);
+  return(TRUE);
+d486 278
+a770 4
+*** For now this facility is used only in a very basic way, to detect
+*** I/O Processors connecting and disconnecting, and to detect external
+*** networks that have gone away.
+***
+d792 2
+d801 1
+a801 1
+  Debug(dbg_Monitor, ("link change reported on processor %s, link %d, new mode %d, state %d",\
+d806 1
+a806 1
+   { ForwardLinkChange(name, servinfo); return; }
+d813 1
+a813 1
+   return;
+d817 1
+a817 3
+   { HandleIOChange(neighbour, mode, state);   
+     return;
+   }
+a818 11
+	/* For other processors, first check that this corresponds to 	*/
+	/* an external link in the resource map. If not, the change	*/
+	/* is ignored for now.						*/
+  { ProcessorEntry 	*proc_entry;
+    RmLink		*default_link;
+    
+    proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(reporter);
+    default_link = &(proc_entry->StandardLinks[link]);
+    if (default_link->Target ne RmL_ExtUid) return;
+  }
+
+d823 1
+a823 1
+   return;
+d827 1
+a827 1
+   return; 
+d829 9
+d839 7
+a845 1
+  LostExternalNetwork(reporter, link);
+d866 1
+d868 1
+a868 1
+  Debug(dbg_Monitor, ("link change has to be forwarded"));
+d883 1
+a883 1
+    
+d895 3
+a897 1
+     for (i = 0; ; i++)
+a927 6
+        else
+         { int rc = Result2(current);
+           if (i > 3) break;	/* BLV !@@$@@^ the nucleus */
+           if (((rc & SS_Mask) eq SS_IOC) && ((rc & EG_Mask) ne EG_Broken))
+             break;	/* unknown object */
+         }
+d975 1
+a975 1
+  Debug(dbg_Monitor, ("sending link change on to %s", ns->Name));
+a993 1
+static	void ReportProcessorToSessionManager(RmProcessor);
+d1026 1
+a1026 1
+  Debug(dbg_Monitor, ("I/O Processor %s has connected in", IO->ObjNode.Name));
+d1032 1
+a1032 1
+   { report("warning, failed to start session in I/O Processor %s", IO->ObjNode.Name);
+d1038 1
+a1038 1
+   		IO->ObjNode.Name);
+d1044 1
+a1044 1
+   		IO->ObjNode.Name);
+d1050 1
+a1050 1
+   		IO->ObjNode.Name);
+d1056 1
+a1056 1
+   		IO->ObjNode.Name, error);
+d1084 1
+a1084 1
+  Debug(dbg_Monitor, ("I/O Processor %s has disconnected", IO->ObjNode.Name));
+a1086 1
+  ReportProcessorToSessionManager(IO);
+d1098 2
+a1101 23
+/**
+*** Reporting a processor to the Session Manager. The Session Manager maintains
+*** a /Windows subdirectory containing the names of all the login windows,
+*** e.g. Net.IO.window.User1 When a processor disappears from the network
+*** the Session Manager must be informed about this so that it can
+*** check for any of these windows, and abort the appropriate login
+*** programs. A side effect of this is that the Taskforce Manager
+*** will be aborted and the whole session will disappear.
+*** In other words, the behaviour is exactly what we want without
+*** the Network Server having to know too much about what every session
+*** is up to.
+***
+*** There is a slight problem here. The Network Server does not have
+*** a capability for the Session Manager because it is started first.
+*** Hence the obvious way of Delete(, /sm/Windows/xxx) will fail.
+*** However, the Session Manager does have a capability for the
+*** Network Server. A private protocol is used to get things going.
+**/
+static	void	ReportProcessorToSessionManager(RmProcessor IO)
+{ MsgBuf	*m = New(MsgBuf);
+  Object	*SessionManager = Locate(Null(Object), "/sm/Windows");
+  Capability	Cap;
+  char		*procname = Malloc(IOCDataMax);
+a1102 28
+  Debug(dbg_Monitor, ("reporting processor %s to the Session Manager", IO->ObjNode.Name));
+  
+  if ((m eq Null(MsgBuf)) ||
+      (SessionManager eq Null(Object)) ||
+      (procname eq Null(char)))
+   goto done;
+
+  m->mcb.Data		= m->data;
+  m->mcb.Control	= m->control;
+
+	/* fake IOCCommon, as per the Processor Manager's LinkFault	*/
+	/* reporting code.						*/
+  InitMCB(&m->mcb, MsgHdr_Flags_preserve, NullPort, NullPort,
+  	FC_GSP | SS_NetServ | FG_NetStatus);
+  MarshalCommon(&m->mcb, SessionManager, Null(char));
+  NewCap(&Cap, (ObjNode *) &(Net->DirNode),
+  		AccMask_R + AccMask_W + AccMask_D + AccMask_A);
+  MarshalCap(&m->mcb, &Cap);
+  BuildName(procname, IO);
+  MarshalString(&m->mcb, procname);
+  SendIOC(&m->mcb);
+      
+done:
+  if (SessionManager ne Null(Object)) Close(SessionManager);
+  if (m ne Null(MsgBuf)) Free(m); 
+  if (procname ne Null(char)) Free(procname);
+}
+
+d1130 1
+a1130 2
+/* BLV - this code does NOT cope with errors !!! */
+void	HandleAcceptNetwork(NsConn Connection, int JobId, 
+d1132 1
+a1132 1
+{ Stream		*pipe = Connection->Pipe;
+d1142 1
+a1142 1
+  Debug(dbg_Monitor, ("accepting external network"));
+d1144 2
+d1154 1
+a1154 2
+     Close(pipe); Connection->Pipe = Null(Stream);
+     return;
+a1163 1
+     Close(pipe); Connection->Pipe = Null(Stream);
+d1165 1
+a1165 1
+     return;
+a1170 1
+     Close(pipe); Connection->Pipe = Null(Stream);
+d1172 1
+a1172 1
+     return;
+d1180 6
+a1185 1
+  (void) RmApplyProcessors(subnet, &HandleAcceptAux, pipe);
+d1209 7
+a1215 1
+  ReplyRmLib(Connection, JobId, reply);
+d1218 1
+a1218 1
+static	int HandleAcceptAux(RmProcessor Processor, ...)
+d1225 1
+a1225 1
+  va_start(args, Processor);
+d1229 2
+a1230 2
+  if (FullRead(pipe, (BYTE *) &size, sizeof(int), -1) < sizeof(int))
+   { Close(pipe); return(0); }
+d1234 1
+a1234 1
+   { Close(pipe); return(0); }
+d1236 1
+a1236 1
+   { Close(pipe); return(0); }
+d1246 2
+a1247 2
+  proc_entry->Processor	= Processor;
+  RmSetProcessorPrivate(Processor, (int) proc_entry);
+d1255 1
+a1255 1
+static	int	HandleAcceptAux2(RmProcessor Processor, ...)
+d1259 1
+a1259 1
+  purpose = RmGetProcessorPurpose(Processor) & RmP_Mask;
+d1261 1
+a1261 1
+   UpdateIOProcessor(Processor, TRUE);
+d1263 1
+a1263 1
+   UpdateProcessor(Processor, TRUE);
+d1265 1
+a1265 1
+  { char *tmp = RmGetObjectAttribute((RmObject) Processor, "PUID", TRUE);
+d1267 1
+a1267 1
+     RmRemoveObjectAttribute((RmObject) Processor, &(tmp[-5]), TRUE);
+d1271 2
+a1272 2
+  BuildName(&(full_name[5]), Processor);
+  RmAddObjectAttribute((RmObject) Processor, full_name, TRUE);
+d1280 1
+a1280 1
+static	int	HandleAcceptAux3(RmProcessor Processor, ...)
+d1283 1
+a1283 1
+  purpose = RmGetProcessorPurpose(Processor) & RmP_Mask;
+d1285 1
+a1285 1
+   ClearNames(Processor);
+d1299 1
+a1299 1
+static	int	HandleJoinnetAux(RmProcessor Processor, ...);
+d1303 1
+a1303 1
+void	HandleJoinNetwork(NsConn Connection, int JobId, 
+d1305 1
+a1305 1
+{ char			*netserv_name;
+d1312 3
+a1314 3
+  RmServer		Server;
+  RmJob			Job;
+  RmFilterStruct	Filter;
+d1318 4
+a1321 2
+  netserv_name		= (char *) request->VariableData;
+  connector_name	= netserv_name + strlen(netserv_name) + 1;
+d1332 1
+a1332 1
+  rc = RmOpenServer(Null(Object), netserv_name, &Server);
+d1335 1
+a1335 1
+  rc = RmNewJob(&Server, &Job);
+d1345 6
+a1350 6
+  out_request.Filter		= &Filter;
+  Filter.Network		= &joinnet_netfilter;
+  Filter.Processor		= &joinnet_filter;
+  Filter.Task			= NULL;
+  Filter.Taskforce		= NULL;
+  Filter.SendHardware		= TRUE;
+d1353 1
+a1353 1
+  rc = RmTx(Job, &out_request);
+d1356 1
+a1356 1
+  rc = RmSearchProcessors(Net, &HandleJoinnetAux, Job->Server->Pipe);
+d1358 1
+a1358 1
+   { RmUnlockWrite(Job); goto done; }
+d1360 1
+a1360 1
+  rc = RmRx(Job, &out_reply);
+d1364 1
+a1364 1
+  ReplyRmLib(Connection, JobId, reply);
+d1369 1
+a1369 1
+   return;
+d1372 2
+d1377 1
+a1377 1
+static	int	HandleJoinnetAux(RmProcessor Processor, ...)
+d1383 1
+a1383 1
+  va_start(args, Processor);
+d1387 1
+a1387 1
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+d1391 1
+a1391 1
+         (RmCountLinks(Processor) * sizeof(RmLink));
+d1467 1
+a1467 1
+  RmProcessor		Connector;
+d1471 3
+a1473 1
+  Debug(dbg_Monitor, ("external network %s has disconnected", subnet->DirNode.Name));
+d1479 1
+a1479 1
+  { Connector  = ext_net->Connector;
+d1481 3
+a1483 3
+    proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Connector);
+    RmBreakLink(Connector, conn_link);
+    RmMakeLink(Connector, conn_link, RmM_ExternalProcessor,
+d1494 2
+a1495 2
+  SetLinkMode(Connector, conn_link, RmL_NotConnected);
+  SetLinkMode(Connector, conn_link, RmL_Pending);
+d1497 4
+d1503 1
+a1503 1
+static int ExternalCopeAux(RmProcessor Processor, ...)
+d1506 6
+a1511 2
+  ReportProcessorToSessionManager(Processor);
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+d1513 1
+a1513 1
+  RmSetProcessorPrivate(Processor, 0);
+@
+
+
+1.8
+log
+@When accepting a network the wrong PUID attribute was removed from
+the sub-network. Hence the processors in the sub-network became
+almost unusable.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/netmon.c,v 1.7 1991/05/18 12:06:30 bart Exp $";
+d67 7
+a73 1
+{ Object	*proc = NetMapProcessorToObject(Processor);
+d135 1
+a135 1
+  if (RmGetProcessorPurpose(neighbour) eq RmP_IO)
+d419 1
+d447 1
+a447 1
+
+d501 3
+a503 1
+void	HandleAcceptNetwork(NsConn Connection, int JobId, int request)
+a508 2
+  int			rc;
+  int			size;
+d515 5
+a519 13
+  
+	/* Get various bits of information from the other Network Server */
+  (void) Read(pipe, (BYTE *) &size, sizeof(int), -1);
+  if ((procname = (char *) Malloc(size)) eq Null(char))
+   { report("internal error 1 receiving network");
+     Close(pipe); Connection->Pipe = Null(Stream);
+     return; 
+   }
+  
+  (void) Read(pipe, procname, size, -1);
+  (void) Read(pipe, (BYTE *) &link, sizeof(int), -1);
+  (void) Read(pipe, (BYTE *) &its_uid, sizeof(int), -1);
+  (void) Read(pipe, (BYTE *) &destlink, sizeof(int), -1);
+a521 1
+  Free(procname);
+a526 7
+		
+ 	/* Get the whole external network */
+  if (RmReadStream(pipe, &subnet, Null(RmTaskforce)) ne RmE_Success)
+   { report("internal error 3 receiving network");
+     Close(pipe); Connection->Pipe = Null(Stream);
+     return;
+   }
+d528 3
+d532 1
+a532 1
+  neighbour = (RmProcessor) RmFindUid((RmSet) subnet, its_uid);
+d541 1
+a541 1
+  if (RmAddTailProcessor(Net, (RmProcessor) subnet) eq (RmProcessor) NULL)
+d553 1
+a553 1
+  (void) RmApplyNetwork(subnet, &HandleAcceptAux, pipe);
+d571 2
+a572 2
+  (void) RmApplyNetwork(subnet, &HandleAcceptAux2);
+  (void) RmApplyNetwork(subnet, &HandleAcceptAux3);
+d576 2
+a577 6
+  Wait(&(Connection->WriteLock));
+  (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+  rc = RmE_Success;
+  (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+  Signal(&(Connection->WriteLock));
+  request = request;
+d590 4
+a593 5
+  
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &HandleAcceptAux, pipe));
+   
+  (void) Read(pipe, (BYTE *) &size, sizeof(int), -1);
+d597 3
+a599 2
+   
+  Read(pipe, (BYTE *) proc_entry, size, -1);
+d621 1
+a621 4
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &HandleAcceptAux2));
+
+  purpose = RmGetProcessorPurpose(Processor);
+d624 1
+a624 1
+  elif ((purpose eq RmP_Helios) || (purpose eq RmP_System))
+d635 1
+a635 1
+
+d645 2
+a646 5
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &HandleAcceptAux3));
+
+  purpose = RmGetProcessorPurpose(Processor);
+  if ((purpose eq RmP_Helios) || (purpose eq RmP_System))
+d665 5
+a669 6
+void	HandleJoinNetwork(NsConn Connection, int JobId, int request)
+{ Stream		*joinnet_pipe = Connection->Pipe;
+  char			*netserv_name = Null(char);
+  int			netserv_size;
+  char			*connector_name	= Null(char);
+  int			connector_size;
+a670 2
+  char			*neighbour_name;
+  int			neighbour_size;
+a675 1
+  Stream		*netserv_pipe;
+d677 2
+d680 6
+a685 19
+  (void) Read(joinnet_pipe, (BYTE *) &netserv_size, sizeof(int), -1);
+  netserv_name = Malloc(netserv_size);
+  if (netserv_name eq Null(char))
+   { rc = RmE_NoMemory; goto done; }
+  (void) Read(joinnet_pipe, netserv_name, netserv_size, -1);
+  
+  (void) Read(joinnet_pipe, (BYTE *) &connector_size, sizeof(int), -1);
+  connector_name = Malloc(connector_size);
+  if(connector_name eq Null(char))
+   { rc = RmE_NoMemory; goto done; }
+  (void) Read(joinnet_pipe, connector_name, connector_size, -1);
+  (void) Read(joinnet_pipe, (BYTE *) &connector_link, sizeof(int), -1);
+  
+  (void) Read(joinnet_pipe, (BYTE *) &neighbour_size, sizeof(int), -1);
+  neighbour_name = Malloc(neighbour_size);
+  if (neighbour_name eq Null(char))
+   { rc = RmE_NoMemory; goto done; }
+  (void) Read(joinnet_pipe, neighbour_name, neighbour_size, -1);
+  (void) Read(joinnet_pipe, (BYTE *) &neighbour_link, sizeof(int), -1);
+d694 1
+a694 1
+  
+d698 14
+a711 1
+  netserv_pipe = RmLockWrite(Job);
+d713 1
+a713 14
+  rc = RmC_AcceptNetwork;
+  (void) Write(netserv_pipe, (BYTE *) &rc, sizeof(int), -1);
+  (void) Write(netserv_pipe, (BYTE *) &connector_size, sizeof(int), -1);
+  (void) Write(netserv_pipe, connector_name, connector_size, -1);
+  (void) Write(netserv_pipe, (BYTE *) &connector_link, sizeof(int), -1);
+  (void) Write(netserv_pipe, (BYTE *) &neighbour_uid, sizeof(int), -1);
+  (void) Write(netserv_pipe, (BYTE *) &neighbour_link, sizeof(int), -1);
+  
+  Filter.Network	= &joinnet_netfilter;
+  Filter.Processor	= &joinnet_filter;
+  Filter.Task		= NULL;
+  Filter.Taskforce	= NULL;
+  Filter.SendHardware	= TRUE;
+  rc = RmWriteStream(netserv_pipe, Net, (RmTaskforce) NULL, &Filter);
+d716 3
+a718 1
+  (void) RmApplyNetwork(Net, &HandleJoinnetAux, netserv_pipe);
+d720 2
+a721 2
+  netserv_pipe = RmSwitchLockRead(Job);
+  (void) Read(netserv_pipe, (BYTE *) &rc, sizeof(int), -1);
+d723 2
+a724 4
+  Wait(&(Connection->WriteLock));
+  (void) Write(joinnet_pipe, (BYTE *) &JobId, sizeof(int), -1);
+  (void) Write(joinnet_pipe, (BYTE *) &rc, sizeof(int), -1);
+  Signal(&(Connection->WriteLock));
+d732 1
+a732 5
+  if (netserv_name ne Null(char)) Free(netserv_name);
+  if (connector_name ne Null(char)) Free(connector_name);
+  if (neighbour_name ne Null(char)) Free(neighbour_name);
+  Close(joinnet_pipe);
+  request = request; 
+a744 3
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &HandleJoinnetAux, pipe));
+   
+d750 4
+a754 2
+  (void) Write(pipe, (BYTE *) &size, sizeof(int), -1);
+  (void) Write(pipe, (BYTE *) proc_entry, size, -1);
+d831 1
+a831 1
+  RmApplyNetwork(subnet, &ExternalCopeAux);
+d849 1
+d852 1
+a857 3
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &ExternalCopeAux));
+
+a863 1
+
+@
+
+
+1.7
+log
+@When a processor is accepted as a result of joinnet, its PUID
+attribute is updated.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/netmon.c,v 1.6 91/02/27 16:35:56 bart Exp $";
+d642 1
+a642 1
+     RmRemoveObjectAttribute((RmObject) Processor, tmp, TRUE);
+@
+
+
+1.6
+log
+@When a network connected via joinnet went away the connecting link was
+not reset correctly.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /giga/Helios/network/RCS/netmon.c,v 1.5 90/12/02 13:57:37 bart Exp Locker: bart $";
+d67 5
+a71 1
+{
+d128 1
+a128 2
+	/* For I/O Processors other than the system console, all changes */
+	/* are important.						 */   
+d130 1
+a130 2
+   { if (neighbour eq BootIOProcessor) return;
+     HandleIOChange(neighbour, mode, state);   
+d439 2
+d624 2
+a625 1
+*** Update the names for all the processors in the external subnet
+d629 2
+a630 1
+
+d639 10
+d901 1
+@
+
+
+1.5
+log
+@added some diagnostics routines
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/netmon.c,v 1.1 90/09/12 14:38:11 jon Exp $";
+d869 1
+@
+
+
+1.4
+log
+@the code coping with external networks and I/O processors now appears to
+work to within the limits of the nucleus.
+@
+text
+@d110 2
+a111 4
+#if 0
+   report("link change reported on processor %s, link %d, new mode %d, state %d",
+	name, link, mode, state);
+#endif
+d176 2
+d263 1
+a263 1
+  
+d286 3
+d338 3
+a340 1
+      
+d397 2
+d503 2
+d849 2
+@
+
+
+1.3
+log
+@This module now contains untested code to support additional I/O processors
+and external networks joining in to the network backbone.
+Plus, of course, both types disconnecting at any time.
+@
+text
+@d110 5
+a118 3
+IOdebug("Link change reported on processor %s, link %d, new mode %d, state %d",
+	reporter->ObjNode.Name, link, mode, state);
+
+d142 1
+a142 1
+    if (default_link->Destination ne RmL_ExtUid) return;
+d177 1
+a177 1
+  
+d197 1
+a197 1
+     
+d204 2
+a205 1
+      { linkbuf[5] = '\0';
+d210 1
+a210 1
+        
+d212 1
+d236 3
+a238 1
+           if ((rc && SS_Mask) eq SS_IOC) break;	/* unknown object */
+d262 2
+a263 1
+
+d266 3
+a285 1
+  
+d312 1
+d391 2
+a392 1
+  
+a393 3
+  neighbour = RmFollowLink(IO, 0, &destlink);
+  if ((neighbour eq RmM_NoProcessor) || (neighbour eq RmM_ExternalProcessor))
+   return;
+d398 6
+a403 2
+   
+  SetLinkMode(neighbour, destlink, RmL_Pending);
+d429 1
+a429 1
+    
+d481 1
+d540 2
+a541 1
+
+d555 1
+a561 3
+IOdebug("calling PrintNetwork");
+PrintNetwork(Net);
+IOdebug("back from PrintNetwork");
+d563 4
+a568 1
+IOdebug("replying to network server");
+a574 3
+IOdebug("replied to network server");
+  
+  (void) RmApplyNetwork(subnet, &HandleAcceptAux2);
+d597 3
+a599 3
+  hardware_count = proc_entry->NumberDrivers;
+  proc_entry->NumberDrivers = 0;
+  proc_entry->StandardLinks = (RmLink *) 
+d601 3
+d628 15
+a672 2
+IOdebug("handle join");
+        
+a697 4
+IOdebug("target network Server %s, connector %s link %d, neighbour %s link %d",
+	netserv_name, connector_name, connector_link, neighbour_name, neighbour_link);
+
+Signal(&SingleStep);	/* to allow debugging */	
+a723 1
+IOdebug("handle_join: waiting for reply");  
+a724 1
+IOdebug("handle_join: getting rc");
+a725 1
+IOdebug("handle_join, rc is %x", rc);
+a730 3
+IOdebug("sent reply back to joinnet");
+
+Wait(&SingleStep);
+d811 1
+a811 1
+  
+d820 1
+a820 1
+   
+d839 1
+a839 1
+  
+d856 2
+d862 3
+a864 1
+{ if (RmIsNetwork(Processor))
+d868 3
+@
+
+
+1.2
+log
+@sources update after visit to Parsytec 22.10.90-31.10.90
+@
+text
+@d33 1
+d39 1
+d70 770
+d841 7
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header$";
+d61 1
+a61 1
+  		RmGetProcessorID(Processor)));
+@

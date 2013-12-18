@@ -1,0 +1,854 @@
+head	1.8;
+access;
+symbols
+	Helios_1_3_1:1.7
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.7
+	Helios1_3:1.4
+	C40_Field_Test_2:1.4
+	Helios13_beta:1.4
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.8
+date	94.03.17.13.56.20;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.11.25.13.17.12;	author nick;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.11.24.16.44.56;	author nick;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.11.24.12.06.19;	author nick;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.06.13.15.20.32;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.03.06.17.59.21;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.02.26.19.18.59;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.02.12.17.54.00;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@fixed compile time warnings
+@
+text
+@/* $Id: netdev.c,v 1.7 1992/11/25 13:17:12 nick Exp nickc $ */
+/*
+ * PC-ETHER
+ *
+ * This is an ethernet device which simply sends all requests to a remote
+ * /ether server. Such a server is currently implemented by the PC IO server
+ * for Western Digital and DLink cards.
+ *
+ * All ethernet devices should comform to the external interface spec of this
+ * example.
+ *
+ */
+ 
+#include <device.h>
+#include <syslib.h>
+#include <nonansi.h>
+#include <queue.h>
+#include <sem.h>
+#include <codes.h>
+#ifdef __C40
+#include <c40.h>
+#endif
+
+/* #define DEBUG */
+
+/*
+ * Extend the DCB structure to contain device specific data. Since
+ * devices cannot have static data this is the ONLY place that persistent
+ * data may be stored.
+ */
+typedef struct
+  {
+    DCB		dcb;		/* Common part of DCB structure	*/
+    Semaphore	lock;		/* Concurrent access lock	*/
+    Stream *	read;		/* Input stream			*/
+    Stream *	write;		/* Output stream		*/
+    List	readq;		/* List of pending read requests*/
+    Semaphore	nreq;		/* Size of readq		*/
+  }
+NetDCB;
+
+/*
+ * DevOperate is called by the server each time a device operation is
+ * requested.
+ */
+
+static void
+DevOperate(
+	   NetDCB *	dcb,
+	   NetDevReq *	req )
+{
+  NetInfoReq *	ireq = (NetInfoReq *)req;
+  NetInfo *  info = &ireq->NetInfo;
+
+  
+  switch (req->DevReq.Request)
+    {
+    case FG_Read:
+      /* Queue read requests for Reader process. The server	*/
+      /* currently sends us several of these when it starts.	*/
+      /* Note that we must lock the DCB against concurrent 	*/
+      /* access.					 	*/
+      
+      Wait( &dcb->lock );
+      
+      AddTail( &dcb->readq, &req->DevReq.Node );
+      
+      Signal( &dcb->nreq );
+      Signal( &dcb->lock );
+      return;
+      
+    case FG_Write:
+#ifdef DEBUG
+	{
+	  int 		i;
+	  char *	buf = (char *)req->Buf;
+	  
+	  IOdebug( "TX %d buf = %x [%", req->Size, buf );
+	  for (i = 0;i < 24; i++)
+	    IOdebug( "%x %", buf[ i ] );
+	  IOdebug( "]" );
+	}
+#endif
+      /* Write data to /ether server inline			*/
+      
+      req->Actual = Write( dcb->write, (char *) req->Buf, req->Size, -1 );
+      
+      req->DevReq.Result = Result2( dcb->write );
+      break;
+      
+    case FG_SetInfo:
+#ifdef DEBUG
+      IOdebug( "Net SetInfo %x %x %x [%", info->Mask, info->Mode, info->State );
+      
+	{
+	  int i;
+	  
+	  for (i = 0; i < 5; i++ )
+	    IOdebug( "%d.%", info->Addr[ i ] );
+	  
+	  IOdebug( "%d]", info->Addr[ 5 ] );
+	}
+#endif
+      /* Set options/address in ethernet device		*/
+      /* The tcpip server will attempt to set the ethernet	*/
+      /* address on startup.					*/
+      /* SetInfo does nothing in this driver.			*/
+      /* req->DevReq.Result = SetInfo(dcb->write,info,sizeof(NetInfo)); */
+      
+      req->DevReq.Result = 0;
+      
+      break;
+      
+    case FG_GetInfo:
+      /* Get options/address from /ether device. Only the	*/
+      /* ethernet address is used by tcpip server.		*/
+      
+      info->Mask = 7;
+      
+      req->DevReq.Result = GetInfo( dcb->read, (byte *)info );
+      
+#ifdef DEBUG
+	{
+	  int i;
+	  
+	  IOdebug( "Addr [%" );
+	  for (i = 0; i < 6; i++ )
+	    IOdebug( "%d %", info->Addr[ i ] );
+	  IOdebug( "]" );
+	}
+#endif
+      break;
+    }
+  
+#if 0
+  /* Unlock the DCB before returning request to server		*/
+  Signal( &dcb->lock );
+#endif
+  
+  /* return request to server by calling the Action routine in	*/
+  /* the request. Note that the tcpip server will re-call 	*/
+  /* DevOperate before returning from this routine when the	*/
+  /* request was a Read.					*/
+  
+  (*req->DevReq.Action)( dcb, req );
+
+  return;
+  
+} /* DevOperate */
+
+
+/*
+ * The Reader process simply waits for a request to arrive and then
+ * reads a message from the /ether server.
+ * It calls the Action routine, so the stack size here must be adequate
+ * for the tcpip server to do its packet arrival processing.
+ */
+static void
+Reader( NetDCB * dcb )
+{
+  word 		got;
+  NetDevReq *	req;
+
+  
+  for (;;)
+    {		
+      /* wait for a request from server 			*/
+      
+      Wait( &dcb->nreq );
+      
+      /* remove it from list. Note that we must lock the DCB	*/
+      /* before doing this.					*/
+      
+      Wait( &dcb->lock );
+      
+      req = (NetDevReq *)RemHead( &dcb->readq );
+      
+      Signal( &dcb->lock );
+      
+      if (req == NULL)
+	continue;
+      
+      /* Read until we get some data, we hope that it	will	*/
+      /* be a complete ether packet.				*/
+    again:		
+      got = Read( dcb->read, (char *) req->Buf, req->Size, -1 );
+      
+      if (got <= 0)
+	{
+#ifdef DEBUG
+	  IOdebug( "Reader: Read failed, return code = %d, Result2 = %x", got, Result2( dcb->read ) );
+#endif	  
+	  goto again;
+	}
+
+#ifdef DEBUG
+	{
+	  int 		i;
+	  char *	buf = (char *)req->Buf;
+	  
+	  IOdebug( "RX %d [%", got );
+	  for (i = 0;i < 24; i++)
+	    IOdebug( "%x %", buf[ i ] );
+	  IOdebug( "]" );
+	}
+#endif
+      req->Actual        = got;
+      req->DevReq.Result = 0;
+      
+      /* Return request to server.				*/
+      
+      (*req->DevReq.Action)( dcb, req );	
+    }
+
+  return;
+  
+} /* Reader */
+
+
+/*
+ * DevClose - this is never called by the current tcpip server
+ */
+static word
+DevClose( NetDCB * dcb )
+{
+  Wait( &dcb->lock );
+  
+  Close( dcb->read  );
+  Close( dcb->write );
+  
+  Free( dcb );
+
+#ifdef DEBUG
+  IOdebug( "Ether: closed down ethernet device" );
+#endif
+  
+  return 0;
+}
+
+
+/*
+ * DevOpen - this is called to initialize the device. It must allocate
+ * the DCB, inititiaize it and initialize the hardware.
+ * The info parameter points to a structure which has been initialized from
+ * a devinfo file netdevice entry.
+   */
+NetDCB *
+DevOpen(
+	MPtr		dev,
+	NetDevInfo *	info
+)
+{
+  NetDCB *		dcb;
+  Object *		o;
+
+  /* Allocate the DCB						*/
+
+  dcb = (NetDCB *) Malloc( sizeof (NetDCB) );
+  
+  if (dcb == NULL)
+    {
+#ifdef DEBUG
+      IOdebug( "Ether: Failed to allocate memory for DCB structure" );
+#endif      
+      return NULL;
+    }
+  
+  /* Look for /ether device					*/
+
+#ifdef __C40
+  {
+  	/* C40 devices cannot access string constants. The following	*/
+  	/* is a work-around to get access to the string.		*/
+  	char name[12];
+
+  	SetString_(name,0,'/','e','t','h');
+  	SetString_(name,1,'e','r','\0','\0');
+	o = Locate( NULL, name );  	
+  }
+#else
+  o = Locate( NULL, "/ether" );
+#endif
+
+  if (o != NULL)
+    {
+      /* We open two streams to the /ether device so that we	*/
+      /* can both read and write simultaneously.		*/
+      
+      dcb->read  = Open( o, NULL, O_ReadOnly  );
+      dcb->write = Open( o, NULL, O_WriteOnly );
+      
+      Close( o );
+    }
+#ifdef DEBUG
+  else
+    {
+      IOdebug( "Ether: failed to locate /ether service" );      
+    }
+#endif  
+  
+  if (o          == NULL ||
+      dcb->read  == NULL ||
+      dcb->write == NULL )
+    {
+      Close( dcb->read );
+      Close( dcb->write );
+      
+      Free( dcb );
+
+#ifdef DEBUG
+      IOdebug( "Ether: Failed to connect to /ether service" );
+#endif
+      return NULL;
+    }
+  
+  /* Initialize the common DCB fields				*/
+  
+  dcb->dcb.Device  = dev;
+  dcb->dcb.Operate = DevOperate;
+  dcb->dcb.Close   = DevClose;
+  
+  /* Initialize our private fields				*/
+  
+  InitSemaphore( &dcb->lock, 1 );
+  
+  InitList( &dcb->readq );
+  
+  InitSemaphore( &dcb->nreq, 0 );		
+  
+  /* Start the Reader process.					*/
+  
+  if (Fork( 2000, Reader, 4, dcb ) == 0)
+    {
+      IOdebug( "Ether: failed to Fork Reader process" );      
+    }  
+
+#ifdef DEBUG
+  IOdebug( "Ether: successfully contact /ether service" );
+#endif
+  
+  return dcb;
+  
+  info=info; /* not used, this stops compiler moaning */
+  
+} /* DevOpen */
+
+@
+
+
+1.7
+log
+@SetString_() macro moved to device.h
+@
+text
+@d1 1
+a1 1
+/* $Id: netdev.c,v 1.6 1992/11/24 16:44:56 nick Exp nick $ */
+d86 1
+a86 1
+      req->Actual = Write( dcb->write, req->Buf, req->Size, -1 );
+d161 1
+a161 1
+  int 		got;
+d186 1
+a186 1
+      got = Read( dcb->read, req->Buf, req->Size, -1 );
+d258 1
+a258 1
+  dcb = Malloc( sizeof (NetDCB) );
+@
+
+
+1.6
+log
+@In C40, if this device is loaded in global RAM it cannot access its
+strings, in particular: "/ether". Fixed to initialize the string
+using code rather than compiler.
+@
+text
+@d1 1
+a1 1
+/* $Id: netdev.c,v 1.5 1992/11/24 12:06:19 nick Exp nick $ */
+a21 1
+#define SetString_(buf,ix,a,b,c,d) ((int *)buf)[ix] = a | b<<8 | c<<16 | d<<24
+@
+
+
+1.5
+log
+@Device argument to DevOpen converted to a MPtr.
+@
+text
+@d1 1
+a1 1
+/* $Id: netdev.c,v 1.4 1992/06/13 15:20:32 nickc Exp nick $ */
+d20 4
+d247 1
+a247 1
+ */
+a256 1
+
+d270 12
+a281 1
+  
+d283 2
+a284 1
+  
+@
+
+
+1.4
+log
+@added some improved debugging messages
+@
+text
+@d1 1
+a1 1
+/* $Id: netdev.c,v 1.3 1991/03/06 17:59:21 nick Exp nickc $ */
+d246 3
+a248 2
+	Device *	dev,
+	NetDevInfo *	info )
+@
+
+
+1.3
+log
+@tidied and further comments added
+@
+text
+@d1 1
+a1 1
+/* $Id$ */
+d21 2
+d29 9
+a37 8
+{
+	DCB		dcb;		/* Common part of DCB structure	*/
+	Semaphore	lock;		/* Concurrent access lock	*/
+	Stream		*read;		/* Input stream			*/
+	Stream		*write;		/* Output stream		*/
+	List		readq;		/* List of pending read requests*/
+	Semaphore	nreq;		/* Size of readq		*/
+} NetDCB;
+d43 5
+a47 1
+static void DevOperate(NetDCB *dcb, NetDevReq *req)
+d49 43
+a91 4
+	NetInfoReq *ireq = (NetInfoReq *)req;
+	NetInfo *info = &ireq->NetInfo;
+	
+	switch(req->DevReq.Request)
+d93 7
+a99 58
+	case FG_Read:
+		/* Queue read requests for Reader process. The server	*/
+		/* currently sends us several of these when it starts.	*/
+		/* Note that we must lock the DCB against concurrent 	*/
+		/* access.					 	*/
+	
+		Wait(&dcb->lock);
+		AddTail(&dcb->readq,&req->DevReq.Node);
+		Signal(&dcb->nreq);
+		Signal(&dcb->lock);
+		return;
+		
+	case FG_Write:
+#ifdef DEBUG
+		{
+			int i;
+			char *buf = (char *)req->Buf;
+			IOdebug("TX %d [%",req->Size);
+			for(i=0;i<24;i++)IOdebug("%x %",buf[i]);
+			IOdebug("]");
+		}
+#endif
+		/* Write data to /ether server inline			*/
+		req->Actual = Write(dcb->write,req->Buf,req->Size,-1);
+		req->DevReq.Result = Result2(dcb->write);
+		break;
+		
+	case FG_SetInfo:
+#ifdef DEBUG
+		IOdebug("Net SetInfo %x %x %x [%",info->Mask,info->Mode,info->State);
+		{
+			int i;
+			for(i = 0; i < 5; i++ ) IOdebug("%d.%",info->Addr[i]);
+			IOdebug("%d]",info->Addr[5]);
+		}
+#endif
+		/* Set options/address in ethernet device		*/
+		/* The tcpip server will attempt to set the ethernet	*/
+		/* address on startup.					*/
+		/* SetInfo does nothing in this driver.			*/
+		/* req->DevReq.Result = SetInfo(dcb->write,info,sizeof(NetInfo)); */
+		
+		req->DevReq.Result = 0;
+
+		break;
+
+	case FG_GetInfo:
+		/* Get options/address from /ether device. Only the	*/
+		/* ethernet address is used by tcpip server.		*/
+		info->Mask = 7;
+		req->DevReq.Result = GetInfo(dcb->read,(byte *)info);
+#ifdef DEBUG
+		{
+			int i;
+			IOdebug("Addr [%");
+			for(i = 0; i < 6; i++ ) IOdebug("%d %",info->Addr[i]);
+			IOdebug("]");
+		}
+d101 26
+a126 1
+		break;
+d128 4
+a131 1
+	
+d133 15
+a147 10
+	/* Unlock the DCB before returning request to server		*/
+	Signal(&dcb->lock);
+#endif	
+	/* return request to server by calling the Action routine in	*/
+	/* the request. Note that the tcpip server will re-call 	*/
+	/* DevOperate before returning from this routine when the	*/
+	/* request was a Read.						*/
+	
+	(*req->DevReq.Action)(dcb,req);
+}
+d155 2
+a156 1
+static void Reader(NetDCB *dcb)
+d158 34
+a191 2
+	int got;
+	NetDevReq *req;
+d193 9
+a201 31
+	for(;;)
+	{		
+		/* wait for a request from server 			*/
+		Wait(&dcb->nreq);
+		
+		/* remove it from list. Note that we must lock the DCB	*/
+		/* before doing this.					*/
+		Wait(&dcb->lock);
+		req = (NetDevReq *)RemHead(&dcb->readq);
+		Signal(&dcb->lock);
+		if( req == NULL ) continue;
+
+		/* Read until we get some data, we hope that it	will	*/
+		/* be a complete ether packet.				*/
+	again:		
+		got = Read(dcb->read,req->Buf,req->Size,-1);
+		if( got <= 0 ) goto again;
+#ifdef DEBUG
+		{
+			int i;
+			char *buf = (char *)req->Buf;
+			IOdebug("RX %d [%",got);
+			for(i=0;i<24;i++)IOdebug("%x %",buf[i]);
+			IOdebug("]");
+		}
+#endif
+		req->Actual = got;
+		req->DevReq.Result = 0;
+		
+		/* Return request to server.				*/
+		(*req->DevReq.Action)(dcb,req);	
+d203 13
+a215 1
+}
+d220 2
+a221 1
+static word DevClose(NetDCB *dcb)
+d223 12
+a234 8
+	Wait(&dcb->lock);
+	
+	Close(dcb->read);
+	Close(dcb->write);
+	
+	Free(dcb);
+	
+	return 0;
+d237 1
+d244 4
+a247 1
+NetDCB *DevOpen(Device *dev, NetDevInfo *info)
+d249 45
+a293 2
+	NetDCB *dcb;
+	Object *o;
+d295 26
+a320 24
+	/* Allocate the DCB						*/
+	dcb = Malloc(sizeof(NetDCB));
+	
+   	if( dcb == NULL ) return NULL;
+
+	/* Look for /ether device					*/
+	o = Locate(NULL,"/ether");
+	
+	if( o != NULL )
+	{
+		/* We open two streams to the /ether device so that we	*/
+		/* can both read and write simultaneously.		*/
+		dcb->read = Open(o,NULL,O_ReadOnly);
+		dcb->write = Open(o,NULL,O_WriteOnly);
+		Close(o);
+	}
+	
+	if( o == NULL || dcb->read == NULL || dcb->write == NULL )
+	{
+		Close(dcb->read);
+		Close(dcb->write);
+		Free(dcb);
+		return NULL;
+	}
+d322 9
+a330 17
+	/* Initialize the common DCB fields				*/
+	dcb->dcb.Device = dev;
+	dcb->dcb.Operate = DevOperate;
+	dcb->dcb.Close = DevClose;
+	
+	/* Initialize our private fields				*/
+	InitSemaphore(&dcb->lock,1);
+	InitList(&dcb->readq);	
+	InitSemaphore(&dcb->nreq,0);		
+
+	/* Start the Reader process.					*/
+	Fork(2000,Reader,4,dcb);
+
+	return dcb;
+	
+	info=info; /* not used, this stops compiler moaning */
+}
+@
+
+
+1.2
+log
+@Significantly tidied
+@
+text
+@d1 13
+a13 1
+
+d21 5
+d28 6
+a33 6
+	DCB		dcb;
+	Semaphore	lock;
+	Stream		*read;
+	Stream		*write;
+	List		readq;
+	Semaphore	nreq;
+d36 4
+a44 2
+	Wait(&dcb->lock);
+
+d50 4
+d86 1
+a86 1
+		/* SetInfo does nothing in this driver 			*/
+d109 2
+d112 5
+a117 1
+	/* return request to server					*/
+d121 6
+d137 2
+a138 1
+		/* remove it from list					*/
+d144 2
+a145 2
+		/* Read until we get some data, we hope that		*/
+		/* will be a complete ether packet.			*/
+a156 1
+
+d166 3
+d181 7
+a187 1
+NetDCB *DevOpen(Device *dev, void *info)
+d192 1
+d197 1
+a197 1
+	/* Look for /ether device				*/
+d202 2
+d217 1
+d222 1
+d227 1
+d232 1
+a232 1
+	info=info; /* not used */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a1 2
+#define TEST 0
+
+d19 1
+a19 1
+void DevOperate(NetDCB *dcb, NetDevReq *req)
+a20 1
+	word error = Err_Null;
+d29 2
+a30 2
+/*		IOdebug("Net Read %x %d",req->Buf,req->Size); */
+#if TEST==0
+a32 1
+#endif
+d37 1
+a37 1
+#if 0
+d46 1
+a46 1
+#if TEST==0
+a47 1
+#endif
+d52 1
+a52 1
+#if 0
+d56 2
+a57 2
+			for(i = 0; i < 6; i++ ) IOdebug("%d %",info->Addr[i]);
+			IOdebug("]");
+d60 8
+a67 3
+#if TEST==0
+		req->DevReq.Result = 0; /* SetInfo(dcb->write,info,sizeof(NetInfo)); */
+#endif
+d71 2
+a72 1
+/*		IOdebug("Net GetInfo %x %x %x",req,ireq,info); */
+d74 2
+a75 4
+#if TEST==0
+		req->DevReq.Result = GetInfo(dcb->read,info);
+#endif
+#if 0
+d88 1
+d92 1
+a92 1
+void Reader(NetDCB *dcb)
+d99 1
+d102 1
+a105 1
+	again:
+d107 4
+d113 1
+a113 1
+#if 0
+d126 1
+d131 1
+a131 1
+void DevClose(NetDCB *dcb)
+d139 2
+a145 1
+	Stream *s;
+d152 1
+a152 1
+#if TEST==0	
+a153 2
+	dcb->read = Open(o,NULL,O_ReadOnly);
+	dcb->write = Open(o,NULL,O_WriteOnly);
+d155 1
+a155 2
+	Close(o);
+	if( dcb->read == NULL || dcb->write == NULL )
+d157 7
+d169 1
+a169 1
+#endif	
+a177 1
+#if TEST==0
+d179 1
+a179 1
+#endif	
+d181 2
+@

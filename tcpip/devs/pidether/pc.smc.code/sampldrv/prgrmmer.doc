@@ -1,0 +1,292 @@
+
+                         WESTERN DIGITAL
+
+                   SAMPLE SOFTWARE DRIVER FOR
+             ETHERNET AND STARLAN LAN ADAPTER BOARDS
+
+                            PRGRMMER.DOC
+                            Version 7.00
+                             May 9, 1991
+
+OVERVIEW
+
+This document provides an overview for programming Western 
+Digital Ethernet LAN adapters.  
+
+Included with the Sample Driver are the following documents:
+
+USER.DOC
+PRGRMMER.DOC
+690NOTES.DOC
+
+It is recommended that you read the documents in the sequence 
+listed above.
+
+Acronyms used throughout this document are:
+	 AM - Accept Multicast 
+	ISR - Interrupt Service Routine
+	MAC - Media Access Control
+	MAR - Multicast Address Register
+	MCA - Micro Channel Adapter
+	MEN - Memory Enable
+	MSR - Memory Select Register
+	NIC - Network Interface Controller
+	POS - Program Option Select
+	RCR - Receive Configuration Register
+	RST - Hard Reset
+
+References are made to National Semiconductor DP8390C
+specifications.
+
+For specific information on using the WD83C690 Network 
+Interface Controller (NIC), refer to the Differences Between 
+DP8390C and WD83C690 at the end of this document.
+
+
+I/O DEFINITIONS
+
+Western Digital Ethernet adapters use 32 I/O registers.
+The first 8 registers are used for configuration.  The
+second 8 registers are referred to as the LAN Address ROM.
+They contain the adapters network address, an information
+byte about the adapter and a check sum byte for these 08 hex
+registers.  The last 16 bytes are mapped to the Network
+Interface Controller (NIC). (Refer to DP8390C specifications).
+
+
+CONFIGURATION REGISTERS
+
+The definitions of the Configuration Registers vary from 
+adapter to adapter.  Common to all adapters, however, is
+the definition of I/O offset 00 hex.  This register controls
+the shared RAM on the adapter and makes it possible for the 
+software to give the NIC a hard reset.
+
+The bit definitions for the Memory Select Register (MSR) are:
+
+     7     6     5     4     3     2     1     0
+    RST   MEN   A18   A17   A16   A15   A14   A13
+
+RST resets the NIC and must be toggled.  MEN enables
+the memory at the address defined by A18-A13. Note that most
+Western Digital adapters assume A19 to be high or active, 
+which means that the RAM is confined to the address space from
+0x80000 to 0xFE000, except for the Micro Channel boards. The
+range of RAM addresses is C0000h to DFFFFh.  The 8013EP/A
+and 8013WP/A boards also have an additional bit defined to map
+the shared RAM from FC0000h to FDFFFFh.  (Refer to the WD83C594
+data sheet for further details.)  Bits 5 through 0 are not used
+on the Micro Channel boards.  The RAM address is programmed in 
+POS for these boards.
+
+The rest of the registers vary from adapter to adapter:
+
+     8003E, 8003EBT, 8003S, 8003SH, 8003WT
+     I/O offset 0x01 through 0x07 are not used.  When
+     read, they alias the 0x08 bytes of LAN Address ROM.
+     When written, they alias to the MSR (offset 0x00).
+
+     8003ET/A, 8003E/A, 8003ST/A, 8003W/A, 8013EP/A, 8013WP/A
+     Refer to MICRO_CH.H found in the INCLUDE directory 
+     of the Sample Driver diskette.
+
+     8013EBT
+     Refer to DEFS8013.H found in the INCLUDE directory 
+     of the Sample Driver diskette.
+
+     8003EB, 8003EP, 8003W
+     Refer to DEFS583.H found in the INCLUDE directory 
+     of the Sample Driver diskette.
+
+     8013EP, 8013W, 8013EW
+     Refer to DEFS583.H and DEFS8013.H found in the 
+     INCLUDE directory of the Sample Driver diskette.
+
+
+LAN ADDRESS ROM REGISTERS
+
+I/O offsets 0x08 through 0x0D contain the unique six (6) 
+byte Ethernet network address for this adapter.  I/O
+offset 0x0E contains the ID byte for this adapter.  To
+utilize the ID byte feature, it is recommended that the
+programmer integrate GETCNFG code into the software driver.
+This code is supplied in the SAMPLDRV directory on the
+Sample Driver diskette.  Use CGETCNFG.ASM for C language
+versions.  Finally, I/O offset 0x0F contains a check sum
+byte for the LAN Address ROM.  The least significant byte
+of the sum of all eight (8) LAN Address ROM bytes must
+equal 0xFF.
+
+NETWORK INTERFACE CONTROLLER (NIC) REGISTERS
+
+For information on the NIC Registers, refer to the include
+file DEFS8390.H found in the INCLUDE directory of the Sample
+Driver diskette.  The National Semiconductor DP8390C
+specification is a recommended reference.
+
+     
+BASIC OPERATIONS OF A LAN ADAPTER DRIVER
+
+In general, a LAN adapter driver consists of three main parts,
+with a fourth included in some applications.  
+
+First, is the initialization code.  This should prepare the 
+adapter for transmit and receive on the network and make all 
+appropriate operating system calls to register the driver and 
+adapter components.  For instance, in OS/2 the Shared RAM 
+segment address must be registered with the operating system 
+before any read/write operations are allowed.
+
+Second, a transmit routine  responsible for putting a Media 
+Access Control (MAC) frame on the network media must be provided. 
+
+Third, an interrupt service routine must be provided.  During
+the receive part of the Interrupt Service Routine (ISR), the 
+driver requests memory from upper layer resources into which 
+the received packet is copied.  Optionally, the driver may 
+provide a means to dynamically change the state of the 
+Driver/Adapter combination.  For instance, the upper layer 
+software may need to enable a certain Multicast Address after 
+initialization is complete.
+
+The ISR may be found in the NSTK_CHK.C file in the DIAG 
+directory of the Sample Driver diskette.  The routine is 
+called "LAN_SERVICE_RTN".  It is called from the assembly 
+module REAL_INT.ASM found in the ASMTOOLS directory of the 
+Sample Driver diskette.
+
+Other commonly used routines are contained in the files
+SR_TOOLS.C and DM_TOOLS.C in the DIAG directory of the 
+Sample Driver diskette.
+
+The Transmit routine "TRANSMIT_PACKET" is found in SR_TOOLS.C, 
+and takes a pointer to the Media Access Control (MAC) frame 
+and the frames length.
+
+The important Initialization routines include "SETUP_INT_VECTOR",
+"GET_LAN_ADDR", "SETUP_8013", "ENABLE_BOARD_INT", "INIT_NIC",
+"INITIALIZE_POINTERS" and "BOARD_INT_ON".
+
+The routines "DISABLE_MULTICAST" and "ENABLE_MULTICAST", use a
+predefined multicast address.  For general multicast usage, 
+set the Accept Multicast (AM) bit in the Receive Configuration 
+Register (RCR) and set the appropriate hash bit in the Multicast 
+Address Registers (MAR) (or set them all for a quick and convenient 
+solution).  Finally, because the hash does not uniquely identify 
+all multicast addresses, make sure that a received multicast 
+packet is correct.
+
+
+The following summarizes the programming differences between
+the adapters within the 8003 family.
+
+     8003E, 8003EBT, 8003S, 8003SH, 8003WT (8-bit)
+     These are the originals within the family.  When writing 
+     the driver, take note of the register aliasing mentioned 
+     in the Configuration Registers section.  Programming the 
+     MSR is the only useful I/O other than the NIC registers.  
+     RAM is 8 bits wide.
+
+     8003ET/A, 8003E/A, 8003ST/A, 8003W/A (16-bit MCA)
+     These are the Micro Channel Adapters (MCA).  The config-
+     uration information may be read from the Program Option 
+     Select (POS) registers.  The RAM is 16 bits wide and 
+     accesses must be 16 bits wide on even byte boundaries only.
+     There is an interrupt line enable bit (EIL in MICRO_CH.H) 
+     which must be set.  The POS registers, not the MSR, set the 
+     Shared RAM base address.  The cascaded interrupt controller 
+     chip must be considered for interrupts higher than seven.
+
+     8013EP/A, 8013WP/A (16-bit MCA)
+     These are the second generation Micro Channel adapters.  The
+     POS register bit definitions are different than the first
+     generation Micro Channel adapters.  The range of I/O base
+     addresses is from 0x0800 to 0xF800.  Refer to the WD83C594
+     Data Sheet for more details.
+ 
+     8013EBT (8/16-bit)
+     This adapter powers up in 8003E emulation mode and has
+     16-bit capability for RAM accesses from both the host and 
+     the NIC side.  The adapter RAM may also be configured on 
+     any 8K boundary within the first 16 Mbyte of address space.  
+     Refer to DEFS8013.H.
+
+     8003EB, 8003EP, 8003W (8-bit)
+     These adapters are software configurable so that the driver
+     may automatically configure itself.  The programming
+     interface is basically the same as the 8003E.  Refer to
+     DEFS583.H and the WD83C584 Data Sheet for more details.
+
+     8013EP, 8013W, 8013EW (8/16-bit)
+     These adapters are similar to the 8013EBT, with the added
+     feature of being software configurable.  Refer to both
+     DEFS8013.H and DEFS583.H and the WD83C584 Data Sheet for
+     more details.
+
+
+Board Identification routines have been provided to help facilitate
+the support of multiple adapters in a given driver.  Refer to the
+USER.DOC file included on the Sample Driver diskette.  The files
+needed may be found in the SAMPLDRV directory on the Sample Driver
+diskette.
+
+
+DIFFERENCES BETWEEN DP8390C AND WD83C690
+
+The following summarizes the programming differences between
+adapters built using the DP8390C and the WD83C690 NIC.  For
+a more detailed description, see 690NOTES.DOC, included with
+the Western Digital Sample Driver.
+
+     1)   Multicast Address Registers
+          The DP8390C provides a hashing algorithm to discard
+          some of the received multicast packets from the
+          network.  The WD83C690, however, receives either all
+          or no multicast packets.  This binary function is 
+          controlled by the AM bit of the RCR.
+
+     2)   Receive Overflow Code
+          The DP8390C specification describes the preferred
+          method for overflow which includes stopping the chip,
+          enabling loopback mode, restarting the chip, clearing
+          at least one packet from the ring and disabling
+          loopback mode.  The WD83C690, does not require this
+          overhead.  Further, restarting the WD83C690 may
+          produce unpredictable results.  For best results the
+          driver should service received packets as usual.
+
+     3)   The WD83C690 has the potential for posting a receive
+          overflow interrupt with an empty receive ring.  The
+          driver should check this condition and write the
+          BNRY register with its current contents to proceed.
+
+     4)   The WD83C690 could enter a locked state under heavy
+          network traffic.  If the driver senses that the
+          transmitter is hung, a software controlled hard reset
+          must be performed (RST bit of the MSR).
+
+     5)   Drivers running on a WD83C690 should verify received
+          packets via the NIC header before passing the packet
+          to the next layer of software.  If an invalid header
+          is detected, the packet may be thrown away or the
+          receive ring may be reinitialized, depending on the
+          severity of the error.
+
+     6)   If Internal Loopback is to be performed, the programmer
+          should realize that the WD83C690 is a full duplex part
+          and the DP8390C is half duplex.  To run internal
+          loopback on the WD part, the receive ring must be
+          initialized as for normal operation.  Transmitted
+          packets are received into the ring and the data may be 
+          verified.
+
+
+Licensed by Western Digital for use by its customers only.  Western
+Digital Corporation makes no warranty of any kind with regards to the 
+sample driver code contained on this disk.
+
+Western Digital is a registered trademark of Western Digital Corporation.
+Other marks mentioned herein belong to their respective companies.
+
+	  Copyright (C) 1991 Western Digital Corporation.
+	              All Rights Reserved.

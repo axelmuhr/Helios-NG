@@ -1,0 +1,232 @@
+------------------------------------------------------------------------------
+--                                                                          --
+--                         H E L I O S                                      --
+--                         -----------                                      --
+--                                                                          --
+--             Copyright (C) 1987, Perihelion Software Ltd.                 --
+--                        All Rights Reserved.                              --
+--                                                                          --
+--                                                                          --
+--                                                                          --
+------------------------------------------------------------------------------
+------------------------------------------------------------------------------
+-- SUBSYSTEM NAME: OCCAM LIBRARY                                            --
+--                                                                          --
+-- MODULE NAME: o_inter                                                     --
+--                                                                          --
+-- FILENAME: o_inter.a                                                      --
+--                                                                          --
+-- AUTHOR: C.H.R.G                                                          --
+--                                                                          --
+-- DATE: 3:9:88                                                             --
+--                                                                          --
+------------------------------------------------------------------------------
+--
+-- FUNCTION :
+--		General interface proceedures for occam. These provide the 
+--	facilty to call occam proceedures direct from 'C', and create
+--	new occam threads within 'C' Tasks.
+--
+
+include basic.m
+include module.m
+include procs.m
+include structs.m
+include debug.m
+
+_def	bytesperword   4
+
+
+-- StartModule o_inter -1 1
+ 
+------------------------------------------------------------------------------
+-- O_Run (	byte *entrypoint, 
+-- =====	byte *wspace, 
+--		word wspace_size, 
+--		byte *vspace,
+--		word param_size, 
+--		...  )
+--
+--	Create a new process in the workspace provided. The wspace ptr 
+--	provided points to the bottom of the workspace. If a seperate
+--	VectorSpace is provided (vspace != Null(byte)) then the new
+--	process receives the relevant vector space pointer. 
+--
+--	The stack frame is terminated by a vector containing all the 
+--	parameters to be passed to the new process. param_size defines	 
+--	the size of the parameter vector (in bytes). 			 
+--									  
+--	N.B it is important to note that the amount of workspace allocated
+--	to the process includes the parameter vector requirement.
+--		work space required:					  
+--	  > if seperate vector space required  				  
+--			(ws.requirement + size.of.parameters + 2)	  
+--	  > if no seperate vector space required			  
+--			(ws.requirement + size.of.parameters + 1)	  
+--									  
+------------------------------------------------------------------------------
+ 
+proc O_Run
+[
+	word	entrypoint	-- proceedure entry point
+	word	wspace		-- ptr to bottom of Wspace
+	word	wspace_size	-- size of wspace in words
+	word	vspace		-- ptr to bottom of Vspace
+	word	param_size	-- size of parameter vector (in bytes)
+
+	word	param		-- parameters
+]
+[
+	word	ws_offset	-- offset into wspace
+]
+-- Entry point
+[
+-- derive ptr to end of Wspace
+	wspace_size
+	wspace
+	wsub
+	store ws_offset
+
+-- check for vector space requirement
+	vspace
+	eqc	0
+	cj	..2
+	j	..3
+
+..2:	ws_offset
+	ldc	bytesperword
+	diff
+	store ws_offset
+
+	vspace
+	ws_offset
+	stnl	0	-- store vspace at end of new wspace	
+
+	vspace
+	ws_offset
+
+-- copy parameters into new stackframe
+..3:
+	ptr	param
+	ws_offset
+	param_size
+	diff
+	param_size
+	move
+
+-- manufacture return address in target stackframe
+
+	ws_offset
+	param_size
+	diff
+	ldc	bytesperword
+	diff
+	store	ws_offset
+
+	ldc	.process_exit-2
+	ldpi
+	ws_offset
+	stnl	0	-- store address of process_exit in target wspace
+
+-- store entry point in target stack frame
+
+	entrypoint
+	ws_offset
+	stnl -1		-- target process entry point
+
+-- manufacture process descriptor
+
+	ws_offset	-- target wspace
+	ldpri		-- priority
+	or
+
+-- RUN IT --- GO GO GO !! faster than a flatulent ferrit
+
+	runp
+
+-- now return with a smile on your face
+
+	return
+
+
+
+-- Trap returning proceedures
+
+.process_exit:
+
+	stopp		-- simply Grind to a Halt
+]
+
+
+
+
+
+--------------------------------------------------------------------------
+-- O_Call( VoidFnPtr proc, ..parameters, vspace)		        --
+--                                                                      -- 
+--   Call the occam proceedure proc having built the relevant           --
+--   stack frame. If a seperate Vector stack is required then a ptr to  --
+--   the stack must be provided as the last parameter.			--
+--------------------------------------------------------------------------
+
+proc O_Call
+[
+	word	proc
+]
+[]
+[
+-- we are enterred as if called 
+	
+	ldl  0		-- pick up final return address
+	ldc  ..save_area-2
+	ldpi
+	stnl 0		-- save the final return address
+
+
+	proc		-- load proc entry point
+
+	ldc  ..return-2	
+	ldpi		-- return address
+	stl  2		-- patch into stack frame
+
+	ajw  2		-- get rid of link & ModTab
+--Regs
+--N.B must be sure that occam assumes it is called and doesn,t do stl 0
+	gcall
+
+
+..return:
+--Regs
+	ajw  -2
+
+	ldc  ..save_area-2
+	ldpi
+	ldnl 0		-- pick up the final return address
+
+	gcall
+
+-- just in case
+	
+	stopp	
+]
+
+-- space for saved return address
+..save_area:
+	word 0
+
+
+
+-- End of Code
+
+-- include debugging functions
+
+--include debug.a
+
+static [
+	extern func O_Run
+	extern func O_Call
+]
+
+-- EndModule[]
+
+-- The End

@@ -1,0 +1,438 @@
+-- File:	hw_glapa.a
+-- Subsystem:	ARM Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	Nov '92
+--
+-- Description: Gnome link adapter specific low level link I/O functions.
+--
+--		These functions implement the lowest level link I/O routines.
+--		Both the blocking and non-blocking variants.
+--
+--		This implementation assumes up to four link adapters may be
+--		present in the system. The link numbers corresponding to the
+--		slot number the link adapater podules are inserted in.
+--		Currently only the gnome link adapter is supported.
+--
+-- RcsId: $Id: hw_glapa.a,v 1.1 1993/08/24 08:45:33 paul Exp $
+--
+-- (C) Copyright 1992 Perihelion Software Ltd.
+-- 
+-- RcsLog: $Log: hw_glapa.a,v $
+-- Revision 1.1  1993/08/24  08:45:33  paul
+-- Initial revision
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include link.m
+include root.m
+include module.m
+include cpustate.m
+
+include ARM/hw_arch.m
+include hw_glap.m
+
+
+_if _not _defp '__ARCHIMEDES [
+	error "This source file should only be used for ARCHIMEDES systems"
+]
+
+
+_if _false [	-- Now implemented in C in hw_glapc.c
+
+-- void InitLink(word channel)
+--
+-- Sets up input and output interrupt handlers for given link channel. If a
+-- podule for this link number is not present, then the function simply
+-- returns.
+--
+-- channel == channel number == podule number.
+--
+-- Called from C so must be PCS conformant.
+
+	Function InitLink
+
+
+-- void ResetLinkHardware(void);
+--
+-- This is called if another processor requests this one to terminate.
+-- It is only useful on multiprocessor systems.
+--
+-- Reset all on-chip links, AbortLinkTx/Rx has already been called to
+-- cancel any outstanding transfers.
+--
+-- Called by C so must conform to PCS.
+-- Assumes user mode.
+--
+
+	Function ResetLinkHardware
+
+	movs	pc, lr
+
+
+
+-- void _LinkTx(word size, Channel link, void *buf);
+--
+-- Simple blocking link reception function. This is used to send a bogus Info
+-- message when debugging early versions of the kernel and can be used for
+-- initial system debugging in concert with KDebug() and -D KERNELDEBUG2.
+--
+-- size: number of bytes to send
+-- link: ptr the link hardware
+-- buf: ptr to buffer holding data
+--
+-- Called from C so must be PCS conformant
+
+	Function _LinkTx
+
+	movs	pc, lr
+
+
+-- void _LinkRx(word size, Channel link, void *buf);
+--
+-- Simple blocking link reception function. This is used to get config vector
+-- in kernel startup.
+--
+-- size: number of bytes to read
+-- link: ptr the link hardware
+-- buf: ptr to buffer to hold the data
+--
+-- Called from C so must be PCS conformant
+
+	Function _LinkRx
+
+	movs	pc, lr
+
+
+_if _false [ -- FOLLOWING TWO FUNCTIONS NOT USED FOR ARM VERSION
+
+-- void __LinkTx(LinkInfo *link, word linkId, word size, void *buf)
+--
+-- Sets up and starts a non-blocking transfer to a communications link
+--
+-- First try to throw some bytes down the link by polling, if this will
+-- take too long, then setup and interrupt driven transfer and suspend
+-- until it completes.
+--
+-- @@@ This could be optimised by allowing a number of polls before deciding
+-- to setup the interrupt transfer.
+--
+-- Called from C so must be PCS conformant
+
+	Function __LinkTx
+
+	movs	pc, lr
+
+
+-- void __LinkRx(LinkInfo *link, word linkId, word size, void *buf)
+--
+-- Sets up and starts a non-blocking transfer from a communications link
+--
+-- First try to grab some bytes from the link by polling, if this will
+-- take too long, then setup and interrupt driven transfer and suspend
+-- until it completes.
+--
+-- @@@ This could be optimised by allowing a number of polls before deciding
+-- to setup the interrupt transfer.
+--
+-- Called from C so must be PCS conformant
+
+	Function __LinkRx
+
+	movs	pc, lr
+
+]
+
+-- void _AbortLinkTx(LinkInfo *link)
+--
+-- Abort the current Tx on the communication link.
+--
+-- Called from C so must be PCS complient
+
+	Function _AbortLinkTx
+
+	movs	pc, lr
+
+
+-- void _AbortLinkRx(Linkinfo *link)
+--
+-- Abort the current Rx on the communication link.
+--
+-- Called from C so must be PCS complient
+
+	Function _AbortLinkRx
+
+	movs	pc, lr
+
+]
+
+
+-- LinkIntrHandler
+--
+-- Link Comms Interrupt handler.
+--
+-- This is branched to directly from the main system interrupt handler
+-- routine. The slot number in a1 has been verified as containing a Gnome
+-- link adapter with its IRQ asserted.
+--
+-- See example C code in hw_glapc.c.
+--
+-- On Entry:
+--	a1 =		Address of card ID at Sync speed (ID_XCB address)
+--	a2 = 		Card slot of interrupting Gnome link adapter.
+--	tmp =		IOC_base
+--	r14_irq =	current threads return address and PSR (DO NOT CORRUPT)
+--	r13_irq =	current threads SaveState.CPUcontext (DO NOT CORRUPT)
+--			Registers {r0-r12} have already been saved to the
+--			SaveState.CPUcontext.
+
+	Function LinkIntrHandler
+
+	import	ExternContinueThread,
+		ExternCheckIRQDispatch
+
+	-- Fixed register usage:
+	--	a1 = 		ExecRoot *
+	--	a2 = 		card slot #
+	--	a3 = 		glap.regs *
+	--	a4 = 		DispatchFlag - any non zero value is taken as
+	--			TRUE, this signifies that we should call
+	--			ExternCheckIRQDispatch, not ExternContinueThread
+	--			as we have re-scheduled threads.
+	--	v1 =		0
+	--	v2 = 		THREAD_RUNNABLE
+	--	v3-5, tmp	Used as scratch registers.
+
+
+	_test _false [
+		-- Only need to save these if they are not saved by
+		-- main system interrupt handler.
+		stmfd	usp!, {v1-v5}
+	]
+
+	GetExecRoot a1			-- a1 = execroot address
+	LD_GLAP_LinkAdapter a2 a3	-- a3 = link adapter reg address.
+
+	mov	v1, 0			-- v1 = 0
+	mov	a4, v1			-- a4 = 0 DispatchCheckFlag
+	mov	v2, THREAD_RUNNABLE	-- used by both routines.
+
+
+	-- If this slot has a valid READ interrupt asserted.
+	-- if (linka->input_status == (GLAP_ReadIntrEnable|GLAP_InputputReady))
+	ldrb	tmp, (a3, glap_regs.input_status)
+	cmp	tmp, GLAP_ReadIntrEnable | GLAP_InputReady
+	bne	CheckTxInterrupt
+
+	-- v4 = LinkReq *	linkreq = &xroot->LinkInStat[slot]
+	add	tmp, a1, ExecRoot.LinkInStat0
+	add	v4, tmp, a2 LSL 3		-- lsl 3 = slot * LinkReq.sizeof
+
+	-- Load LinkReq Count and Buf into regs.
+	ldmia	v4, {v3, v5}
+
+	-- Receive as many bytes as possible.
+	-- do {
+ReadByte:
+	-- *buff++ = linka->read_data;
+	ldrb	tmp, (a3, glap_regs.read_data)
+	strb	tmp, (v5), 1
+
+	-- size--;
+	subs	v3, 1
+
+	-- } while (size && linka->input_status & GLAP_InputReady);
+	beq	NoMoreToRead
+	ldrb	tmp, (a3, glap_regs.input_status)
+	tst	tmp, GLAP_InputReady
+	bne	ReadByte
+	b	ReadMoreLater
+
+NoMoreToRead:
+	-- End of block reception, re-schedule LinkRx thread.
+
+	-- a4 = SaveState **ssp = &xroot->KernelRoot->Links[cardslot]->RxThread;
+	ldr	tmp, (a1, ExecRoot.KernelRoot)
+	ldr	tmp, (tmp, Root.Links)
+	ldr	tmp, (tmp, a2 LSL 2)	-- index into link table (slot = link #)
+	add	a4, tmp, Link.RxThread	-- a4 = address of RxThread
+	-- A side effect of setting a4 !=0 is that it notes that we should call
+	-- ExternCheckIRQDispatch on exit.
+
+	-- v5 = SaveState *	ss = *ssp;
+	ldr	v5, (a4)		-- v5 = RxThread
+
+	-- @@@ Note linkTx/Rx can currenty only be HIGHPRI. So we should add an
+	-- optimisation that simply uses (v1 =0) as the index. An sets 
+	-- xroot->HighestAvailPri = 0.
+
+	-- tmp = ss->priority
+	ldr	tmp, (v5, SaveState.priority)
+
+	-- v3 = ThreadQ *tq = &xroot->Queues0.tail;
+	add	v3, a1, ExecRoot.Queue0.tail
+
+	_if _defp '__ARM6 [
+		error "possible ARM6 change - Add FIQ disable to PSR"
+	]
+	-- Must disable all interrupts while altering run Q's. 	- IRQ's are
+	-- already disabled.
+	teqp	pc, IRQMode | IRQDisable | FIQDisable
+
+	-- Add thread to its pri's run Q.
+	-- tq->tail = tq->tail->next = ss;
+	-- (index into RunQ .tails with 'tmp lsl 3' = pri * sizeof ThreadQ)
+	ldr	v4, (v3, tmp lsl 3)		-- v4 = tq->tail
+	str	v5, (v4, SaveState.next)	-- tq->tail->next = ss
+	str	v5, (v3, tmp lsl 3)		-- tq->tail = ss
+
+	-- ss->next = NULL;
+	str	v1, (v5, SaveState.next)	-- (v1=0)
+
+	-- Keep exec hint up to date.
+	-- if (pri < xroot->HighestAvailPri)
+	--	xroot->HighestAvailPri = pri;
+	ldr	v4, (a1, ExecRoot.HighestAvailPri)
+	cmp	v4, tmp
+	strgt	tmp, (a1, ExecRoot.HighestAvailPri)
+
+	-- Re-enable FIQ's if they were not disabled in original PSR.
+	-- r14_irq holds interrupted PC/PSR
+	tst	r14_irq, FIQDisable
+	teqeqp	pc, IRQMode | IRQDisable
+
+	-- Clear thread so an AbortRx cannot re-schedule it.
+	-- *ssp = NULL;
+	str	v1, (a4)
+
+	-- ss->status = THREAD_RUNNABLE;
+	str	v2, (v5, SaveState.status)
+
+	-- Stop any further link input interrupts occuring.
+	-- linka->input_status = 0;
+	strb	v1, (a3, glap_regs.input_status)
+
+	b	CheckTxInterrupt
+
+ReadMoreLater:
+	-- More bytes to come, so save updated buffer pointer and size for
+	-- next interrupt to use.
+	stmia	v4, {v3, v5}
+
+
+CheckTxInterrupt:
+	-- If this slot has a valid WRITE interrupt asserted.
+	-- if (linka->output_status == (GLAP_WriteIntrEnable|GLAP_OutputReady))
+	ldrb	tmp, (a3, glap_regs.output_status)
+	cmp	tmp, GLAP_WriteIntrEnable | GLAP_OutputReady
+	bne	Continue
+
+	-- v4 = LinkReq *	linkreq = &xroot->LinkOutStat[slot]
+	add	tmp, a1, ExecRoot.LinkOutStat0
+	add	v4, tmp, a2 LSL 3		-- lsl 3 = slot * LinkReq.sizeof
+
+	-- Load LinkReq Count and Buf into regs.
+	ldmia	v4, {v3, v5}
+
+	-- Send as many bytes as possible.
+	-- do {
+WriteByte:
+	-- linka->write_data = *buff++;
+	ldrb	tmp, (v5), 1
+	strb	tmp, (a3, glap_regs.write_data)
+
+	-- size--;
+	subs	v3, 1
+
+	-- } while (size && linka->output_status & GLAP_OutputReady);
+	beq	NoMoreToWrite
+	ldrb	tmp, (a3, glap_regs.output_status)
+	tst	tmp, GLAP_OutputReady
+	bne	WriteByte
+	b	WriteMoreLater
+
+NoMoreToWrite:
+	-- End of block reception, re-schedule LinkTx thread.
+
+	-- a4 = SaveState **ssp = &xroot->KernelRoot->Links[cardslot]->TxThread;
+	ldr	tmp, (a1, ExecRoot.KernelRoot)
+	ldr	tmp, (tmp, Root.Links)
+	ldr	tmp, (tmp, a2 LSL 2)	-- index into link table (slot = link #)
+	add	a4, tmp, Link.TxThread	-- a4 = address of TxThread
+	-- A side effect of setting a4 !=0 is that it notes that we should call
+	-- ExternCheckIRQDispatch on exit.
+
+	-- v5 = SaveState *	ss = *ssp;
+	ldr	v5, (a4)		-- v5 = TxThread
+
+	-- tmp = ss->priority
+	ldr	tmp, (v5, SaveState.priority)
+
+	-- v3 = ThreadQ *tq = &xroot->Queues0.tail;
+	add	v3, a1, ExecRoot.Queue0.tail
+
+	_if _defp '__ARM6 [
+		error "possible ARM6 change - Add FIQ disable to PSR"
+	]
+	-- Must disable all interrupts while altering run Q's. 	- IRQ's are
+	-- already disabled.
+	teqp	pc, IRQMode | IRQDisable | FIQDisable
+
+	-- Add thread to its pri's run Q.
+	-- tq->tail = tq->tail->next = ss;
+	-- (index into RunQ .tails with 'tmp lsl 3' = pri * sizeof ThreadQ)
+	ldr	v4, (v3, tmp lsl 3)		-- v4 = tq->tail
+	str	v5, (v4, SaveState.next)	-- tq->tail->next = ss
+	str	v5, (v3, tmp lsl 3)		-- tq->tail = ss
+
+	-- ss->next = NULL;
+	str	v1, (v5, SaveState.next)	-- (v1=0)
+
+	-- Keep exec hint up to date.
+	-- if (pri < xroot->HighestAvailPri)
+	--	xroot->HighestAvailPri = pri;
+	ldr	v4, (a1, ExecRoot.HighestAvailPri)
+	cmp	v4, tmp
+	strgt	tmp, (a1, ExecRoot.HighestAvailPri)
+
+	-- Re-enable FIQ's if they were not disabled in original PSR.
+	-- r14_irq holds interrupted PC/PSR
+	tst	r14_irq, FIQDisable
+	teqeqp	pc, IRQMode | IRQDisable
+
+	-- Clear thread so an AbortTx cannot re-schedule it.
+	-- *ssp = NULL;
+	str	v1, (a4)
+
+	-- ss->status = THREAD_RUNNABLE;
+	str	v2, (v5, SaveState.status)
+
+	-- Stop any further link output interrupts occuring.
+	-- linka->output_status = 0;
+	strb	v1, (a3, glap_regs.output_status)
+
+		-- As thread has been resumed, see if we need to slice to it.
+	b	ExternCheckIRQDispatch
+
+WriteMoreLater:
+	-- More bytes to send, so save updated buffer pointer and size for
+	-- next interrupt to use.
+	stmia	v4, {v3, v5}
+
+Continue:
+	_if _false [
+		-- Only need to restore these if they are not saved by
+		-- main system interrupt handler.
+		ldmfd	usp!, {v1-v5}
+	]
+
+	teq	a4, 0
+		-- If no thread has been resumed, just continue current thread.
+	beq	ExternContinueThread
+
+		-- As thread has been resumed, see if we need to slice to it.
+	b	ExternCheckIRQDispatch
+
+
+
+-- End of hw_glapa.a

@@ -1,0 +1,270 @@
+head     1.1;
+branch   ;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @! @;
+
+
+1.1
+date     91.03.10.23.53.47;  author paul;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@        TTL     ARM2/3 control program                            > control/s
+        ; -------------------------------------------------------------------
+
+        GET     listopts.s      ; assembly listing control directives
+        GET     arm.s           ; ARM processor description
+	GET	PCSregs.s	; other ARM register definitions
+        GET     basic.s         ; default labels and variables
+        GET     structs.s       ; structure construction MACROs
+        GET     module.s        ; Helios object module construction MACROs
+        GET     exmacros.s      ; Executive MACROs
+        GET     SWIinfo.s       ; Executive SWI definitions
+
+        OPT     (opt_on + opt_von + opt_mon + opt_mcon) ; listing options
+
+        GET     simstate.s      ; emulator control structures
+
+        ; -------------------------------------------------------------------
+        ; This code expects the following external functions:
+
+        IMPORT  __stack_overflow,EXCEPTION	; stack overflow handler
+
+        ; -------------------------------------------------------------------
+
+        StartModule     control,-1,100  ; name,module slot,version
+
+        ; -------------------------------------------------------------------
+
+        static                              ; start of static data area
+        static_extern_func  main            ; program control entry
+        static_struct       ARMstate,astate ; ARM state structure
+        static_end                          ; end of this static area
+
+        ; -------------------------------------------------------------------
+
+main    FnHead
+        ; in:   a1 = argc (argument count)
+        ;       a2 = argv (pointer to array of character pointers)
+        ; out:  a1 = return code (0 = OK; non-0 = error condition)
+        MOV     ip,sp
+        STMFD   sp!,{v1,v2,v3,v4,v5,fp,ip,lk,pc}
+        SUB     fp,ip,#&04
+        CMP     sp,sl
+        BLLT    __stack_overflow
+
+        SADR    v1,astate               ; address the ARM state structure
+        MOV     a1,v1
+	SWI	exec_ResetARM		; initialise the structure
+
+        MOV     a1,v1
+        ADR     a2,test_code            ; start simulating the simulator
+        SWI     exec_SetNewPC
+        LDR     a1,[v1,#ARMstate_FLAGS]
+        ORR     a1,a1,#fnnames          ; display function names
+        STR     a1,[v1,#ARMstate_FLAGS]
+
+control_loop
+        LDR     a3,[v1,#ARMstate_cPC]
+        BIC     a3,a3,#PSRflags         ; remove the PSR and mode bits
+        SUB     a3,a3,#8                ; deal with the pipe-lining
+        ; **** THE FOLLOWING INSTRUCTION MAY ABORT ****
+        LDR     a4,[a3,#&00]            ; fetch the instruction
+        ; a4 = instruction
+        ; a3 = address
+
+        ADRL    a2,padding_text
+        MOV     a1,a3
+        SWI     exec_WriteHex8
+        MOV     a1,a2
+        SWI     exec_Output
+        MOV     a1,a4
+        SWI     exec_WriteHex8
+        MOV     a1,a2
+        SWI     exec_Output
+
+        MOV     a1,a4
+        MOV     a2,a3
+	SWI	exec_Disassemble
+
+        MOV     a1,v1
+	SWI	exec_SingleStep
+        SWI     exec_NewLine
+control_wait_loop
+        SWI     exec_TerminalIn
+        BLVS    key_delay               ; V set - then no character read
+        BVS     control_wait_loop       ; so go around again
+
+        CMP     a1,#"q"
+        BEQ     control_loop_finished
+        
+        CMP     a1,#" "
+        BNE     control_loop
+
+        MOV     a1,v1
+	SWI	exec_RegisterDump
+        B       control_wait_loop
+
+control_loop_finished
+        MOV     a1,#&00                         ; return code
+        LDMEA   fp,{v1,v2,v3,v4,v5,fp,sp,pc}^
+
+padding_text    =       " : ",&00
+        ALIGN
+
+        ; -------------------------------------------------------------------
+
+key_delay
+        STMFD   sp!,{a1,lk}
+        MOV     a1,#&00008000
+key_delay_loop
+        SUBS    a1,a1,#&01
+        BNE     key_delay_loop
+        LDMFD   sp!,{a1,pc}^
+
+        ; -------------------------------------------------------------------
+        ; -------------------------------------------------------------------
+        ; -------------------------------------------------------------------
+
+test_code       ; assumes it is running in RAM
+        ; test setup
+        ADRL    sp,test_stack
+        ADRL    sl,test_stack_end
+        MOV     fp,#&00000000
+        MOV     lk,#&00000000
+        ADRL    ip,test_end
+
+	BL	test_subroutine
+
+        ; data processing tests
+        MOV     a1,#&00000000
+        MOV     a1,#&FFFFFFFF
+        MVN     a1,a1
+        ORR     a1,a1,#&FF
+        MOV     a1,a1,LSL #16
+        MVN     a1,a1,LSR #8
+
+        MOV     a2,#20
+        ADD     a1,a2,#20
+        SUB     a2,a1,#20
+        SUBS    a2,a2,#20
+        SUBS    a2,a2,#20
+        SUBS    a2,a2,#20
+
+        MOV     a2,#10
+        RSB     a1,a2,#20
+
+        MOV     a1,#&AA
+        TEQ     a1,#&AA
+        TST     a1,#&0A
+
+        MOV     a1,#10
+        MOV     a2,#20
+        CMP     a1,a2
+
+        ; multiplication tests
+        MOV     a1,#10
+        MOV     a2,#10
+        MOV     a3,#10
+        MUL     a4,a1,a2                        ; a4 = a1 * a2
+        MLA     v1,a1,a2,a3                     ; v1 = (a1 * a2) + a3
+
+        ; load/store tests
+        ADRL    a1,test_location0
+        LDR     a2,[a1,#&00]            ; pre-index   0 (no write-back)
+        LDR     a3,[a1],#&04            ; post-index  4 (with write-back)
+        LDR     a4,[a1,#-&04]!          ; pre-index  -4 (with write-back)
+        LDR     v1,[a1,#&04]!           ; pre-index   4 (with write-back)
+
+        ADRL    a1,test_location0
+        MOV     a2,#&00000001
+        MOV     a3,#&00000002
+        MOV     a4,#&00000003
+        MOV     v1,#&00000004
+        STR     a2,[a1,#&00]            ; pre-index   0 (no write-back)
+        STR     a3,[a1],#&04            ; post-index  4 (with write-back)
+        STR     a4,[a1,#-&04]!          ; pre-index  -4 (with write-back)
+        STR     v1,[a1,#&04]!           ; pre-index   4 (with write-back)
+
+        ADRL    a1,test_location0
+        LDRB    a2,[a1,#&00]
+        LDRB    a3,[a1,#&01]
+        LDRB    a4,[a1,#&02]
+        LDRB    v1,[a1,#&03]
+
+        ; semaphore tests
+        ADRL    a3,test_swap
+        MOV     a2,#&80000000
+        SWP     a1,a2,[a3]                      ; a1 = [a3] ; [a3] = a2
+        SWPB    a2,a1,[a3]                      ; a2 = [a3] ; [a3] = a1
+
+        ; load/store multiple tests
+        ADRL    a1,test_load
+        LDMIA   a1,{a2,a3,a4,v1,v2,v3,v4,v5}    ; words 0..7
+        LDMIA   a1!,{a2,a3,a4,v1,v2,v3,v4,v5}   ; words 0..7
+        LDMIA   a1,{a2,a3,a4,v1,v2,v3,v4,v5}    ; words 8..15
+
+        ADRL    a1,test_store
+        STMIA   a1,{a2,a3,a4,v1,v2,v3,v4,v5}    ; words 0..7
+        STMIA   a1!,{a2,a3,a4,v1,v2,v3,v4,v5}   ; words 0..7
+        STMIA   a1,{a2,a3,a4,v1,v2,v3,v4,v5}    ; words 8..15
+
+        B       test_code               ; and around again
+
+test_subroutine	FnHead
+        MOVNV   a1,a1
+        MOVNV   a1,a1
+        MOVNV   a1,a1
+        MOVS    pc,lk
+
+test_stack_end  %       (&00000100)     ; sample stack
+test_stack
+
+test_location0  &       &01234567
+test_location4  &       &89ABCDEF
+
+test_swap       &       &AAAA5555
+
+test_load       &       &00000000
+                &       &11111111
+                &       &22222222
+                &       &33333333
+                &       &44444444
+                &       &55555555
+                &       &66666666
+                &       &77777777
+                &       &88888888
+                &       &99999999
+                &       &AAAAAAAA
+                &       &BBBBBBBB
+                &       &CCCCCCCC
+                &       &DDDDDDDD
+                &       &EEEEEEEE
+                &       &FFFFFFFF
+
+test_store      %       (16 * 4)        ; store area
+
+test_end        ; NO reads/writes should happen after this address
+
+        ; -------------------------------------------------------------------
+        ; -------------------------------------------------------------------
+        ; -------------------------------------------------------------------
+
+        EndModule
+
+        ; -------------------------------------------------------------------
+        END
+@

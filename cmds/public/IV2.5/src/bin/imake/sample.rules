@@ -1,0 +1,222 @@
+/**/#
+/**/# The Main rules
+/**/#
+
+/*
+ * This is the standard rule for compiling system calls
+ */
+#define	library_sysobj_rule()						@@\
+.c.o:									@@\
+	$(CPP) -E -DPROF $*.c | $(AS) -o $*.o -Mx			@@\
+	-$(LD) -X -r -o profiled/$*.o $*.o				@@\
+	$(CPP) -E $*.c | $(AS) -o $*.o -Mx				@@\
+	-$(LD) -x -r -o a.out $*.o					@@\
+	mv a.out $*.o
+
+
+/*
+ * ... and for other objects in libraries
+ */
+#define	library_obj_rule()						@@\
+.s.o:									@@\
+	$(CPP) $(DEFINES) -E -DPROF $*.s \				@@\
+		| $(AS) $(AFLAGS) -68020 -o $*.o -Mx			@@\
+	-$(LD) -X -r -o profiled/$*.o $*.o				@@\
+	$(CPP) $(DEFINES) -E $*.s | $(AS) $(AFLAGS) -68020 -o $*.o -Mx	@@\
+	-$(LD) -x -r -o a.out $*.o					@@\
+	mv a.out $*.o							@@\
+									@@\
+.c.o:									@@\
+	$(CC) -p -c $(CFLAGS) $*.c					@@\
+	-$(LD) -X -r -o profiled/$*.o $*.o				@@\
+	$(CC) -c $(CFLAGS) $*.c						@@\
+	-$(LD) -x -r -o a.out $*.o					@@\
+	mv a.out $*.o
+
+
+/*
+ * These two are used by things like csh...
+ */
+#define cxstr_obj_target(target)					@@\
+target.o:	target							@@\
+	${XSTR}								@@\
+	${CC} -c -R xs.c						@@\
+	mv -f xs.o target.o						@@\
+	rm -f xs.c
+
+#define cxstr_obj_rule()						@@\
+.c.o:									@@\
+	${CC} -E ${CFLAGS} $*.c | ${XSTR} -c -				@@\
+	${CC} -c ${CFLAGS} x.c						@@\
+	mv -f x.o $*.o							@@\
+	rm -f x.c
+
+
+/*
+ * Special library rules for generating files from the UTek library
+ */
+#define	tools_library_obj_rule()					@@\
+.s.o:									@@\
+	$(CPP) $(DEFINES) -E $*.s | $(AS) $(AFLAGS) -68020 -o $*.o -Mx	@@\
+	-$(LD) -x -r -o a.out $*.o					@@\
+	mv a.out $*.o							@@\
+									@@\
+.c.o:									@@\
+	$(CC) -c $(CFLAGS) $*.c						@@\
+	-$(LD) -x -r -o a.out $*.o					@@\
+	mv a.out $*.o
+
+#define	library_target(libname)						@@\
+all: lib/**/libname lib/**/libname/**/_p				@@\
+lib/**/libname: $(OBJS)							@@\
+	ar cruf $@ $(OBJS)						@@\
+lib/**/libname/**/_p: $(OBJS)						@@\
+	cd profiled; ar cruf ../$@ $(OBJS)
+
+#define	tools_library_target(libname)					@@\
+all: lib/**/libname							@@\
+lib/**/libname: $(OBJS)							@@\
+	ar cru $@ $(OBJS)						@@\
+
+/*
+ * Note that '/*' plays havoc with cpp. So we use the equivalent '/?*'.
+ */
+#define	multiple_library_target(libname,dirlist)			@@\
+all: lib/**/libname lib/**/libname/**/_p				@@\
+									@@\
+lib/**/libname: dirlist							@@\
+	-mkdir tmp							@@\
+	for i in dirlist; do \						@@\
+		(cd tmp; ar x ../$$i/lib$${i}); done			@@\
+	ar crf $@ `ls tmp/?*.o`						@@\
+	rm -rf tmp							@@\
+lib/**/libname/**/_p: dirlist						@@\
+	-mkdir tmp							@@\
+	for i in dirlist; do \						@@\
+		(cd tmp; ar x ../$$i/lib$${i}_p); done			@@\
+	ar crf $@ `ls tmp/?*.o`						@@\
+	rm -rf tmp							@@\
+									@@\
+dirlist: FRC								@@\
+	cd $@; $(IMAKE) $(MFLAGS) all					@@\
+FRC:
+
+
+/*
+ * This is a basic program target
+ */
+#define	program_target(program, objlist)				@@\
+program: objlist $(SYSOBJECTS)						@@\
+	$(CC) -o $@ objlist $(LDFLAGS)					@@\
+	$(XINU) $@
+
+
+/*
+ * This target can be called by all programs that are contained in
+ * a single c source file.
+ */
+#define	simple_program_target(program,dest)				@@\
+OBJS = program.$O							@@\
+SRCS = program.c							@@\
+									@@\
+complex_program_target(program,dest)
+
+
+/*
+ * This target is like simple_program_target() except that the dependency
+ * list is long (it must be provided in the Imakefile.
+ */
+#define complex_program_target(program,dest)				@@\
+program: $(OBJS) $(SYSOBJECTS)						@@\
+	$(CC) -o $@ $(OBJS) $(LDFLAGS)					@@\
+	$(XINU) $@							@@\
+									@@\
+install_program(program,dest)						@@\
+depend_target()
+
+
+/*
+ * Compile an assembler module that is kept in a .c file (like the
+ * system call library).
+ */
+#define	casm_obj_target(basename)					@@\
+basename.$O: basename.c							@@\
+	${CC} -E basename.c | ${AS} -o basename.$O
+
+/*
+ * Install a non-executable file.
+ */
+#define	install_non_exec(file,dest)					@@\
+install:: file								@@\
+	install68 -c -m 0664 file $(DEST)/dest
+	
+
+/*
+ * Install a shell program.  Must be named 'program'.sh.
+ */
+#define	install_shell(program,dest)					@@\
+install:: program.sh							@@\
+	install68 -c program.sh $(DEST)/dest/program
+
+#define	install_program(program,dest)					@@\
+install:: program							@@\
+	install68 -c program $(DEST)/dest
+
+#define	install_multiple(list,dest)					@@\
+install:: list								@@\
+	@for i in list; do \						@@\
+		(set -x; install68 -c $$i $(DEST)/dest); \		@@\
+	done
+
+#define	install_library(libname,dest)					@@\
+install:: lib/**/libname lib/**/libname/**/_p				@@\
+	install68 -c -r -x lib/**/libname \				@@\
+		$(DEST)/dest/lib/**/libname.a				@@\
+	install68 -c -r -x lib/**/libname/**/_p \			@@\
+		$(DEST)/dest/lib/**/libname/**/_p.a			@@\
+									@@\
+install_vax_library(libname,lib68)
+
+#define	install_vax_library(libname,dest)				@@\
+install:: lib/**/libname lib/**/libname/**/_p				@@\
+	install68 -c -r lib/**/libname \				@@\
+		$(TOOLSDEST)/dest/lib/**/libname.a			@@\
+	install68 -c -r lib/**/libname/**/_p \				@@\
+		$(TOOLSDEST)/dest/lib/**/libname/**/_p.a		@@\
+
+#define	install_tools_library(libname,dest)				@@\
+install:: lib/**/libname						@@\
+	install68 -c -r lib/**/libname \				@@\
+		$(DEST)/dest/lib/**/libname.a				@@\
+
+/*
+ * Do an imake on multiple sub-directories.
+ */
+#define	imake_multiple()						@@\
+all:									@@\
+	@-for dir in `ls -F | egrep /`; do \				@@\
+		(set -x; cd $$dir; $(IMAKE)); \				@@\
+	done								@@\
+									@@\
+imake_multiple_install()
+
+
+#define	imake_multiple_install()					@@\
+install::								@@\
+	@-for dir in `ls -F | egrep /`; do \				@@\
+		(set -x; cd $$dir; $(IMAKE) install); \			@@\
+	done
+
+/*
+ * This makes the depend target given OBJS.
+ */
+#define	DependComment '# define Dependencies for $(MACHINE)'
+#define	depend_target()							@@\
+depend:									@@\
+	echo DependComment > $(MACHINE).depend				@@\
+	makedepend -s DependComment \					@@\
+		-f $(MACHINE).depend \					@@\
+		$(DEPEND_INCLUDES) \					@@\
+		$(DEPEND_DEFINES) \					@@\
+		$(INCLUDES) \						@@\
+		$(SRCS)

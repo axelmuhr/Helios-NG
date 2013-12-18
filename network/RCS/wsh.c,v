@@ -1,0 +1,991 @@
+head	1.6;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.5
+	Alenia_release:1.5
+	Helios1_3:1.5
+	C40_Field_Test_2:1.4
+	C40_Field_Test_R1:1.3
+	Helios13_beta:1.3
+	Helios1_2_2_Fault:1.2
+	Helios1_2_2_Native:1.2
+	Helios1_2_2_native_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.1
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.6
+date	93.08.11.10.57.27;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.11.04.17.35.21;	author craig;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.09.30.13.38.52;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.06.09.15.17.21;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.04.07.13.20.21;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.11.21.14.52.44;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@New version of the wsh command designed for Helios 1.2. This command
+creates a new window and runs a shell inside that window. The shell
+may be run on a particular processor.
+@
+
+
+1.6
+log
+@memory reduction
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--     			H E L I O S   C O M M A N D S			--
+--			-----------------------------			--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- wsh.c								--
+--                                                                      --
+--	A proper version of the wsh command.				--
+--                                                                      --
+--	Author:  BLV 13/7/90						--
+--	Rewrite: BLV 8.6.92 to use RmLib				--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/wsh.c,v 1.5 1992/11/04 17:35:21 craig Exp $*/
+
+/*{{{  header files etc */
+#include <stdio.h>
+#include <syslib.h>
+#include <stdlib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <string.h>
+#include <servlib.h>
+#include <signal.h>
+#include <fault.h>
+#include "rmlib.h"
+
+#define eq ==
+#define ne !=
+
+	/* find_file is not currently documented. It searches through	*/
+	/* the environment's search path for the specified string.	*/
+extern void	find_file(char *, char *);
+/*}}}*/
+
+/*{{{  usage() */
+static void usage(void)
+{ 
+#ifdef SingleProcessor
+  fputs("wsh: usage, wsh\n", stderr);
+#else
+  fputs("wsh: usage, wsh [processor]\n", stderr);
+#endif
+  exit(EXIT_FAILURE);
+}
+/*}}}*/
+/*{{{  creating a new window */
+/**
+*** This code creates a new window using the window server held in the
+*** program's environment.
+**/
+static Object *CreateWindow(void)
+{ Object	*new_window;
+  Environ	*env		= getenviron();
+
+  if (env eq NULL)
+   { fputs("wsh: corrupt environment.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+
+	/* Check that the CServer object is actually defined.	*/
+  { Object	**objv	= env->Objv;
+    int		  i;
+    for (i = 0; i <= OV_CServer; i++)
+     if (objv[i] eq Null(Object))
+      { fputs("wsh: incomplete environment.\n", stderr);
+	exit(EXIT_FAILURE);
+      }
+  }
+
+  new_window = Create(env->Objv[OV_CServer], "shell", Type_Stream, 0, NULL);
+  if (new_window eq NULL)
+   { fprintf(stderr, "wsh: failed to create new window %s/shell.",
+		env->Objv[OV_CServer]->Name);
+     exit(EXIT_FAILURE);
+   }
+  return(new_window);
+}
+/*}}}*/
+/*{{{  find the TFM for this session, if appropriate */
+static Object	*find_tfm(char *processor_name)
+{ Environ	 *env	= getenviron();
+  Object	**objv	= env->Objv;
+  int		  i;
+  int		  flags;
+
+	/* If CDL is not set, and no processor is specified, then no	*/
+	/* TFM is needed.						*/
+  flags = _posixflags(PE_BLOCK, 0);
+  if (((flags & PE_RemExecute) eq 0) && (processor_name eq NULL))
+   return(NULL);
+
+	/* CDL is set, or a particular processor has been specified.	*/
+	/* Return the TFM from the environment, if any.			*/
+  for (i = 0; i < OV_TFM; i++)
+   if (objv[i] eq NULL)
+    return(NULL);
+  if (objv[OV_TFM] eq (Object *) MinInt)
+   return(NULL);
+  else
+   return(objv[OV_TFM]);
+}
+/*}}}*/
+/*{{{  run the shell using system library calls */
+/**
+*** This routine uses system library calls to run the new shell. I would
+*** prefer to use posix vfork() and execve(), zapping the environment
+*** appropriately, but posix does not adequately define mechanisms for
+*** detaching a program.
+**/
+static bool simple_run(Object *new_window, Object *controller, char *processor_name)
+{ char		 command_name[IOCDataMax];
+  Stream	*window_stream;
+  Object	*objv[OV_End + 1];
+  Stream	*strv[5];
+  char		*argv[2];
+  Environ	*my_environ	= getenviron();
+  Environ	 sending;
+  Stream	*program_stream	= Null(Stream);
+  Object	*remote_processor;
+
+  if (processor_name ne NULL)
+   { char	full_name[IOCDataMax];
+
+	/* A particular processor has been specified, but there is no	*/
+	/* TFM. Hence it is necessary to Locate the target processor	*/
+	/* and turn its Processor Manager into the controller.		*/
+     if (*processor_name eq '/')
+      strcpy(full_name, processor_name);
+     else
+      { full_name[0] = '/'; strcpy(&(full_name[1]), processor_name); }
+
+     remote_processor	= Locate(Null(Object), full_name);
+     if (remote_processor eq Null(Object))
+      { fprintf(stderr, "wsh: cannot find processor %s\n", full_name);
+	return(FALSE);
+      }
+
+     controller		= Locate(remote_processor, "tasks");
+     if (controller eq Null(Object))
+      { fprintf(stderr, "wsh: cannot find %s/tasks\n", remote_processor->Name);
+        return(FALSE);
+      }
+   }
+
+	/* At this point "controller" can be one of the following :	*/
+	/*  a) this session's TFM, if CDL is set and no processor has	*/
+	/*     been specified.						*/
+	/*  b) a particular Processor Manager, if a processor has been	*/
+	/*     specified but there is no TFM				*/
+	/*  c) NULL, to run the shell locally.				*/
+	/* The full environment can now be constructed.			*/
+
+  objv[OV_Cdir]		= my_environ->Objv[OV_Cdir];
+  objv[OV_Task]		= (Object *) MinInt;
+  objv[OV_Code]		= (Object *) MinInt;
+  objv[OV_Source]	= (Object *) MinInt;
+  objv[OV_Parent]	= my_environ->Objv[OV_Task];
+  objv[OV_Home]		= my_environ->Objv[OV_Home];
+  objv[OV_Console]	= new_window;
+  objv[OV_CServer]	= my_environ->Objv[OV_CServer];
+  objv[OV_Session]	= my_environ->Objv[OV_Session];
+  objv[OV_TFM]		= my_environ->Objv[OV_TFM];
+  objv[OV_TForce]	= (Object *) MinInt;
+  objv[OV_End]		= Null(Object);
+
+  window_stream		= Open(new_window, NULL, O_ReadWrite);
+  if (window_stream eq Null(Stream))
+   { fprintf(stderr, "wsh: failed to open window %s\n", new_window->Name);
+     return(FALSE);
+   }
+  window_stream->Flags	|= Flags_OpenOnGet;	/* prevent premature deletion */
+	/* stdin should be a different stream from stdout/stderr, or	*/
+	/* the Posix library can get upset.				*/
+  strv[0] = window_stream;
+  strv[1] = strv[2] = CopyStream(window_stream);
+  if (strv[1] eq NULL)
+   { fprintf(stderr, "wsh: out of memory\n");
+     return(FALSE);
+   }
+  strv[0]->Flags &= ~O_WriteOnly;
+  strv[1]->Flags &= ~O_ReadOnly;
+  strv[3] = my_environ->Strv[3];
+  strv[4] = Null(Stream);
+
+  argv[0]		= "shell";
+  argv[1]		= NULL;
+
+  sending.Strv		= strv;
+  sending.Objv		= objv;
+  sending.Envv		= my_environ->Envv;
+  sending.Argv		= argv;
+
+	/* The shell may be in a cache somewhere.	*/
+  find_file(command_name, "shell");
+  objv[OV_Source]	= Locate(cdobj(), command_name);
+  if (objv[OV_Source] eq NULL)
+   { fputs("wsh: failed to locate shell\n", stderr);
+     return(FALSE);
+   }
+
+  objv[OV_Task]		= Execute(controller, objv[OV_Source]);
+  if (objv[OV_Task] eq NULL)
+   { fputs("wsh: failed to run shell.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  program_stream	= Open(objv[OV_Task], NULL, O_ReadWrite);
+  if (program_stream eq NULL)
+   { int i;
+     for (i = 0; i < 3; i++) Delete(objv[OV_Task], NULL);  
+     fprintf(stderr, "wsh: failed to open %s\n", objv[OV_Task]->Name);
+     return(FALSE);
+   }
+
+  (void) SendEnv(program_stream->Server, &sending);
+  Delay(OneSec);		/* to let the shell open its window	*/
+  Close(program_stream);	/* detach */
+  return(TRUE);
+}
+/*}}}*/
+/*{{{  run the shell using RmLib calls */
+/**
+*** Use the Resource Management library to run the shell on a particular
+*** processor.
+**/
+#ifndef SingleProcessor
+static bool rmlib_run(Object *new_window, char *processor_name)
+{ RmNetwork	 real_network	= RmGetNetwork();
+  RmProcessor	 real_processor;
+  RmProcessor	 obtained_processor;
+  RmTask	 shell_template;
+  RmTask	 running_shell;
+  char		 command_name[IOCDataMax];
+  FILE		*stderr_save;
+
+  if (real_network eq (RmNetwork) NULL)
+   { fputs("wsh: failed to get network details.\n", stderr);
+     return(FALSE);
+   }
+  real_processor = RmLookupProcessor(real_network, processor_name);
+  if (real_processor eq NULL)
+   { fprintf(stderr, "wsh: failed to find processor %s in the network.\n",
+		processor_name);
+     return(FALSE);
+   }
+  obtained_processor = RmObtainProcessor(real_processor);
+  if (obtained_processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "wsh: failed to get accesss to processor %s\n", processor_name);
+     return(FALSE);
+   }
+
+  find_file(command_name, "shell");
+  shell_template	= RmNewTask();
+  if (shell_template eq (RmTask) NULL)
+   { fputs("wsh: out of memory.\n", stderr);
+     return(FALSE);
+   }
+
+  RmSetTaskId(shell_template, "shell");
+  RmSetTaskCode(shell_template, command_name);
+
+	/* At this point it is necessary to zap this program's		*/
+	/* environment to refer to the new window. The OV_Console	*/
+	/* context object should be made to refer to the new window,	*/
+	/* and file descriptors 0, 1 and 2 should be streams to the	*/
+	/* new window. Strictly speaking this should happen inside a	*/
+	/* vfork()'ed child.						*/
+  { int		 stderr_fd_save	= dup(2);
+    int 	 new_window_fd, new_window_fd2;
+    Stream	*new_window_stream, *new_window_stream2;
+    Environ	*my_environ	= getenviron();
+
+	/* Save the standard error stream. It will have to be zapped	*/
+	/* before running the task in the new window.			*/
+    if (stderr_fd_save < 0)
+     { fputs("wsh: error duplicating stderr file descriptor.\n", stderr);
+       return(FALSE);
+     }
+    stderr_save = fdopen(stderr_fd_save, "w");
+    if (stderr_save eq NULL)
+     { fputs("wsh: error duplicating stderr stream.\n", stderr);
+       return(FALSE);
+     }
+
+	/* Open a stream to the new window, first at the Helios level	*/
+	/* and then at the Posix level.					*/
+    new_window_stream	= Open(new_window, NULL, O_ReadWrite);
+    if (new_window_stream eq NULL)
+     { fputs("wsh: failed to access new window.\n", stderr);
+       return(FALSE);
+     }
+    new_window_stream2		 = CopyStream(new_window_stream);
+    if (new_window_stream2 eq NULL)
+     { fputs("wsh: out of memory accessing window.\n", stderr);
+       return(FALSE);
+     }
+    new_window_stream->Flags	&= ~O_WriteOnly;
+    new_window_fd		 = sopen(new_window_stream);
+    new_window_stream2->Flags	&= ~O_ReadOnly;
+    new_window_fd2		 = sopen(new_window_stream2);
+    if ((new_window_fd < 0) || (new_window_fd2 < 0))
+     { fputs("wsh: failed to get file descriptor for new window.\n", stderr);
+       return(FALSE);
+     }
+
+	/* Set stdin, stdout and stderr to refer to the new window.	*/
+    close(0); close(1); close(2);
+    if ((dup2(new_window_fd, 0) < 0) || (dup2(new_window_fd2, 1) < 0) ||
+	(dup2(new_window_fd2, 2) < 0))
+     { fputs("wsh: failed to redirect standard streams to new window.\n", stderr_save);
+       return(FALSE);
+     }
+
+    Close(my_environ->Objv[OV_Console]);
+    my_environ->Objv[OV_Console] = new_window;
+  }
+  
+  running_shell = RmExecuteTask(obtained_processor, shell_template, NULL);
+  if (running_shell eq (RmTask) NULL)
+   { fputs("wsh: failed to execute shell.\n", stderr_save);
+     return(FALSE);
+   }
+  RmLeaveTask(running_shell);
+  return(TRUE);
+}
+#endif
+/*}}}*/
+
+/*{{{  main() */
+int main(int argc, char **argv)
+{ char		*processor_name = NULL;
+  Object	*new_window;
+  Object	*tfm;
+  bool		 result;
+
+#ifdef SingleProcessor
+  if (argc > 1)
+   usage();
+#else
+  if (argc eq 2)
+   processor_name = argv[1];
+  elif (argc > 2)
+   usage();
+#endif
+
+  new_window	= CreateWindow();
+  tfm		= find_tfm(processor_name);
+
+	/* If running outside a session, or if no particular processor	*/
+	/* has been specified, system library-level Execute() calls	*/
+	/* will be required. Posix does not provide a sensible way	*/
+	/* of detaching.						*/
+  if ((tfm eq NULL) || (processor_name eq NULL))
+   result = simple_run(new_window, tfm, processor_name);
+
+#ifndef SingleProcessor
+  else
+	/* If there is a TFM and a processor has been specified then	*/
+	/* the Resource Management library's RmExecuteTask() routine	*/
+	/* should be used.						*/
+   result = rmlib_run(new_window, processor_name);  
+#endif
+
+	/* This Delete should set a flag in the window server, causing	*/
+	/* it to go destroy the window once all the clients have gone	*/
+	/* away.							*/
+  Delete(new_window, NULL);
+  return(result ? EXIT_SUCCESS : EXIT_FAILURE);
+}
+/*}}}*/
+
+
+
+@
+
+
+1.5
+log
+@strv[0] WriteOnly flag was being cleared in the wrong place
+@
+text
+@d14 1
+a14 1
+--	Rewrite: BLV 8.6.92 to use RmLib
+d17 1
+a17 1
+static char *rcsid = "$Header: /hsrc/network/RCS/wsh.c,v 1.4 1992/09/30 13:38:52 bart Exp craig $";
+@
+
+
+1.4
+log
+@The same Helios stream was used for stdin, stdout and stderr. This
+was not compatible with init where stdin was separate but stdout and
+stderr were the same.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/wsh.c,v 1.3 1992/06/09 15:17:21 bart Exp $";
+a178 1
+  strv[0]->Flags &= ~O_WriteOnly;
+d184 1
+@
+
+
+1.3
+log
+@Rewrite to use the RmLib execute facilities
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/wsh.c,v 1.2 1991/04/07 13:20:21 bart Exp $";
+d176 10
+a185 1
+  strv[0] = strv[1] = strv[2] = window_stream;
+d273 2
+a274 2
+    int 	 new_window_fd;
+    Stream	*new_window_stream;
+d296 10
+a305 2
+    new_window_fd	= sopen(new_window_stream);
+    if (new_window_fd < 0)
+d312 2
+a313 2
+    if ((dup2(new_window_fd, 0) < 0) || (dup2(new_window_fd, 1) < 0) ||
+	(dup2(new_window_fd, 2) < 0))
+@
+
+
+1.2
+log
+@Added support for Tiny Helios. Various bits of the networking software can
+now be compiled with options such as -DSingleProcessor, to produce reduced
+versions of Helios.
+@
+text
+@d14 1
+d17 1
+d19 1
+a19 2
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/wsh.c,v 1.1 90/11/21 14:52:44 bart Exp $";
+
+d29 1
+d34 2
+a35 4
+/**
+*** find_file() is not currently documented. It searches through the command
+*** search path for the specified string.
+**/
+d37 1
+d39 3
+a41 24
+/**
+*** forward declarations.
+**/
+static void	usage(void);
+static Object	*CreateWindow(char *);
+static Object	*work_out_controller(char *processer, Object **program);
+static int	RunCommand(char *processor, char **, Object *);
+#ifndef SingleProcessor
+static Object	*go_through_tfm(char *processor, Object **program);
+#endif
+
+/**
+*** main()
+***  1) parse the arguments.
+***  2) create a new window relative to the current standard streams
+***  3) run the command in that window
+***  4) get rid of the window
+**/
+int main(int argc, char **argv)
+{ static char	*command_args[] = {"shell", Null(char) };
+  Object	*window;
+  int		rc;
+  char		*processor_name = Null(char);
+  
+d43 1
+a43 1
+  if (argc >= 2)
+d45 1
+a45 1
+  if (argc > 2)
+a46 13
+   usage();
+  
+  if (argc eq 2) processor_name = argv[1];
+   
+  window = CreateWindow(command_args[0]);
+  if (window eq Null(Object)) return(EXIT_FAILURE);  
+  rc = RunCommand(processor_name, command_args, window);
+  (void) Delete(window, Null(char));
+  return(rc);
+}
+
+static void usage(void)
+{ fprintf(stderr, "wsh : usage, wsh [processor]\n");
+d49 2
+a50 1
+
+d52 2
+a53 2
+*** Creating a new window. This is done by getting an object for the
+*** current console server out of the environment.
+d55 5
+a59 7
+static Object *CreateWindow(char *command_name)
+{ Object	*window_server;
+  Object	*new_window;
+  char		buffer[NameMax];
+  Environ	*env = getenviron();
+  
+  if (env eq Null(Environ))
+d61 1
+a61 1
+     return(Null(Object));
+d63 5
+a67 4
+  
+  { Object	**objv = env->Objv;
+    int		i;
+    for (i = 0; i <= OV_CServer; i++)  
+d70 1
+a70 1
+        return(Null(Object));
+d74 5
+a78 5
+  window_server = env->Objv[OV_CServer];
+  if (window_server eq (Object *) MinInt)
+   { fputs("wsh: there is no window server in the current environment.\n",
+   		 stderr);
+     return(Null(Object));
+a79 7
+   
+  strncpy(buffer, objname(command_name), NameMax);
+  buffer[NameMax - 1] = '\0';
+  new_window = Create(window_server, buffer, Type_Stream, 0, Null(BYTE));
+  if (new_window eq Null(Object))
+   fprintf(stderr, "wsh : failed to Create window %s/%s", window_server->Name,
+   		buffer);
+d82 7
+d90 18
+d109 4
+a112 7
+*** This runs a command using Helios calls only. An attempt is made to
+*** open the specified window. If successful the environment is built
+*** up, and an attempt is made to locate the program. If successful
+*** it is necessary to work out how to execute the target program,
+*** a rather complicated operation that is done by a separate task.
+*** The program is then executed inside the controller. The wsh command
+*** never waits for the program to terminate.
+d114 3
+a116 3
+static int RunCommand(char *processor, char **command_args, Object *window)
+{ char		command_name[IOCDataMax];
+  Stream	*window_stream = Open(window, Null(char), O_ReadWrite);
+d119 38
+a156 6
+  Environ	*my_environ = getenviron();
+  Environ	sending;
+  Stream	*program_stream = Null(Stream);
+  int		rc = Err_Null;
+  Object	*controller;
+            
+d163 1
+a163 1
+  objv[OV_Console]	= window;
+d170 1
+d172 2
+a173 2
+   { fprintf(stderr, "wsh : failed to open window %s\n", window->Name);
+     goto fail;
+d175 1
+a175 2
+
+  window_stream->Flags |= Flags_OpenOnGet;   
+d178 1
+a178 11
+  strv[4] = (Stream *) MinInt;
+  
+  sending.Strv = strv;
+  sending.Objv = objv;
+  sending.Envv = my_environ->Envv;
+  sending.Argv = command_args;
+    
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+d180 2
+a181 7
+  objv[OV_Source] = Locate(CurrentDir, command_name);
+  if (objv[OV_Source] eq Null(Object))
+   { fprintf(stderr, "wsh : failed to locate command %s\n", command_args[0]);
+     goto fail;
+   }  
+  
+  objv[OV_Code] = (Object *) MinInt;
+d183 11
+a193 13
+  controller = work_out_controller(processor, objv);
+  if (controller eq (Object *) MinInt) goto fail;
+  
+  objv[OV_Task] = Execute(controller, objv[OV_Source]);
+  if (objv[OV_Task] eq Null(Object))
+   { fprintf(stderr, "wsh: failed to execute command %s\n",
+   	objv[OV_Source]->Name);
+     if (controller ne Null(Object))
+      { Fault(Result2(controller), command_name, IOCDataMax);
+        fprintf(stderr, "wsh: fault was 0x%x (%s)\n", Result2(controller),
+        		command_name);
+      }
+     goto fail;
+d195 5
+a199 4
+  program_stream = Open(objv[OV_Task], Null(char), O_ReadWrite);
+  if (program_stream eq Null(Stream))
+   { fprintf(stderr, "wsh: failed to open task %s\n", objv[OV_Task]->Name);
+     goto fail;
+d202 6
+a207 16
+  (void) SendEnv(program_stream->Server, &sending);   
+
+  Delay(OneSec);
+   
+  Close(window_stream);
+  Close(program_stream);
+  Close(objv[OV_Task]);
+  Close(objv[OV_Source]);
+  return(rc);
+  
+fail:  
+  if (window_stream ne Null(Stream)) Close(window_stream);
+  if (program_stream ne Null(Stream)) Close(program_stream);
+  if (objv[OV_Task] ne Null(Object))
+   { (void) Delete(objv[OV_Task], Null(char));
+     (void) Close(objv[OV_Task]);
+a208 3
+  if (objv[OV_Source] ne Null(Object)) Close(objv[OV_Source]);
+  return(EXIT_FAILURE);
+} 
+d210 7
+d218 2
+a219 14
+*** Work out the controller. This can get quite nasty.
+***
+*** 1) If no particular processor has been specified,
+***    a) if there is a TFM, 
+***      i)  if CDL is set, use the TFM as the controller
+***      ii) else use the current processor as a controller
+***    b) if there is no TFM, always use the current processor
+***
+*** 2) If a particular processor has been specified,
+***    a) if there is no TFM, attempt to locate the processor manager
+***       and use that.
+***    b) otherwise use the TFM as the controller, and create a new
+***       file in a fifo specifying the task together with a
+***       puid attribute.
+d221 9
+d231 15
+a245 2
+static	Object	*work_out_controller(char *processor, Object **objv)
+{ Environ *my_environ = getenviron();
+d247 5
+a251 12
+  if (processor eq Null(char))
+   { if (getenv("CDL") ne Null(char))
+      { Object	*tfm = my_environ->Objv[OV_TFM];
+        int	i;
+        for (i = 0; i < OV_TFM; i++)
+         if (my_environ->Objv[i] eq Null(Object))
+          { tfm = Null(Object); break; }
+        if (tfm eq (Object *) MinInt) tfm = Null(Object);       
+        return(tfm);
+      }
+     else	/* run it locally */
+      return(Null(Object));
+d254 2
+a255 13
+#ifndef SingleProcessor   
+  	/* a particular processor has been specified			   */
+  	/* Check whether or not there is a TFM in the current environment. */
+  { Object	*tfm = my_environ->Objv[OV_TFM];
+    int i;
+    for (i = 0; i < OV_TFM; i++)
+     if (my_environ->Objv[i] eq Null(Object))
+      { tfm = Null(Object); break; }
+    if (tfm eq (Object *) MinInt) tfm = Null(Object);
+    
+    if (tfm ne Null(Object))
+     return(go_through_tfm(processor, objv));
+  }
+d257 16
+a272 11
+	/* there is no tfm in the current environment, so the work	*/
+	/* has to be done manually.					*/
+  { Object	*processor_obj;
+    Object	*procman;
+    static	char processor_name[IOCDataMax];
+    
+    if (processor[0] eq '/')
+     strcpy(processor_name, processor);
+    else
+     { processor_name[0] = '/';
+       strcpy(&(processor_name[1]), processor);
+d274 4
+a277 5
+     
+    processor_obj = Locate(Null(Object), processor_name);
+    if (processor_obj eq Null(Object))
+     { fprintf(stderr, "wsh: failed to locate processor %s\n", processor_name);
+       return((Object *) MinInt);
+d279 7
+a285 4
+    procman = Locate(processor_obj, "tasks");
+    if (procman eq Null(Object))
+     { fprintf(stderr, "wsh: failed to locate %s/tasks\n", processor_obj->Name);
+       return((Object *) MinInt);
+d287 16
+a302 2
+    Close(processor_obj);
+    return(procman);
+d304 11
+a314 4
+#else	/* SingleProcessor */
+  objv = objv;
+#endif  
+}    
+d316 6
+a321 18
+/**
+*** Now for the worst hack in Helios 1.2. To run a program remotely via
+*** the Taskforce Manager should involve calls to the Resource Management
+*** library. Sadly that bit has not been finished. Hence this program
+*** creates a pseudo-CDL binary for a single taskforce, containing a
+*** single task which is what should be executed.
+**/
+#ifndef SingleProcessor
+typedef	struct	CDL_Binary {
+	WORD		Type;		/* these go into the header */
+	WORD		NoComponents;
+	WORD		NoCStreams;
+	WORD		NoIStreams;
+	WORD		NoAttribs;
+	WORD		Ignore1;
+	WORD		CurrentDirIndex;
+	WORD		Ignore2;
+	WORD		TfNameIndex;
+d323 9
+a331 34
+	WORD		Ignore3;	/* This is a single component */
+	WORD		NameIndex;
+	WORD		Flags;
+	WORD		Ignore4;
+	WORD		Ignore5;
+	WORD		PuidIndex;
+	WORD		Ptype;
+	WORD		NumberAttribs;
+	WORD		AttribIndex;
+	List		Ignore6;
+	UWORD		Memory;
+	WORD		LifeTime;
+	UWORD		TimeLimit;
+	WORD		Priority;
+	WORD		NumberArguments;
+	WORD		Ignore7;
+	WORD		ArgumentsIndex;
+	WORD		CompIStreams;
+	WORD		IStreamIndex;
+	WORD		Ignore8;
+	WORD		StdinIndex;
+	WORD		StdinMode;
+	WORD		StdinStandard;
+	WORD		StdoutIndex;
+	WORD		StdoutMode;
+	WORD		StdoutStandard;
+	WORD		StderrIndex;
+	WORD		StderrMode;
+	WORD		StderrStandard;
+	WORD		StddbgIndex;
+	WORD		StddbgMode;
+	WORD		StddbgStandard;
+	WORD		Junk;
+} CDL_Binary;
+d333 2
+a334 1
+static	BYTE	CDL_Buffer[1024];
+d336 8
+a343 9
+static	Object	*go_through_tfm(char *processor, Object **objv)
+{ int	index		= 0;
+  BYTE	*strings	= &(CDL_Buffer[sizeof(CDL_Binary)]);
+  CDL_Binary	*binary = (CDL_Binary *) CDL_Buffer;
+  Object	*processor_obj;
+  int	len;
+  
+  if (*processor eq '/')
+   processor_obj = Locate(Null(Object), processor);
+d345 5
+a349 38
+   { CDL_Buffer[0] = '/';
+     strcpy(&(CDL_Buffer[1]), processor);
+     processor_obj = Locate(Null(Object), CDL_Buffer);
+   }
+  if (processor_obj eq Null(Object))
+   { fprintf(stderr, "wsh: failed to locate processor %s\n", processor);
+     return((Object *) MinInt);
+   }
+   
+  binary->Type			= 0x12345677;
+  binary->NoComponents		= 1;
+  binary->NoCStreams		= 0;
+  binary->NoIStreams		= 4;
+  binary->NoAttribs		= 0;
+  binary->Ignore3		= 0x12345677;
+  binary->Flags			= 0;
+  binary->Ptype			= 0;
+  binary->NumberAttribs		= 0;
+  binary->AttribIndex		= 0;
+  binary->Memory		= 0;
+  binary->LifeTime		= 0;
+  binary->TimeLimit		= 0;
+  binary->Priority		= 1;
+  binary->NumberArguments	= 1;
+  binary->CompIStreams		= 4;
+  binary->IStreamIndex		= 0;
+  binary->StdinIndex		= -1; 
+  binary->StdinMode		= 1;
+  binary->StdinStandard		= 0;
+  binary->StdoutIndex		= -1; 
+  binary->StdoutMode		= 2;
+  binary->StdoutStandard	= 1;
+  binary->StderrIndex		= -1; 
+  binary->StderrMode		= 2;
+  binary->StderrStandard	= 2;
+  binary->StddbgIndex		= -1; 
+  binary->StddbgMode		= 2;
+  binary->StddbgStandard	= 3;
+d351 7
+a357 4
+  len = strlen(objv[OV_Cdir]->Name);
+  strcpy(&(strings[index]), objv[OV_Cdir]->Name);
+  binary->CurrentDirIndex	= index;
+  index += (len + 1);
+a358 4
+  len = strlen("wsh");
+  strcpy(&(strings[index]), "wsh");
+  binary->TfNameIndex		= index;
+  index += (len + 1);
+a359 4
+  len = strlen(objv[OV_Source]->Name);
+  strcpy(&(strings[index]), objv[OV_Source]->Name);
+  binary->NameIndex		= index;
+  index += (len + 1);
+a360 38
+  len = strlen(processor_obj->Name);
+  strcpy(&(strings[index]), processor_obj->Name);
+  binary->PuidIndex		= index;
+  index += (len + 1);
+
+  { char	*temp = objname(objv[OV_Source]->Name);
+    len = strlen(temp);
+    strcpy(&(strings[index]), temp);
+    binary->ArgumentsIndex = index;
+    index += (len + 1);
+  }
+  
+  { Object	*fifo_server = Locate(Null(Object), "/fifo");
+    Object	*fifo_obj;
+    Stream	*fifo_file;
+    
+    if (fifo_server eq Null(Object))
+     { fputs("wsh: failed to locate fifo server.\n", stderr);
+       return((Object *) MinInt);
+     }
+    fifo_obj = Create(fifo_server, "wsh", Type_Fifo, 0, Null(BYTE));
+    if (fifo_obj eq Null(Object))
+     { fputs("wsh: failed to create fifo file.\n", stderr);
+       return((Object *) MinInt);
+     }
+    fifo_file = Open(fifo_obj, Null(char), O_WriteOnly + O_Create);
+    if (fifo_file eq Null(Stream))
+     { fputs("wsh: failed to create fifo file.\n", stderr);
+       return((Object *) MinInt);
+     }
+    (void) Write(fifo_file, CDL_Buffer, sizeof(CDL_Binary) + index, -1);
+    Close(fifo_file);
+    objv[OV_Source] = fifo_obj;
+   }
+ return(objv[OV_TFM]);
+/* return((Object *) MinInt);*/
+}
+#endif
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/wsh.c,v 1.1 90/09/12 14:57:10 jon Exp $";
+d33 1
+a33 1
+*** find_file() is not currently located. It searches through the command
+d43 1
+d45 1
+a45 1
+static Object	*work_out_controller(char *processer, Object **program);
+d47 1
+d62 6
+a67 1
+  if (argc > 2) usage();
+d258 2
+a259 1
+   
+d299 3
+d311 1
+d461 1
+@

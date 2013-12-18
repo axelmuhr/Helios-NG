@@ -1,0 +1,1104 @@
+head	1.10;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.8
+	Alenia_release:1.8
+	Helios1_3:1.8
+	C40_Field_Test_2:1.8
+	C40_Field_Test_R1:1.8
+	Helios13_beta:1.8
+	Helios1_2_2_Fault:1.6
+	Helios1_2_2_Native:1.5
+	Helios1_2_2_native_beta:1.4
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.10
+date	94.03.10.17.13.27;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	93.08.11.10.37.03;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.06.08.15.27.20;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.04.24.15.37.26;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.01.15.11.04.39;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.01.14.15.52.33;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.08.27.15.26.55;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.12.17.14.31.25;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.11.01.14.52.16;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@command to examine the current state of a network
+@
+
+
+1.10
+log
+@added initialisation of Nodes in SYSDEB world
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- network.c								--
+--                                                                      --
+--	A utility to examine the network				--
+--                                                                      --
+--	Author:  BLV 23/10/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/network.c,v 1.9 1993/08/11 10:37:03 bart Exp nickc $*/
+
+#include <helios.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <syslib.h>
+#include <gsp.h>
+#include <codes.h>
+#include <nonansi.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <posix.h>
+#include <root.h>
+#include <ctype.h>
+#include "session.h"
+#include "private.h"
+#include "rmlib.h"
+#include "exports.h"
+#include "netutils.h"
+
+#ifndef	eq
+#define	eq ==
+#define ne !=
+#endif
+
+static	void		do_info(   int, char **);
+static	void		do_monitor(int, char **);
+static	void		do_help(   int, char **);
+static	void		do_show(   int, char **);
+static	void		do_list(   int, char **);
+static	void		do_showall(int, char **);
+static	void		do_owners( int, char **);
+static	void		do_avail(  int, char **);
+static	void		usage(void);
+static	int		init_network(RmProcessor processor, ...);
+static	int		delete_unwanted(RmProcessor processor, ...);
+
+int main(int argc, char **argv)
+{ char	**real_args;
+
+  if (argc <= 1) usage();
+
+  argc	-= 2;
+  real_args = &(argv[2]);
+  
+  if (!strcmp(argv[1], "info"))
+   do_info(argc, real_args);
+  elif (!strcmp(argv[1], "monitor"))
+   do_monitor(argc, real_args);
+  elif (!strcmp(argv[1], "show"))
+   do_show(argc, real_args);
+  elif (!strcmp(argv[1], "showall"))
+   do_showall(argc, real_args);
+  elif (!strcmp(argv[1], "list"))
+   do_list(argc, real_args);
+  elif (!strcmp(argv[1], "owners"))
+   do_owners(argc, real_args);
+  elif (!strncmp(argv[1], "avail", 5))
+   do_avail(argc, real_args);
+  elif (!strcmp(argv[1], "help"))
+   do_help(argc, real_args);
+  else
+   { fprintf(stderr, "network: unknown option %s\n", argv[1]);
+     usage();
+   }
+  return(EXIT_SUCCESS);
+}
+
+static	void	usage(void)
+{ fputs("network: usage should be one of the following\n", stderr);
+  fputs("       : network list\n", stderr);
+  fputs("       : network show [processors]\n", stderr);
+  fputs("       : network showall [processors]\n", stderr);
+  fputs("       : network owners\n", stderr);
+  fputs("       : network info [processors]\n", stderr);
+  fputs("       : network monitor interval [processors]\n", stderr);
+  fputs("       : network availibility\n", stderr);
+  fputs("       : network help\n", stderr);
+  exit(EXIT_FAILURE);
+}
+
+/**
+*** list: a less verbose version of show
+**/
+static int do_list_aux(RmProcessor, ...);
+
+static	void	do_list(int argc, char **argv)
+{ RmNetwork	network;
+
+  if (argc ne 0) usage();
+  network = RmGetNetwork();
+  if (network eq (RmNetwork) NULL)
+   fprintf(stderr,
+    "network: failed to get information on current network, RmLib error %s\n",
+        	RmMapErrorToString(RmErrno));
+  else
+   { fputs("Current network : ", stdout);
+     (void) RmApplyProcessors(network, &do_list_aux);
+     putchar('\n');
+   }
+
+  argv = argv;
+}
+
+static int do_list_aux(RmProcessor Processor, ...)
+{ 
+  printf("/%s ", RmGetProcessorId(Processor));
+  return(0);
+}
+
+/**
+*** Show : simply print out the current network, in all its gory detail
+**/
+static	void	do_show(int argc, char **argv)
+{ RmNetwork	network;
+
+  network = RmGetNetwork();
+  if (network eq (RmNetwork) NULL)
+   fprintf(stderr,
+    "network: failed to get information on current network, RmLib error %s\n",
+        	RmMapErrorToString(RmErrno));
+  elif (argc eq 0)
+   PrintNetwork(network);
+  else
+   { init_PrintNetwork(TRUE);
+     for ( ; argc > 0; argc--, argv++)
+      { RmProcessor	current = RmLookupProcessor(network, *argv);
+        if (current eq (RmProcessor) NULL)
+         fprintf(stderr, "network: processor %s is not in the network\n",
+		*argv);
+        else
+         PrintProcessor(current, 0);
+      }
+     tidy_PrintNetwork();
+   }
+}
+
+/**
+*** Showall : similar to show but also prints out the hardware details
+**/
+static	void	do_showall(int argc, char **argv)
+{ RmNetwork	network;
+
+  network = RmGetNetworkAndHardware();
+  if (network eq (RmNetwork) NULL)
+   fprintf(stderr,
+    "network: failed to get information on current network, RmLib error %s\n",
+        	RmMapErrorToString(RmErrno));
+  elif (argc eq 0)
+   PrintNetwork(network);
+  else
+   { init_PrintNetwork(TRUE);
+     for ( ; argc > 0; argc--, argv++)
+      { RmProcessor	current = RmLookupProcessor(network, *argv);
+        if (current eq (RmProcessor) NULL)
+         fprintf(stderr, "network: processor %s is not in the network\n",
+		*argv);
+        else
+         PrintProcessor(current, 0);
+      }
+     tidy_PrintNetwork();
+   }
+}
+
+static	void	do_info(int argc, char **argv)
+{ RmNetwork	network;
+  
+  network = RmGetNetwork();
+  if (network eq (RmNetwork) NULL)
+   { fprintf(stderr,
+      "network: failed to get information on current network, RmLib error %s\n",
+    		RmMapErrorToString(RmErrno));
+     exit(EXIT_FAILURE);
+   }
+  if (argc ne 0)
+   { (void) RmApplyProcessors(network, &init_network);
+      for ( ; argc > 0; argc--, argv++)
+       { RmProcessor	current = RmLookupProcessor(network, *argv);
+         if (current eq (RmProcessor) NULL)
+           fprintf(stderr, "network: processor %s is not in the network\n",
+       		*argv);
+         else
+          RmSetProcessorPrivate(current, 1);
+       }
+      (void) RmApplyProcessors(network, &delete_unwanted);
+   }
+
+  DisplayInfo(network);
+
+  RmFreeNetwork(network);
+}
+
+static	void	do_monitor(int argc, char **argv)
+{ int		delay = 2;
+  RmNetwork	network;
+
+  if ((argc ne 0) && (**argv ne '/'))
+   { delay = atoi(*argv);
+     argc--; argv++;
+     if (delay <= 0) delay = 2;
+   }
+
+  network = RmGetNetwork();
+  if (network eq (RmNetwork) NULL)
+   { fprintf(stderr,
+      "network: failed to get information on current network, RmLib error %s\n",
+    		RmMapErrorToString(RmErrno));
+     exit(EXIT_FAILURE);
+   }
+
+  if (argc ne 0)
+   { (void) RmApplyProcessors(network, &init_network);
+      for ( ; argc > 0; argc--, argv++)
+       { RmProcessor	current = RmLookupProcessor(network, *argv);
+         if (current eq (RmProcessor) NULL)
+           fprintf(stderr, "network: processor %s is not in the network\n",
+       		*argv);
+         else
+          RmSetProcessorPrivate(current, 1);
+       }
+      (void) RmApplyProcessors(network, &delete_unwanted);
+   }
+
+  MonitorNetwork(network, delay);   
+}
+
+/**
+*** do_owners
+**/
+typedef	struct	OwnerDetails {
+	Node		Node;
+	int		Owner;
+	int		Count;
+} OwnerDetails;
+
+static	List	OwnerList;
+static	int	NumberProcessors;
+static	int	IOCount;
+static	int	RouterCount;
+static	int	NetworkWalk(RmProcessor Processor, ...);
+static	WORD	ShowOwners(Node *node, WORD arg);
+static	WORD	MatchOwner(Node *node, WORD arg);
+
+static void do_owners(int argc, char **argv)
+{ RmNetwork	Network;
+
+  argc = argc; argv = argv;
+  
+  InitList(&(OwnerList));  
+  IOCount = RouterCount = 0;
+  
+	/* Get details of the current network into local memory */
+  Network = RmGetNetwork();
+  if (Network == (RmNetwork) NULL)
+   { fputs("network: failed to get network details\n", stderr);
+     return;
+   }
+  NumberProcessors = RmCountProcessors(Network);
+  
+	/* Walk down the current network examining every processor	*/
+	/* Build the ownership list as the program goes along.		*/
+  (void) RmApplyProcessors(Network, &NetworkWalk);
+
+	/* Output the results by walking down the owner list.		*/
+  (void) WalkList(&OwnerList, &ShowOwners);
+  if (IOCount > 0)
+   printf("%-10s : %3d processor%s, %2d%% of the network\n",
+  	"I/O", IOCount,
+  	(IOCount > 1) ? "s" : " ", (100 * IOCount) / NumberProcessors);
+
+  if (RouterCount > 0)
+   printf("%-10s : %3d processor%s, %2d%% of the network\n",
+  	"Router", RouterCount,
+  	(RouterCount > 1) ? "s" : " ", (100 * RouterCount) / NumberProcessors);
+
+	/* Free the network and the owner list */
+  RmFreeNetwork(Network);
+  until(EmptyList_(OwnerList)) Free(RemHead(&OwnerList));
+}
+
+	/* This routine is called for every processor in the network.	*/
+static	int	NetworkWalk(RmProcessor Processor, ...)
+{ int		Owner;
+  OwnerDetails	*details;
+  int		purpose = RmGetProcessorPurpose(Processor) & RmP_Mask;
+
+  if (purpose eq RmP_IO)
+   { IOCount++; return(0); }
+  elif (purpose eq RmP_Router)
+   { RouterCount++; return(0); }
+   
+	/* Get the current processor owner, and see if this owner	*/
+	/* is already known.						*/
+  Owner		= RmGetProcessorOwner(Processor);
+  details	= (OwnerDetails *) SearchList(&OwnerList, &MatchOwner, Owner);
+
+	/* If the user is already known then the search will have found	*/
+	/* an OwnerDetails structure that can be updated. Otherwise	*/
+	/* a new structure must be allocated and initialised.		*/
+  if (details != (OwnerDetails *) NULL)
+   details->Count++;
+  else
+   { details	= (OwnerDetails *) malloc(sizeof(OwnerDetails));
+     if (details == (OwnerDetails *) NULL)
+      { fputs("network : out of memory building owner list\n", stderr);
+        return(0);
+      }
+     details->Owner	= Owner;
+     details->Count	= 1;
+#ifdef SYSDEB
+     details->Node.Next = details->Node.Prev = &details->Node;
+#endif
+     AddTail(&(OwnerList), &(details->Node));
+   }
+
+	/* for this program the return value is ignored anyway.	*/
+  return(0);
+}
+
+	/* Match a processor's owner with an entry in the current	*/
+	/* list of owners.						*/
+static	WORD	MatchOwner(Node *node, WORD arg)
+{ OwnerDetails	*details	= (OwnerDetails *) node;
+
+  if (details->Owner == arg)
+   return(1);
+  else
+   return(0);
+}
+
+	/* Print out the results of the search.				*/
+static	WORD	ShowOwners(Node *node, WORD arg)
+{ OwnerDetails	*details = (OwnerDetails *) node;
+
+  printf("%-10s : %3d processor%s, %2d%% of the network\n",
+  	RmWhoIs(details->Owner), details->Count, 
+	(details->Count > 1) ? "s" : " ",
+  	(details->Count * 100) / NumberProcessors);
+  return(0);
+  arg = arg;
+}
+
+
+/**
+*** do_help(). Print out lots and lots and lots.
+**/
+
+static char *text1 = "\
+Network is a command to allow users to examine the whole network of\n\
+processors, and see what is happening. There are various options.\n\n\
+";
+static char *text2 = "\
+nework list : this simply lists the processors in the current network.\n\
+Typical output might be something like:\n\
+  Current network : /01 /02 /03 /06\n\n\
+";
+static char *text3 = "\
+network show : this is used to give more information about the processors,\n\
+including processor type, the amount of memory, and details of connections\n\
+to other processors. By default all processors will be listed, but it is\n\
+possible to specify particular processors if desired, for example:\n\
+    network show /01 /02 /03\n\n\
+";
+static char *text4 = "\
+network showall : this gives similar information to the show option,\n\
+but also gives details of the hardware facilities available in the\n\
+network.\n\n\
+";
+static char *text5 = "\
+network info : this is used to get information about the current loading\n\
+of the processors in the network. The output produced is something like:\n\
+   Processor 02 : load 1045, memory free 42%\n\
+By default the command gives details about all the processors in the\n\
+network, but it is possible to restrict the processors by listing\n\
+the ones desired, for example:\n\
+    network info /02 /03\n\n\
+";
+static char *text6 = "\
+network monitor : this is like the info option, but runs continuously\n\
+until the user quits. A menu is displayed. It is possible to\n\
+specify a different interval if desired:\n\
+  network monitor 20\n\
+Also, the processors affected may be restricted as per the info command.\n\
+  network monitor 20 /02 /03\n\n\
+";
+static char *text7 = "\
+network owners : this shows the various people logged in to the network\n\
+and how many processors have been allocated to each user.\n\n\
+";
+
+static char *text8 = "\
+network availability : this shows the numbers of processors currently free\n\
+or being cleaned out, and lists them.\n\n\
+";
+
+static char *text9 = "\
+network help : the help option gives this information.\n\n\
+";
+
+static	void	do_help(int argc, char **argv)
+{ FILE	*output = popen("/helios/bin/more", "w");
+
+  argc = argc; argv = argv;
+  
+  if (output eq (FILE *) NULL)
+   { fputs("network: failed to access /helios/bin/more\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+  fputs(text1, output);
+  fputs(text2, output);
+  fputs(text3, output);
+  fputs(text4, output);
+  fputs(text5, output);
+  fputs(text6, output);
+  fputs(text7, output);
+  fputs(text8, output);
+  fputs(text9, output);
+  pclose(output);  
+}
+
+/**
+*** Show the availability of processors. This involves two phases.
+*** In the first phase the numbers of processors in the free pool or
+*** owned by the cleaners are counted up. In the second phase the
+*** appropriate processors are printed. A junk variable is used to get
+*** the commas right.
+**/
+static int do_avail_aux1(RmProcessor, ...);
+static int do_avail_aux2(RmProcessor, ...);
+
+static void do_avail(int argc, char **argv)
+{ RmNetwork	network;
+  int		free_count;
+  int		cleaner_count;
+  int		graveyard_count;
+  int		junk;
+
+  if (argc ne 0) usage();
+  argv = argv;
+
+  network = RmGetNetwork();
+  if (network eq (RmNetwork) NULL)
+   { fprintf(stderr, "network: failed to get information on current network, RmLib error %s\n",
+		RmMapErrorToString(RmErrno));
+     return;
+   }
+
+  free_count	  = RmApplyProcessors(network, &do_avail_aux1, RmO_FreePool);
+  cleaner_count	  = RmApplyProcessors(network, &do_avail_aux1, RmO_Cleaners);
+  graveyard_count = RmApplyProcessors(network, &do_avail_aux1, RmO_Graveyard);
+  printf("network  : %d processors free, %d being cleaned, %d dead.\n",
+		free_count, cleaner_count, graveyard_count);
+  if (free_count > 0)
+   { junk = 0;
+     fputs("Free     : ", stdout);
+     (void) RmApplyProcessors(network, &do_avail_aux2, RmO_FreePool, &junk);
+     putchar('\n');
+   }
+  if (cleaner_count > 0)
+   { junk = 0;
+     fputs("Cleaners : ", stdout);
+     (void) RmApplyProcessors(network, &do_avail_aux2, RmO_Cleaners, &junk);
+     putchar('\n');
+   }
+}
+
+static int do_avail_aux1(RmProcessor processor, ...)
+{ va_list	args;
+  int		owner;
+  int		purpose;
+
+  va_start(args, processor);
+  owner = va_arg(args, int);
+  va_end(args);
+
+  if (RmGetProcessorOwner(processor) ne owner)
+   return(0);
+
+  purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+  if ((purpose eq RmP_IO) || (purpose eq RmP_Router))
+   return(0);
+
+  return(1);
+}
+
+static int do_avail_aux2(RmProcessor processor, ...)
+{ va_list	args;
+  int		owner;
+  int		*junk;
+  int		purpose;
+
+  va_start(args, processor);
+  owner = va_arg(args, int);
+  junk  = va_arg(args, int *);
+  va_end(args);
+
+  if (RmGetProcessorOwner(processor) ne owner)
+   return(0);
+
+  purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+  if ((purpose eq RmP_IO) || (purpose eq RmP_Router))
+   return(0);
+
+  if (*junk ne 0) fputs(", ", stdout);
+  fputs(RmGetProcessorId(processor), stdout);
+  *junk += 1;
+  return(1);
+}
+
+/**
+*** init_domain(), this is used to set a processor's private field to 0,
+*** to mark it as unused.
+**/
+static int init_network(RmProcessor Processor, ...)
+{ 
+  RmSetProcessorPrivate(Processor, 0);
+  return(0);
+}
+
+/**
+*** complement the above, get rid of any unwanted processors
+**/
+static int delete_unwanted(RmProcessor Processor, ...)
+{ int	rc;
+
+  if (RmGetProcessorPrivate(Processor) ne 0) return(0);
+  
+  if (RmRemoveProcessor(Processor) eq (RmProcessor) NULL)
+   { fputs("network: internal error manipulating network (remove)\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+  if ((rc = RmFreeProcessor(Processor)) ne RmE_Success)
+   { fprintf(stderr, "network: internal error manipulating network (delete %x)\n",
+   		rc);
+     exit(EXIT_FAILURE);
+   }
+
+  return(0);
+}
+   
+@
+
+
+1.9
+log
+@memory reduction
+@
+text
+@d16 1
+a16 1
+/* RcsId: $Header: /hsrc/network/RCS/network.c,v 1.8 1992/06/08 15:27:20 bart Exp $*/
+d326 3
+@
+
+
+1.8
+log
+@Moved the netutils routine LookupProcessor into the Resource Management
+library, RmLookupProcessor()
+@
+text
+@d16 1
+a16 2
+
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/network.c,v 1.7 1992/04/24 15:37:26 bart Exp bart $";
+@
+
+
+1.7
+log
+@Now uses nuinfo.c and numon.c for monitoring the network
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/network.c,v 1.6 1992/01/15 11:04:39 bart Exp $";
+d144 1
+a144 1
+      { RmProcessor	current = LookupProcessor(network, *argv);
+d171 1
+a171 1
+      { RmProcessor	current = LookupProcessor(network, *argv);
+d195 1
+a195 1
+       { RmProcessor	current = LookupProcessor(network, *argv);
+d231 1
+a231 1
+       { RmProcessor	current = LookupProcessor(network, *argv);
+@
+
+
+1.6
+log
+@Major update of networking sources, to incorporate the fault-tolerance
+work as demonstrated at the IED meeting 10.1.92
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/sparkygiga/Helios/network/RCS/network.c,v 1.2 90/12/17 14:31:25 bart Exp $";
+d52 2
+a53 1
+static	int		print_stats(RmProcessor, ...);
+d142 1
+a142 1
+   { init_PrintNetwork();
+d169 1
+a169 1
+   { init_PrintNetwork();
+d192 6
+a197 7
+  if (argc eq 0)
+   RmApplyProcessors(network, &print_stats);
+  else
+   for ( ; argc > 0; argc--, argv++)
+    { RmProcessor	current = LookupProcessor(network, *argv);
+      if (current eq (RmProcessor) NULL)
+       fprintf(stderr, "network: processor %s is not in the network\n",
+d199 8
+a206 3
+      else
+       (void) print_stats(current);
+    }
+d211 2
+a212 1
+{ int	delay = 10;
+a218 7
+   
+  forever
+   { printf("\fNetwork Monitor\n\n");
+     do_info(argc, argv);
+     Delay(delay * OneSec);
+   } 
+}
+d220 7
+d228 11
+a238 19
+/**
+*** print_stats(). This is used to display statistics on a processor. N.B.
+*** unless the processor is a Helios processor this does very little.
+**/
+static	BYTE	servinfo_data[sizeof(ProcStats) + IOCDataMax];
+
+static	int print_stats(RmProcessor Processor, ...)
+{ Object	*real_proc;
+  Object	*procman;
+  int		purpose;
+  ProcStats	*stats = (ProcStats *) servinfo_data;
+    
+  purpose = RmGetProcessorPurpose(Processor);
+  if ((purpose & RmP_Mask) ne RmP_Helios) return(0);
+  real_proc = RmMapProcessorToObject(Processor);
+  if (real_proc eq Null(Object))
+   { fprintf(stderr, "network: failed to access processor %s\n",
+   		RmGetProcessorId(Processor));
+     return(0);
+a239 14
+  procman = Locate(real_proc, "tasks");
+  if (procman eq Null(Object))
+   { fprintf(stderr, "network: failed to access processor manager on %s\n",
+   		real_proc->Name);
+     Close(real_proc);
+     return(0);
+   }
+  if (ServerInfo(procman, servinfo_data) < Err_Null)
+   fprintf(stderr, "network: failed to examine processor %s, fault 0x%8x\n",
+   	real_proc->Name, Result2(real_proc));
+  else
+   fprintf(stderr, "Processor %.8s : load %4d,  memory free %3d%%\n",
+	RmGetProcessorId(Processor), stats->Load,
+		(100 * stats->MemFree) / stats->MemMax);
+d241 2
+a242 4
+  Close(real_proc);
+  Close(procman);
+  return(0);		
+}  
+d394 1
+a394 2
+until the user aborts it by pressing control-C. By default information\n\
+on every processor is displayed every ten seconds. It is possible to\n\
+d524 30
+@
+
+
+1.5
+log
+@Minor changes to match Helios1_2_2_Native final release
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/network.c,v 1.4 1991/09/11 11:15:14 bart Exp $";
+d88 2
+a89 2
+  fputs("       : network show\n", stderr);
+  fputs("       : network showall\n", stderr);
+d138 2
+d141 11
+a151 3
+   PrintNetwork(network);
+
+  argc = argc; argv = argv;
+d155 1
+a155 1
+*** Show : simply print out the current network, in all its gory detail
+d165 2
+d168 11
+a178 3
+   PrintNetwork(network);
+
+  argc = argc; argv = argv;
+d392 3
+a394 1
+to other processors.\n\n\
+a432 3
+extern	FILE *popen(char *, char *);   
+extern  void pclose(FILE *);
+
+d468 1
+d481 5
+a485 5
+  free_count	= RmApplyProcessors(network, &do_avail_aux1, RmO_FreePool);
+  cleaner_count	= RmApplyProcessors(network, &do_avail_aux1, RmO_Cleaners);
+
+  printf("network  : %d processors are free, %d processors are being cleaned.\n",
+		free_count, cleaner_count);
+@
+
+
+1.4
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/network.c,v 1.2 1991/08/20 14:19:33 bart Exp $";
+d49 2
+a50 1
+static	void		do_owners(  int, char **);
+d74 2
+d93 1
+d186 1
+a186 1
+{ int	delay;
+d188 1
+a188 3
+  if (argc eq 0)
+   delay = 10;
+  elif (**argv ne '/')
+d201 1
+d203 40
+d403 5
+d431 1
+d436 5
+a440 2
+*** print_stats(). This is used to display statistics on a processor. N.B.
+*** unless the processor is a Helios processor this does very little.
+d442 2
+a443 1
+static	BYTE	servinfo_data[sizeof(ProcStats) + IOCDataMax];
+d445 14
+a458 13
+static	int print_stats(RmProcessor Processor, ...)
+{ Object	*real_proc;
+  Object	*procman;
+  int		purpose;
+  ProcStats	*stats = (ProcStats *) servinfo_data;
+    
+  purpose = RmGetProcessorPurpose(Processor);
+  if ((purpose & RmP_Mask) ne RmP_Helios) return(0);
+  real_proc = RmMapProcessorToObject(Processor);
+  if (real_proc eq Null(Object))
+   { fprintf(stderr, "network: failed to access processor %s\n",
+   		RmGetProcessorId(Processor));
+     return(0);
+d460 11
+a470 6
+  procman = Locate(real_proc, "tasks");
+  if (procman eq Null(Object))
+   { fprintf(stderr, "network: failed to access processor manager on %s\n",
+   		real_proc->Name);
+     Close(real_proc);
+     return(0);
+d472 7
+a478 7
+  if (ServerInfo(procman, servinfo_data) < Err_Null)
+   fprintf(stderr, "network: failed to examine processor %s, fault 0x%8x\n",
+   	real_proc->Name, Result2(real_proc));
+  else
+   fprintf(stderr, "Processor %.8s : load %4d,  memory free %3d%%\n",
+	RmGetProcessorId(Processor), stats->Load,
+		(100 * stats->MemFree) / stats->MemMax);
+d480 4
+a483 4
+  Close(real_proc);
+  Close(procman);
+  return(0);		
+}  
+d485 3
+d489 2
+d492 3
+d496 28
+@
+
+
+1.3
+log
+@Fixed bug in the do_monitor() routine. If a processor argument was given
+without a delay argument then the delay defaulted to an uninitialised
+variable.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/network.c,v 1.2 1990/12/17 14:31:25 bart Exp bart $";
+a51 1
+static	RmProcessor	LookupProcessor(RmNetwork, char *);
+a100 1
+  int		rc;
+d103 1
+a103 1
+  network = RmGetNetwork(&rc);
+d106 2
+a107 2
+    "network: failed to get information on current network, RmLib error 0x%x\n",
+        	rc);
+d110 1
+a110 1
+     (void) RmApplyNetwork(network, &do_list_aux);
+d118 2
+a119 3
+{ if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &do_list_aux));
+  printf("/%s ", RmGetProcessorID(Processor));
+a127 1
+  int		rc;
+d129 1
+a129 1
+  network = RmGetNetwork(&rc);
+d132 2
+a133 2
+    "network: failed to get information on current network, RmLib error 0x%x\n",
+        	rc);
+a144 1
+  int		rc;
+d146 1
+a146 1
+  network = RmGetNetworkAndHardware(&rc);
+d149 2
+a150 2
+    "network: failed to get information on current network, RmLib error 0x%x\n",
+        	rc);
+a158 1
+  int		rc;
+d160 1
+a160 1
+  network = RmGetNetwork(&rc);
+d163 2
+a164 2
+      "network: failed to get information on current network, RmLib error 0x%x\n",
+    		rc);
+d168 1
+a168 1
+   RmApplyNetwork(network, &print_stats);
+d182 1
+a182 1
+{ int	delay = 10;
+d184 3
+a186 1
+  if ((argc ne 0) && (**argv ne '/'))
+d211 1
+a217 1
+  int		rc;
+d222 1
+a222 1
+  IOCount = 0;
+d225 1
+a225 1
+  Network = RmGetNetwork(&rc);
+d234 1
+a234 1
+  (void) RmApplyNetwork(Network, &NetworkWalk);
+d239 1
+a239 1
+  printf("%-10s : %3d processor%s, %2d%% of the network\n",
+d243 5
+a253 2
+	/* Note that if the network contains subnets then this routine	*/
+	/* MUST do the recursion into the subnet.			*/
+d257 1
+a257 3
+  
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &NetworkWalk));
+d259 1
+a259 1
+  if (RmGetProcessorPurpose(Processor) eq RmP_IO)
+d261 2
+d394 1
+a397 3
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &print_stats));
+
+d399 1
+a399 2
+  if ((purpose ne RmP_Helios) && (purpose ne RmP_System))
+   return(0);
+d403 1
+a403 1
+   		RmGetProcessorID(Processor));
+d406 4
+a409 3
+  if (ServerInfo(real_proc, servinfo_data) < Err_Null)
+   { fprintf(stderr, "network: failed to examine processor %s, fault 0x%8x\n",
+   	real_proc->Name, Result2(real_proc));
+d413 7
+d422 1
+a422 3
+  fprintf(stderr, "Processor %.8s : load %4d,  memory free %3d%%\n",
+	RmGetProcessorID(Processor), stats->Load,
+		(100 * stats->MemFree) / stats->MemMax);
+a425 49
+/**
+*** Lookup Processor, similar to the one in the network server
+**/
+static int	LookupAux1(RmProcessor, ...);
+
+static RmProcessor	LookupProcessor(RmNetwork Network, char *name)
+{ char		*temp = name + strlen(name);
+  
+  if (*name eq '/') name++;
+  
+  for ( ; (temp >= name) && (*temp ne '/'); temp--);
+
+  return((RmProcessor) RmSearchNetwork(Network, &LookupAux1, name, ++temp));
+}
+
+static int LookupAux1(RmProcessor Processor, ...)
+{ va_list	args;
+  char		*name;
+  char		*last_name;
+  RmNetwork	current;
+  RmNetwork	root_net;
+  int		amount;
+      
+  va_start(args, Processor);
+  name		= va_arg(args, char *);
+  last_name	= va_arg(args, char *);
+  va_end(args);
+  
+  if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &LookupAux1, name, last_name));
+
+	/* Unless the last bit matches, do not bother to check */  
+  if (strcmp(RmGetProcessorID(Processor), last_name)) return(0);
+
+  current	= (RmNetwork) Processor;
+  root_net	= RmRootNetwork(Processor);
+  
+  while (last_name > name)	/* If name is 00, match is immediate	*/
+   { last_name--; last_name--;  /* Skip the / and get to last char	*/
+     for ( amount = 0; (last_name >= name) && (*last_name ne '/'); 
+           last_name--, amount++);
+     last_name++;		/* should now be Cluster */
+     current = RmParentNetwork((RmProcessor) current);
+     if (current eq (RmNetwork) NULL) return(0);
+
+     if (strncmp(RmGetNetworkID(current), last_name, amount)) return(0); 
+   }
+  return((int) Processor);
+}
+@
+
+
+1.2
+log
+@network info used to ignore system processors. This was incorrect.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/network.c,v 1.1 90/11/01 14:52:16 bart Exp $";
+d188 1
+a188 1
+{ int	delay;
+d190 1
+a190 3
+  if (argc eq 0)
+   delay = 10;
+  elif (**argv ne '/')
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/network.c,v 1.1 90/09/12 13:49:52 jon Exp $";
+d404 2
+a405 1
+  if (purpose ne RmP_Helios) return(0);
+@

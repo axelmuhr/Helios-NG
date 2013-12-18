@@ -1,0 +1,1263 @@
+head	1.16;
+access;
+symbols
+	Helios_1_3_1:1.16
+	Helios_C40_1_3_Official_Release:1.14
+	Alenia_release:1.13
+	Helios1_3:1.12
+	C40_Field_Test_2:1.12
+	C40_Field_Test_R1:1.10
+	Helios13_beta:1.10
+	Helios1_2_2:1.8
+	Helios1_2_2Beta:1.8
+	Helios1_2_1:1.7
+	Helios1_2:1.5
+	V1_2Beta0:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.16
+date	93.08.11.13.42.17;	author bart;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	93.07.12.10.24.29;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	93.03.17.10.49.42;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.11.04.16.33.16;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.09.07.16.57.06;	author paul;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.08.03.17.38.28;	author bart;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.06.12.16.13.43;	author nick;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.05.01.17.04.23;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.07.25.16.49.03;	author martyn;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.03.04.13.50.36;	author nick;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.02.27.18.46.04;	author nick;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.11.30.12.08.44;	author nick;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.15.17.36.45;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.25.19.27.09;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.10.11.00.00;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.05.13.28.13;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@posix exec() etc.
+@
+
+
+1.16
+log
+@Stack size for waiter thread is now controlled in pposix.h
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     P O S I X    L I B R A R Y			--
+--                     --------------------------                       --
+--                                                                      --
+--             Copyright (C) 1988, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- exec.c								--
+--                                                                      --
+--	Exec et al.							--
+--                                                                      --
+--	Author:  NHG 8/5/88						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId:	 %W%	%G% Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: exec.c,v 1.15 1993/07/12 10:24:29 nickc Exp $ */
+
+
+#include <helios.h>	/* standard header */
+
+#define __in_exec 1	/* flag that we are in this module */
+
+#include <stdarg.h>
+
+#include <posix.h>
+
+#include "pposix.h"
+#include <codes.h>
+#include <process.h>
+
+#define _Trace(a,b,c)
+
+STATIC Semaphore forklock;
+static fdentry *pfdvec;
+STATIC PCB *childvec;
+STATIC int inchild;
+static int nextpid;
+STATIC Port WaitPort;
+STATIC int starttime;
+STATIC int childtimes;
+STATIC int childvecsize;
+
+static char *pathbuf = NULL;
+
+STATIC void (*_exitvector[EXIT_LIMIT])(void);
+STATIC int number_of_exit_functions;
+STATIC Environ MyEnv;
+
+static void waiter(PCB *pcb);
+static void int2hex(int n, char *s);
+static int hex2int(char *s);
+
+extern char **_posix_init( void )
+{
+	char **argv;
+	Port myport;
+	char *ids;
+	sigset_t ignore = 0;
+	sigset_t mask = 0;
+	Capability cap;
+			
+	starttime  = (int) _cputime();
+	childtimes = 0;
+
+	InitSemaphore(&forklock,1);
+	PausePort = NullPort;
+	WaitPort = NewPort();
+	
+	childvec     = (PCB *)Malloc(childvecinc*sizeof(PCB));
+	childvecsize = childvecinc;
+	memset(childvec,0,childvecinc*sizeof(PCB));
+	
+	nextpid = 43;
+	inchild = 0;
+
+	childvec[0].pid = 42;	
+	childvec[0].pgrp = 42;	
+	
+	TaskData(TD_Port, &myport);	
+	GetEnv(myport, &MyEnv);
+	
+	argv = MyEnv.Argv;
+	environ = MyEnv.Envv;
+
+	UID = -1; GID = -1;
+	if((ids = getenv("_UID")) != NULL ) UID = hex2int(ids);
+	if((ids = getenv("_GID")) != NULL ) GID = hex2int(ids);
+	if((ids = getenv("_SIGMASK")) != NULL ) mask = hex2int(ids);
+	if((ids = getenv("_SIGIGNORE")) != NULL ) ignore = hex2int(ids);
+
+	/* install default capability				*/
+	((word *)&cap)[0] = -1;
+	((word *)&cap)[1] = UID | ((long)GID<<16);
+	DefaultCapability(&cap,NULL);
+		
+	init_signal(mask, ignore);
+	
+	init_fileio(&MyEnv);
+
+	/* if the CDL environment variable is set, try TFM in execve */
+	if( getenv("CDL") != NULL ) pflagword |= PE_RemExecute;
+
+	return argv;	
+}
+
+static int hex2int(char *s)
+{
+	int n = 0;
+	int i;
+	for( i = 0; i < 8; i++ )
+	{
+		char c = s[i];
+		if  ( '0' <= c && c <= '9' ) n = (n<<4) + c - '0';
+		elif( 'a' <= c && c <= 'f' ) n = (n<<4) + c - 'a' + 10;
+		else 			     n = (n<<4) + c - 'A' + 10;
+	}
+	return n;
+}
+
+static void int2hex(int n, char *s)
+{
+	int i;
+	for( i = 7; i >= 0; i-- ) 
+	{
+		int d = n&0xf;
+		if( d > 9 ) s[i] = 'A' + d - 10;
+		else s[i] = '0' + d;
+		n >>= 4;
+	}
+}
+
+static int vfork_start(void)
+{
+	int i;
+	int pcb = 0;
+
+	for( i = 1; i < childvecsize ; i++ ) 
+		if( childvec[i].pid == 0 ) { pcb = i; break; }
+	
+	/* if the childvec is full, re-allocate it */
+	if( i == childvecsize )
+	{
+		PCB *oldvec = childvec;
+		PCB *newvec = (PCB *)Malloc(((word)childvecsize+childvecinc)*sizeof(PCB));
+		
+		if( newvec != NULL )
+		{
+			memset(newvec,0,(childvecsize+childvecinc)*sizeof(PCB));
+			memcpy(newvec,oldvec,childvecsize*sizeof(PCB));
+			childvec = newvec;
+			Free(oldvec);
+			pcb = childvecsize;
+			childvecsize += childvecinc;
+		}
+	}
+
+	if( pcb == 0 )
+	{
+		Signal(&forklock);
+		errno = EAGAIN; return -1;
+	}
+
+	/* save fdvec and increment refs on open files */
+	
+	if( (pfdvec = savefdv()) == NULL )
+	{
+		Signal(&forklock);
+		errno = ENOMEM; return -1;
+	}
+
+	inchild = pcb;
+
+	savesigmasks();
+
+	childvec[pcb].status    = 0;
+	childvec[pcb].pid       = nextpid++;
+	childvec[pcb].pgrp      = childvec[0].pgrp;
+	childvec[pcb].starttime = (int)_cputime();
+	childvec[pcb].prog      = NULL;	
+	childvec[pcb].stream    = NULL;
+	
+	return 0;
+}
+
+static int posix_exit(int status)
+{
+	int pid;
+
+	_Trace(0xCCCC000F,MyTask,status);
+	
+	/* check for parent termination, if so, generate exit code */
+	
+	if( inchild == 0 )
+	{
+		Exit(((word)status&0xff)<<8);
+	}
+
+	/* else this is the termination of a vforked child, 		*/
+	/* status will either be the failure code, or MinInt if the	*/
+	/* child was successfully execed.				*/
+
+	pid = childvec[inchild].pid;
+
+	childvec[inchild].status = (int)(status==MinInt?MinInt:(((word)status&0xff)<<8));
+
+	restorefdv(pfdvec);
+	
+	pfdvec = NULL;	
+	
+	inchild	= 0;
+
+	restoresigmasks();	/* restore signal masks		*/
+
+	Signal(&forklock);	/* allow more vforks		*/
+
+	CHECKSIGS();		/* raise any pending signals	*/
+	
+	return pid;		/* return child pid to parent 	*/
+}
+
+static int _sigexit(int sig)
+{
+_Trace(0xCCCC000E,MyTask,sig);
+#ifndef __TRAN
+	/* make sure that exit code will not loop at a higher priority */
+	/* waiting for lower priority code to abort - because it can't! */
+	SetPriority(StandardPri);
+#endif
+	Exit(sig);
+return 0;
+}
+
+extern int execl(char *path,...)
+{
+  char **a0 = (&path)+1;	/* XXX - BEWARE of assumption of descending stack !!! */
+	
+  return execve(path,a0,environ);
+}
+
+extern int execv(char *path,char **argv)
+{
+	return execve(path,argv,environ);
+}
+
+extern int execle(char *path,...)
+{
+	char **a0;
+	char ***env;
+	
+	a0 = (&path)+1;
+	env = (char ***)a0;
+	
+	while( *env++ );
+
+	return execve(path,a0,*env);
+}
+
+extern int execlp(char *file,...)
+{
+	int r;
+	char **a0;
+	
+	pathbuf = (char *)Malloc(PATH_MAX+1);
+	
+	if( pathbuf == NULL ) { errno = ENOMEM; return -1; }
+	
+	find_file(pathbuf,file);
+	
+	a0 = (&file)+1;
+	
+	r = execve(pathbuf,a0,environ);	
+	
+	return r;
+}
+
+extern int execvp(char *file, char **argv)
+{
+	int r;
+
+	pathbuf = (char *)Malloc(PATH_MAX+1);
+	
+	if( pathbuf == NULL ) { errno = ENOMEM; return -1; }
+	
+	find_file(pathbuf,file);
+
+	r = execve(pathbuf,argv,environ);	
+	
+	return r;
+}
+
+extern int execve(char *name, char **argv, char **envv)
+{
+	Object *  tfm    = NULL;
+	Object *  source = NULL;
+	Object *  code   = NULL;
+	Object *  prog   = NULL;
+	Stream *  stream = NULL;
+	Environ * env    = (Environ *)Malloc(sizeof(Environ));
+	Stream ** strv   = NULL;
+	Object ** objv   = (Object **)Malloc(sizeof(Object *)*(OV_End+1));
+	word      e = 0;
+	char *    dummy = NULL;
+	char	  uidbuf[14];	/* _UID=01234567 */
+	char	  gidbuf[14];	/* _GID=01234567 */
+	bool	  got_newenv	= FALSE;
+
+	if( env == NULL || objv == NULL )
+	{ e = ENOMEM; goto fail; }
+	
+	if ((source = Locate(cdobj(), name)) == NULL)
+	{ e = posix_error(Result2(cdobj())); goto fail; }
+
+	code = source;
+	
+	/* Check the POSIX extension flag for Remote_Execute */
+	if( (pflagword & PE_RemExecute) == 0 || 
+	    (tfm = UserTFM) == (Object *)MinInt 
+	  )
+	{
+		if((code = Load(NULL,source)) == NULL)
+		{ e = posix_error(Result2(source)); goto fail; }
+		
+		tfm = Locate(cdobj(),"/tasks");
+	}
+
+	if ( (prog = Execute(tfm, code) ) == NULL )
+	{ e = posix_error(Result2(code));goto fail; }
+
+	if ((stream = Open(prog, NULL, O_ReadWrite)) == NULL)
+	{ e = posix_error(Result2(prog));goto fail; }
+
+	objv[OV_Cdir]	= cdobj();		/* current directory		*/
+	objv[OV_Task] 	= prog;			/* this program's /tasks entry	*/
+	objv[OV_Code] 	= code;			/* its /loader entry		*/
+	objv[OV_Source] = source;		/* original source file		*/
+	objv[OV_Parent] = ThisTask;		/* pass my /tasks entry as parent */
+	
+	objv[OV_Home] 	= Home;			/* user's home directory	*/
+	objv[OV_Console]= Console;		/* control console		*/
+	objv[OV_CServer]= CServer;		/* console server		*/
+	objv[OV_Session]= Session;		/* my session manager entry	*/
+	objv[OV_TFM]	= UserTFM;		/* user's TFM			*/
+
+	objv[OV_TForce]	= prog;			/* TFM entry for task force	*/
+	objv[OV_End]	= NULL;
+
+	if( (strv = marshalfdv()) == NULL ) {e = ENOMEM; goto fail; }
+
+	if (envv == NULL) envv = MyEnv.Envv;;
+
+		/* BLV - if an application uses a private set of environment	*/
+		/* strings then it is necessary to make a copy of these and	*/
+		/* add a further two for _UID and _GID, or there are very	*/
+		/* strange effects on protection.				*/
+		/* BLV - even worse, some programs change the environ variable !*/
+	if (envv != MyEnv.Envv)
+	 { int	count, i;
+	   char	**newenv;
+
+	   for (count = 0; envv[count] != NULL; count++);
+	   newenv = (char **)Malloc(((long)count + 3) * sizeof(char *));
+	   if (newenv == NULL)
+	    { e = ENOMEM; goto fail; }
+	   for (i = 0; i < count; i++)
+	    newenv[i] = envv[i];
+	   newenv[i] = NULL;
+
+	   envv = environ;		/* Save the old environment */
+	   environ = newenv;
+	   if (getenv("_UID") == NULL)	/* Check that _UID is not already defined */
+	    { strcpy(uidbuf, "_UID=00000000");
+ 	      newenv[i++] = uidbuf;
+	      newenv[i]   = NULL;
+	    }
+	   if (getenv("_GID") == NULL)
+	    { strcpy(gidbuf, "_GID=00000000");
+	      newenv[i++] = gidbuf;
+	      newenv[i]   = NULL;
+	    }
+	   environ = envv;	/* restore old environment		*/
+	   envv	   = newenv;	/* and use the newly created environment*/
+	   got_newenv = TRUE;
+	 }
+
+		/* Try to stop a hacker from overwriting the _UID and	*/
+		/* _GID strings in the environment by resetting these 	*/
+		/* using private variables.				*/
+	{ char	**saveenv;
+	  char	 *ids;
+
+	  saveenv = environ;		/* so that getenv() can be used */
+	  environ = envv;		/* possibly a no-op		*/
+
+	  if((ids = getenv("_UID")) != NULL ) int2hex(UID,ids);
+	  if((ids = getenv("_GID")) != NULL ) int2hex(GID,ids);
+	  if((ids = getenv("_SIGMASK")) != NULL ) int2hex((int)mask.mask,ids);
+	  if((ids = getenv("_SIGIGNORE")) != NULL ) int2hex((int)mask.ignore,ids);
+
+	  environ = saveenv;
+	}
+	
+	env->Argv = argv==NULL?&dummy:argv;
+	env->Envv = envv==NULL?&dummy:envv;
+	env->Objv = objv;
+	env->Strv = strv;
+
+	if( (e=SendEnv(stream->Server, env)) < 0 )
+	{ e = posix_error(e); goto fail; }
+
+	if( tfm != NULL && tfm != UserTFM ) Close(tfm);
+	if( source != NULL && source != code ) Close(source);
+	Close(code);
+	if (got_newenv) Free(envv);
+	Free(env);
+	Free(strv);
+	Free(objv);
+	if( pathbuf != NULL ) Free(pathbuf),pathbuf=NULL;
+
+	if( inchild == 0 )
+	{
+		Close(prog);		/* replace current */
+		Close(stream);
+		_exit(0);
+	}
+	else
+	{
+		childvec[inchild].prog = prog;	
+		childvec[inchild].stream = stream;
+		Fork(WaiterStack, waiter,4,&(childvec[inchild]));
+		_exit((int)MinInt);
+	}
+
+fail:
+	if( tfm != NULL && tfm != UserTFM ) Close(tfm);
+	if( source != NULL && source != code ) Close(source);
+	if( code != NULL ) Close(code);
+	if( prog != NULL ) Close(prog);
+	if( stream != NULL ) Close(stream);
+	if( env != NULL ) Free(env);
+	if( strv != NULL ) Free(strv);
+	if( objv != NULL ) Free(objv);
+	if( pathbuf != NULL ) Free(pathbuf),pathbuf=NULL;
+	if (got_newenv) Free(envv);
+	errno = (int)e;
+	return -1;
+}
+
+static void waiter(PCB *pcb)
+{
+	extern void inner_raise(int sig, bool async, bool propagate);
+	word svsize = InitProgramInfo(pcb->stream,PS_Terminate);
+	word *sv    = (word *)Malloc(svsize * sizeof(word));
+	word status;
+	
+_Trace(0xAAAA000a,MyTask,pcb->pid);	
+	status = GetProgramInfo(pcb->stream,sv,-1);
+_Trace(0xAAAA000b,MyTask,status);	
+	Wait( &forklock );
+_Trace(0xAAAA000c,MyTask,status);	
+	pcb->status = (int)status;
+
+	AbortPort(WaitPort,0);
+_Trace(0xAAAA000d,MyTask,status);	
+	Signal( &forklock );
+
+	inner_raise(SIGCHLD,TRUE,FALSE);
+	Free(sv);
+_Trace(0xAAAA000e,MyTask,status);
+}
+
+extern pid_t wait(int *stat)
+{
+	return waitpid(-1,stat,0);
+}
+
+extern pid_t wait2(int *stat, int options)
+{
+	return waitpid(-1,stat,options);
+}
+
+extern pid_t wait3(int *stat, int options,void *rusage)
+{
+	return waitpid(-1,stat,options);
+}
+
+extern pid_t waitpid(pid_t wpid, int *stat,int options)
+{
+	int status = 0;
+	int pcb;
+	int pid = 0;
+	pid_t pgrp = 0;
+	MCB m;
+_Trace(0xAAAA0001,MyTask,wpid);
+	CHECKSIGS();
+	Wait(&forklock);	/* ensure no forks happen during this */
+_Trace(0xAAAA0005,MyTask,wpid);	
+
+	if( wpid == 0 ) pgrp = childvec[inchild].pgrp;
+	elif( wpid < -1 ) pgrp = -wpid;
+	
+	/* loop here forever until a child, if any, terminates	*/
+	forever
+	{
+		int i;
+		word e;
+		int any = 0;
+		pcb = 0;
+
+		for( i = 1; i < childvecsize; i++ )
+			if( (childvec[i].pid != 0)		&&
+			    ((wpid == -1) 			||
+			     (childvec[i].pid == wpid)		||
+			     (childvec[i].pgrp == pgrp)
+			    )
+			  ) 
+			{
+				any++;
+				if( (childvec[i].status != MinInt) )
+					{ pcb = i; break; }
+			}
+
+		if( any == 0 ) { errno = ECHILD, pid = -1; goto done; }
+
+		if( pcb != 0 ) break;
+		
+		if( (options & WNOHANG) != 0 ) goto done;
+		
+		InitMCB(&m,0,WaitPort,NullPort,0);
+_Trace(0xAAAA0006,MyTask,wpid);
+		/* release the lock while we wait for a child to finish	*/
+		Signal( &forklock );
+		e = GetMsg(&m);
+		Wait( &forklock );		
+_Trace(0xAAAA0004,MyTask,e);
+	
+		if( e == 123 ) { errno = EINTR; pid = -1; goto done; }
+		
+		if( e == EK_Timeout ) continue;
+		
+		FreePort(WaitPort);
+		WaitPort = NewPort();
+	}
+
+	pid = childvec[pcb].pid;
+
+	status = childvec[pcb].status;
+
+	if( childvec[pcb].prog != NULL ) Close(childvec[pcb].prog);
+	if( childvec[pcb].stream != NULL ) Close(childvec[pcb].stream);
+
+	childtimes += (int)(_cputime() - childvec[ pcb ].starttime);
+
+	childvec[pcb].pid = 0;
+		
+	if( stat != NULL ) *stat = status;
+
+done:
+	Signal(&forklock);
+_Trace(0xAAAA0002,MyTask,pid|(errno<<16));	
+	CHECKSIGS();
+_Trace(0xAAAA0003,MyTask,pid|(errno<<16));
+	return pid;
+}
+
+extern void find_file(char *path, char *file )
+{
+	char *env;
+	char *f = file;
+	
+	while( *f ) 
+		if( *f++ == '/' ) 
+		{
+			strcpy(path,file);
+			return;
+		}
+	
+	env = getenv("PATH");
+
+	if( env != NULL ) 
+	{
+		while( *env != '\0' )
+		{
+			Object *o;
+			char *p = path;
+			char *f = file;
+			while( *env != ':' && *env != '\0' ) *p++ = *env++;
+			*p++ = '/';
+
+			while( (*p++ = *f++) != '\0' );
+
+			if( (o=Locate(cdobj(),path)) != NULL )
+			{
+				Close(o);
+				return;
+			}
+			if( *env == ':' ) env++;
+		}
+	}
+
+	strcpy(path,file);
+	
+	return;
+}
+
+/* This is not really part of Posix, but no self-respecting Unix look-	*/
+/* alike should be without it.						*/
+
+extern int system(const char *command)
+{
+	int stat;
+	CHECKSIGS();
+	if( vfork()==0 )
+	{
+	/* MJT 25/7/91 */
+
+	/* close down streams with fd > 3 so that open pipes do not end */
+	/* up with 4 ends !						*/
+
+		int fd, maxfd = getdtablesize();
+
+		for(fd = 4 ; fd < maxfd ; fd++)
+			close(fd);
+
+		execl("/helios/bin/shell", "shell", "-fc", command, NULL );
+		_exit(20);
+	}
+	wait(&stat);
+	CHECKSIGS();
+	return stat;
+}
+
+/* It is very difficult to tell from the Posix spec whether these 	*/
+/* functions are part of Posix or not. We have put them here because	*/
+/* this is the most sensible place for them...				*/
+
+extern int atexit(void (*func)(void))
+{ 
+	if (number_of_exit_functions >= EXIT_LIMIT) return 1;    /* failure */
+		_exitvector[number_of_exit_functions++] = func;
+	return 0;                                                /* success */
+}
+
+extern void exit(int n)
+{
+	while (number_of_exit_functions!=0)
+		(*_exitvector[--number_of_exit_functions])();
+	_exit(n);
+}
+
+extern void abort()
+{
+	raise(SIGABRT);
+	_sigexit(0x80+SIGABRT);
+}
+
+extern Environ *getenviron(void)
+{
+	return &MyEnv;
+}
+
+/* end of exec.c */
+@
+
+
+1.15
+log
+@fixed warning messages from new compiler
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.14 1993/03/17 10:49:42 nickc Exp nickc $ */
+d430 1
+a430 1
+		Fork(1000,waiter,4,&(childvec[inchild]));
+@
+
+
+1.14
+log
+@added warning comment about assumption of descending stack
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.13 1992/11/04 16:33:16 nickc Exp nickc $ */
+a45 17
+extern Port PausePort;
+extern int pflagword;
+extern struct sigaction sigactions[];
+
+extern uid_t	UID;
+extern gid_t	GID;
+
+extern void init_fileio(Environ *env);
+extern fdentry *savefdv(void);
+extern void restorefdv(fdentry *sfdvec);
+extern Stream **marshalfdv(void);
+extern int _cputime(void);
+extern void *memset(void *dst, int byte, int size);
+extern int svopen(Stream *s, int fd);
+extern void *memcpy(void * dst, void *src, int size);
+extern void *strcpy(char *dst, char *src);
+
+a49 1
+extern void find_file(char *path, char *file );
+a50 4
+
+extern int posix_error(word);
+extern void init_signal(sigset_t mask, sigset_t ignore);
+
+d54 1
+a54 1
+extern char **_posix_init()
+d63 1
+a63 1
+	starttime = _cputime();
+d70 1
+a70 1
+	childvec = Malloc(childvecinc*sizeof(PCB));
+d145 1
+a145 1
+		PCB *newvec = Malloc(((word)childvecsize+childvecinc)*sizeof(PCB));
+d176 6
+a181 6
+	childvec[pcb].status = 0;
+	childvec[pcb].pid = nextpid++;
+	childvec[pcb].pgrp = childvec[0].pgrp;
+	childvec[pcb].starttime = _cputime();
+	childvec[pcb].prog = NULL;	
+	childvec[pcb].stream = NULL;
+d264 1
+a264 1
+	pathbuf = Malloc(PATH_MAX+1);
+d281 1
+a281 1
+	pathbuf = Malloc(PATH_MAX+1);
+d294 13
+a306 13
+	Object *tfm = NULL;
+	Object *source = NULL;
+	Object *code = NULL;
+	Object *prog = NULL;
+	Stream *stream = NULL;
+	Environ *env = Malloc(sizeof(Environ));
+	Stream **strv = NULL;
+	Object **objv = Malloc(sizeof(Object *)*(OV_End+1));
+	word e = 0;
+	char *dummy = NULL;
+	char	uidbuf[14];	/* _UID=01234567 */
+	char	gidbuf[14];	/* _GID=01234567 */
+	bool	got_newenv	= FALSE;
+d362 1
+a362 1
+	   newenv = Malloc(((long)count + 3) * sizeof(char *));
+d453 1
+a453 1
+	word *sv = Malloc(svsize * sizeof(word));
+d455 1
+d552 1
+a552 1
+	childtimes += _cputime()-childvec[pcb].starttime;
+d609 1
+a609 1
+extern int system(char *command)
+@
+
+
+1.13
+log
+@fixed minor compile time warnings
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.12 1992/09/07 16:57:06 paul Exp nickc $ */
+d258 1
+a258 1
+	char **a0 = (&path)+1;
+d260 1
+a260 1
+	return execve(path,a0,environ);
+@
+
+
+1.12
+log
+@fix to stop Exit looping forever when its priority (during a signal)
+is higher than task that it is waiting for to abort.
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.11 1992/08/03 17:38:28 bart Exp $ */
+d116 1
+a116 1
+	((word *)&cap)[1] = UID | (GID<<16);
+d211 3
+a213 1
+_Trace(0xCCCC000F,MyTask,status);
+d215 1
+d230 1
+d384 1
+a384 1
+	   newenv = Malloc((count + 3) * sizeof(char *));
+@
+
+
+1.11
+log
+@Fixed problems with user id inheritance in execve().
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.10 1992/06/12 16:13:43 nick Exp $ */
+d30 1
+a60 1
+extern int Fork(int stsize, VoidFnPtr fn, ...);
+d243 5
+@
+
+
+1.10
+log
+@Default capability installed on program startup.
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.9 1992/05/01 17:04:23 nickc Exp nick $ */
+d317 3
+a319 2
+	char **saveenv;
+	char *ids;
+d363 1
+a363 7
+	if( envv != environ ) saveenv=environ,environ=envv;
+	else saveenv = NULL;
+	
+	if((ids = getenv("_UID")) != NULL ) int2hex(UID,ids);
+	if((ids = getenv("_GID")) != NULL ) int2hex(GID,ids);
+	if((ids = getenv("_SIGMASK")) != NULL ) int2hex((int)mask.mask,ids);
+	if((ids = getenv("_SIGIGNORE")) != NULL ) int2hex((int)mask.ignore,ids);
+d365 50
+a414 1
+	if( saveenv ) environ = saveenv;
+d427 1
+d457 1
+a457 1
+
+@
+
+
+1.9
+log
+@removed some compiler warnings
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.8 1991/07/25 16:49:03 martyn Exp nickc $ */
+d83 1
+d108 1
+d114 5
+@
+
+
+1.8
+log
+@in the system routine, close down fd's > 3 before exec. This prevents the
+duplication of pipe descriptors (a pipe can ony have two ends).
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.7 1991/03/04 13:50:36 nick Exp $ */
+d70 1
+a70 1
+extern int posix_error(int);
+d160 1
+a160 1
+		PCB *newvec = Malloc((childvecsize+childvecinc)*sizeof(PCB));
+d208 1
+a208 1
+		Exit((status&0xff)<<8);
+d217 1
+a217 1
+	childvec[inchild].status = status==MinInt?MinInt:((status&0xff)<<8);
+d237 1
+d308 1
+a308 1
+	int e = 0;
+d360 2
+a361 2
+	if((ids = getenv("_SIGMASK")) != NULL ) int2hex(mask.mask,ids);
+	if((ids = getenv("_SIGIGNORE")) != NULL ) int2hex(mask.ignore,ids);
+d392 1
+a392 1
+		_exit(MinInt);
+d406 1
+a406 1
+	errno = e;
+d413 1
+a413 1
+	int svsize = InitProgramInfo(pcb->stream,PS_Terminate);
+d421 1
+a421 1
+	pcb->status = status;
+d465 2
+a466 1
+		int i,e;
+@
+
+
+1.7
+log
+@hex2int now copes with lowercase as well as upper case hex digits
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.6 91/02/27 18:46:04 nick Exp $ */
+d573 10
+@
+
+
+1.6
+log
+@Long-standing bug in execle() fixed
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.5 90/11/30 12:08:44 nick Exp $ */
+d129 3
+a131 2
+		if( '0' <= c && c <= '9' ) n = (n<<4) + c - '0';
+		else n = (n<<4) + c - 'A' + 10;
+@
+
+
+1.5
+log
+@execvp used to leave 513 byte memory chunks lying around.
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.4 90/11/15 17:36:45 nick Exp Locker: nick $ */
+d253 1
+a253 1
+	char **env;
+d255 2
+a256 1
+	env = a0 = (&path)+1;
+d258 3
+a260 3
+	while( *(++env) != (char *)0 );
+	
+	return execve(path,a0,env);
+@
+
+
+1.4
+log
+@signal state now saved & restored across vforks, process groups handled
+correctly in waitpid().
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.3 90/09/25 19:27:09 paul Exp $ */
+d43 2
+d266 2
+a267 1
+	char *path = Malloc(PATH_MAX+1);
+d269 1
+a269 1
+	if( path == NULL ) { errno = ENOMEM; return -1; }
+d271 1
+a271 1
+	find_file(path,file);
+d275 1
+a275 3
+	r = execve(path,a0,environ);	
+	
+	Free(path);
+d283 2
+a284 1
+	char *path = Malloc(PATH_MAX+1);
+d286 1
+a286 1
+	if( path == NULL ) { errno = ENOMEM; return -1; }
+d288 1
+a288 1
+	find_file(path,file);
+d290 1
+a290 3
+	r = execve(path,argv,environ);	
+	
+	Free(path);
+d376 1
+d401 1
+@
+
+
+1.3
+log
+@arm changes
+@
+text
+@d17 1
+a17 1
+/* $Id: exec.c,v 1.2 90/09/10 11:00:00 nick Exp Locker: nick $ */
+d31 2
+d93 1
+a93 4
+	childvec[0].pid = 0;
+	childvec[0].status = 0;
+
+	nextpid = 1;
+d96 3
+a113 4
+#if 0	
+	init_session(&MyEnv);
+#endif
+		
+a135 1
+	int n1 = n;
+a144 22
+#if 0
+static init_session(Environ *env)
+{
+	int objc;
+	Object **objv = env->Objv;
+	
+	for( objc = 0; objv[objc]; objc++ );
+	
+	if( objc > OV_Home ) Home = objv[OV_Home];
+	else Home = (Object *)MinInt;
+
+	if( objc > OV_Console ) Console = objv[OV_Console];
+	else Console = (Object *)MinInt;
+
+	if( objc > OV_TFM ) UserTFM = objv[OV_TFM];
+	else UserTFM = (Object *)MinInt;
+
+	if( objc > OV_Session ) Session = objv[OV_Session];
+	else Session = (Object *)MinInt;
+}
+#endif
+
+d184 4
+d190 1
+a194 2
+	inchild = pcb;
+
+d201 1
+a201 1
+
+d221 2
+d225 2
+d232 1
+d309 1
+a309 1
+			
+d312 1
+a312 1
+
+a318 5
+#if 0
+	if (((pflagword & PE_RemExecute) == 0) || 
+	    ((tfm = Locate(cdobj(), "/tfm")) == NULL)
+	   )
+#else
+a321 1
+#endif
+d357 2
+a358 2
+	if((ids = getenv("_SIGMASK")) != NULL ) int2hex(sig_mask,ids);
+	if((ids = getenv("_SIGIGNORE")) != NULL ) int2hex(sig_ignore,ids);
+d400 1
+a400 1
+	
+d407 1
+a407 1
+	extern void inner_raise(int sig, bool async);
+d410 7
+a416 2
+
+	pcb->status = GetProgramInfo(pcb->stream,sv,-1);
+d419 2
+d422 1
+a422 1
+	inner_raise(SIGCHLD,TRUE);
+d424 1
+d447 3
+a449 2
+	MCB *m = New(MCB);
+
+d452 4
+d465 6
+a470 1
+			if(childvec[i].pid != 0) 
+d473 2
+a474 4
+				if( (childvec[i].status != MinInt) &&
+				    ((wpid == -1) ||
+				     (wpid > 0 && childvec[i].pid == wpid)))
+				{ pcb = i; break; }
+d483 8
+a490 4
+		InitMCB(m,0,WaitPort,NullPort,0);
+
+		e = GetMsg(m);
+		
+a512 2
+	Free(m);
+
+d514 1
+a514 1
+	
+d516 1
+d603 1
+a603 1
+  return &MyEnv;
+@
+
+
+1.2
+log
+@now picks up UserTFM from environment when CDL is set
+@
+text
+@d17 1
+a17 1
+/* $Id$ */
+d324 1
+a324 1
+	char *saveenv;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d336 1
+d340 5
+@

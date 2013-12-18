@@ -1,0 +1,175 @@
+         GET      "asmhdr"
+
+         EXTRN    _mem_un,__exit,_main
+         ENTRY    callglb,_exit,GetGlob,initpkt
+         ENTRY    _stackt
+         ENTRY    __stack
+
+UG        EQU      150
+CALLMAING EQU      UG+0
+CALLEXTG  EQU      UG+15
+HRG       EQU      UG+15
+
+SECT    MACRO  arg1
+        CNOP   0,4
+        DC.L   LIBWORD
+        DC.B   7,\1
+        ENDM
+
+*
+* Coroutine symbols
+*
+C_LINK    EQU        0               Link to next co-routine
+C_CLLR    EQU        4               Caller coroutine
+C_SEND    EQU        8               Stack end - 50
+C_RESP    EQU       12               Resumption ptr
+C_FUNC    EQU       16               Function
+*                   20               PC dump - dummy
+C_RTRN    EQU       24               Return link for stop
+*
+*
+* Global vector symbols
+*
+*
+G_RES2    EQU      10*4              Used for error codes
+G_RC      EQU      11*4              RETURNCODE for STOP
+G_SBASE   EQU      12*4              Current stack base
+
+MSTART   DC.L     (MEND-MSTART)/4
+         DC.L     SECWORD
+         DC.B     19,'C interface routine'
+
+         SECT     <'callmai'>
+*
+* CALLMAIN( argv, argl, init.packet)
+*
+CALLMAIN:
+         MOVEM.L  A0-A7,RA0-CALLMAIN(A4)   ;SAVE COMPLETE BCPL ENV.
+         MOVE.L   G_SBASE(A2),A0           ;FETCHES BASE OF CURRENT BCPL STACK
+         ADDA.L   A0,A0                    ;MAKE MC
+         ADDA.L   A0,A0
+         MOVE.L   C_SEND(A0),SP            ;FETCH TOP OF BCPL STACK AS C STACK
+         LEA.L    _main,A0
+         MOVE.L   #2,D5
+         LSL.L    #2,D1                    ;Make MC addr of argv
+         LSL.L    #2,D3                    ;and Initpkt
+         MOVE.L   D3,initpkt-CALLMAIN(A4)  ;set up external for init packet
+         BRA.S    CALLEXT
+
+         SECT     <'callext'>
+*
+* CALLEXT( arg1, ... )
+*   +  A0 = C routine to call
+*   &  D5 = No. of args
+*
+CALLEXT:
+         LEA.L    CALLEXT,A4
+         MOVEA.L  STACK_POINTER-CALLEXT(A4),A3 ;POINTER FOR THE INTERNAL STACK
+         MOVE.L   A1,-(A3)                     ;STACK BCPL ENV.
+         MOVE.L   A3,STACK_POINTER-CALLEXT(A4) ;UPDATE POINTER
+         MOVE.L   A1,_stacktop-CALLEXT(A4)
+         MOVE.L   D1,D0
+         MOVE.L   D2,D1
+         MOVE.L   D3,D2
+         MOVE.L   D4,D3
+         SUBQ.L   #5,D5
+         BLT.S    NO_ARGS
+         MOVE.L   D5,D4                    ;Save No. of args pushed for later
+         ADDQ.L   #1,D4                    ;Real No. of args pushed
+         MOVE.L   A1,A3
+         ADDA.L   #16,A3                   ;GET RID OF FIRST 4 STACKED ARGS
+MORE_ARGS:
+         MOVE.L   (A3)+,-(SP)
+         DBRA     D5,MORE_ARGS
+         BRA.S    CALLC
+NO_ARGS: MOVEQ.L  #0,D4                    ; No args pushed
+*
+* Norcroft C will only corrupt D0-D3/D7/A0
+*
+CALLC    JSR      (A0)
+         LSL.L    #2,D4                    ; Make bytes count of args pushed
+         ADDA.L   D4,SP                    ; Remove pushed args
+         SUBA.L   A0,A0
+         ADDI.L   #4,STACK_POINTER-CALLEXT(A4)  ;Junk last BCPL env.
+         MOVE.L   D0,D1
+         JMP      (R)
+*
+*
+_exit:   JSR      _mem_un
+         LEA.L    _exit,A4
+         MOVEM.L  RA0-_exit(A4),A0-A7
+         JMP      (R)                      ;AND EXIT
+*
+__stack_overflow:
+__stack: MOVE.L   #84,D0
+         TRAP     #0
+         BRA.S    __stack
+*
+*
+         SECT     <'callglb'>
+*
+* callglb( globalnum, nargs, arg1, ... )
+*
+NREGS    EQU      9
+*
+callglb: MOVEM.L  D4-D6/A1-A6,-(SP)        ;SAVE C NON-CORRUPTIBLES
+         LEA.L    callglb,A4               ;MAKE IT LOOK AS IF IN BCPL
+         MOVE.L   RA2-callglb(A4),A2       ;LOAD INITIAL BCPL ENV.
+         MOVEA.L  STACK_POINTER-callglb(A4),A3  ;GET BCPL ENV A1 FROM INTERNAL
+         MOVEA.L  (A3),A1                  ;STACK
+         
+         LSL.L    #2,D0                    ;MAKE GLOBAL OFFSET
+         MOVE.L   0(A2,D0.L),A0            ;LOAD ADDRESS OF ROUTINE TO CALL
+
+         MOVE.L   D1,D0                    ;COPY NARGS
+         MOVE.L   D2,D1                    ;PUT ARG1 IN RIGHT REG
+         MOVE.L   D3,D2                    ;"  ARG2 "    "    "
+         SUBQ.L   #3,D0                    ;ANY MORE ?
+         BLT.S    L1                       ;IF LT NO
+         LEA.L    (NREGS+1)*4(SP),A6       ;OTHERWISE LOAD ADDRESS TO COPY FROM
+         MOVE.L   (A6)+,D3                 ;ARGUMENT FOR D3
+         DBRA     D0,L2                    ;FINISHED ?
+         BRA.S    L1                       ;YES
+L2:      MOVE.L   (A6)+,D4                 ;ARGUMENT FOR D4
+         DBRA     D0,L3                    ;FINISHED ?
+         BRA.S    L1                       ;YES
+L3:      LEA.L    12+16(A1),A5             ;ADDRESS TO POKE AHEAD TO
+L4:      MOVE.L   (A6)+,(A5)+              ;POKE REST OF ARGUMENTS AHEAD
+         DBRA     D0,L4
+L1:
+         MOVEM.L  RA5-callglb(A4),A5/A6    ;LOAD S AND R ROUTINES
+         MOVE.L   #12,D0
+         MOVE.L   A0,A4
+         SUBA.L   A0,A0
+         JSR      (S)                      ;CALL BCPL
+         MOVE.L   D1,D0                    ;FETCH RESULT
+         MOVEM.L  (SP)+,D4-D6/A1-A6        ;RESTORE REGS
+         RTS
+
+GetGlob: MOVE.L   RA2,D0
+         RTS
+
+RA0:     DC.L     1
+RA1:     DC.L     1
+RA2:     DC.L     1
+RA3:     DC.L     1
+RA4:     DC.L     1
+RA5:     DC.L     1
+RA6:     DC.L     1
+RA7:     DC.L     1
+
+         DS.L     100         ;STACK of BCPL environments
+STACK:
+STACK_POINTER:
+         DC.L     STACK
+initpkt: DC.L     0
+
+_stacktop:
+_stackt: DC.L     0
+
+         CNOP     0,4
+         DC.L     0
+         DC.L     CALLMAING,CALLMAIN-MSTART
+         DC.L     CALLEXTG,CALLEXT-MSTART
+         DC.L     HRG
+MEND     END

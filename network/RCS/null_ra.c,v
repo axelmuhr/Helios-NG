@@ -1,0 +1,489 @@
+head	1.9;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.6
+	Helios1_3:1.4
+	C40_Field_Test_2:1.4
+	C40_Field_Test_R1:1.3
+	Helios13_beta:1.3
+	Helios1_2_2_Fault:1.3
+	Helios1_2_2_Native:1.3
+	Helios1_2_2_native_beta:1.3
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.9
+date	93.08.12.13.52.31;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	93.08.11.11.13.41;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	93.04.20.10.49.03;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.12.14.15.32.00;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.12.07.12.19.33;	author nick;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.07.10.12.11.47;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.03.01.17.19.59;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.14.16.59.25;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@a null reset driver, which should be portable to all machines because it
+does not touch any hardware
+@
+
+
+1.9
+log
+@fixed compile time warnings
+@
+text
+@/*------------------------------------------------------------------------
+--									--
+--			H E L I O S					--
+--			-----------					--
+--									--
+--		Copyright (C) 1990, Perihelion Software Ltd.		--
+--			All Rights Reserved.				--
+--									--
+--	null_ra.c							--
+--		  A null driver. This claims to reset every processor,	--
+--	but actually does nothing.					--
+--									--
+--	Author : BLV, 24.8.90						--
+--									--
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/null_ra.c,v 1.8 1993/08/11 11:13:41 bart Exp nickc $*/
+
+#define	VersionNumber "1.03"
+
+#ifdef __TRAN
+#pragma -f0		/* switch off vector stack			*/
+#pragma -g0		/* and do not put the names into the code	*/
+#endif
+
+#ifdef STACKCHECK
+#ifdef __TRAN
+#pragma -s1
+static void _stack_error(Proc *p)
+{ IOdebug("null_ra.d: stack overflow in %s at %x",p->Name,&p);
+  Exit(0x0080 | SIGSTAK);
+}
+#endif
+#pragma	-s0
+#else
+#pragma -s1
+#endif
+
+#include <syslib.h>
+#include <device.h>
+#include <codes.h>
+#include <root.h>
+#include <gsp.h>
+#include <module.h>
+#include <stdarg.h>
+#include <string.h>
+#include "private.h"
+#include "rmlib.h"
+#include "netaux.h"
+
+#ifdef Malloc
+#undef Malloc
+#endif
+
+/**
+*** Machine independent routines.
+**/
+static void	DeviceOperate(DCB *, DriverRequest *);
+static word	DeviceClose(DCB *);
+
+/**
+*** Machine specific routines
+**/
+static void	driver_Initialise(	NetworkDCB *, DriverRequest *);
+static void	driver_Reset(		NetworkDCB *, DriverRequest *);
+static void	driver_Analyse(		NetworkDCB *, DriverRequest *);
+static void	driver_TestReset(	NetworkDCB *, DriverRequest *);
+static void	driver_Boot(		NetworkDCB *, DriverRequest *);
+static void	driver_ConditionalReset(NetworkDCB *, DriverRequest *);
+
+DCB	*DevOpen(MPtr dev, NetworkDCB *network_dcb)
+{
+  network_dcb->DCB.Device	= dev;
+  network_dcb->DCB.Operate	= &DeviceOperate;
+  network_dcb->DCB.Close	= &DeviceClose;
+  return(&(network_dcb->DCB));  
+}
+
+static void DeviceOperate(DCB *device, DriverRequest *request)
+{ NetworkDCB	*network_dcb = (NetworkDCB *) device;
+
+  switch(request->FnRc)
+   {
+   	case	ND_Initialise	: 
+   		driver_Initialise(network_dcb, request); break;
+	case	ND_Reset	:
+		driver_Reset(network_dcb, request); break;
+	case	ND_Analyse	:
+		driver_Analyse(network_dcb, request); break;
+	case	ND_TestReset	:
+		driver_TestReset(network_dcb, request); break;
+	case	ND_Boot		:
+		driver_Boot(network_dcb, request); break;	
+	case	ND_ConditionalReset :
+		driver_ConditionalReset(network_dcb, request); break;
+	default	:
+		request->FnRc = (int)(EC_Error + SS_NetServ + EG_WrongFn);
+   }
+}
+
+static word DeviceClose(DCB *device)
+{ device = device;
+  return(Err_Null);
+}
+
+/**
+*** Access to routines in the network server, if needed
+**/
+static void driver_report(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+
+#ifdef __C40
+  char		buf[80];
+  int		format_mp, code_mp;
+
+  	/* format_mp is a C pointer which may be invalid. It refers to	*/
+  	/* a word-aligned pointer within the code.			*/
+  format_mp   = (int)  format;
+  format_mp >>= 2;
+  	/* subtract ir0, to cope with funny memory layouts.		*/
+  format_mp  += (int) _DataToFuncConvert(NULL);
+  	/* work out the top two bits of the mptr, using the address of	*/
+  	/* a function which is known to be within the same piece of	*/
+  	/* memory as the code.						*/
+  code_mp     = (int) &driver_report;
+  code_mp    &= 0xC0000000;
+  format_mp  |= code_mp;
+  	/* put them together, and you get an mptr for the string.	*/
+  MP_GetData(buf, format_mp, 0, 80 / sizeof(int));
+  format      = buf;
+#endif
+ 
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->report))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+static void driver_fatal(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+
+#ifdef __C40
+  char		buf[80];
+  int		format_mp, code_mp;
+  format_mp   = (int)  format;
+  format_mp >>= 2;
+  format_mp  += (int) _DataToFuncConvert(NULL);
+  code_mp     = (int) &driver_report;
+  code_mp    &= 0xC0000000;
+  format_mp  |= code_mp;
+  MP_GetData(buf, format_mp, 0, 80 / sizeof(int));
+  format      = buf;
+#endif
+  
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->fatal))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+/**
+*** Initialise(). For every processor except the root processor and
+*** I/O processors, indicate that a definite reset is available.
+*** This is of course a big whopper.
+**/
+static void	driver_Initialise(NetworkDCB *device, DriverRequest *request)
+{ RmHardwareFacility	*hardware = device->HardwareFacility;
+  int			i, j;
+
+  driver_report(device, "null_ra.d driver, version %W", VersionNumber);
+
+  request->FnRc = (int) Err_Null;
+  for (i = 0; i < hardware->NumberProcessors;i++)
+   { RmProcessor	Processor = hardware->Processors[i];
+     ProcessorEntry	*proc_entry;
+     
+     if (Processor eq (RmProcessor) device->RootProcessor) continue;
+     if ((RmGetProcessorPurpose(Processor) & RmP_Mask) eq RmP_IO)
+      continue;
+     
+     proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+     for (j = 0; j < proc_entry->NumberDrivers; j++)
+      { DriverEntry *driver = &(proc_entry->DriverEntry[j]);
+        if (driver->Hardware ne hardware) continue;
+        driver->Flags |= DriverFlags_DefiniteReset;
+      }
+   }
+}
+
+/**
+*** Reset the processor or processors specified in the request. For the
+*** null device this simply means specifying that the requested processors
+*** have been reset.
+***
+*** After an initial reset, the DefiniteReset flag is cleared. This stops
+*** network show etc. displaying garbage information.
+**/
+static void	driver_Reset(NetworkDCB *device, DriverRequest *request)
+{ RmHardwareFacility	*hardware = device->HardwareFacility;
+  int	i, j;
+
+  for (i = 0; i < request->NumberProcessors; i++)
+   { RmProcessor Processor = request->Processor[i];
+     int	 state	   = RmGetProcessorState(Processor);
+     state |= RmS_Reset;
+     (void) RmSetProcessorState(Processor, state);
+   }
+
+  for (i = 0; i < hardware->NumberProcessors; i++)
+   { RmProcessor	processor	= hardware->Processors[i];
+     ProcessorEntry	*proc_entry;
+
+     if (processor eq (RmProcessor) device->RootProcessor) continue;
+     if ((RmGetProcessorPurpose(processor) & RmP_Mask) eq RmP_IO)
+      continue;
+
+     proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(processor);
+     for (j = 0; j < proc_entry->NumberDrivers; j++)
+      { DriverEntry *driver = &(proc_entry->DriverEntry[j]);
+        if (driver->Hardware ne hardware) continue;
+        driver->Flags &= ~DriverFlags_DefiniteReset;
+      }
+     processor->Control &= ~(RmC_Native | RmC_Reset);
+   }
+
+  request->FnRc = (int) Err_Null;
+  device = device;
+}
+
+/**
+*** Analyse the specified processors. For the null device this means
+*** claiming to have reset them.
+**/
+static void	driver_Analyse(NetworkDCB *device, DriverRequest *request)
+{ int	i;
+
+  for (i = 0; i < request->NumberProcessors; i++)
+   { RmProcessor Processor = request->Processor[i];
+     int	 state	   = RmGetProcessorState(Processor);
+     state |= RmS_Reset;
+     (void) RmSetProcessorState(Processor, state);
+   }
+  request->FnRc = (int) Err_Null;
+  device = device;
+}
+
+static void	driver_TestReset(NetworkDCB *device, DriverRequest *request)
+{ driver_fatal(device, "null_ra.d, driver TestReset routine called illegally");
+  request = request;
+}
+
+static void	driver_Boot(NetworkDCB *device, DriverRequest *request)
+{ driver_fatal(device, "null_ra.d, driver bootstrap routine called illegally");
+  request = request;
+}
+
+static void driver_ConditionalReset(NetworkDCB *device, DriverRequest *request)
+{ driver_fatal(device,
+               "null_ra.d, driver conditional reset routine called illegally");
+  request = request;
+}
+@
+
+
+1.8
+log
+@Sorted out stack checking options
+@
+text
+@d16 1
+a16 1
+/* RcsId: $Header: /hsrc/network/RCS/null_ra.c,v 1.7 1993/04/20 10:49:03 bart Exp $*/
+d96 1
+a96 1
+		request->FnRc = EC_Error + SS_NetServ + EG_WrongFn;
+d183 1
+a183 1
+  request->FnRc = Err_Null;
+d237 1
+a237 1
+  request->FnRc = Err_Null;
+d254 1
+a254 1
+  request->FnRc = Err_Null;
+@
+
+
+1.7
+log
+@updated C40 debugs to cope with ir0 != 0
+@
+text
+@d16 1
+d18 1
+a18 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/null_ra.c,v 1.6 1992/12/14 15:32:00 bart Exp $";
+d20 1
+a20 3
+#define	VersionNumber "1.02"
+
+#pragma -s1		/* switch off stack checking			*/
+d23 14
+@
+
+
+1.6
+log
+@The strings are now copied to local memory before being passed to the
+Network Server for diagnostics.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: null_ra.c,v 1.4 92/07/10 12:11:47 bart Exp $";
+d104 2
+d108 5
+d116 1
+a138 1
+
+d141 1
+@
+
+
+1.5
+log
+@First argument of DevOpen changed to MPtr.
+@
+text
+@d19 1
+a19 1
+#define	VersionNumber "1.01"
+d99 14
+a112 1
+  
+d127 13
+d159 3
+a161 2
+  
+  driver_report(device, "null_ra.d driver, version %s", VersionNumber);
+@
+
+
+1.4
+log
+@This driver now hacks about with the processor control after the initial
+reset. The end result is that no warning is produced during bootstrap
+but network show etc. do not give silly output claiming definite reset is
+available.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/null_ra.c,v 1.3 1992/01/14 14:20:34 bart Exp $";
+d57 1
+a57 1
+DCB	*DevOpen(Device *dev, NetworkDCB *network_dcb)
+@
+
+
+1.3
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/null_ra.c,v 1.1 1991/08/06 17:32:53 bart Exp $";
+d19 1
+a19 1
+#define	VersionNumber "1.00"
+d157 3
+d162 2
+a163 1
+{ int	i;
+d171 18
+@
+
+
+1.2
+log
+@Various files had been left checked out somehow, tidying up.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/null_ra.c,v 1.1 90/09/14 16:59:25 bart Exp Locker: bart $";
+d141 2
+a142 1
+     if (RmGetProcessorPurpose(Processor) eq RmP_IO) continue;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/TRAN/RCS/null_ra.c,v 1.1 90/09/13 12:50:45 bart Exp $";
+@

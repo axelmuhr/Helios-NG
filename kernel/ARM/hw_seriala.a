@@ -1,0 +1,257 @@
+-- File:	hw_seriala.a
+-- Subsystem:	ARM Helios executive
+-- Author:	JGSmith
+-- Date:	930311
+--
+-- Description: Low-level VL16C551 serial interface link I/O functions.
+--
+-- Copyright (c) 1993, VLSI Technology Inc.
+--	All Rights Reserved.
+-- 
+-- ----------------------------------------------------------------------------
+
+include ../gexec.m	-- Executive manifests
+include link.m
+include root.m
+include module.m
+include cpustate.m
+
+include ARM/vy86pid.m
+
+-- ----------------------------------------------------------------------------
+
+_if _not _defp '__VY86PID [
+	error "This source file should only be used for VY86PID systems"
+]
+
+-- ----------------------------------------------------------------------------
+-- LinkIntrHandler
+--
+-- Link Comms Interrupt handler.
+--
+-- This is branched to directly from the main system interrupt handler
+-- routine.
+--
+-- NOTE: This code is currently setup to only deal with a single
+-- serial interrupt source. It assumes that the serial device is Link
+-- logical ID 0.
+--
+-- On Entry:
+--	tmp/ip =	hw_INTC
+--	r14_irq =	current threads return address and PSR (DO NOT CORRUPT)
+--	r13_irq =	current threads SaveState.CPUcontext (DO NOT CORRUPT)
+--			Registers {r0-r12} have already been saved to the
+--			SaveState.CPUcontext.
+
+	Function LinkIntrHandler
+
+	import	ExternContinueThread,
+		ExternCheckIRQDispatch
+
+	GetExecRoot a1			-- a1 = execroot address
+	ldr	a2,hw_SERIAL_holder	-- a2 = VL16C551 serial device address
+	mov	a4,0			-- a4 = 0 (used as a thread Dispatched flag)
+	mov	v1,0			-- v1 = 0 (easy to use constant for later code)
+	mov	v2,THREAD_RUNNABLE	-- v2 = handy constant
+
+	-- Since we may have been called spuriously (and possibly not
+	-- even from the main system interrupt handler), we check that
+	-- we do have an out-standing serial interrupt.
+	ldrb	a3,(a2,hw_serial.IIR)	-- get interrupt state
+	tst	a3,hw_serial_IIR_IPENDN	-- check if interrupt is pending
+	bne	ExternContinueThread	-- no interrupt, so quick exit
+
+	-- check for Rx interrupt
+	and	a3,a3,hw_serial_IIR_IID_mask	-- type of interrupt pending
+	cmp	a3,hw_serial_IIR_IID_RDA	-- check for Rx DAta interrupt
+	bne	checkTx
+
+-- ----------------------------------------------------------------------------
+
+	-- Rx data interrupt
+	-- a1 = ExecRoot address
+	-- a2 = hw_SERIAL address
+	-- a4 = last SaveState dispatched
+	-- v1 = 0
+	-- v2 = THREAD_RUNNABLE
+
+	add	v4,a1,ExecRoot.LinkInStat0	-- v4 = (LinkReq *)&xroot->LinkInStat[0]
+	ldmia	v4,{v3,v5}
+	-- v3 = count
+	-- v5 = buffer
+
+	-- FIXME : We could improve this code by checking if more
+	-- bytes can be polled across
+	ldrb	tmp,(a2,hw_serial.RBR)		-- tmp = current byte
+	strb	tmp,(v5),1			-- store byte (incrementing buffer address)
+	subs	v3,v3,1				-- v3 = number of bytes remaining
+	stmneia	v4,{v3,v5}			-- save updated count and buffer values
+	bne	ExternContinueThread		-- continue the current thread
+	-- no bytes remaining, so fall through to unblockRxThread
+
+-- ----------------------------------------------------------------------------
+
+unblockRxThread:
+	-- Unblock the LinkRx thread.
+	-- a1 = ExecRoot address
+	-- a2 = hw_SERIAL
+	-- a4 = last SaveState dispatched
+	-- v1 = 0
+	-- v2 = THREAD_RUNNABLE
+
+	ldr	tmp,(a1,ExecRoot.KernelRoot)	-- get KernelRoot structure address
+	ldr	tmp,(tmp,Root.Links)		-- get Links structure address
+	ldr	tmp,(tmp,0)			-- index into link table (logical id 0)
+	add	a4,tmp,Link.RxThread		-- a4 = address of RxThread
+	-- a4 = SaveState **ssp = thread to be re-started
+
+	ldr	v5,(a4)				-- v5 = "SaveState *" of blocked thread
+	ldr	tmp,(v5,SaveState.priority)	-- tmp = SaveState.priority
+	add	v3,a1,ExecRoot.Queue0.tail	-- v3 = (ThreadQ *)&xroot->Queues0.tail
+
+	-- NOTE: At the moment we are in IRQ mode, with IRQs disabled.
+	-- This means that no other handlers will be activated, and we
+	-- can modify the run Q's atomically.
+
+	-- Add thread to its pri's run Q.
+	-- tq->tail = tq->tail->next = ss;
+	-- (index into RunQ .tails with 'tmp lsl 3' = pri * sizeof ThreadQ)
+	ldr	v4,(v3,tmp lsl 3)		-- v4 = tq->tail
+	str	v5,(v4,SaveState.next)		-- tq->tail->next = ss
+	str	v5,(v3,tmp lsl 3)		-- tq->tail = ss
+
+	str	v1,(v5,SaveState.next)		-- ss->next = NULL
+
+	-- Keep exec hint up to date.
+	-- if (pri < xroot->HighestAvailPri)
+	--	xroot->HighestAvailPri = pri;
+	ldr	v4,(a1,ExecRoot.HighestAvailPri)
+	cmp	v4,tmp
+	strgt	tmp,(a1,ExecRoot.HighestAvailPri)
+
+	-- Clear thread so an AbortRx cannot re-schedule it.
+	str	v1,(a4)				-- *ssp = NULL
+	str	v2,(v5,SaveState.status)	-- ss->status = THREAD_RUNNABLE
+
+	-- Stop any further link input interrupts occuring
+	ldr	a3,(a1,ExecRoot.Serial1_IER_softcopy)
+	bic	a3,a3,hw_serial_IER_ERBFI
+	strb	a3,(a2,hw_serial.IER)		-- linka->IER &= ~IER_ERBFI
+	str	a3,(a1,ExecRoot.Serial1_IER_softcopy)
+
+	B	ExternCheckIRQDispatch		-- so see if we need to slice to it
+
+hw_SERIAL_holder:
+	word	hw_SERIAL			-- 32bit constant
+
+-- ----------------------------------------------------------------------------
+
+checkTx:
+	-- check for Tx interrupt
+	-- a1 = ExecRoot address
+	-- a2 = hw_SERIAL
+	-- a3 = type of interrupt pending
+	-- a4 = last SaveState dispatched
+	-- v1 = 0
+	-- v2 = THREAD_RUNNABLE
+	cmp	a3,hw_serial_IIR_IID_THRE	-- Tx Holding Register Empty interrupt
+	bne	unknownIRQ
+
+	-- Tx data interrupt
+	-- a1 = ExecRoot address
+	-- a2 = hw_SERIAL address
+
+	add	v4,a1,ExecRoot.LinkOutStat0	-- v4 = (LinkReq *)&xroot->LinkOutStat[0]
+	ldmia	v4,{v3,v5}
+	-- v3 = count
+	-- v5 = buffer
+
+	-- FIXME : We could improve this code by checking if more
+	-- bytes can be polled across
+	ldrb	tmp,(v5),1			-- load byte (incrementing buffer address)
+	strb	tmp,(a2,hw_serial.THR)		-- store byte to the serial device
+	subs	v3,v3,1				-- v3 = number of bytes remaining
+	stmneia	v4,{v3,v5}			-- save updated count and buffer values
+	bne	ExternContinueThread		-- continue the current thread
+	-- no bytes remaining, so fall through to unblockTxThread
+
+-- ----------------------------------------------------------------------------
+
+unblockTxThread:
+	-- Unblock the LinkTx thread.
+	-- a1 = ExecRoot address
+	-- a2 = hw_SERIAL
+	-- a4 = last SaveState dispatched
+	-- v1 = 0
+	-- v2 = THREAD_RUNNABLE
+
+	ldr	tmp,(a1,ExecRoot.KernelRoot)	-- get KernelRoot structure address
+	ldr	tmp,(tmp,Root.Links)		-- get Links structure address
+	ldr	tmp,(tmp,0)			-- index into link table (logical id 0)
+	add	a4,tmp,Link.TxThread		-- a4 = address of TxThread
+	-- a4 = SaveState **ssp = thread to be re-started
+
+	ldr	v5,(a4)				-- v5 = "SaveState *" of blocked thread
+	ldr	tmp,(v5,SaveState.priority)	-- tmp = SaveState.priority
+	add	v3, a1, ExecRoot.Queue0.tail	-- v3 = (ThreadQ *)&xroot->Queues0.tail
+
+	-- See the comments about allowing other IRQs in the unblockRxThread code.
+
+	-- Add thread to its pri's run Q.
+	-- tq->tail = tq->tail->next = ss;
+	-- (index into RunQ .tails with 'tmp lsl 3' = pri * sizeof ThreadQ)
+	ldr	v4,(v3,tmp lsl 3)		-- v4 = tq->tail
+	str	v5,(v4,SaveState.next)		-- tq->tail->next = ss
+	str	v5,(v3,tmp lsl 3)		-- tq->tail = ss
+
+	str	v1,(v5,SaveState.next)		-- ss->next = NULL
+
+	-- Keep exec hint up to date.
+	-- if (pri < xroot->HighestAvailPri)
+	--	xroot->HighestAvailPri = pri;
+	ldr	v4,(a1,ExecRoot.HighestAvailPri)
+	cmp	v4,tmp
+	strgt	tmp,(a1,ExecRoot.HighestAvailPri)
+
+	-- Clear thread so an AbortTx cannot re-schedule it.
+	str	v1,(a4)				-- *ssp = NULL
+	str	v2,(v5,SaveState.status)	-- ss->status = THREAD_RUNNABLE
+
+	-- Stop any further link output interrupts occuring.
+	ldr	a3,(a1,ExecRoot.Serial1_IER_softcopy)
+	bic	a3,a3,hw_serial_IER_ETBEI
+	strb	a3,(a2,hw_serial.IER)		-- linka->IER &= ~IER_ETBEI
+	str	a3,(a1,ExecRoot.Serial1_IER_softcopy)
+
+	B	ExternCheckIRQDispatch		-- so see if we need to slice to it
+
+-- ----------------------------------------------------------------------------
+unknownIRQ:
+	-- FIXME : At the moment we ignore the modem status and line
+	--	   status interrupts. However, we still need to clear
+	--	   them to ensure we can leave the IRQ handler.
+	-- a1 = ExecRoot address
+	-- a2 = hw_SERIAL
+	-- a3 = type of interrupt pending
+	-- a4 = last SaveState dispatched
+	-- v1 = 0
+	-- v2 = THREAD_RUNNABLE
+
+	cmp	a3,hw_serial_IIR_IID_MS		-- Modem Status
+	bne	unknownIRQcheckRLS
+	ldrb	tmp,(a2,hw_serial.MSR)		-- read MSR to clear source
+	b	ExternContinueThread		-- continue the current thread
+
+-- ----------------------------------------------------------------------------
+
+unknownIRQcheckRLS:
+	cmp	a3,hw_serial_IIR_IID_RLS	-- Rx Line Status
+	-- FIXME: If this is NE then we have failed to match a source
+	--	  against the interrupt
+	bne	ExternContinueThread		-- continue the current thread
+	ldrb	tmp,(a2,hw_serial.LSR)		-- read LSR to clear source
+	b	ExternContinueThread		-- continue the current thread
+	-- and fall through to the handlerExit routine
+
+-- ----------------------------------------------------------------------------
+-- EOF hw_seriala.a

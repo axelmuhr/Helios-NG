@@ -1,0 +1,215 @@
+		INSTALLATION PROCEDURE FOR THE K-PAR B008 DRIVER (IMB)
+			Copyright (C) 1989 K-par systems Ltd.
+
+INTRODUCTION
+
+	The  B008 driver for  the Sun 386i  is supplied  so  it can be
+installed as a loadable driver or it can be incorporated into the UNIX
+kernel.    This   note describes  both   methods, but  it does  assume
+familiarity with rebuilding the UNIX kernel under SunOS.
+
+
+LOADING THE DISTRIBUTION
+
+	The drivers are distributed on a 1/4" cartridge tape or a 3.5"
+high   density diskette.  The  total   size is  around 50kbytes.   The
+distribution files must  be read  into a temporary directory prior  to
+distribution about the file system.  In this document it is assumed to
+be a temporary directory in /tmp, but  any directory with write access
+is suitable.
+
+	To install the software  change directory to /tmp,  create the
+new directory, change to  that and read  in the tape using tar(1),  or
+the diskette using bar(1).   You will probably have  to be root  to do
+this.  e.g.
+
+    k-par# cd /tmp
+    k-par# mkdir imb
+    k-par# cd imb
+    k-par# bar xvpf /dev/rfd0c
+
+	The following files are included in the distribution:
+
+    README		This document.
+    imb.man		man(1) page.
+    imb.script		script to create the imb devices.
+    imb_conf		configuration information.
+    imb_distribute	script to distribute files.
+    imb_load		script to load the loadable driver.
+    imb_unload		script to unload loadable driver and remove devices.
+    imbio.h		include file which defines ioctl's used by imb driver.
+    imbinit		driver initialisation program
+    iserver		a version of the INMOS iserver to run with the driver
+    ivalid		iserver validation program
+    ivalid.b4h		bootable program loaded by ivalid
+    ivalid.man		man(1) page for ivalid
+
+DISTRIBUTING THE FILES
+
+	The  script  "imb_distribute" will copy   the  files from  the
+directory in which they were read from the diskette (or tape) to their
+"normal" destinations.  On standard installations these are read/write
+file systems, although you might  need to be  root to have permissions
+to write to them.  Edit the start  of the script  if  the destinations
+are not  suitable.  Edit the  body  of the  script to  stop particular
+files from being copied.    The files are normally  distributed  using
+cp(1) but mv(1) or ln(1) can be used by editing "imb_distribute".
+
+	"imb_distribute" must be run with the driver's password as its
+only command  line parameter.  This password  is   used to  enable the
+driver  and is  described  later.    It should be   supplied with  the
+distribution, probably  written on the diskette's (or   tape's) label.
+Passwords  should be obtained  from your  distributor,  or direct from
+K-par Systems Ltd.: telephone +44 272 252290, email: imb@k-par.uucp
+
+	When the  distribution is complete  and has been tested remove
+the temporary directory.  Note that  the  usual clearing of /tmp which
+is done daily or  at boot time usually removes  files, not directories
+in /tmp so it must be done manually.
+
+
+SETTING UP THE HARDWARE
+
+	The driver, as distributed, uses the  following values for the
+Inmos B008 board. These are defined (in the cryptic manner required by
+SunOS) in "imb_conf", and are:
+	
+	Control Status Register	(csr)	= 0x150
+	DMA channel (dmachan)		= 1
+	Interrupt Channel (irq)		= 3
+
+	It  is recommended that  you set  up  the board to  agree with
+these values.  If that is not practical  edit "imb_conf" to agree with
+the values set on the board.
+
+
+USING THE LOADABLE DRIVER
+
+	Two  shell scripts have  been provided to  load and unload the
+driver  as a   loadable driver.  They   are "imb_load"  & "imb_unload"
+respectively. They are distributed by  "imb_distribute" to the SCRIPTS
+directory defined  in  it.   Note  that  "imb_unload" will remove  the
+/dev/imb devices.
+
+	For occasional  use these scripts  can  be run as and when the
+B008 board is going to be used. A more satisfactory way is to load the
+driver when the machine is booted. To do this edit the "/etc/rc.local"
+file. You will find a line towards the end of the file which refers to
+loadable drivers. Add the line  to load the imb  driver after that. It
+should say:
+
+    # Load imb driver
+    modload imb.o -conf imb_conf -exec imb.script
+
+	If this  fails it is probably  because the driver is not using
+the correct addresses. Find what addresses should be used and edit the
+"imb_conf" file.
+
+
+REBUILDING THE KERNEL
+
+	This  note assumes that you  know  how  to rebuild a kernel to
+incorporate a driver. If not refer to the  SunOS manuals. Probably the
+best description is given in Chapter 7 of the "Writing Device Drivers"
+manual.
+
+	The changes  to the kernel configuration file  (GENERIC or one
+of its   derivatives) are identical  to  those  given  to the loadable
+driver in "imb_conf".
+
+	Modify "/usr/sys/sun/conf.c" by adding a line before
+"extern int seltrue();" something of the form:
+
+    #include "imb.h"
+    #if NIMB > 0
+    extern int imbopen(), imbclose(), imbread(), imbwrite(), imbioctl();
+    extern int imbselect();
+    #else
+    #define imbopen         nodev
+    #define imbclose        nodev
+    #define imbread         nodev
+    #define imbwrite        nodev
+    #define imbioctl        nodev
+    #define imbselect       nodev
+    #endif
+
+	Later  in the cdevsw[] structure replace  an  unused entry, or
+extend the structure, with a new entry:
+
+    { 
+        imbopen,        imbclose,       imbread,        imbwrite,       /*64*/
+        imbioctl,       nodev,          imbselect,      0,
+        0,
+    },
+
+	The  binary for the driver  is "imb_driver.o" which should  be
+put into "/usr/sys/sun386/OBJ".
+
+	Having rebuilt   your kernel by  running config(8)  &  make(1)
+remember to  create  the new device(s)  before booting the new kernel.
+The major unit number is the  entry number in the  cdevsw[] structure.
+You can  do this manually or  use the "imb.script" script used  by the
+loadable driver.  This   takes as its first   parameter the number  of
+devices (1 or 2) and  as its  fourth parameter  the major unit number.
+The second and third parameters are ignored.
+
+	The driver  must be  initialiased after the Sun386i   has been
+booted by using the "imbinit" program.  This will have been renamed to
+be the  password supplied  with the distribution  by "imb_distribute".
+The  driver   is normally  initialised  at boot  time  by  adding  the
+following lines towards the end of "/etc/rc.local"
+
+    if [ -f /etc/modules/KPARPASSWORD ] ; then
+	/etc/modules/KPARPASSWORD && chat 'K-par imb driver.'
+    fi
+
+
+USING THE DRIVER
+
+	After the driver has been  loaded, but before  it can be used,
+the  initialisation program   "imbinit" must be  run.  The  name under
+which it is run is a password, which is tied to the  computer's hostid
+and might have  an  expiry date.  For  loadable   drivers  this is run
+automatically at  load time by  imb.script; for drivers built into the
+kernel the file  /etc/rc.local should  have been edited   to run   the
+program at system boot time.
+
+	The  usual system commands   can  be used  to  access the  imb
+driver, plus some additional  ioctl(2)'s.  These are documented in the
+man(1) page, which is part of this distribution.
+
+USING THE ISERVER
+
+	There is  a version of   the  INMOS  iserver included  in  the
+distribution.  This allows the INMOS D505A Sun 3 occam 2 toolset to be
+used  with  the driver,  provided   that  only the   transputer hosted
+binaries are used (see toolset manual for more information).  The only
+differences are that environment variable ISERVER  should be set up to
+point to this iserver, and  environment  variable TRANSPUTER should be
+set to /dev/imb0.  The iserver switch -sl can be used to specify other
+device types, e.g. if device /dev/imb1 is to be used enter:
+
+    iserver -sl/dev/imb1 ...
+
+	The  Sun   3 iterm  file "/vol/itools/iterms/sun3suntools.itm"
+should be  modified   to  use  the  Sun 386i cursor   control   escape
+sequences.  To do this edit the file and change the 4 lines reading:
+
+    6:27,91,65.            # R8         cursor up      cursor up
+    7:27,91,66.            # R14        cursor down    cursor down
+    8:27,91,68.            # R10        cursor left    cursor left
+    9:27,91,67.            # R12        cursor right   cursor right
+
+to become:
+
+    6:27,91,50,49,53,122.  # R8         cursor up      cursor up
+    7:27,91,50,50,49,122.  # R14        cursor down    cursor down
+    8:27,91,50,49,55,122.  # R10        cursor left    cursor left
+    9:27,91,50,49,57,122.  # R12        cursor right   cursor right
+
+TESTING THE DRIVER AND ISERVER
+
+	A  shell script  called  "ivalid"  is  provided, to  test  the
+iserver and driver.  This downloads and runs the transputer executable
+"ivalid.b4h" using the  iserver. See  the man(1)  page ivalid.man  for
+more information.

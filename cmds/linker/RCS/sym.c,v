@@ -1,0 +1,940 @@
+head	1.7;
+access;
+symbols
+	Helios_1_3_1:1.7
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.6
+	C40_Field_Test_2:1.6
+	C40_Field_Test_R1:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.7
+date	93.01.15.14.21.54;	author nick;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.10.01.10.00.48;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.07.13.08.59.10;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.04.27.12.38.56;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.10.09.08.47.51;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.10.08.15.52.21;	author ben;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.10.22.15.47.16;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Assigning NULL to an int is not allowed by IBM, instance of this fixed.
+@
+text
+@/****************************************************************/
+/* Helios Linker					     	*/
+/*								*/
+/* File: sym.c                                                  */
+/*                                                              */
+/* Routines to manipulate the symbol table                      */
+/*                                                              */
+/* Author: NHG 17-Feb-87                                        */
+/****************************************************************/
+/* RcsId: $Id: sym.c,v 1.6 1992/10/01 10:00:48 nickc Exp nick $ */
+
+#include "link.h"
+#include <ctype.h>
+
+#define trace if (traceflags & db_sym) _trace
+
+PRIVATE VMRef	 symheap;
+PRIVATE VMRef	 globheap;
+PRIVATE STEntry	 Symtab[ GLOBAL_HASHSIZE ];
+PUBLIC WORD	 symsize;
+
+#ifdef __STDC__
+WORD hash(char *);
+#else
+WORD hash();
+#endif
+
+/********************************************************/
+/* initsym                                              */
+/*                                                      */
+/* Initialize the symbol table.                         */
+/*                                                      */
+/********************************************************/
+
+PUBLIC void
+initsym( void )
+{
+  int i;
+
+
+  for (i = 0; i < GLOBAL_HASHSIZE ; i++)
+    {
+      Symtab[ i ].head    = NullVMRef;
+      Symtab[ i ].entries = 0;
+    }
+  
+  symheap  = VMPage();
+  globheap = VMPage();
+  symsize  = 0;
+
+  return;
+  
+} /* initsym */
+
+
+/********************************************************/
+/* lookup                                               */
+/*                                                      */
+/* Lookup a symbol in the hash tables.                  */
+/* it checks the local, module symbol table first,      */
+/* followed by the global one.                          */
+/* Returns the symbol if present, otherwise NULL.       */
+/*                                                      */
+/********************************************************/
+
+PUBLIC VMRef
+lookup( BYTE * name )
+{
+  UWORD		hs = hash(name);
+  UWORD		h  = (hs % LOCAL_HASHSIZE);  
+  VMRef		sym;
+  int		loops = 0;
+  int		entries = 0;
+  asm_Module *	m;
+	
+  if (!VMSame( curmod, module0 ))
+    {
+      m       = VMAddr( asm_Module, curmod );
+      sym     = m->symtab[ h ].head;
+      entries = m->symtab[ h ].entries;
+		
+      while ( !NullRef( sym ) )
+	{
+	  Symbol *	s;
+
+	  
+	  s = VMAddr( Symbol, sym );
+	  
+	  trace( "mod lookup #%d sym %x %s == %s", loops, sym, name, s->name );
+	  
+	  if ( !VMSame( curmod, s->module ) || s->global ) 
+	    warn( "global or external symbol found in local symbol table: %s", s->name );
+	  
+	  if (eqs( name, s->name ))
+	    {
+	      trace("mod lookup sym %s found",name);
+	      
+	      if (loops > entries)
+		report("Warning: found %s: but loops %d > entries %d\n", name, loops, entries );
+	      
+	      return sym;
+	    }
+	  
+	  sym = s->next;
+	  
+#ifdef dubious
+	  if ( loops++ == entries + 10 )
+	    {
+	      report( "possible loop in symtab loop = %d entries = %d", loops, entries );
+	      
+	      traceflags |= db_sym;	      
+	    }
+	  else if ( loops == entries*2 ) error("quitting");
+#else	  
+	  loops++;
+#endif	  
+	}
+      
+      if (loops > entries)
+	report( "Warning: didn't find %s and loops %d > entries %d", name, loops, entries );
+    }
+  
+  h = (hs % GLOBAL_HASHSIZE);
+  
+  sym     = Symtab[ h ].head;
+  loops   = 0;
+  entries = Symtab[ h ].entries;
+  
+  while ( !NullRef(sym) )
+    {
+      Symbol *	s;
+
+
+      s = VMAddr( Symbol, sym );
+      
+      trace( "glob lookup sym %x %s == %s", sym, name, s->name );
+      
+      if (!s->global && !VMSame( curmod, module0 ))
+	warn( "local symbol found in global symbol table: %s", s->name );
+      
+      if ( eqs( name, s->name ) )
+	{
+	  trace( "glob lookup sym %s found", name );
+	  
+	  return sym;
+	}
+      
+      sym = s->next;
+      
+      if (loops++ == entries + 10)
+	{
+	  report( "possible loop in global symtab loops = %d entries = %d",
+		 loops, entries );
+	  
+	  traceflags |= db_sym;
+	}
+      else if (loops == 2 * entries)
+	error( "quitting" );
+    }
+  
+  trace( "lookup failed for %s", name );
+  
+  return NullVMRef;
+
+} /* lookup */
+
+
+/********************************************************/
+/* insert                                               */
+/*                                                      */
+/* insert a symbol in the table.                        */
+/*                                                      */
+/********************************************************/
+
+PUBLIC VMRef
+insert(
+       BYTE *	name,
+       WORD	local )
+{
+  UWORD 	h = hash(name);
+  VMRef	    	sym;
+  Symbol *	s;
+  asm_Module *	m;
+  int		size = sizeof(Symbol) + strlen(name);
+
+  
+  if (local)
+    {
+      sym = VMalloc( size, symheap );
+      
+      if ( NullRef(sym) ) 
+	{
+	  symheap = VMPage();
+	  sym     = VMalloc( size, symheap );
+	}
+    }
+  else
+    {
+      sym = VMalloc( size, globheap );
+      
+      if ( NullRef(sym) ) 
+	{
+	  globheap = VMPage();
+	  sym      = VMalloc( size, globheap );
+	}
+    }
+  
+  symsize += size;
+  
+  trace("insert %s %d sym = %x",name,local,sym);
+  
+  s = VMAddr( Symbol, sym );
+  
+  VMDirty( sym );
+  VMlock(  sym );
+  
+  strcpy( s->name, name );
+  
+  s->type       = 0;
+  s->value.w    = 0;
+  s->referenced = FALSE;
+#ifdef NEW_REF
+  s->fwd_ref    = NullVMRef;
+#endif
+  
+  if ( local && !VMSame( curmod, module0 ) )
+    {
+      VMRef headref;
+
+      
+      m = VMAddr( asm_Module, curmod );
+      
+      h %= LOCAL_HASHSIZE;
+      
+      headref = m->symtab[ h ].head;
+      
+      s->next   = headref;
+      s->prev   = NullVMRef;
+      s->module = curmod;
+      s->global = FALSE;
+      
+      if ( !NullRef(headref) )
+	{
+	  Symbol *	head = VMAddr( Symbol, headref );
+	  
+	  head->prev = sym;
+	  
+	  VMDirty(headref);
+	}
+      
+      m = VMAddr( asm_Module, curmod );	/* just in case */
+      
+      m->symtab[ h ].head = sym;
+      m->symtab[ h ].entries++;
+      
+      VMDirty(curmod);
+    }
+  else
+    {
+      VMRef headref;
+      
+      
+      h %= GLOBAL_HASHSIZE;
+      
+      headref  = Symtab[ h ].head;
+      
+      s->next   = headref;
+      s->prev   = NullVMRef;
+      s->module = NullVMRef;
+      s->global = TRUE;        	
+      
+      if ( !NullRef(headref) )
+	{
+	  Symbol *	head = VMAddr( Symbol, headref );
+
+	  
+	  head->prev = sym;
+	  
+	  VMDirty(headref);
+	}
+      
+      Symtab[ h ].head = sym;
+      Symtab[ h ].entries++;
+    }
+  
+  VMunlock( sym );
+  
+  return sym;
+
+} /* insert */
+
+
+/********************************************************/
+/* movesym                                              */
+/*                                                      */
+/* Remove symbol from current symbol table and place    */
+/* in global table.                                     */
+/*                                                      */
+/********************************************************/
+
+PUBLIC void
+movesym( VMRef sym )
+{
+  UWORD		hs;
+  UWORD 	h;
+  Symbol *	s;
+  asm_Module *	m;
+
+  
+  s = VMAddr( Symbol, sym );
+  
+  if ( s->global || VMSame( s->module, module0 ))		/* already moved */
+    {
+      s->global = TRUE;
+      
+      VMDirty( sym );
+      
+      return;
+    }
+  
+  hs = hash( s->name );  
+  h  = (hs % LOCAL_HASHSIZE);
+  
+  /* else move symbol from local to global table */
+  
+  VMlock( sym );
+  
+  trace( "movesym ref %x name %s links %x %x", sym, s->name, s->next, s->prev );
+  
+  if ( NullRef( s->prev ) )
+    {
+      /* at head of list, step list head pointer over us */
+      
+      m = VMAddr( asm_Module, s->module );
+      
+      m->symtab[ h ].head = s->next;
+      m->symtab[ h ].entries--;
+    }
+  else 
+    {
+      Symbol *	prev = VMAddr( Symbol, s->prev );
+
+
+      /* else step prev's next pointer over us */
+      
+      prev->next = s->next;
+      
+      VMDirty( s->prev );
+      
+      m = VMAddr( asm_Module, s->module );
+      
+      m->symtab[ h ].entries--;
+    }
+      
+  VMDirty( s->module );
+
+  if ( !NullRef(s->next) )
+    {
+      Symbol *	next = VMAddr( Symbol, s->next );
+
+      
+      /* if not at tail of list, patch next's prev pointer */
+      
+      next->prev = s->prev;
+      
+      VMDirty( s->next );
+    }	
+  
+  h = (hs % GLOBAL_HASHSIZE);
+  
+  /* finally set up our pointers */
+  
+  s->next   = Symtab[ h ].head;
+  s->prev   = NullVMRef;
+  s->global = TRUE;
+  
+  VMDirty( sym );
+  
+  if ( !NullRef( Symtab[ h ].head ) )
+    {
+      Symbol *	head = VMAddr( Symbol, Symtab[ h ].head );
+      
+
+      /* if list is not empty, patch prev of old head */
+      
+      head->prev = sym;
+      
+      VMDirty( Symtab[ h ].head );
+    }
+  
+  Symtab[ h ].head = sym;
+  Symtab[ h ].entries++;
+  
+  VMunlock( sym );
+
+  return;
+
+} /* movesym */
+
+
+PUBLIC void
+cps(
+    BYTE *	src,
+    BYTE *	dst )
+{
+  strcpy( dst, src );
+
+} /* cps */
+@
+
+
+1.6
+log
+@fixed compile time warnings
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: sym.c,v 1.5 1992/07/13 08:59:10 nickc Exp nickc $ */
+d220 1
+a220 1
+  s->value.w    = NULL;
+@
+
+
+1.5
+log
+@fixed to support new patch CODESTUB
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: sym.c,v 1.4 1992/04/27 12:38:56 nickc Exp nickc $ */
+d35 2
+a36 1
+PUBLIC void initsym()
+d38 16
+a53 11
+	int i;
+	for (i = 0; i < GLOBAL_HASHSIZE ; i++)
+	{
+		Symtab[ i ].head    = NullVMRef;
+		Symtab[ i ].entries = 0;
+	}
+        
+	symheap  = VMPage();
+	globheap = VMPage();
+	symsize  = 0;
+}
+d66 2
+a67 2
+PUBLIC VMRef lookup(name)
+BYTE *name;
+d164 2
+a165 1
+}
+d167 1
+d175 4
+a178 3
+PUBLIC VMRef insert(name,local)
+  BYTE *name;
+  WORD local;
+d289 2
+a290 1
+}
+d292 1
+d301 2
+a302 2
+PUBLIC void movesym(sym)
+VMRef sym;
+d397 2
+a398 1
+}
+d400 5
+a404 2
+PUBLIC void cps(src,dst)
+BYTE *src, *dst;
+d406 3
+a408 2
+	strcpy(dst,src);
+}
+@
+
+
+1.4
+log
+@minor cosmetic changes
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: sym.c,v 1.3 1991/10/09 08:47:51 paul Exp nickc $ */
+d15 1
+a15 1
+#define trace if(traceflags&db_sym) _trace
+d17 4
+a20 1
+PRIVATE VMRef symheap;
+a21 3
+PRIVATE STEntry Symtab[HASHSIZE];
+PUBLIC WORD symsize;
+
+d27 1
+d38 1
+a38 1
+	for (i=0; i<HASHSIZE ; i++)
+d40 2
+a41 2
+		Symtab[i].head = NullVMRef;
+		Symtab[i].entries = 0;
+d44 3
+a46 2
+	symheap = VMPage();
+	symsize = 0;
+a48 9
+/********************************************************/
+/* lookup                                               */
+/*                                                      */
+/* Lookup a symbol in the hash tables.                  */
+/* it checks the local, module symbol table first,      */
+/* followed by the global one.                          */
+/* Returns the symbol if present, otherwise NULL.       */
+/*                                                      */
+/********************************************************/
+a49 1
+#if 1
+d63 12
+a74 11
+        WORD h = hash(name);
+        VMRef sym;
+	int loops = 0;
+	int entries = 0;
+	Module *m;
+	
+        if( !VMSame(curmod,module0) )
+        {
+        	m = VMAddr(Module,curmod);
+        	sym = m->symtab[h].head;
+		entries = m->symtab[h].entries;
+d76 24
+a99 11
+                while ( !NullRef(sym) )
+                {
+                	Symbol *s = VMAddr(Symbol,sym);
+			trace("mod lookup #%d sym %x %s == %s",loops,sym,name,s->name);
+                        if( eqs(name,s->name) ) {
+                        	trace("mod lookup sym %s found",name);
+                        	if (loops > entries)
+                        	  report("Warning: found %s: but loops %d > entries %d\n", name, loops, entries);
+                        	return sym;
+                        }
+                        sym = s->next;         
+d101 57
+a157 99
+                        if( loops++ == entries+10 )
+                        {
+                        	report("possible loop in symtab loop = %d entries = %d",loops,entries);
+                        	traceflags |= db_sym;
+                        }
+                        else if ( loops == entries*2 ) error("quitting");
+#else
+			loops++;
+#endif
+                }
+               	if (loops > entries)
+              	  report("Warning: didn't find %s and loops %d > entries %d", name, loops, entries);
+        }
+
+        sym = Symtab[h].head;
+	loops = 0;
+	entries = Symtab[h].entries;
+	
+        while ( !NullRef(sym) )
+        {
+               	Symbol *s = VMAddr(Symbol,sym);
+		trace("glob lookup sym %x %s == %s",sym,name,s->name);
+                if( eqs(name,s->name) ) {
+                       	trace("glob lookup sym %s found",name);
+			return sym;
+		}
+                sym = s->next;
+
+                if( loops++ == entries+10 )
+                {
+                      	report("possible loop in global symtab loops = %d entries = %d",loops,entries);
+                       	traceflags |= db_sym;
+                }
+                else if ( loops == 2*entries ) error("quitting");
+        }
+        
+	trace("lookup failed for %s",name);
+        return NullVMRef;
+}
+#else
+/* OLDCODE */
+PUBLIC VMRef lookup(name)
+BYTE *name;
+{
+        WORD h = hash(name);
+        VMRef sym;
+	int loops = 0;
+	int entries = 0;
+	Module *m;
+	
+        if( !VMSame(curmod,module0) )
+        {
+        	m = VMAddr(Module,curmod);
+        	sym = m->symtab[h].head;
+		entries = m->symtab[h].entries;
+		
+                while ( !NullRef(sym) )
+                {
+                	Symbol *s = VMAddr(Symbol,sym);
+			trace("mod lookup sym %x %s == %s",sym,name,s->name);
+                        if( eqs(name,s->name) ) {
+                        	trace("mod lookup sym %s found",name);
+                        	return sym;
+                        }
+                        sym = s->next;
+         
+                        if( loops++ == entries+10 )
+                        {
+                        	report("possible loop in symtab loop = %d entries = %d",loops,entries);
+                        	traceflags |= db_sym;
+                        }
+                        else if ( loops == entries*2 ) error("quitting");
+                }
+        }
+
+        sym = Symtab[h].head;
+	loops = 0;
+	entries = Symtab[h].entries;
+	
+        while ( !NullRef(sym) )
+        {
+               	Symbol *s = VMAddr(Symbol,sym);
+		trace("glob lookup sym %x %s == %s",sym,name,s->name);
+                if( eqs(name,s->name) ) {
+                       	trace("glob lookup sym %s found",name);
+			return sym;
+		}
+                sym = s->next;
+
+                if( loops++ == entries+10 )
+                {
+                      	report("possible loop in global symtab loops = %d entries = %d",loops,entries);
+                       	traceflags |= db_sym;
+                }
+                else if ( loops == 2*entries ) error("quitting");
+        }
+        
+	trace("lookup failed for %s",name);
+        return NullVMRef;
+a158 1
+#endif
+d168 2
+a169 2
+BYTE *name;
+WORD local;
+d171 22
+a192 9
+        WORD h = hash(name);
+        VMRef sym;
+	Symbol *s;
+	Module *m;
+	int size = sizeof(Symbol) + strlen(name);
+	
+	sym = VMalloc(size,symheap);
+	
+	if( NullRef(sym) ) 
+d194 2
+a195 2
+		symheap = VMPage();
+		sym = VMalloc(size,symheap);
+d197 16
+a212 14
+
+	symsize += size;
+
+	trace("insert %s %d sym = %x",name,local,sym);
+
+	s = VMAddr(Symbol,sym);
+	VMDirty(sym);
+	
+        cps(name,s->name);
+        s->type = 0;
+        s->value.w = NULL;
+        s->module = curmod;
+	s->global = !local;
+	s->referenced = FALSE; /* Nicks REFLIST code */
+d214 1
+a214 1
+	s->fwd_ref = NullVMRef;
+d216 50
+a265 40
+	
+        if( local && !VMSame(curmod,module0) )
+        {
+        	VMRef headref;
+        	m = VMAddr(Module,curmod);
+        	
+        	headref = m->symtab[h].head;
+
+        	s->next = headref;
+        	s->prev = NullVMRef;
+
+		if( !NullRef(headref) )
+		{
+	        	Symbol *head = VMAddr(Symbol,headref);
+        		head->prev = sym;
+        		VMDirty(headref);
+        	}
+
+		m = VMAddr(Module,curmod);	/* just in case */        	
+		m->symtab[h].head = sym;
+		m->symtab[h].entries++;
+		VMDirty(curmod);
+        }
+        else
+        {
+        	VMRef headref = Symtab[h].head;
+
+        	s->next = headref;
+        	s->prev = NullVMRef;
+        	
+		if( !NullRef(headref) )
+		{
+	        	Symbol *head = VMAddr(Symbol,headref);
+        		head->prev = sym;
+        		VMDirty(headref);
+        	}
+        	
+        	Symtab[h].head = sym;
+        	Symtab[h].entries++;
+        }
+d267 13
+a279 1
+        return sym;
+d293 91
+a383 82
+	Symbol *s;
+	WORD h;
+	Module *m;
+	s = VMAddr(Symbol,sym);
+	
+	if ( s->global )
+	  {
+	    return;		/* already moved */
+	  }
+	
+	h = hash(s->name);
+	
+	/* else move symbol from local to global table */
+	
+	VMlock(sym);
+		
+	trace("movesym ref %x name %s links %x %x",sym,s->name,s->next,s->prev);
+	
+	if( NullRef(s->prev) )
+	{
+		/* at head of list, step list head pointer over us */
+	  
+		m = VMAddr(Module,s->module);
+		m->symtab[h].head = s->next;
+		m->symtab[h].entries--;
+		VMDirty(s->module);
+	}
+	else 
+	{
+		/* else step prev's next pointer over us */
+		Symbol *prev = VMAddr(Symbol,s->prev);
+		
+		prev->next = s->next;
+		VMDirty(s->prev);
+		m = VMAddr(Module,s->module);
+		m->symtab[h].entries--;
+		VMDirty(s->module);
+	}
+
+	if( !NullRef(s->next) )
+	{
+		/* if not at tail of list, patch next's prev pointer */
+		Symbol *next = VMAddr(Symbol,s->next);
+		next->prev = s->prev;
+		VMDirty(s->next);
+	}
+
+	/* finally set up our pointers */
+       	s->next = Symtab[h].head;
+       	s->prev = NullVMRef;
+	s->global = TRUE;
+	VMDirty(sym);
+	
+	if( !NullRef(Symtab[h].head) )
+	{
+		/* if list is not empty, patch prev of old head */
+	       	Symbol *head = VMAddr(Symbol,Symtab[h].head);
+        	head->prev = sym;
+		VMDirty(Symtab[h].head);
+        }
+        
+       	Symtab[h].head = sym;
+       	Symtab[h].entries++;
+       	
+       	VMunlock(sym);
+       	
+}
+
+/********************************************************/
+/* eqs                                                  */
+/* cps                                                  */
+/*                                                      */
+/* String manipulation routines                         */
+/*                                                      */
+/********************************************************/
+
+#ifdef never
+PUBLIC INT eqs(s,t)
+BYTE *s, *t;
+{
+        return strcmp(s,t) == 0;
+}
+d385 1
+a385 7
+PUBLIC void cps(src,dst)
+BYTE *src, *dst;
+{
+        int i;
+        for( i = 0 ; src[i] ; i++ )
+                dst[i] = src[i];
+        dst[i] = '\0';
+a386 1
+#endif
+@
+
+
+1.3
+log
+@NickC's changes for the 'C40 + some bug fixes
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: sym.c,v 1.1 1991/08/22 15:05:01 nickc Exp $ */
+d298 4
+a301 1
+	if( s->global ) return;		/* already moved */
+d314 1
+d324 1
+@
+
+
+1.2
+log
+@Nick C's new wonder code
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: sym.c,v 1.1 1990/10/22 15:47:16 paul Exp $ */
+d360 1
+a360 2
+/* String manipulation routines, only the first 31 chars*/
+/* of any string are compared or copied.                */
+d368 1
+a368 1
+        return strncmp(s,t,31) == 0;
+d375 1
+a375 1
+        for( i = 0 ; src[i] && i <= 31 ; i++ )
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id$ */
+d235 3
+@

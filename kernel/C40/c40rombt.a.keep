@@ -1,0 +1,549 @@
+-- File:	c40rombt.a
+-- Subsystem:	'C40 Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	June '93
+--
+-- Description: 'C40 specific ROM boot code.
+--
+--		This code is used to bootstrap a Helios system held in ROM.
+--
+--		The bootstrap and nucleus to be booted may reside in any form
+--		of ROM/EPROM/FLASH/EEPROM at any C40 boot address. The nucleus
+--		may be copied from ROM or some other type of storage media into
+--		faster/addressable RAM memory. All Helios-C40 code is completely
+--		position independent.
+--
+--		The code here is very similar to the communications link
+--		bootstrap 'c40boot.a'. The design of the (version 1.3.1 and
+--		later) Helios-C40 nucleus supports both ROM and link booting.
+--		Furthermore, existing link booted nuclei can be ROMmed and
+--		any ROMed nuclei can be transmitted down a link to boot
+--		processors configured to boot from link.
+--
+--		The different phases of the bootstrap are:
+--
+--		1)	C40 CPU boot loader execution and memory control
+--			register initialisation.
+--
+--		2)	System specific CPU and memory initialisation.
+--
+--		3)	System self test if required.
+--
+--		4)	Helios memory map setup, including copy of nucleus
+--			from ROM (or other storage media) to RAM if required.
+--
+--		5)	Initialisation of Helios kernel's internal copy of the
+--			IDROM structure.
+--
+--		6)	Initialisation of Helios kernel's internal copy of the
+--			Config structure.
+--
+--		7)	Setup of minimal C PCS (Procedure Call Standard)
+--			environment and jump to the Helios kernel's entry
+--			point.
+--
+--		To configure this bootstrap for your board, the ROM_BASE
+--		should point at the location of the ROM on its address bus.
+--		You may also wish to copy the ROMed nucleus into RAM for more
+--		speed by uncommenting the COPY_ROM_TO_RAM option, and if
+--		your data RAM on the local bus is below 0x402ff000 uncomment
+--		the ONCHIP_RAM_WITHIN_ADDRESSABILITY option. You will also
+--		have to update the GBCR and LBCR words in the C40 boot loader
+--		header to the appropriate values for your memory system.
+--		You should also look at the ROMmed IDROM and Config structures
+--		defined at the file. You may wish to customise some of these
+--		for you board.
+--
+--		Note that this file must be linked using ld's -i option to
+--		suppress the generation of the normal Helios image header.
+--
+--
+-- RcsId: $Id: c40rombt.a,v 1.7 1993/09/17 16:04:11 paul Exp tony $
+--
+-- (C) Copyright 1993 Perihelion Software Ltd.
+--
+-- 
+-- RcsLog: $Log: c40rombt.a,v $
+-- Revision 1.7  1993/09/17  16:04:11  paul
+-- fixes for config size - now correctly specified in terms of bytes and
+-- initial C stack is now set to dispatch stack to fix addressibility
+-- problems if RAM is loacated higher than the first quadrant of memory.
+--
+-- Revision 1.6  1993/08/18  18:28:40  paul
+-- fixed IACK address
+--
+-- Revision 1.5  1993/08/18  17:44:37  paul
+-- Cleaned up comments some more.
+--
+-- Revision 1.4  1993/08/18  15:44:05  paul
+-- Added example IDROM and changed Config init to copy static ROMed config
+-- structure. Bootstrap now supports C40 CPU bootloader (but also requires
+-- use of the -i option to the linker). Cleaned up comments. Added the CPU
+-- cache initialisation I had forgotten earlier!
+--
+-- Revision 1.3  1993/08/17  09:48:46  paul
+-- updated comments
+--
+-- Revision 1.2  1993/06/17  19:13:20  paul
+-- updated with new Config struct initialisation
+--
+-- Revision 1.1  1993/06/14  16:27:29  paul
+-- Initial revision
+--
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- Bootstrap Constants and Options.
+	--
+	-- You may wish to select different values for the following constants
+	-- and options.
+
+	-- You may choose to copy the entire nucleus into RAM for faster
+	-- execution, or to get full 32bit memory access if the ROM is not
+	-- 32bit. The downside is that you will use up more RAM.
+	-- _def	'COPY_ROM_TO_RAM	TRUE	-- Copy nucleus into faster RAM.
+
+	-- If the main RAM block and on-chip RAM are within C addressability
+	-- range of one other (4GB), then set this option. i.e. data RAM does
+	-- not exceed 0x402ff000.
+	-- _def 'ONCHIP_RAM_WITHIN_ADDRESSABILITY TRUE
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- AMPP macro include files.
+
+	include basic.m
+	include c40.m
+	include tim40.m
+	include c40mmap.m
+	include ../gexec.m
+	include module.m
+	include config.m
+	include root.m
+	include link.m
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- 1) C40 CPU boot loader execution and memory control register
+	--    initialisation.
+	--
+	-- The bootstrap code may either be encapsulated by the standard C40
+	-- CPU bootstrap header and copied in its entirety by the boot loader
+	-- into RAM, or jumped to from a simple boot program loaded by the C40's
+	-- boot loader. For a description of the C40 boot loader see section
+	-- 13.2, page 13-5: "Boot Loader Description and External ROM
+	-- Interfacing" of the TMS320C40 User Guide. This example boot loader
+	-- header causes the entire bootstrap to be copied to the onchip RAM
+	-- and executed there. It therefore expects to be located at the
+	-- start of the ROM image on one of the 6 standard C40 ROM bootstrap
+	-- boundaries.
+
+BootstrapStart:
+
+	-- C40 CPU boot loader header:
+
+	-- ROM width.
+	word	32		-- 32 bit ROM (16 = 16 bit ROM, 8 = 8 bit ROM).
+
+	-- Bus controller registers.
+	-- The following bus controller register contents should hold the
+	-- values required to initialise your boards memory subsystem.
+	word	0x3e39fff0	-- GBCR
+	word	0x3e39fff0	-- LBCR
+
+	-- Size of bootstrap to copy in words.
+	word	(BootstrapCopyEnd - BootstrapEntryPoint) / 4
+
+	word	0x2ffc00	-- load address - onchip ram block 1.
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- 2) System specific CPU and memory initialisation.
+	--
+	-- Any futher memory initialisation, such as possibly setting up the
+	-- timers for DRAM refresh should be done at this point. This will
+	-- enable us to start using the external RAM. The on-chip C40
+	-- boot loader will already have initialised the GBCR and LBCR memory
+	-- controller registers. Any system specific hardware initialisation
+	-- should also be done at this point.
+
+BootstrapEntryPoint:
+
+	-- The first instruction stores the location of the nucleus into
+	-- register ar6.  The boot loader uses register ar1 to hold the 
+	-- address of the bootstrap word being read, post incrementing after
+	-- each word.  The nucleus begins right after the bootstrap and
+	-- hence immediately after the boot loader has finished and the
+	-- bootstrap code is begun, ar1 SHOULD contain the base address of
+	-- the nucleus.
+	lda	ar1, ar6
+
+	-- Enable C40 cache.
+	or	ST_CE, st
+
+	-- The bootstrap uses data in an 'IDROM' to initialise the C40 from
+	-- and which it then copies into a private kernel structure. An IDROM
+	-- is a structure used to define a C40 board's characteristics such as
+	-- memory size and location. The Helios nucleus refers to the IDROM in
+	-- order to adapt to the environment in which it finds itself running.
+	--
+	-- The IDROM used by the bootstrap is defined at the end of this file.
+
+	-- Load address of ROMed copy of boards IDROM.
+	ldabs32_unsafe BoardIDROM ar5
+
+	-- Load base addr of C40's internal periperal map.
+	ldperimap ar0
+
+	-- Timer 1 is not used by Helios and may be used as required by the
+	-- user/hardware. For example it may be used for the boards DRAM
+	-- refresh.
+	ldi	*+ar5(IDROM.TIMER1_PERIOD), r0
+	sti	r0, *+ar0(timer1_period)
+
+	ldi	*+ar5(IDROM.TIMER1_CTRL.w_offset), r0
+	-- Timer1 actually in upper 16 bits of word.
+	lsh	-IDROM.TIMER1_CTRL.shift, r0
+
+	-- Set the timer to run on when a JTAG halt is in effect,
+	-- this ensures that DRAM refresh continues.
+	ldhi	((tcr_dbgcont1 | tcr_dbgcont2) >> 16) & 0xffff, r1
+	or	r1, r0
+	sti	r0, *+ar0(timer1_control)
+
+	-- Timer 2 is dedicated to Helios, it is used for timekeeping and
+	-- timeslicing. Its period register should be initialised to provide
+	-- an accurate 1mS period for this hardware's particular clock speed.
+	ldi	*+ar5(IDROM.TIMER0_PERIOD), r0
+	sti	r0, *+ar0(timer0_period)
+
+
+	----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- 3) System self test if required.
+	--
+	-- Any system self test code should be inserted at this point.
+
+
+
+	----------------------------------------------------------------------
+	----------------------------------------------------------------------
+	-- 4) Helios memory map setup, including copy of nucleus from ROM
+	--    (or other storage media) to RAM if required.
+	--
+	-- The Helios memory map:
+	--
+	--	     Hi addr.
+	--
+	--	------------------
+	--	Trace Vector		Set up by Helios.
+	--	------------------
+	--
+	--	Poss. second strobe
+	--	memory block.
+	--
+	--	------------------	Memory pools as set up by Helios.
+	--	Poss. dummy block	Used to stitch together noncontigous
+	--	------------------	strobe 0/1 if both contain RAM.
+	--
+	--	Main Memory Pool
+	--
+	--	------------------
+	--	Config vector		Initialised by ROM bootstrap.
+	--	------------------
+	--	Kernel Root
+	--	------------------
+	--	Interrupt vectors       256 bytes (must be 2kb boundary aligned).
+	--	------------------
+	--	System Stack (1kb)
+	--	------------------
+	--	ExecRoot (1kb)		Contains IDROM initialised by bootstrap.
+	--	------------------
+	--	Copied Nucleus		(Only if copied into RAM from flash/ROM/disk)
+	--	------------------	< Base of local/global bus strobe 0/1
+	--
+	--	     Lo addr.
+	--
+
+	-----------------------------------------------------------------------
+	-- Set base of RAM. Helios holds the main system structures just above
+	-- this point, such as the ExecRoot, system stack, interrupt vector
+	-- table, kernel root, Config structure and C addressable user RAM.
+	-- It may be located on the local or global bus and either stobe
+	-- on these busses.
+	--
+	-- The nucleus location is completely independent of this and may
+	-- be located on any strobe on either bus.
+	--
+	-- The Helios C address base is the base address to which all C byte
+	-- addresses are added to get a machine address. The IR0 register
+	-- (referred to by the R_BASE alias) is dedicated to hold this value.
+	-- The C address base is usually set to the start of RAM, but if the
+	-- last word of this RAM is within byte addressability range of the
+	-- on-chip RAM, then the C address base should be set to the start of
+	-- the on-chip RAM. This allows on-chip RAM to be directly accessable
+	-- from C.
+
+	-- For example, if system RAM is located on strobe 0 of the local bus:
+	ldi	*+ar5(IDROM.LBASE0), ar1
+
+	_test _defp 'ONCHIP_RAM_WITHIN_ADDRESSABILITY [
+		ldhi	0x002f, R_BASE	-- Set C address base to on-chip RAM
+		or	0xf000, R_BASE	-- both this and the RAM can be
+					-- addressable from C. (i.e. are
+					-- within 4 gigabytes of each other).
+	][
+		ldi	ar1, R_BASE	-- otherwise set it at base of RAM.
+	]
+
+	-----------------------------------------------------------------------
+	-- If the nucleus needs to be copied from slow ROM, or the boot sector
+	-- of a disk, to RAM, then it should be copied at this point. If the
+	-- nucleus is to be copied to the same strobe and bus that we are
+	-- using for the system data, then the ExecRoot's position should be set
+	-- to the next free location after the nucleus. If the nucleus is placed
+	-- on another bus/strobe, then the RAM used to hold the nucleus should
+	-- NOT be included in the IDROM. Otherwise Helios will attempt to use
+	-- this memory as workspace! The following code assumes a 32 bit wide
+	-- ROM. If you wish to copy non 32 bit wide ROM to RAM in order to be
+	-- able to execute it, then you will have to re-work this code.
+
+	_test _defp 'COPY_ROM_TO_RAM [
+CopyNuc:
+		-- Get address of nucleus in ROM.
+		-- TONY ldi32	ROM_NUC_BASE ar3
+		lda	ar6, ar3
+
+		ldi	*ar3, r0	-- read # bytes of image to copy
+		ldi	ar1, ar4	-- ar1 points to nucleus load area
+
+		sti	r0, *ar4++	-- save size as part of image
+		lsh	-2, r0		-- / sizeof(word) - convert to # words
+		subi	3, r0		-- initialise for rpts
+					-- -1 size, -2 rpts and || correction
+		-- Copy nucleus image
+		ldi	*ar3++, r1	-- initialise r1 for parallel loop
+		rpts	r0		-- loops r0 + 1
+			ldi	*ar3++, r1 || sti	r1, *ar4++
+		sti	r1, *ar4++	-- store final value
+
+		-- Setup address of ExecRoot to follow nucleus.
+		-- Otherwise we will use the base of RAM.
+		-- tvtp and ivtp must lie on a 512 word (2k) boundary.
+		addi	512-1, ar4
+		andn	512-1, ar4
+
+		-- GetExecRoot macro and function loads this address from tvtp
+		ldpe	ar4, tvtp
+
+		-- Save start address of nucleus in ExecRoot.
+		-- Nucleus location is held as a word pointer on C40
+		sti	ar1, *+ar4(ExecRoot.Nucleus)
+		ldi	ar4, ar1	-- following code expects ar1 = ExecRoot
+	][
+		-- Set address of ExecRoot.
+		-- This is held in the tvtp expansion register.
+		-- tvtp and ivtp must lie on a 512 word (2k) boundary.
+
+		-- GetExecRoot macro and function loads this address from tvtp
+		ldpe	ar1, tvtp
+
+		-- Save address of nucleus in ExecRoot.
+		-- Nucleus location is held as a word pointer on C40
+		-- TONYldi32	ROM_NUC_BASE ar2
+		lda	ar6, ar2
+		sti	ar2, *+ar1(ExecRoot.Nucleus)
+	]
+
+	-- Save standard address base in nucleus.
+	sti	R_BASE,	*+ar1(ExecRoot.CAddressBase)
+
+	-- Set default HW_Config sent to bootstrap when booting other
+	-- processors down a link (a copy of HW_Config is sent to bootstrap
+	-- booted down a link). In link booted systems the HW_Config word
+	-- determines what bus/strobe to load the nucleus to. Use the
+	-- HW_NucleusXXXXXXX flags in config.m if you  wish to set the default
+	-- nucleus load address for CPU's booted from this processor.
+	stik	0, *+ar1(ExecRoot.HWConfig)
+
+	-- Position system stack pointer directly after ExecRoot.
+	-- ExecRoot and SSP are nominally 1kb in size each. (system stack
+	-- builds upwards) .sizeof defined in terms of bytes so / 4 to get
+	-- words.
+	ldi	ar1, R_SSP
+	addi	ExecRoot.sizeof / 4, R_SSP
+
+	-- Align interrupt vectors to 0x200 word boundary after ExecRoot
+	-- and system stack.
+	ldi	R_SSP, ar3
+	addi	0x200-1, ar3
+	andn	0x200-1, ar3
+	ldpe	ar3, ivtp	-- set interrupt vector position
+
+	addi	0x40, ar3	-- add size of interrupt vector table
+				-- to give kernel root position
+
+	-- The Kernel root struct is located directly after the interrupt
+	-- vector table.
+	ldi	ar3, r0
+	C40CAddress r0				-- Convert to BPTR.
+	sti	r0, *+ar1(ExecRoot.KernelRoot)	-- Save in ExecRoot.
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- 5) Initialisation of Helios kernel's internal copy of the IDROM
+	--    structure.
+	--
+	-- The TIM-40 standard IDROM is a structure that characterises the
+	-- C40 hardware of this particular board. Helios-C40 uses the IDROM
+	-- to configure itself to the hardware environment in which it finds
+	-- itself executing. The IDROM is held in an internal Helios structure
+	-- for reference by the nucleus during initialisation and execution.
+	--
+	-- On entry to this code fragment:
+	--	AR1 = ExecRoot
+	--	AR5 = Address of ROMed copy of IDROM
+
+	-- Get address of kernel's internal copy of the IDROM structure.
+	addi	ExecRoot.ID_ROM, ar1, ar4
+
+	-- Get size of IDROM.
+	ldi	IDROM.sizeof / 4, r0
+
+	-- Copy IDROM into ExecRoot structure
+IDROM_Copy:
+	ldi	*ar5++, r1
+	sti	r1, *ar4++
+	subi	1, r0
+	bnz	IDROM_Copy
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- 6) Initialisation of Helios kernel's internal copy of the Config
+	--    structure.
+	--
+	-- Config is a Helios specific structure used to define information
+	-- required to initialise the Helios nucleus for this particular
+	-- environment.
+	--
+	-- See near the end of this file for the example config structure.
+	--
+	-- On entry to this code fragment:
+	--	AR3 = WPTR to kernel Root structure.
+
+	-- Get address of the kernel's internal copy of the Config structure.
+	-- This is held directly after the Root structure. As AR3 holds the
+	-- address of the kernel Root, simply add its size to get Config's
+	-- address (.sizeof returns byte size, hence the divide by four).
+	addi	Root.sizeof / 4, ar3
+
+	-- Load address of ROMed copy of Config.
+	ldabs32_unsafe	BoardConfig ar5
+
+	-- Get size of Config structure and convert to # words.
+	lsh	-2, *+ar5(Config.ImageSize), r0
+
+	-- Copy Config into internal position.
+Config_Copy:
+	ldi	*ar5++, r1
+	sti	r1, *ar3++
+	subi	1, r0
+	bnz	Config_Copy
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- 7) Setup of minimal C PCS (Procedure Call Standard) environment and
+	--    jump to the Helios kernel's entry point.
+	--
+	-- The kernel entry point's prototype is:
+	-- 	void KStart(Channel bootlink, word *nucbase)
+	--
+	-- In a ROM booted system the 'bootlink' parameter is -1 to denote
+	-- a ROM bootstrap sequence, as apposed to a link bootstrap. The
+	-- nucbase is the address of the nucleus.
+	--
+	-- On entry to this code fragment:
+	--	AR1 = ExecRoot
+
+	-----------------------------------------------------------------------
+	-- Setup C PCS.
+
+	-- Setup initial C stack.
+	_test _false [
+		-- This is a FALLING stack from top of internal RAM.
+		ldhi	0x30, R_USP	-- 0x002f ffff
+		subi	1, R_USP
+	][
+		-- Falling stack using the dispatch stack for initialisation.
+		-- This relies on the initial kernel thread NEVER blocking
+		-- and interrupts NOT being enabled until a new C addressable
+		-- stack has allocated from an initialised memory system.
+		ldi	ExecRoot.DispatchStack + DISPATCHSTACKSIZE - 1, R_USP
+		addi	ar1, R_USP
+	]
+
+	-- C PCS defines that registers set the flags.
+	or	ST_SET_COND, R_ST
+
+	-- No need to set up Module table pointer as this is not required by
+	-- KStart.
+	
+	-----------------------------------------------------------------------
+	-- Construct arguments to KStart().
+
+	-- Bootlink is -1 to signify ROM booted system.
+	ldi	-1, R_A1			-- bootlink is arg 1
+
+	ldi	*+ar1(ExecRoot.Nucleus), R_A2	-- Nucleus base is arg 2
+
+	-----------------------------------------------------------------------
+	-- Jump into nucleus's kernel module (kmodule).
+	-- jmp addr = *(GetNucBase() + 1) + (GetNucBase() + 1) + sizeof(Module)
+
+	-- Get pointer to nucleus from arg 2 and increment to point at kernel
+	-- slot in nucleus contents table.
+	addi	1, R_A2, ar2
+
+	-- Convert kernel slot RPTR (self relative pointer) to address of
+	-- kernel's module.
+	ldi	*ar2, ar1	-- Get kernel RPTR - byte offset to kernel.
+	lsh	-2, ar1		-- Convert byte offset to number of words,
+	addi	ar2, ar1	-- and add in address of kernel RPTR.
+
+	-- Step over module header (.sizeof in terms of bytes).
+	addi	Module.sizeof / 4, ar1
+
+	-- Jump to kernel entry point.
+	b	ar1		-- "My god... its full of stars"
+
+	-- include the C40 Idrom structure.
+	include c40idrom.m
+
+	-- include the C40 Config structure
+	include c40config.m
+
+BootstrapCopyEnd:
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- C40 CPU boot loader tail.
+
+	word	0		-- 0 size block causes bootloader to stop.
+	word	0		-- IVTP - actually setup in Helios init.
+	word	0		-- TVTP - actually setup in Helios init.
+	word	0x00300000	-- End of boot IACK address (start of RAM).
+
+BootstrapEnd:
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- End of c40rombt.a

@@ -1,0 +1,490 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- saasm.a								--
+--                                                                      --
+--	Assembler routines for stand-alone library. Note that each	--
+--	routine is in a module of its own.				--
+--                                                                      --
+--	Author:  NHG 01/8/89						--
+--                                                                      --
+--------------------------------------------------------------------------
+
+include basic.m
+include procs.m
+include structs.m
+include memory.m
+include module.m
+
+----------------------------------------------------------
+-- Accelerate						--
+--							--
+-- Run a procedure in fast RAM				--
+--							--
+----------------------------------------------------------
+
+	StartModule Accelerate -1 1000
+
+	static
+	[
+		extern func	Accelerate
+	]
+
+proc Accelerate
+[
+	word		carrier		-- fast RAM carrier
+	word		func		-- function to run
+	word		nargs		-- number of arg bytes
+	word		arg0		-- first argument
+]
+[
+	word		wptr		-- pointer to entry workspace
+	word		disp		-- pointer to procs display
+]
+[
+	carrier Carrier.Addr
+	carrier Carrier.Size add	-- stack top
+
+	ldnlp -3			-- display space
+	store disp
+	
+	disp				-- step down from display
+	nargs sub			-- space for args
+	ldnlp -2			-- linkage space
+	store wptr			-- save it
+
+	ptr arg0			-- source
+	wptr ldnlp 2			-- dest
+	nargs				-- bytes to move
+	move				-- and copy
+	
+	ldc ..accret-2 ldpi
+	wptr stnl 0			-- return address
+
+	disp				-- module table pointer
+	wptr stnl 1			-- set display
+	
+	ldl _ModTab ldnl 0		-- module table
+	disp stnl 0
+
+	carrier Carrier.Addr		-- vsp
+	disp stnl 1
+
+	ldlp 0
+	disp stnl 2			-- and old wsp
+
+	func				-- function to call
+	wptr				-- its workspace
+
+	gajw				-- swap into fast ram
+	rev				-- get rid of old wsp
+	gcall				-- and enter function
+
+..accret:
+	ajw -4			-- back to entry frame
+	ldl 1			-- display
+	ldnl 2			-- old wsp
+
+	gajw			-- switch back
+
+	rev			-- get result on top
+
+	return			-- and quit
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- alt							--
+--							--
+-- C callable interface to ALT construct		--
+--							--
+----------------------------------------------------------
+
+	StartModule alt -1 1000
+
+	static
+	[
+		extern func	alt
+	]
+
+proc alt
+[
+	word	timeout			-- timeout for timer alt
+	word	nchans			-- number of channels
+	word	chans			-- array of channel ptrs
+]
+[
+	word	usedbyalt
+	word	i			-- array index
+	word	selchan			-- index of selected channel
+]
+[
+	ldc -3 store selchan
+
+	talt
+
+	ldc 0 store i
+	while[ cne i nchans ]
+	[
+		i chans wsub ldnl 0	-- channel
+		ldc 1			-- guard
+		enbc			-- enable channel
+		i adc 1 store i		-- i++
+	]
+	
+	if [ timeout ]
+	[
+		ldtimer timeout sum	-- endtime
+		ldc 1			-- guard
+		enbt			-- enable timer
+	]
+
+	taltwt				-- wait for something
+	
+	ldc 0 store i
+	while[ cne i nchans ]
+	[
+		i chans wsub ldnl 0	-- channel
+		ldc 1			-- guard
+		ldc ..selectc-..altend	-- select address
+		if[ disc ]		-- disable channel
+		[
+			i store selchan
+		]
+		i adc 1 store i		-- i++		
+	]
+	
+	if [ timeout ]
+	[
+		ldtimer timeout sum	-- endtime
+		ldc 1			-- guard
+		ldc ..selectt-..altend	-- select address		
+		dist			-- enable timer
+	]
+	
+	altend
+
+..altend:
+	ldc -2
+	return
+	
+..selectc:
+	selchan
+	return
+
+..selectt:
+	ldc -1
+	return
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- HiPri						--
+--							--
+-- Execute the supplied procedure at high priority.	--
+-- At present a maximum of three args may be passed.	--
+--							--
+----------------------------------------------------------
+
+	StartModule HiPri -1 1000
+
+	static
+	[
+		extern func	HiPri
+	]
+
+_defq 'hipri['hipri_body]
+[
+deftemp [
+	ajw -4
+	ldpri stl 1				-- save current pri
+	ldpri cj templab 1			-- if already hipri skip
+	ldc templab 3 - 2 ldpi
+	stl -1
+	ldlp 0 runp
+templab 3 :
+	mint adc 1 mint stnl 11
+templab 1 :
+        _set '_stackinc _add _stackinc 4
+	hipri_body
+        _set '_stackinc _sub _stackinc 4
+	ldl 1 cj templab 2			-- if was hipri skip
+	ldlp 0 adc 1 runp
+	stopp
+templab 2 :
+	ajw 4
+]
+]
+
+
+proc HiPri
+[
+	word	func		-- pointer to function
+	word	arg0		-- first argument
+	word	arg1		-- second argument
+	word	arg3		-- third argument
+]
+[
+	word	result		-- return value from func
+]
+[
+	hipri
+	[
+		arg3 stl 0	-- hipri leaves local 0 free
+		arg1
+		arg0
+		ldl _add _stackinc _ModTab
+		call ..CallFunc
+		store result
+	]
+	result				-- return with result
+]
+
+..CallFunc:
+	ldl 11		-- get fnptr from proc args
+	gcall
+
+	EndModule
+
+----------------------------------------------------------
+-- mctype						--
+--							--
+-- returns processor type 414, 800 or 425		--
+--							--
+----------------------------------------------------------
+
+	StartModule mctype -1 1000
+
+	static
+	[
+		extern func	mctype
+	]
+
+proc mctype
+[
+]
+[
+]
+[
+	ldc	800
+	ldc	414
+	ldc	425
+	lddevid
+	rev
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- setjmp						--
+-- longjmp						--
+--							--
+-- Long distance jumps for C				--
+--							--
+----------------------------------------------------------
+
+	StartModule SetJmp -1 1000
+
+	static
+	[
+		extern func	setjmp
+		extern func	longjmp
+	]
+
+proc setjmp
+[
+	word	buf		-- 2 word jump buffer
+]
+[]
+[
+	ldl 0			-- return link
+	buf stnl 0		-- save in offset 0
+
+	ldlp 0 			-- my workspace address
+
+	buf stnl 1		-- save in offset 1
+
+	ldc 0			-- result is 0
+]
+
+proc longjmp
+[
+	word	buf		-- jump buffer
+	word	res		-- result
+]
+[]
+[
+	if[ ceq0 res ]		-- ensure rc is not 0
+	[
+		ldc 1
+		store res
+	]
+
+	res			-- return code
+	buf ldnl 0		-- code ptr
+	buf ldnl 1		-- and workspace
+	gajw			-- swap to workspace of setjmp
+	rev			-- dispose of old value
+	stl 0			-- plant return link
+	rev			-- return code on top
+	ret			-- and return to setjmp's caller
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- clock						--
+--							--
+-- 100Hz tick clock					--
+--							--
+----------------------------------------------------------
+
+	StartModule clock -1 1000
+
+	static
+	[
+		extern func	clock
+	]
+
+proc clock
+[]
+[]
+[
+	if[ ldpri ]
+	[
+		ldtimer mint not and
+		ldc 4 prod		-- to 16 microsecond ticks
+		ldc 625 div		-- to 100 Hz ticks
+		return
+	]
+	ldtimer mint not and		-- in microseconds
+	ldc 10000 div			-- to 100 Hz ticks
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- Delay						--
+--							--
+-- Delay for the given number of usec			--
+--							--
+----------------------------------------------------------
+
+	StartModule Delay -1 1000
+
+	static
+	[
+		extern func	Delay
+	]
+
+proc Delay
+[
+	word		usec
+]
+[]
+[
+	hipri
+	[
+		ldtimer usec sum tin
+	]
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- errno						--
+--							--
+-- errno variable (used by some routines)		--
+--							--
+----------------------------------------------------------
+
+	StartModule errno -1 1000
+
+	static
+	[
+		extern word	errno
+	]
+
+	EndModule
+
+----------------------------------------------------------
+-- exit							--
+--							--
+-- halt this processor					--
+--							--
+----------------------------------------------------------
+
+	StartModule exit -1 1000
+
+	static
+	[
+		extern func	exit
+	]
+
+proc exit
+[]
+[]
+[
+	start			-- reset processor
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- _stack_error						--
+--							--
+-- halt this processor					--
+--							--
+----------------------------------------------------------
+
+	StartModule _stack_error -1 1000
+
+	static
+	[
+		extern func	_stack_error
+	]
+
+proc _stack_error
+[]
+[]
+[
+	start			-- reset processor
+]
+
+	EndModule
+
+----------------------------------------------------------
+-- _ProcExit						--
+--							--
+-- call __ProcExit to terminate process.		--
+--							--
+----------------------------------------------------------
+
+	StartModule _ProcExit -1 1000
+
+	static
+	[
+		extern func	_ProcExit
+	]
+
+proc _ProcExit
+[] []
+[
+	ajw	-4
+	ldl	1
+	ldnl	1
+	ldl	1
+	callx	__ProcExit
+]
+
+	EndModule
+
+
+-- end of saasm.a

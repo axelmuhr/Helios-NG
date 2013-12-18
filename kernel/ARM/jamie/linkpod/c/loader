@@ -1,0 +1,137 @@
+/*> c.loader <*/
+/*---------------------------------------------------------------------------*/
+/* Helios Executive loader
+ *
+ * Loads and Executes the given image in MEMC logical address space
+ *
+ * "syntax: execload <filename>"
+ *
+ * The image is loaded into absolute logical address space.
+ * SVC mode is entered, IRQ/FIQ disabled.
+ * sound DMA disabled.
+ * (video should not need to be changed)
+ * Image is copied to 0x00000000
+ * Image is entered at 0x00000000
+ *
+ * This program will only return on error
+ */
+/*---------------------------------------------------------------------------*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <kernel.h>
+#include <swis.h>
+
+extern void copy_and_execute(char *source,unsigned int length,char *dest,unsigned int pageinfo) ;
+
+/*---------------------------------------------------------------------------*/
+
+int main(int argc,char **argv)
+{
+ FILE             *imfile ;
+ unsigned int      flen = 0 ;
+ unsigned int      amount = 0 ;
+ char             *buffer = NULL ;
+ unsigned int      pageinfo = 0x00000000 ;
+ _kernel_swi_regs  rset ;
+
+ printf("ExecLoad v0.07 %s %s (Helios Executive loader)\n",__TIME__,__DATE__) ;
+
+ if (argc < 2)
+  {
+   printf("Filename missing\n") ;
+   printf("syntax: execload <filename>\n") ;
+   exit(0) ;
+  }
+ else
+  if (argc > 2)
+   {
+    printf("Too many parameters\n") ;
+    printf("syntax: execload <filename>\n") ;
+    exit(0) ;
+   }
+
+ /* "argv[1]" pointer to filename */
+ if ((imfile = fopen(argv[1],"r")) == NULL)
+  {
+   printf("Unable to open image file \"%s\"\n",argv[1]) ;
+   exit(0) ;
+  }
+
+ if (fseek(imfile,0,SEEK_END) != 0)
+  {
+   printf("Unable to seek to end of image file \"%s\"\n",argv[1]) ;
+   fclose(imfile) ;
+   exit(0) ;
+  }
+
+ if ((flen = (unsigned int)ftell(imfile)) == -1)
+  {
+   printf("Unable to read current file position\n") ;
+   fclose(imfile) ;
+   exit(0) ;
+  }
+
+ if (fseek(imfile,0,SEEK_SET) != 0)
+  {
+   printf("Unable to seek to start of image file \"%s\"\n",argv[1]) ;
+   fclose(imfile) ;
+   exit(0) ;
+  }
+
+ if (flen >= 0x00010000)
+  {
+   printf("Unable to deal with objects larger than 64K at the moment\n") ;
+   fclose(imfile) ;
+   exit(0) ;
+  }
+
+ printf("Loading &%08X bytes from \"%s\" into memory\n",flen,argv[1]) ;
+
+ if ((buffer = (char *)malloc(flen)) == NULL)
+  {
+   printf("Unable to allocate memory for the file buffer\n") ;
+   fclose(imfile) ;
+   exit(0) ;
+  }
+
+ if ((amount = fread(buffer,1,flen,imfile)) != flen)
+  {
+   printf("Unable to load image into memory buffer (&%08X of &%08X)\n",amount,flen) ;
+   fclose(imfile) ;
+   exit(0) ;
+  }
+
+ /* we now have "flen" bytes of data loaded into "buffer" */
+ fclose(imfile) ;
+
+ printf("Object loaded\n") ;
+ _kernel_swi((XOS_Bit | OS_ReadMemMapInfo),&rset,&rset) ;
+ printf("%d pages of &%08X bytes\n",rset.r[1],rset.r[0]) ;
+ switch (rset.r[0])
+  {
+   case 0x00001000 : /* 4K */
+                     pageinfo = (0x0 << 2) ;
+                     break ;
+   case 0x00002000 : /* 8K */
+                     pageinfo = (0x1 << 2) ;
+                     break ;
+   case 0x00004000 : /* 16K */
+                     pageinfo = (0x2 << 2) ;
+                     break ;
+   case 0x00008000 : /* 32K */
+                     pageinfo = (0x3 << 2) ;
+                     break ;
+   default         : printf("Unknown page size &%08X\n",rset.r[0]) ;
+                     exit(1) ;
+  }
+ pageinfo |= (rset.r[1] << 16) ;
+
+ copy_and_execute(buffer,flen,0x00000000,pageinfo) ;
+
+ /* should never return */
+ return(0) ;
+}
+
+/*---------------------------------------------------------------------------*/
+/*> EOF c.loader <*/

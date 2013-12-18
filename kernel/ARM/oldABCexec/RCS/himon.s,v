@@ -1,0 +1,571 @@
+head     1.1;
+branch   ;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @! @;
+
+
+1.1
+date     91.03.10.23.53.35;  author paul;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@        SUBT    Debugging monitor for Helios Executive          > himon/s
+        ; Copyright (c) 1989, Active Book Company, Cambridge, United Kingdom.
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ARM HELIOS Executive: debugging monitor
+        ;
+        ; Author:               James G Smith
+        ; History:      891219  File split from main module "hiexec.s"
+        ;
+        ; ---------------------------------------------------------------------
+        ; This should be extended to provide lo-level error output (even on
+        ; fatal system errors). We should write to the screen directly without
+        ; relying on any other code, and with a minimum of RAM. Ideally this
+        ; code should be moved into the lo-Executive.
+        ; ---------------------------------------------------------------------
+
+                GBLL    displaymem      ; extend the failure output
+displaymem      SETL    {TRUE}
+
+        ; ---------------------------------------------------------------------
+
+        [       (:LNOT: generic)
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; void InitMonitor(void) ;
+        ; Attach the monitor to the system error vector.
+        ;
+InitMonitor	FnHead
+        MOV     ip,lk
+        ; Update the abort/error vector to point to our debugger.
+        MOV     a1,#vec_systemError             ; vector number
+        ADR     a2,Helios_monitor		; routine address
+        SWI     exec_VectorPatch                ; and patch the vector
+        ; and we do not preserve the old contents
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; Debugging monitor support -------------------------------------------
+        ; ---------------------------------------------------------------------
+
+        EXPORT  NewLine
+NewLine
+        ; in:  <no conditions>
+        ; out: <all registers preserved>
+        MOV     ip,lk
+        SWI     exec_NewLine
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+
+        EXPORT  WriteHex8
+WriteHex8
+        ; in:  a1 = 32bit number to be displayed as HEX
+        ; out: a1 preserved
+        MOV     ip,lk
+        SWI     exec_WriteHex8
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+
+        EXPORT  RegisterOut
+RegisterOut
+        ; in:  a2 = base address of register dump area
+        ;      a3 = register number (0..15) of register to be displayed
+        ; out: a1 = preserved
+
+        STMFD   sp!,{a1,v1,v2,v3,v4,link}
+
+        MOV     v1,a2                   ; register dump area address
+        MOV     v3,a3                   ; remember the register number
+        MOV     v2,v3
+        ADR     v4,HexString            ; we use the first 10 digits
+
+        MOV     a1,#"r"                 ; register prefix
+        SWI     exec_TerminalOut
+
+        CMP     v3,#&0A
+        ; if register number > 10 then display leading "1"
+        MOVCS   a1,#"1"
+        SWICS   exec_TerminalOut
+        SUBCS   v3,v3,#&0A
+        LDR     a1,[v4,v3]              ; load the relevant character
+        SWI     exec_TerminalOut
+        ; if register number < 10 then we need to display an extra space
+        MOVCC   a1,#" "
+        SWICC   exec_TerminalOut
+
+        ADR     a1,abort_equals
+        SWI     exec_Output
+
+        MOV     v3,v2,LSL #2            ; register address = number * 4
+        LDR     a1,[v1,v3]
+        SWI     exec_WriteHex8
+
+        LDMFD   sp!,{a1,v1,v2,v3,v4,pc}^
+
+        ; ---------------------------------------------------------------------
+
+HexString
+        =       "0123456789ABCDEF"
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+
+DisplayQueue
+        ; in:   a1 = Queue head
+        ; out:  all state preserved
+        STMFD   sp!,{a1,a2,a3,a4,lk}
+        MOV     a2,a1
+        LDR     a2,[a2,#SaveState_next]
+DisplayQueue_loop
+        CMP     a2,#&00000000
+        BEQ     DisplayQueue_tail
+        MOV     a1,a2
+        SWI     exec_WriteHex8
+        MOV     a1,#","
+        SWI     exec_TerminalOut                        ; seperator
+        LDR     a2,[a2,#SaveState_next]
+        B       DisplayQueue_loop
+DisplayQueue_tail
+        ; a2 = NULL
+        MOV     a1,a2
+        SWI     exec_WriteHex8
+        SWI     exec_NewLine
+        LDMFD   sp!,{a1,a2,a3,a4,pc}^   
+
+        ; ---------------------------------------------------------------------
+
+DisplayQueueEndtime
+        ; in:   a1 = Queue head
+        ; out:  all state preserved
+        STMFD   sp!,{a1,a2,a3,a4,lk}
+        MOV     a2,a1
+        LDR     a2,[a2,#SaveState_next]
+DisplayQueueEndTime_loop
+        CMP     a2,#&00000000
+        BEQ     DisplayQueue_tail
+        LDR     a1,[a2,#SaveState_endtime]
+        SWI     exec_WriteHex8
+        MOV     a1,#","
+        SWI     exec_TerminalOut                ; seperator
+        LDR     a2,[a2,#SaveState_next]
+        B       DisplayQueueEndTime_loop
+DisplayQueueEndTime_tail
+        ADR     a1,DisplayQueueEndTime_Message
+        SWI     exec_Output
+        LDMFD   sp!,{a1,a2,a3,a4,pc}^   
+DisplayQueueEndTime_Message
+        =       "<END>",&0A,&00
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+        ; error handler messages ----------------------------------------------
+        ; ---------------------------------------------------------------------
+
+abort_error
+        =       "Error number &",null
+
+abort_message
+        =       "Register dump (stored at &",null
+abort_message2
+        =       ") is:",null
+abort_equals
+        =       " = ",null
+abort_mode
+        =       "Mode ",null
+        ALIGN
+
+proc_modes
+        ; textual description of the processor modes
+        ; (table must be word-aligned, and each string must be a word long)
+        =       "USR",null
+        =       "FIQ",null
+        =       "IRQ",null
+        =       "SVC",null
+
+abort_flags
+        =       ", PSR flags: ",null
+
+proc_flags_unset
+        ; textual representation of the processor flags
+        ; (textual representation of set flags is (unset_value AND &DF))
+        =       "nzcvif",null   ; unset
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+        ; Helios_monitor:
+        ;
+        ; This function is linked into the abort/error mechanism by updating
+        ; the system error vector using "exec_VectorPath" during the
+        ; "ExecInit" function.
+        ;
+Helios_monitor
+        ; in:   a1  = int signum
+        ;       a2  = NULL terminated ASCII error message
+        ;       a3  = ptr to "register_dump" of registers at instance of error
+        ;       a4  = recoverable
+        ;       SVC mode; IRQs disabled; FIQs as caller.
+        ;       lk  = callers return address and PSR
+        ; out:  All registers restored from the register dump area
+        ;
+        ; Notes:
+        ;  If the callers processor mode was SVC then we CANNOT return since
+        ;  we lost  their svc_r14 when we were called.
+        ;
+        ;  A proper interrupt driven link adaptor handler should be written
+        ;  allowing Helios to be debugged interactively down the link.
+        ;
+        ;  We are executing under the Helios Server, therefore we must conform
+        ;  to the Helios message sending protocol.
+        ;
+        ;  We are SVC mode here, yet we are calling the USR mode character
+        ;  output routines. This will work as long as the link register is
+        ;  preserved around the SWI calls.
+        ;
+        MOV     v1,a2
+        MOV     v2,a1
+        MOV     v3,a3
+
+        SWI     exec_NewLine
+
+        SWI     exec_FindExecRoot
+
+        MOV     a1,v1
+        SWI     exec_Output                     ; display error message
+        SWI     exec_NewLine
+
+        ADR     a1,abort_error
+        SWI     exec_Output
+
+        MOV     a1,v2
+        SWI     exec_WriteHex8
+        SWI     exec_NewLine
+
+        ADR     a1,abort_message
+        SWI     exec_Output
+
+        MOV     a2,v3                   ; a2 = pointer to register dump
+        MOV     a1,v3                   ; a1 = value to print
+        SWI     exec_WriteHex8
+
+        ADR     a1,abort_message2
+        SWI     exec_Output
+        SWI     exec_NewLine
+
+        ; display the dumped registers ("v3" holds the register dump address)
+        MOV     v4,#&00                 ; start with register 0
+display_regs_loop
+        MOV     a3,v4
+        MOV     a2,v3
+        BL      RegisterOut
+        ADD     v4,v4,#&01              ; step onto the next register
+
+        ANDS    a1,v4,#&00000003        ; Z = v4 MOD 4 state
+
+        MOVNE   a1,#" "                 ; padding space
+        SWINE   exec_TerminalOut
+        SWIEQ   exec_NewLine
+
+        CMP     v4,#&10                 ; have we done all 16
+        BCC     display_regs_loop
+
+        SWI     exec_NewLine
+
+        LDR     v5,[v3,#(&0F * 4)]      ; r15 index within the register dump
+
+        ; display the PSR state ("v5" holds the PC+PSR value)
+        ADR     a1,abort_mode
+        SWI     exec_Output
+
+        AND     a3,v5,#SVCmode          ; a3 = processor mode index
+        ADR     a4,proc_modes           ; a4 = textual descriptor address
+        ADD     a1,a4,a3,LSL #2         ; a1 = a4 + (a3 * 4)
+        SWI     exec_Output
+
+        ADR     a1,abort_flags
+        SWI     exec_Output
+
+        MOV     v5,v5,LSR #26           ; v5 = flags (bottom 6 bits)
+        ADR     v2,proc_flags_unset     ; v2 = unset flags text
+        MOV     v4,#(1 :SHL: 5)         ; flags bit index
+next_flag_loop
+        TST     v5,v4
+        LDR     a1,[v2],#&01            ; load textual descriptor
+        ANDNE   a1,a1,#&DF              ; and make set if bit set
+        SWI     exec_TerminalOut
+        MOVS    v4,v4,LSR #1            ; shift mask bit down
+        BNE     next_flag_loop          ; until it falls off the end
+
+        SWI     exec_NewLine
+        SWI     exec_NewLine
+
+        [       (displaymem)
+        ; display memory around the PC
+        LDR     v1,[v3,#(&0F * &04)]    ; PC is register 15
+        BIC     v1,v1,#PSRflags         ; use the address only
+        SUBS    v2,v1,#&00000100        ; and display at most 64 words before
+        MOVMI   v2,#&00000000           ; else the memory from &00000000
+dmem_loop
+        MOV     a1,v2
+        SWI     exec_WriteHex8          ; display the address
+        MOV     a1,#":"
+        SWI     exec_TerminalOut
+        MOV     a1,#" "
+        SWI     exec_TerminalOut
+
+        LDR     a1,[v2],#&04
+        SWI     exec_WriteHex8
+        SWI     exec_NewLine
+
+        CMP     v2,v1                   ; check for termination
+        BCC     dmem_loop
+
+        SWI     exec_NewLine
+
+        [       {FALSE} ; we do not have access to the necessary locations
+        ; display the ExecRoot structure
+        ADRL    a1,eroot_message
+        SWI     exec_Output
+        ADRL    v1,ROOT_start
+        MOV     a1,v1
+        SWI     exec_WriteHex8
+        SWI     exec_NewLine
+        ADRL    v2,spare_space          ; the end of the ExecRoot structure
+        MOV     a2,#&00000000           ; index into the structure
+eroot_loop
+        MOV     a1,a2
+        SWI     exec_WriteHex8
+        MOV     a1,#":"
+        SWI     exec_TerminalOut
+        MOV     a1,#" "
+        SWI     exec_TerminalOut
+
+        LDR     a1,[v1],#&04
+        SWI     exec_WriteHex8
+        SWI     exec_NewLine
+
+        ADD     r2,r2,#&04              ; update the index
+        CMP     v1,v2                   ; and check for termination
+        BCC     eroot_loop
+
+        SWI     exec_NewLine
+        ]       ; {FALSE}
+        ]       ; (displaymem)
+
+        [       (followdp)
+        !       0,"DP dump code included"
+        ; Note: This code is NOT perfect in that it will attempt to generate
+        ;       "task" information for all exceptions. If the register dump
+        ;       is not that of a Helios "task" then further exceptions can
+        ;       be generated. The code should interrogate the hardware memory
+        ;       system present and trap all illegal "pointer" values before
+        ;       attempting to de-reference them.
+        ;
+        ;       Also, any pointer values derived from this operation must
+        ;       lie within the global Helios heap.
+        ;
+        ; v3 = pointer to register dump
+        ; a1,a2,a3,a4,v1,v2,v4,v5,v6 are available as work registers
+        MOV     v6,#&00000000           ; if we generate an abort, this will
+                                        ; stop further "dp" de-referencing.
+
+        LDR     v1,[v3,#(&09 * 4)]      ; "dp" is register 9
+        TEQ     v1,#&00000000
+        BEQ     invalid_dp
+
+        ADRL    a1,dp_message
+        SWI     exec_Output
+
+        ; ***** VERY TACKY WAY OF REFERENCING THE MODULE NAME *****
+        LDR     v1,[v1,#(1 * 4)]        ; entry 1
+        LDR     v1,[v1,#(48 * 4)]       ; entry 48
+        LDR     v1,[v1,#(2 * 4)]        ; entry 2
+
+        ADD     v1,v1,#&08              ; reference the start of the name
+next_name_character
+        LDR     a1,[v1],#&01
+        CMP     a1,#&00
+        SWINE   exec_TerminalOut
+        BNE     next_name_character
+
+        SWI     exec_NewLine
+        SWI     exec_NewLine
+invalid_dp
+        ]
+
+        [       (backtrace)
+        !       0,"Stack backtrace code included"
+        ; Note: This code is NOT perfect in that it will attempt to generate
+        ;       a backtrace listing for all exceptions. If the register dump
+        ;       is not that of a C program further exceptions can be
+        ;       generated. The code should interrogate the hardware memory
+        ;       system present and trap all illegal "fp" values before
+        ;       attempting to indirect into the saved frame.
+        ;
+        ; v3 = pointer to register dump
+        ; a1,a2,a3,a4,v1,v2,v4,v5,v6 are available as work registers
+
+        LDR     v1,[v3,#(&0B * 4)]      ; "fp" is register 11
+        CMP     v1,#&04000000           ; would generate "address exception"
+        BCS     no_fp_list
+
+        LDR     v2,[v3,#(&0D * 4)]      ; "sp" is register 13
+        LDR     v4,[v3,#(&0F * 4)]      ; "pc" is register 15
+
+        ADRL    a1,backtrace_message
+        SWI     exec_Output
+
+        ADRL    a1,backtrace_fp
+        SWI     exec_Output
+backtrace_loop
+        CMP     v1,#&00000000
+        BEQ     fp_at_end
+        CMP     v1,#&04000000           ; would generate "address exception"
+        BCS     fp_at_end
+
+        LDR     v5,[v1,#0]              ; load word at "fp[0]"
+        BIC     v5,v5,#PSRflags         ; get the pure address
+        SUB     v5,v5,#&0C              ; and step back 3 instructions
+
+        LDR     v2,[v1,#-8]             ; load word at "fp[-2]"
+
+        ADR     a1,backtrace_notfound   ; default name
+        MOV     a2,#&0B                 ; look upto 10 words back for STM
+search_STM_loop
+        SUBS    a2,a2,#&01
+        BEQ     search_STM_loop_end
+
+        SUB     v5,v5,#&04              ; step back a word
+        LDR     a3,[v5,#&00]            ; and load the word
+
+        MOV     a4,#&FF000000
+        ORR     a4,a4,#&00FF0000
+        AND     v6,a3,a4
+        CMP     v6,#&FF000000
+        BNE     search_STM_loop
+
+        MOV     a4,a4,LSR #16           ; create the bottom mask
+        AND     a3,a3,a4                ; mask out top
+        SUB     a1,v5,a3
+search_STM_loop_end
+        SWI     exec_Output
+
+        MOV     a1,#","                 ; print spacer
+        SWI     exec_TerminalOut
+
+        LDR     v1,[v1,#-12]            ; "fp = fp[-3]"
+        B       backtrace_loop
+
+fp_at_end
+        ADR     a1,backtrace_top
+        SWI     exec_Output
+        SWI     exec_NewLine
+no_fp_list
+        ]
+
+        ADR     a1,message_debugger
+        SWI     exec_Output
+
+        ; loop waiting for RESET
+        ; This is where the interactive server debugger would be entered
+termination_loop
+        B       termination_loop
+
+        ; ---------------------------------------------------------------------
+        ; more error handler messages -----------------------------------------
+        ; ---------------------------------------------------------------------
+
+message_debugger
+        =       "Executive halted (RESET HELIOS computer)",cr,lf,null
+
+        [       (displaymem)
+eroot_message
+        =       "ExecRoot structure at &",null
+        ]       ; (displaymem)
+
+        [       (followdp)
+dp_message
+        =       "current task = ",null
+        ]
+
+        [       (backtrace)
+nobacktrace_message
+        =       "no "                   ; terminated by following message
+backtrace_message
+        =       "stack backtrace:",cr,lf,null
+backtrace_fp
+        =       "fp = [",null
+backtrace_notfound
+        =       "<name not found>",null
+backtrace_top
+        =       "<top of frame>]",cr,lf,null
+        ]
+
+        ALIGN           ; after all the messages
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+        EXPORT  PSRout
+PSRout
+        ; in:  no state
+        ; out: all state preserved
+        ; Display the current processor mode and PSR status
+
+        STMFD   sp!,{a1,a2,a3,a4,v1,link}
+
+        MOV     v1,pc
+
+        ADR     a1,abort_mode
+        SWI     exec_Output
+
+        AND     a3,v1,#SVCmode          ; a3 = processor mode index
+        ADR     a4,proc_modes           ; a4 = textual descriptor address
+        ADD     a1,a4,a3,LSL #2         ; a1 = a4 + (a3 * 4)
+        SWI     exec_Output
+
+        ADR     a1,abort_flags
+        SWI     exec_Output
+
+        MOV     v1,v1,LSR #26           ; v1 = flags (bottom 6 bits)
+
+        ADRL    a2,proc_flags_unset     ; a2 = unset flags text
+
+        MOV     a4,#(1 :SHL: 5)         ; flags bit index
+next_PSRflag_loop
+        TST     v1,a4
+        LDR     a1,[a2],#&01            ; load textual descriptor
+        ANDNE   a1,a1,#&DF              ; and make set if bit set
+        SWI     exec_TerminalOut
+        MOVS    a4,a4,LSR #1            ; shift mask bit down
+        BNE     next_PSRflag_loop       ; until it falls off the end
+
+        SWI     exec_NewLine
+
+        LDMFD   sp!,{a1,a2,a3,a4,v1,pc}^
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+        ]       ; EOF (:LNOT: generic)
+
+        ; ---------------------------------------------------------------------
+        END     ; himon.s (and the hi-level Executive code)
+@

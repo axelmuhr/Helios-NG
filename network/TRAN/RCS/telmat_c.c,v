@@ -1,0 +1,900 @@
+head	1.2;
+access;
+symbols
+	Helios1_3:1.2
+	Helios13_beta:1.2
+	Helios1_2_2_Fault:1.2
+	Helios1_2_2_Native:1.2
+	Helios1_2_2_native_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	90.11.25.19.54.39;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.13.12.51.01;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@These drivers now work, and have been tested on a real T.Node
+@
+text
+@/*------------------------------------------------------------------------
+--									--
+--			H E L I O S					--
+--			-----------					--
+--									--
+--		Copyright (C) 1990, Perihelion Software Ltd.		--
+--		Copyright (C) 1990, Telmat Informatique			--
+--			All Rights Reserved.				--
+--									--
+--	telmat_c.c							--
+--		Configuration driver for the Telmat T.Node		--
+--									--
+--	Authors : BLV, 15.8.90						--
+--		  Caroline Burrer, Telmat Informatique			--
+--									--
+------------------------------------------------------------------------*/
+
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/TRAN/RCS/telmat_c.c,v 1.1 90/09/13 12:51:01 bart Exp Locker: bart $";
+
+#define	VersionNumber	"1.00"
+
+#pragma -s1		/* switch off stack checking			*/
+#pragma -f0		/* switch off vector stack			*/
+#pragma -g0		/* and do not put the names into the code	*/
+
+#include <syslib.h>
+#include <device.h>
+#include <codes.h>
+#include <root.h>
+#include <gsp.h>
+#include <module.h>
+#include <stdarg.h>
+#include <string.h>
+#include "private.h"
+#include "rmlib.h"
+#include "netaux.h"
+
+#ifdef Malloc
+#undef Malloc
+#endif
+
+#define		ControlStream	Spare[0]
+#define		Prefix		Spare[1]
+#define		TC_Prefix	0x0001	/* from tcontrol.h */
+#define		TC_Configure	0x0006
+#define		TC_Connect	0x0007
+#define		TC_Disconnect	0x0008
+#define		TC_Enquire	0x0009
+
+/**
+*** Machine independent routines.
+**/
+static void	DeviceOperate(DCB *, DriverRequest *);
+static word	DeviceClose(DCB *);
+
+/**
+*** Machine specific routines
+**/
+static void	driver_Initialise(	NetworkDCB *, DriverRequest *);
+static void	driver_MakeLinks(	NetworkDCB *, DriverRequest *);
+static void	driver_TestLinks(	NetworkDCB *, DriverRequest *);
+static void	driver_ObtainProcessors(NetworkDCB *, DriverRequest *);
+static void	driver_MakeInitialLinks(NetworkDCB *, DriverRequest *);
+static void	driver_FreeProcessors(	NetworkDCB *, DriverRequest *);
+
+DCB	*DevOpen(Device *dev, NetworkDCB *network_dcb)
+{
+  network_dcb->DCB.Device	= dev;
+  network_dcb->DCB.Operate	= &DeviceOperate;
+  network_dcb->DCB.Close	= &DeviceClose;
+  return(&(network_dcb->DCB));  
+}
+
+static void DeviceOperate(DCB *device, DriverRequest *request)
+{ NetworkDCB	*network_dcb = (NetworkDCB *) device;
+
+  switch(request->FnRc)
+   {
+   	case	ND_Initialise	: 
+   		driver_Initialise(network_dcb, request); break;
+	case	ND_MakeLinks	:
+		driver_MakeLinks(network_dcb, request); break;
+	case	ND_TestLinks	:
+		driver_TestLinks(network_dcb, request); break;
+	case	ND_ObtainProcessors :
+		driver_ObtainProcessors(network_dcb, request); break;
+	case	ND_MakeInitialLinks :
+		driver_MakeInitialLinks(network_dcb, request); break;
+	case	ND_FreeProcessors :
+		driver_FreeProcessors(network_dcb, request); break;
+	default	:
+		request->FnRc = EC_Error + SS_NetServ + EG_WrongFn;
+   }
+}
+
+static word DeviceClose(DCB *device)
+{ NetworkDCB	*network_dcb = (NetworkDCB *) device;
+  Stream	*controller  = (Stream *) network_dcb->ControlStream;
+  if (controller ne Null(Stream)) Close(controller);
+  return(Err_Null);
+}
+
+/**
+*** Access to routines in the network server, if needed
+**/
+static void driver_report(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+  
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->report))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+static void driver_fatal(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+  
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->fatal))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+/**
+*** driver_Initialise(). This is a copy of the telmat_ra.d initialisation
+*** code.
+**/
+static	void	initialise_aux1(RmProcessor, int *, NetworkDCB *);
+static	word	determine_prefix(Stream *, NetworkDCB *);
+
+static void	driver_Initialise(NetworkDCB *device, DriverRequest *request)
+{ int			sequence_number = 1;
+  RmHardwareFacility	*hardware;  
+  Stream		*controller;
+  Object		*control_obj;
+  int			i;
+      
+  driver_report(device, "telmat_c.d driver version %s", VersionNumber);
+
+  control_obj = Locate(Null(Object), "/Tcontrol");
+  if (control_obj eq Null(Object))
+   driver_fatal(device, "telmat_c.d driver, failed to locate /Tcontrol");
+
+  controller = Open(control_obj, Null(char), O_ReadOnly);
+  if (controller eq Null(Stream))
+   driver_fatal(device,
+   		"telmat_c.d driver, failed to open /Tcontrol, fault %x", 
+		Result2(control_obj));
+
+  device->ControlStream	= (int) controller;
+  device->Prefix	= determine_prefix(controller, device);
+  
+  hardware = device->HardwareFacility;
+  if (strlen(hardware->Option) ne 0)
+   driver_report(device, "telmat_c.d driver, ignoring option %s", 
+   		hardware->Option);
+  for (i = 0; i < hardware->NumberProcessors; i++)
+   { RmProcessor Processor = hardware->Processors[i];
+     initialise_aux1(Processor, &sequence_number, device);
+   }   
+   
+  request->FnRc = Err_Null;
+}
+
+/**
+*** For every processor, figure out an sid.
+**/
+static void	initialise_aux1(RmProcessor Processor, int *sequence_number,
+		NetworkDCB *device)
+{ ProcessorEntry	*proc_entry;
+  int			i;
+        
+  if (RmGetProcessorPurpose(Processor) eq RmP_IO) return;
+
+ 	/* find the correct driver */
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+  for (i = 0; i < proc_entry->NumberDrivers; i++)
+   if (proc_entry->DriverEntry[i].Hardware eq device->HardwareFacility)
+    { 
+ 	/* It is necessary to determine an id matching the old sid.	*/
+      if (Processor eq device->RootProcessor)
+       proc_entry->DriverEntry[i].Aux1 = 0;
+	/* Check for the special boards which are given special id's	*/
+	/* This is horrible.						*/
+      elif (RmIsAProcessorAttribute(Processor, "MEM0") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 200;
+      elif (RmIsAProcessorAttribute(Processor, "MEM1") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 201;
+      elif (RmIsAProcessorAttribute(Processor, "MEM2") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 202;
+      elif (RmIsAProcessorAttribute(Processor, "MEM3") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 203;
+      elif (RmIsAProcessorAttribute(Processor, "SPC0") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 210;
+      elif (RmIsAProcessorAttribute(Processor, "SPC1") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 211;
+      elif (RmIsAProcessorAttribute(Processor, "SPC2") eq RmE_Success)
+	proc_entry->DriverEntry[i].Aux1 = 212;
+      else
+       { proc_entry->DriverEntry[i].Aux1 = *sequence_number;
+         *sequence_number += 1;
+       }
+
+      proc_entry->DriverEntry[i].Aux1 += device->Prefix;
+      break;
+    }              
+}
+
+/**
+*** Given a name such as Cluster1, determinate a network prefix. Hopefully
+*** this will disappear soon.
+**/
+
+static word	determine_prefix(Stream	*control, NetworkDCB *device)
+{ char		*name = "1";
+  MCB		mcb;
+  word		rc;
+  word		result;
+  
+  mcb.MsgHdr.Dest	= control->Server;
+  mcb.MsgHdr.Reply	= control->Reply;
+  mcb.MsgHdr.FnRc	= FC_Private + TC_Prefix;
+  mcb.MsgHdr.Flags	= MsgHdr_Flags_preserve;
+  mcb.MsgHdr.DataSize	= strlen(name) + 1;
+  mcb.MsgHdr.ContSize	= 0;
+  mcb.Timeout		= 20 * OneSec;
+  mcb.Data		= name;
+  rc = PutMsg(&mcb);
+  if (rc ne Err_Null)
+   driver_fatal(device,
+   	 "telmat_c.d, failed to communicate with /Tcontrol, fault %x", rc);
+
+  mcb.MsgHdr.Dest	= control->Reply;
+  mcb.Timeout		= 20 * OneSec;
+  mcb.Data		= (BYTE *) &result;
+  rc = GetMsg(&mcb);
+  if (rc < Err_Null)
+   driver_fatal(device,
+   	"telmat_c.d, failed to communicate with /Tcontrol, fault %x", rc);
+  return(result);
+}
+
+/**
+**/
+static void	driver_MakeLinks(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** No-op for now
+**/
+static void	driver_TestLinks(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** No-op for now
+**/
+static void driver_FreeProcessors(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** No-op for now
+**/
+static void driver_ObtainProcessors(NetworkDCB *device, DriverRequest *request)
+{ request->FnRc = Err_Null; return;
+}
+
+/**
+*** This routine does the following jobs.
+**/
+#define	MaxConnections	256	/* enough for 128 processors */
+typedef	struct	FullConnection {
+	int		Sid1;
+	int		Link;
+	int		Type;
+	int		Sid2;
+	int		Destlink;
+	int		DestType;
+} FullConnection;
+static	RmProcessor	LookupSid(NetworkDCB *device, int sid);
+static	bool		MakeConnection(NetworkDCB *device, DriverRequest *,
+			FullConnection *);
+
+static void driver_MakeInitialLinks(NetworkDCB *device, DriverRequest *request)
+{ FullConnection	*LinkTable;	/* internal connections */
+  FullConnection	*SidTable;	/* external connections */
+  FullConnection	*FinalSidTable;	/* final external connections */
+  int			i, j, k;
+  RmHardwareFacility	*hardware;
+  int			NextLink = 0;
+  int			NextSid	 = 0;
+  int			reply;
+  int			retries;
+  RmProcessor		current;
+  RmProcessor		neighbour;
+  int			destlink;
+    
+  LinkTable = (FullConnection *) Malloc(MaxConnections * sizeof(FullConnection));
+  if (LinkTable eq Null(FullConnection))
+   { request->FnRc = EC_Error + SS_NetServ + EG_NoMemory + EO_Link; return; }
+
+  SidTable = (FullConnection *) Malloc(MaxConnections * sizeof(FullConnection));
+  if (SidTable eq Null(FullConnection))
+   { request->FnRc = EC_Error + SS_NetServ + EG_NoMemory + EO_Link;
+     Free(LinkTable);
+     return;
+   }
+
+  hardware = device->HardwareFacility;
+  for (i = 0; i < hardware->NumberProcessors; i++)
+   { ProcessorEntry	*proc_entry;
+     ProcessorEntry	*its_proc_entry;
+     int		link;
+     int		number_links;
+     int		my_sid;
+     int		its_sid;
+
+     current = hardware->Processors[i];
+     number_links = RmCountLinks(current);
+     
+	/* For now I assume that the root processor is outside the T.Node */
+	/* However, with the old-style resource maps the root processor   */
+	/* is considered to be under the control of this driver, so I	  */
+	/* need a test to avoid making silly links such as the link	  */
+	/* between the root processor and the I/O processor.		  */
+     if (current eq device->RootProcessor) continue;
+                  
+     proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(current);     
+     for (j = 0; j < proc_entry->NumberDrivers; j++)
+      { DriverEntry	*driver_entry = &(proc_entry->DriverEntry[j]);
+        if (driver_entry->Hardware eq hardware)
+         { my_sid = driver_entry->Aux1;
+           break;
+         }
+      }
+
+     for (link = 0; link < number_links; link++)
+      { neighbour = RmFollowLink(current, link, &destlink);
+		/* unconnected links must be ignored */
+	if (neighbour eq RmM_NoProcessor) continue;
+
+		/* Connected links may go to another controlled processor */
+		/* or to an uncontrolled processor.			  */
+		/* Special case for the root processor, because its	  */
+		/* connection must go into SID table and not link table	  */
+        if ((neighbour ne RmM_ExternalProcessor) &&
+	    (neighbour ne device->RootProcessor))
+         { its_proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(neighbour);
+	 
+	   for (j = 0; j < hardware->NumberProcessors; j++)
+	    if (neighbour eq hardware->Processors[j])
+	     { if ((i > j) || ((i eq j) && (link > destlink)))
+	        goto next_link;
+
+			/* This connection must be added to the sid table */
+			/* First, find the sid for the other processor    */	
+               for (k = 0; k < its_proc_entry->NumberDrivers; k++)
+	        { DriverEntry	*driver = &(its_proc_entry->DriverEntry[k]);
+		  if (driver->Hardware ne hardware) continue;
+		  its_sid = driver->Aux1;
+		  LinkTable[NextLink].Sid1		= my_sid - 1;
+		  LinkTable[NextLink].Sid2		= its_sid - 1;
+		  LinkTable[NextLink].Link		= link;
+		  LinkTable[NextLink].Destlink		= destlink;
+
+                  if ((my_sid - device->Prefix) >= 200)
+	           LinkTable[NextLink].Type = my_sid - (device->Prefix + 200);
+		  else
+		   LinkTable[NextLink].Type = -1;
+
+		  if ((its_sid - device->Prefix) >= 200)
+	           LinkTable[NextLink].DestType = its_sid - (device->Prefix + 200);
+		  else
+		   LinkTable[NextLink].DestType = -1;
+		  NextLink++;
+		  RmBreakLink(current, link);
+		  goto next_link;
+		}                
+	     }
+	 }
+
+	/* If I get here, then this link is either external or it goes	*/
+	/* to a connection outside the T.Node/Tandem Node/Meganode.	*/
+	/* The behaviour is much the same				*/
+        if (neighbour eq device->RootProcessor)
+	 { SidTable[NextSid].Sid1		= 0 + device->Prefix;
+	   SidTable[NextSid].Sid2		= my_sid;
+	   SidTable[NextSid].Link		= destlink;
+	   SidTable[NextSid].Destlink		= link;
+	   SidTable[NextSid].Type		= -1;
+           if ((my_sid - device->Prefix) >= 200)
+	    SidTable[NextSid].DestType = my_sid - (device->Prefix + 200);
+	   else
+	    SidTable[NextSid].DestType		= -1;
+	   NextSid++;
+	 }
+	elif (neighbour eq RmM_ExternalProcessor)
+		/* This means ext[x] in the resource map, where x is the */
+		/* item number.	Currently destlink is set to x		 */
+		/* !!! to be done for 1.2				 */
+         { driver_report(device, "telmat_c.d, cannot cope with external links");
+         }
+	else
+		/* this can be ignored for now, links like this are external */
+		/* connections, i.e. they go through an item to an outside   */
+		/* processor, but I do not know which item. Possibly it	     */
+		/* should assign any free item, starting at 0, or something  */
+		/* similar. Possibly the resource map may have to be extended */
+		/* to specify the item.					      */
+	 { driver_report(device, "telmat_c.d, cannot cope with links to outside processors");
+	 }	 
+next_link:
+	continue;
+      }		/* for every link on the current processor		*/
+   }		/* for every processor controlled in this network	*/
+
+
+#if 0
+  for (i = 0; i < NextSid; i++)
+   driver_report(device, "SidTable[%d] : sid1 %x, link 1 %d, sid2 %x, link 2 %x",  
+             i, SidTable[i].Sid1, SidTable[i].Link, SidTable[i].Sid2,
+	     	SidTable[i].Destlink);
+
+    for (i = 0; i < NextLink; i++)
+   driver_report(device, "LinkTable[%d] : sid1 %x, link 1 %d, sid2 %x, link 2 %x",  
+             i, LinkTable[i].Sid1, LinkTable[i].Link, LinkTable[i].Sid2,
+	     	LinkTable[i].Destlink);
+#endif
+
+   FinalSidTable = (FullConnection *) Malloc(MaxConnections * sizeof(FullConnection));
+   if (FinalSidTable eq Null(FullConnection))
+    { request->FnRc = EC_Error + EG_NoMemory + EO_Link;
+      Free(LinkTable);
+      Free(SidTable);
+      return;
+    }
+    
+	/* When I get here SidTable should have been filled in with	*/
+	/* suitable Sid's and link numbers for all connections to	*/
+	/* outside world. This must be sent off to Tcontrol, to be	*/
+	/* processed. The results must be compared with the original	*/
+	/* to permit an update.						*/
+  { MCB		mcb;
+    Stream	*tcontrol = (Stream *) device->ControlStream;
+    mcb.MsgHdr.Dest	= tcontrol->Server;
+    mcb.MsgHdr.Reply	= tcontrol->Reply;
+    mcb.MsgHdr.FnRc	= FC_Private + TC_Configure;
+    mcb.MsgHdr.DataSize	= NextSid * sizeof(FullConnection);
+    mcb.MsgHdr.ContSize	= 0;
+    mcb.MsgHdr.Flags	= MsgHdr_Flags_preserve;
+    mcb.Data		= (BYTE *) SidTable;
+    mcb.Timeout		= StreamTimeout;
+
+    for (retries = 0; retries < 2; retries++)    
+     { if (PutMsg(&mcb) < Err_Null)
+        { ReOpen(tcontrol);
+          continue;
+        }
+       mcb.MsgHdr.Dest	= tcontrol->Reply;
+       mcb.Data		= (BYTE *) FinalSidTable;
+       mcb.Timeout		= StreamTimeout;
+       if ((reply = GetMsg(&mcb)) eq Err_Null) break;
+       ReOpen(tcontrol);
+     }
+    if (reply ne Err_Null)
+     { driver_report(device, "telmat_c.d, error %x interacting with /Tcontrol",
+     			reply);
+       request->FnRc	= reply;
+       Free(LinkTable); Free(SidTable); Free(FinalSidTable);
+       return;
+     }
+    
+    mcb.MsgHdr.Dest	= tcontrol->Server;
+    mcb.MsgHdr.Reply	= tcontrol->Reply;
+    mcb.MsgHdr.FnRc	= FC_Private + TC_Configure;
+    mcb.MsgHdr.DataSize	= NextLink * sizeof(FullConnection);
+    mcb.MsgHdr.ContSize	= 0;
+    mcb.MsgHdr.Flags	= MsgHdr_Flags_preserve;
+    mcb.Data		= (BYTE *) LinkTable;
+    mcb.Timeout		= StreamTimeout;
+
+    for (retries = 0; retries < 2; retries++)    
+     { if (PutMsg(&mcb) < Err_Null)
+        { ReOpen(tcontrol);
+          continue;
+        }
+       mcb.MsgHdr.Dest	= tcontrol->Reply;
+       mcb.Data		= (BYTE *) LinkTable;
+       mcb.Timeout		= StreamTimeout;
+       if ((reply = GetMsg(&mcb)) eq Err_Null) break;
+       ReOpen(tcontrol);
+     }
+    if (reply ne Err_Null)
+     { driver_report(device, "telmat_c.d, error %x interacting with /Tcontrol",
+     			reply);
+       request->FnRc	= reply;
+       Free(LinkTable); Free(SidTable); Free(FinalSidTable);
+       return;
+     }
+  }
+
+
+	/* First, update the external connections by comparing every	*/
+	/* entry in the initial SidTable with the entry in the final	*/
+	/* SidTable. If these are different, figure out the T.Node	*/
+	/* worker that is affected, follow the current link to get the	*/
+	/* required information, break the current link, and build a	*/
+	/* new link.							*/
+	/* For example: root processor -> link 2 of worker 0 instead of	*/
+	/* link 1. current becomes the processor worker 0, neighbour	*/
+	/* becomes the root processor, link 1 is broken, and link 2 is	*/
+	/* made.							*/
+  for (i = 0; i < NextSid; i++)
+   { if ((SidTable[i].Sid1 ne FinalSidTable[i].Sid1) 		||
+         (SidTable[i].Sid2 ne FinalSidTable[i].Sid2)		||
+         (SidTable[i].Link ne FinalSidTable[i].Link) 		||
+         (SidTable[i].Destlink ne FinalSidTable[i].Destlink) )
+      { current = LookupSid(device, FinalSidTable[i].Sid2);
+        neighbour = RmFollowLink(current, SidTable[i].Destlink, &destlink);
+	RmBreakLink(current, SidTable[i].Destlink);
+	RmMakeLink(current, FinalSidTable[i].Destlink, neighbour, destlink);
+      }
+     unless(MakeConnection(device, request, &(FinalSidTable[i]))) goto error;
+   }
+
+	/* For all the links in the Linktable, find the two affected	*/
+	/* processors and make the connection. Note that the link was	*/
+	/* broken at the time that LinkTable[] was built up.		*/
+  for (i = 0; i < NextLink; i++)
+   { LinkTable[i].Sid1 += 1;
+     LinkTable[i].Sid2 += 1;
+     current = LookupSid(device, LinkTable[i].Sid1);
+     neighbour	= LookupSid(device, LinkTable[i].Sid2);
+     RmMakeLink(current, LinkTable[i].Link, neighbour, LinkTable[i].Destlink);
+     unless(MakeConnection(device, request, &(LinkTable[i]))) goto error;
+   }
+
+  request->FnRc		= Err_Null;
+
+error:  
+  Free(LinkTable);
+  Free(SidTable);      
+  Free(FinalSidTable);
+  return;
+}
+
+/**
+*** given an Sid, find the matching processor.
+BLV - optimise using binary search of table, or something else
+**/
+static	RmProcessor LookupSid(NetworkDCB *device, int sid)
+{ RmHardwareFacility	*hardware = device->HardwareFacility;
+  int			i, j;
+  
+  for (i = 0; i < hardware->NumberProcessors; i++)
+   { RmProcessor	current = hardware->Processors[i];
+     ProcessorEntry	*proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(current);
+     for (j = 0; j < proc_entry->NumberDrivers; j++)
+      { DriverEntry *driver_entry = &(proc_entry->DriverEntry[j]);
+        if (driver_entry->Hardware eq hardware)
+	 { if (sid eq driver_entry->Aux1)
+	    return(current);
+	   else
+	    break;
+	 }
+      }
+   }
+
+  return(RmM_NoProcessor);
+}
+
+	/* Make the specified connection, which may be internal or	*/
+	/* external.							*/
+static bool MakeConnection(NetworkDCB *device, DriverRequest *request,
+		 FullConnection * conn)
+{ MCB			mcb;
+  Stream		*tcontrol = (Stream *) device->ControlStream;
+  FullConnection	connection;
+  int			retries;
+  word			reply;
+    
+  mcb.MsgHdr.Dest	= tcontrol->Server;
+  mcb.MsgHdr.Reply	= tcontrol->Reply;
+  mcb.MsgHdr.FnRc	= FC_Private + TC_Connect;
+  mcb.MsgHdr.DataSize	= sizeof(FullConnection);
+  mcb.MsgHdr.ContSize	= 0;
+  mcb.MsgHdr.Flags	= MsgHdr_Flags_preserve;
+  mcb.Data		= (BYTE *) &connection;
+  mcb.Timeout		= StreamTimeout;
+
+#if 0
+  driver_report(device, "Making connection: sid %x link %d to sid %x link %d",
+	conn->Sid1, conn->Link, conn->Sid2, conn->Destlink);
+#endif
+	
+  if (conn->Sid1 eq (0 + device->Prefix))
+   connection.Sid1	= 99 + device->Prefix;
+  else
+   connection.Sid1	= conn->Sid1 - 1;
+   
+  if (conn->Sid2 eq (0 + device->Prefix))
+   connection.Sid2	= 99 + device->Prefix;
+  else
+   connection.Sid2	= conn->Sid2 - 1;
+   
+  connection.Link	= conn->Link;
+  connection.Destlink	= conn->Destlink;
+  if ((conn->Sid1 - device->Prefix) >= 200)
+   connection.Type = conn->Sid1 - (device->Prefix + 200);
+  else
+   connection.Type = -1;
+  if ((conn->Sid2 - device->Prefix) >= 200)
+   connection.DestType = conn->Sid2 - (device->Prefix + 200);
+  else
+   connection.DestType = -1;
+
+#if 0
+  driver_report(device, "real connection: sid %x link %d to sid %x link %d",
+	connection.Sid1, connection.Link, connection.Sid2, connection.Destlink);
+#endif
+   
+  for (retries = 0; retries < 2; retries++)    
+   { if (PutMsg(&mcb) < Err_Null)
+      { ReOpen(tcontrol);
+        continue;
+      }
+     mcb.MsgHdr.Dest		= tcontrol->Reply;
+     mcb.Data			= (BYTE *) &connection;
+     mcb.Timeout		= StreamTimeout;
+     if ((reply = GetMsg(&mcb)) eq Err_Null) break;
+     ReOpen(tcontrol);
+   }
+  if (reply ne Err_Null)
+   { driver_report(device, "telmat_c.d, error %x making connection inside /Tcontrol",
+   			reply);
+     request->FnRc	= reply;
+     return(FALSE);
+   }
+  return(TRUE);
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/telmat_c.c,v 1.2 90/09/13 11:06:26 bart Exp Locker: bart $";
+a192 2
+	/* BLV - the old telmat_ra.c occasionally subtracts 1 from sid's */
+	/* BLV I am not sure why					 */
+a194 3
+      else
+       proc_entry->DriverEntry[i].Aux1 = *sequence_number++;
+
+d197 1
+a197 1
+      if (RmIsAProcessorAttribute(Processor, "MEM0"))
+d199 1
+a199 1
+      elif (RmIsAProcessorAttribute(Processor, "MEM1"))
+d201 1
+a201 1
+      elif (RmIsAProcessorAttribute(Processor, "MEM2"))
+d203 1
+a203 1
+      elif (RmIsAProcessorAttribute(Processor, "MEM3"))
+d205 1
+a205 1
+      elif (RmIsAProcessorAttribute(Processor, "SPC0"))
+d207 1
+a207 1
+      elif (RmIsAProcessorAttribute(Processor, "SPC1"))
+d209 1
+a209 1
+      elif (RmIsAProcessorAttribute(Processor, "SPC2"))
+d211 4
+d217 1
+d227 1
+a227 1
+{ char		*name = device->NetworkName;
+a251 1
+   	
+d279 1
+a279 1
+{
+a283 6
+*** 1) build a table specifying the current interconnections between the
+***    processors in this hardware
+*** 2) send this table off to /Tcontrol for checking
+*** 3) get back a new table with updated connections
+*** 4) modify the internal data structures inside the network resource map
+*** 5) make all the links
+d294 3
+d299 3
+a301 2
+{ FullConnection	*InitialTable;
+  FullConnection	*FinalTable;
+d304 2
+a305 1
+  int			NextConnection = 0;
+d307 7
+a313 3
+        
+  InitialTable = (FullConnection *) Malloc(MaxConnections * sizeof(FullConnection));
+  if (InitialTable eq Null(FullConnection))
+a314 1
+  FinalTable = (FullConnection *) Malloc(MaxConnections * sizeof(FullConnection));
+d316 2
+a317 1
+  if (FinalTable eq Null(FullConnection))
+d319 1
+a319 1
+     Free(InitialTable);
+d325 1
+a325 3
+   { RmProcessor 	current	= hardware->Processors[i];
+     ProcessorEntry	*proc_entry;
+     RmProcessor	neighbour;
+a326 1
+     int		destlink;
+d328 1
+a328 1
+     int		number_links = RmCountLinks(current);
+d331 11
+a341 1
+          
+d353 37
+a389 17
+        if (neighbour eq RmM_NoProcessor) continue;
+        if (neighbour eq RmM_ExternalProcessor) continue; /* for now */
+        for (j = 0; j < hardware->NumberProcessors; j++)
+         if (neighbour eq hardware->Processors[j])
+          { its_proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(neighbour);
+            for (j = 0; j < its_proc_entry->NumberDrivers; j++)
+             { DriverEntry *driver = &(its_proc_entry->DriverEntry[j]);
+               if (driver->Hardware eq hardware)
+                { its_sid = driver->Aux1;
+                  if (its_sid <= my_sid) goto done_this_link;
+                  InitialTable[NextConnection].Sid1	= my_sid;
+                  InitialTable[NextConnection].Sid2	= its_sid;
+		  InitialTable[NextConnection].Link	= link;
+		  InitialTable[NextConnection].Destlink	= destlink;
+		  InitialTable[NextConnection].Type	= -1;
+		  InitialTable[NextConnection].DestType	= -1;
+		  NextConnection++;
+d391 36
+a426 7
+		  goto done_this_link;
+		}
+             }
+          }
+	/* Connection to a processor outside the control of this driver */
+	/* Ignore it for now.						*/
+done_this_link:
+d432 25
+a456 3
+	/* When I get here InitialTable should have been filled in with	*/
+	/* suitable Sid's and link numbers for the controlled processors*/
+	/* This can now be sent off to /Tcontrol			*/
+a458 1
+    
+d462 1
+a462 1
+    mcb.MsgHdr.DataSize	= NextConnection * sizeof(FullConnection);
+d464 2
+a465 2
+    mcb.MsgHdr.Flags	= 0;
+    mcb.Data		= (BYTE *) InitialTable;
+d467 19
+d487 7
+a493 4
+    PutMsg(&mcb);
+    
+    mcb.MsgHdr.Dest	= tcontrol->Reply;
+    mcb.Data		= (BYTE *) FinalTable;
+d495 13
+a507 1
+    if ((reply = GetMsg(&mcb)) < Err_Null)
+d510 3
+a512 2
+     	request->FnRc	= reply;
+     	return;
+a515 22
+	/* Final table should now have full details of the real		*/
+	/* connections to make. At present these have to be made one	*/
+	/* by one. That is silly, and the configure phase of Tcontrol	*/
+	/* should really make the links anyway.				*/
+  { MCB		mcb;
+    Stream	*tcontrol;
+     
+    for (i = 0; i < NextConnection; i++)
+     { mcb.MsgHdr.Dest		= tcontrol->Server;
+       mcb.MsgHdr.Reply		= tcontrol->Reply;
+       mcb.MsgHdr.FnRc		= FC_Private + TC_Connect;
+       mcb.MsgHdr.Flags		= 0;
+       mcb.MsgHdr.DataSize	= sizeof(FullConnection);
+       mcb.MsgHdr.ContSize	= 0;
+       mcb.Data			= (BYTE *) &(FinalTable[i]);
+       mcb.Timeout		= StreamTimeout;
+       (void) PutMsg(&mcb);
+       mcb.MsgHdr.Dest		= tcontrol->Reply;
+       mcb.Timeout		= StreamTimeout;
+       (void) GetMsg(&mcb);
+     }
+  }
+d517 19
+a535 14
+  for (i = 0; i < NextConnection; i++)
+   { RmProcessor	current;
+     RmProcessor	neighbour;
+     
+	/* This is somewhat inefficient */
+     for (j = 0; j < hardware->NumberProcessors; j++)
+      { ProcessorEntry	*proc_entry;
+        current = hardware->Processors[j];
+	proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(current);
+	for (k = 0; k < proc_entry->NumberDrivers; k++)
+	 { DriverEntry	*driver_entry = &(proc_entry->DriverEntry[k]);
+	   if (driver_entry->Aux1 eq FinalTable[i].Sid1)
+	    goto found_current;
+	 }
+d537 23
+a559 1
+found_current:
+d561 18
+a578 8
+     for (j = 0; j < hardware->NumberProcessors; j++)
+      { ProcessorEntry	*proc_entry;
+        neighbour = hardware->Processors[j];
+	proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(neighbour);
+	for (k = 0; k < proc_entry->NumberDrivers; k++)
+	 { DriverEntry	*driver_entry = &(proc_entry->DriverEntry[k]);
+	   if (driver_entry->Aux1 eq FinalTable[i].Sid2)
+	    goto found_neighbour;
+d581 49
+a629 1
+found_neighbour:
+d631 23
+a653 7
+    RmMakeLink(current, FinalTable[i].Link, neighbour, FinalTable[i].Destlink);
+  }
+  
+  Free(InitialTable);
+  Free(FinalTable);      
+  request->FnRc		= Err_Null;
+  return;
+@

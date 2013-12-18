@@ -1,0 +1,333 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1
+	C40_Field_Test_2:1.1
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1;
+locks
+	tony:1.4; strict;
+comment	@ * @;
+
+
+1.4
+date	94.08.10.09.14.39;	author al;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.07.12.11.57.14;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	93.06.24.12.21.52;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.04.29.17.02.27;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@Command to take an existing nucleus and split it up into its component
+parts.
+@
+
+
+1.4
+log
+@Ported to MS-DOS and added @@argfile support.  It was quite a hack to add
+@@argfile support, let me tell you.
+@
+text
+@/*
+ * Helios system image breaker
+ *
+ * Reads an existing nucleus and extracts some bits 
+ *
+ * Author : BLV 29/4/91
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <helios.h>
+#include <stddef.h>
+#include "getargs.h"
+
+#ifdef __SUN4
+#define EXIT_FAILURE -1
+#define EXIT_SUCCESS  0
+#endif
+
+#define eq ==
+#define ne !=
+
+static void usage(void);
+
+int main(int argc,STRING *argv)
+{ FILE *nucleus_source;
+  FILE *output_file;
+  BYTE *image;
+  WORD *w_image;
+  WORD size;
+  int  i;
+  bool no_problems = TRUE;
+  int ptabsize;
+  ArgStack *argstack = NULL;
+
+  if (argc < 3) usage();
+
+  nucleus_source = fopen(argv[1], "rb");
+  if (nucleus_source eq Null(FILE))
+   { fprintf(stderr, "sysbreak: unable to open nucleus %s\n", argv[1]);
+     exit(EXIT_FAILURE);
+   }
+
+  if (fread((BYTE *) &size, sizeof(WORD), 1, nucleus_source) < 1)
+   { fputs("sysbreak: failed to read first word of nucleus.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+
+    /* check the nucleus size, to ensure that it is sensible */
+  if ((size <= 1024) || (size >= (1024 * 1024)))
+   { fprintf(stderr,
+             "sysbreak: a nucleus size of %ld bytes is silly.\n", size);
+     exit(EXIT_FAILURE);
+   }
+   
+  image = (byte *) malloc( (int) size);
+  if (image eq Null(BYTE))
+   { fprintf(stderr, 
+       "sysbreak: cannot allocate a nucleus buffer of %ld bytes.\n", size);
+     exit(EXIT_FAILURE);
+   }
+   
+  *((WORD *) image) = size;
+  if (fread(&(image[sizeof(WORD)]), 1, (int)size - sizeof(WORD), nucleus_source)
+             < (size - sizeof(WORD)))
+   { fputs("sysbreak: failed to read all of nucleus.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+   
+  fclose(nucleus_source);
+
+   /* skip command name and first argument */
+  argv++; argv++; argc--; argc--;
+  w_image = (WORD *) image;
+  
+  /* Count what we think argc should be */
+  {
+  	int 	keepargc = argc;
+	STRING 	*keepargv = argv;
+	int	cnt = 0;
+
+	/* Count the real arguments */
+	while ( (*argv != NULL) || (argstack != NULL) ) {
+		if (*argv == NULL) {
+			popargs(&argstack, &argc, &argv);
+			continue;
+		}
+
+		if ( **argv == '@@') {
+			char **argfile;
+
+			argfile = getargs((*argv)+1, &argc);
+			if (argfile == NULL) { 
+				fprintf(stderr, "Unable to open or create arguments from %s\n", (*argv)+1);
+				exit(EXIT_FAILURE);
+			} else {
+				/* argv+1 is pushed so we return to the next argv */
+				pushargs(&argstack, argc-1, argv+1);
+				argv = argfile;
+			}
+
+			continue;
+		}
+
+		argv++;
+		cnt++;
+	}
+
+	/* Restore settings */
+	argc = keepargc;
+	argv = keepargv;
+
+	/* Free memory */
+	freeargs();
+
+	/* How many */
+	ptabsize = cnt;
+  }
+
+  /* Now break up */  
+  for (i = 0; i < ptabsize; i++)
+   { WORD *base, *nextbase;
+     BYTE *addr, *nextaddr;
+     WORD component_size;
+     char *imfile;
+
+     /* argfile ? */
+     while ( (*argv == NULL) || (**argv == '@@') ) {
+       if (*argv == NULL) {
+         popargs(&argstack, &argc, &argv);
+         continue;
+       }
+
+       if ( **argv == '@@') {
+         char **argfile;
+
+         argfile = getargs((*argv)+1, &argc);
+         if (argfile == NULL) { 
+           fprintf(stderr, "Unable to open or create arguments from %s\n", (*argv)+1);
+           exit(EXIT_FAILURE);
+         } else {
+           /* argv+1 is pushed so we return to the next argv */
+           pushargs(&argstack, argc-1, argv+1);
+           argv = argfile;
+         }
+
+         continue;
+       }
+     }
+
+     /* The image */
+     imfile = *argv++;
+
+     /* Here we go ... */
+     base = &(w_image[i + 1]);
+     if (*base eq 0)
+      { fprintf(stderr, "sysbreak: end of nucleus reached before producing %s\n",
+                imfile);
+        exit(EXIT_FAILURE);
+      }
+     addr = (BYTE *) base + *base;
+
+     nextbase = &(base[1]);
+     
+     if (*nextbase eq 0)
+      component_size = &(image[size]) - addr;
+     else
+      { nextaddr = (BYTE *) nextbase + *nextbase;
+        component_size = nextaddr - addr;
+      }
+      
+/*
+     printf("Component %d: base %x, size is %d\n", i+1, addr, component_size);
+     printf("            : starts with %x\n", *((word *) addr));
+*/
+     output_file = fopen(imfile, "wb");
+     if (output_file eq Null(FILE))
+      { fprintf(stderr, "sysbreak: failed to open output file %s\n",
+      		imfile);
+      	no_problems = FALSE;
+        continue;
+      }
+      
+     { WORD junk[3];
+       junk[0] = 0x12345678;
+       junk[1] = 0;
+       junk[2] = component_size;
+       if (fwrite((BYTE *) junk, sizeof(WORD), 3, output_file) ne 3)
+        { fprintf(stderr, "sysbreak: failed to write program header to %s\n",
+                  imfile);
+          fclose(output_file);
+          no_problems = FALSE;
+          continue;
+        }
+     }
+     
+    if (fwrite(addr, 1, (int) component_size, output_file) ne component_size)
+     { fprintf(stderr, "sysbreak: failed to write all of %s\n", imfile);
+       fclose(output_file);
+       no_problems = FALSE;
+       continue;
+     }
+    
+    fclose(output_file);
+  }
+  
+  return(no_problems ? EXIT_SUCCESS : EXIT_FAILURE);
+}
+
+static void usage(void)
+{ fputs("sysbreak: usage, sysbreak <nucleus> <outputfiles>\n", stderr);
+  exit(EXIT_FAILURE);
+}
+@
+
+
+1.3
+log
+@fixed compile time warnings
+@
+text
+@d12 1
+d32 3
+a34 1
+    
+d75 46
+a120 1
+  for (i = 0; i < argc; i++)
+d124 28
+d153 1
+d157 1
+a157 1
+                argv[i]);
+d175 1
+a175 1
+     output_file = fopen(argv[i], "wb");
+d178 1
+a178 1
+      		argv[i]);
+d189 1
+a189 1
+                  argv[i]);
+d197 1
+a197 1
+     { fprintf(stderr, "sysbreak: failed to write all of %s\n", argv[i]);
+@
+
+
+1.2
+log
+@fixed for compilation on SUN
+@
+text
+@d48 1
+a48 1
+             "sysbreak: a nucleus size of %d bytes is silly.\n", size);
+d52 1
+a52 1
+  image = malloc(size);
+d55 1
+a55 1
+       "sysbreak: cannot allocate a nucleus buffer of %d bytes.\n", size);
+d60 1
+a60 1
+  if (fread(&(image[sizeof(WORD)]), 1, size - sizeof(WORD), nucleus_source)
+d119 1
+a119 1
+    if (fwrite(addr, 1, component_size, output_file) ne component_size)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d13 5
+d78 1
+a78 1
+     if (*base eq NULL)
+d86 2
+a87 1
+     if (*nextbase eq NULL)
+@

@@ -1,0 +1,169 @@
+            GET     "asmhdr"
+MSTART      DC.L    (MEND-MSTART)/4
+            ENTRY   __divid,__udivi
+            ENTRY   __multi
+            ENTRY   __remai,__urema
+            ENTRY   __divte
+********************************************************************************
+*       Multiply                32 bit multiply routine                        *
+*                 Performs D0 := D0 * D1                                       *
+********************************************************************************
+__multi
+            MOVEM.L D1-D3,-(SP)         Save registers used
+            MOVE.W  D0,D2               Low word into D2
+            MOVE.W  D1,D3               Low word into D3
+            SWAP    D0                  High word into D0
+            SWAP    D1                  High word into D1
+            MULU    D2,D1               D1H * D0L
+            MULU    D3,D0               D0H * D1L
+            MULU    D3,D2               D0L * D1L
+            ADD.W   D1,D0               D1H*D0L + D0H*D1L
+            SWAP    D0                  Get into high word
+            CLR.W   D0                  Clear bottom word
+            ADD.L   D2,D0               (D1H*D0L + D0H*D1L) << 16  +  D0L*D1L
+            MOVEM.L (SP)+,D1-D3         Restore registers
+            RTS
+
+__divid     MOVEM.L D4-D6,-(SP)
+            EXG.L   D0,D1
+            BSR     DIV00
+            MOVEM.L (SP)+,D4-D6
+            RTS
+
+__udivi     MOVEM.L D4-D6,-(SP)
+            EXG.L   D0,D1
+            BSR     DIV02
+            MOVEM.L (SP)+,D4-D6
+            RTS
+
+__remai     MOVEM.L D4-D6,-(SP)
+            EXG.L   D0,D1
+            BSR     DIV00
+            MOVE.L  D1,D0
+            MOVEM.L (SP)+,D4-D6
+            RTS
+
+__urema     MOVEM.L D4-D6,-(SP)
+            EXG.L   D0,D1
+            BSR     DIV02
+            MOVE.L  D1,D0
+            MOVEM.L (SP)+,D4-D6
+            RTS
+
+__divte     TST.L   D0
+            BNE.S   ZZD1
+            DIVU    D0,D1           Trap if divide by zero
+ZZD1        RTS
+
+********************************************************************************
+*       Divide                  32 bit division routine                        *
+*           Performs D0 := D0/D1; D1 := D0 REM D1                              *
+*           Corrupts all data registers                                        *
+********************************************************************************
+*
+* Acknowledgments:
+*   This a straight rip-off of ACNs divide routine in the TRIPOS
+*   kernel!
+*
+DIV00
+            TST.L   D1                  Denominator < 0 ?
+            BPL     DIV01
+            NEG.L   D1
+            BSR     DIV01
+            NEG.L   D0
+            RTS
+
+DIV01       TST.L   D0                  Numerator < 0 ?
+            BPL     DIV02
+            NEG.L   D0
+            BSR     DIV02               Divide abs(d1) by d2
+            NEG.L   D0
+            NEG.L   D1                  Correct for sign
+            RTS
+
+* DIV02 performs division on unsigned numbers. It first sees if the
+* denominator is small enough for straight-line code using DIVU to
+* be applicable
+
+* set D0, D1 := D0/D1, D0 Rem D1.
+* D0 and D1 are treated as unsigned numbers, and 0<=D0<=#X80000000
+* and 0<D1<=#X80000000.
+*     Note that both D0 and D1 can be as big as one greater than the
+*     largest ordinary positive integer held in a 32-bit (signed) word.
+* If D1=0 the 68000 will take a 'divide by zero' trap.
+* The only case that can lead to an answer that is out of the range
+* of normal (signed) numbers is #X80000000/1 which can arise when
+* Divide1 was called on #X80000000/(-1)
+
+DIV02
+            CMPI.L  #$0000FFFF,D1
+            BHI     DIV04               Denominator is larger than 16 bits
+* DIV03 is used as a subroutine called from the general case code.
+* It returns with D0,D1 := D0/D1, D0 rem D1, and D2 and D5 corrupted
+DIV03       MOVE.L  D0,D5
+            CLR.W   D0
+            SWAP    D0                  High part of numerator
+            DIVU    D1,D0
+            MOVE.L  D0,D2               Save partial result away
+            MOVE.W  D5,D0
+            DIVU    D1,D0               Other part of the division
+            SWAP    D0
+            CLR.L   D1
+            MOVE.W  D0,D1
+            MOVE.W  D2,D0
+            SWAP    D0
+            RTS
+* DIV04 is reached if the denominator does not fit in 16 bits. It takes
+* a quick exit if the numerator is less than the denominator
+DIV04       CMP.L   D0,D1
+            BLS     DIV05               Branch in general case
+            MOVE.L  D0,D1
+            MOVEQ.L #0,D0               Result IS zero
+            RTS
+* At DIV05, since the denominator is >= 2^16 and the numerator is
+* < 2^32, the quotient will be < 2^16. An approximation to the
+* required quotient is produced by dividing both numerator & denominator
+* by a scale factor computed as 1+(D1/#X10000), and then doing a
+* short division by the (now) 16-bit denominator. The scale factor fits in
+* 16 bits even after the '+1' because the original D1 had #X80000000 as its
+* largest possible value, so the largest scale factor is #X00008001.
+DIV05       MOVE.L  D1,D6
+            CLR.W   D6
+            SWAP    D6                  Top half of D1 = D1/#X10000
+            ADDQ.L  #1,D6               Increment it to get safe scale factor
+            MOVE.L  D0,D3
+            MOVE.L  D1,D4               Grab a safe copy of the input
+            MOVE.L  D6,D1
+            BSR.S   DIV03               D0 := D0 / Scalefactor
+            MOVE.L  D4,D1
+            DIVU    D6,D1               now D1 (word) = scaled denominator
+* the choice of scalefactor here was intended to ensure that the
+* scaled denominator now in D1 was less than 16 bits long, and entry
+* conditions imply that the quotient I compute will be small enough that
+* a single DIVU order can be used to get it
+            DIVU    D1,D0
+* D0 (word) now holds an estimate for the quotient that I want.
+* Check it, and produce a remainder, by multiplying by original
+* denominator & comparing with original numerator.
+            ANDI.L  #$0000FFFF,D0       Get rid of top half, since not wanted
+DIV06       MOVE.L  D4,D1
+            MOVE.L  D4,D2
+            SWAP    D2
+            MULU    D0,D1
+            MULU    D0,D2
+            SWAP    D2                  Top half of D2 should have been zero
+            ADD.L   D2,D1               and this ADD can not cause a carry
+            SUB.L   D3,D1
+            BHI     DIV08               overshot, since remainder seems negative
+            NEG.L   D1
+            CMP.L   D1,D4
+            BHI     DIV07               OK, remainder is in range
+            ADDQ.L  #1,D0               Crank up the quotient
+            BRA.S   DIV06
+DIV07       RTS
+DIV08       SUBQ.L  #1,D0
+            BRA.S   DIV06               Adjust quotient & try again
+
+            CNOP    0,4
+            DC.L    0,0
+MEND        END

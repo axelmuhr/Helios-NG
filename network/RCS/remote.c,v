@@ -1,0 +1,1058 @@
+head	1.10;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.6
+	Alenia_release:1.5
+	Helios1_3:1.4
+	C40_Field_Test_2:1.4
+	C40_Field_Test_R1:1.3
+	Helios13_beta:1.3
+	Helios1_2_2_Fault:1.2
+	Helios1_2_2_Native:1.2
+	Helios1_2_2_native_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.10
+date	94.02.21.17.58.26;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	93.12.20.13.51.58;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	93.08.11.10.42.44;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	93.06.22.14.10.30;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.04.01.12.46.16;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.12.04.13.41.18;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.09.30.16.02.45;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.06.09.17.30.46;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.08.30.11.36.50;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.11.21.15.45.43;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@New version of the remote command, specially for Helios 1.2
+@
+
+
+1.10
+log
+@removed second line of error message when RmLib fails to execute a task because the error code returned is unreliable
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--     			H E L I O S   C O M M A N D S			--
+--			-----------------------------			--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- remote.c								--
+--                                                                      --
+--	A proper version of the remote command.				--
+--                                                                      --
+--	Author:  BLV 13/7/90						--
+--	Rewrite: BLV 9.6.92, to use RmLib				--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/remote.c,v 1.9 1993/12/20 13:51:58 nickc Exp nickc $*/
+
+/*{{{  header files etc */
+#include <stdio.h>
+#include <syslib.h>
+#include <stdlib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <string.h>
+#include <servlib.h>
+#include <signal.h>
+#include <fault.h>
+#include <time.h>
+#include "rmlib.h"
+
+#define eq ==
+#define ne !=
+
+/**
+*** find_file() is not currently located. It searches through the command
+*** search path for the specified string.
+**/
+extern void	find_file(char *, char *);
+/*}}}*/
+
+/*{{{  signal handling */
+static	Object	*Global_ProgObject	= Null(Object);
+#ifndef NoRmLib
+static	RmTask	 Global_RunningTask	= (RmTask) NULL;
+#endif
+  
+static	void	 my_signalhandler(int x)
+{ if (Global_ProgObject ne Null(Object))
+   { Stream	*temp = PseudoStream(Global_ProgObject, O_ReadWrite);
+     SendSignal(temp, x);
+     Close(temp);
+   }
+#ifndef NoRmLib
+  elif (Global_RunningTask ne (RmTask) NULL)
+   RmSendTaskSignal(Global_RunningTask, x);
+#endif
+}
+/*}}}*/
+/*{{{  usage() */
+static void usage(void)
+{ fputs("remote: usage, remote [-d] processor command [args]\n", stderr);
+  exit(EXIT_FAILURE);
+}
+/*}}}*/
+#ifndef NoRmLib
+/*{{{  find the TFM for this session, if there is one */
+static Object	*find_tfm(void)
+{ Environ	 *env	= getenviron();
+  Object	**objv	= env->Objv;
+  int		  i;
+
+	/* Return the TFM from the environment, if any.			*/
+  for (i = 0; i < OV_TFM; i++)
+   if (objv[i] eq NULL)
+    return(NULL);
+  if (objv[OV_TFM] eq (Object *) MinInt)
+   return(NULL);
+  else
+   return(objv[OV_TFM]);
+}
+/*}}}*/
+/*{{{  run the program using RmLib calls */
+/**
+*** Use the Resource Management library to run the shell on a particular
+*** processor.
+**/
+static int rmlib_run(char *processor_name, char **command_args, bool detach)
+{ RmNetwork	 real_network	= RmGetNetwork();
+  RmProcessor	 real_processor;
+  RmProcessor	 obtained_processor;
+  RmTask	 command_template;
+  RmTask	 running_command;
+  char		 command_name[IOCDataMax];
+  int		 rc;
+  int		 i;
+
+  
+  if (real_network eq (RmNetwork) NULL)
+   { fprintf(stderr,"remote: failed to get network details. (%x)\n", RmErrno);
+     return(EXIT_FAILURE);
+   }
+  real_processor = RmLookupProcessor(real_network, processor_name);
+  if (real_processor eq NULL)
+   { fprintf(stderr, "remote: failed to find processor %s in the network.\n",
+		processor_name);
+     return(EXIT_FAILURE);
+   }
+  
+  obtained_processor = RmObtainProcessor(real_processor);
+  if (obtained_processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "remote: failed to get access to processor %s. (%x)\n",
+	     processor_name, RmErrno);
+     return(EXIT_FAILURE);
+   }
+
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+  
+  command_template	= RmNewTask();
+  if (command_template eq (RmTask) NULL)
+   { fputs("remote: out of memory.\n", stderr);
+     return(EXIT_FAILURE);
+   }
+
+  RmSetTaskId(command_template, command_args[0]);
+  RmSetTaskCode(command_template, command_name);
+  for (i = 1; command_args[i] ne NULL; i++)
+   RmAddTaskArgument(command_template, i, command_args[i]);
+     
+  running_command = RmExecuteTask(obtained_processor, command_template, NULL);
+  
+  if (running_command eq (RmTask) NULL)
+   { fputs("remote: failed to execute command.\n", stderr);
+     /* NB/ The error code returned is probably bogus, so ignore it */
+     return(EXIT_FAILURE);
+   }
+  
+  Global_RunningTask = running_command;
+
+  if (detach)
+   { RmLeaveTask(running_command);
+     rc = 0;
+   }
+  else
+    {
+      rc = RmWaitforTask(running_command) >> 8;
+    }
+  
+  return(rc);
+}
+/*}}}*/
+#endif
+/*{{{  run the program using system library calls */
+/**
+*** This routine uses system library calls to run the program on
+*** a particular processor.
+**/
+static int simple_run(char *processor_name, char **command_args, bool detach)
+{ Object	*objv[OV_End + 1];
+  Environ	*my_environ	= getenviron();
+  Environ	 sending;
+  Stream	*program_stream	= Null(Stream);
+  Object	*remote_processor;
+  Object	*controller;
+  int		 rc;
+
+  { char	full_name[IOCDataMax];
+
+    if (*processor_name eq '/')
+     strcpy(full_name, processor_name);
+    else
+     { full_name[0] = '/'; strcpy(&(full_name[1]), processor_name); }
+
+    remote_processor	= Locate(Null(Object), full_name);
+    if (remote_processor eq Null(Object))
+     { fprintf(stderr, "remote: cannot find processor %s\n", full_name);
+       return(EXIT_FAILURE);
+     }
+
+    controller		= Locate(remote_processor, "tasks");
+    if (controller eq Null(Object))
+     { fprintf(stderr, "remote: cannot find %s/tasks\n", remote_processor->Name);
+       return(EXIT_FAILURE);
+     }
+  }
+
+	/* "controller" is now the target processor manager.		*/
+	/* The full environment can now be constructed.			*/
+  objv[OV_Cdir]		= my_environ->Objv[OV_Cdir];
+  objv[OV_Task]		= (Object *) MinInt;
+  objv[OV_Code]		= (Object *) MinInt;
+  objv[OV_Source]	= (Object *) MinInt;
+  objv[OV_Parent]	= my_environ->Objv[OV_Task];
+  objv[OV_Home]		= my_environ->Objv[OV_Home];
+  objv[OV_Console]	= my_environ->Objv[OV_Console];
+  objv[OV_CServer]	= my_environ->Objv[OV_CServer];
+  objv[OV_Session]	= my_environ->Objv[OV_Session];
+  objv[OV_TFM]		= my_environ->Objv[OV_TFM];
+  objv[OV_TForce]	= (Object *) MinInt;
+  objv[OV_End]		= Null(Object);
+
+  sending.Strv		= my_environ->Strv;
+  sending.Objv		= objv;
+  sending.Envv		= my_environ->Envv;
+  sending.Argv		= command_args;
+
+	/* Find the program to execute.					*/
+  { char	 command_name[IOCDataMax];
+    if (*(command_args[0]) eq '/')
+     strcpy(command_name, command_args[0]);
+    else
+     { command_name[0] = '\0';
+       find_file(command_name, command_args[0]);
+       if (command_name[0] eq '\0')
+        { fprintf(stderr, "remote: cannot find program %s\n", command_args[0]);
+	  return(EXIT_FAILURE);
+        }
+     }
+        objv[OV_Source]	= Locate(cdobj(), command_name);
+    if (objv[OV_Source] eq NULL)
+     { fprintf(stderr, "remote: failed to find program %s\n", command_args[0]);
+      return(EXIT_FAILURE);
+     }
+  }
+
+  objv[OV_Task]		= Execute(controller, objv[OV_Source]);
+  if (objv[OV_Task] eq NULL)
+   { fprintf(stderr, "remote: failed to run program %s\n", objv[OV_Source]->Name);
+     return(EXIT_FAILURE);
+   }
+  Global_ProgObject = objv[OV_Task]; /* for signal handling */
+
+  program_stream	= Open(objv[OV_Task], NULL, O_ReadWrite);
+  if (program_stream eq NULL)
+   { int i;
+     for (i = 0; i < 3; i++) Delete(objv[OV_Task], NULL);  
+     fprintf(stderr, "remote: failed to open %s\n", objv[OV_Task]->Name);
+     return(EXIT_FAILURE);
+   }
+
+  (void) SendEnv(program_stream->Server, &sending);
+
+  if (!detach)
+   { if (InitProgramInfo(program_stream, PS_Terminate) < Err_Null)
+      { fprintf(stderr, "remote: failed to wait for task %s\n", program_stream->Name);
+	return(EXIT_FAILURE);
+      }
+     rc = (int)GetProgramInfo(program_stream, NULL, -1);
+     if (rc ne 0)
+      rc >>= 8;		/* Helios->Posix return code translation */
+   }
+  else
+   rc = 0;
+
+  Global_ProgObject = NULL;
+  Close(program_stream);
+  return(rc);
+}
+/*}}}*/
+/*{{{  main() */
+
+int main(int argc, char **argv)
+{ char		 *processor_name = NULL;
+#ifndef NoRmLib
+  Object	 *tfm;
+#endif
+  int		  result;
+  char		**command_args;
+  bool		  detach	= FALSE;
+
+  if (argc < 3) usage();
+  if (!strcmp(argv[1], "-d"))
+   { detach = TRUE;
+     if (argc < 4) usage();
+     processor_name = argv[2];
+     command_args   = &(argv[3]);
+   }
+  else
+   { processor_name = argv[1];
+     command_args   = &(argv[2]);
+   }
+  
+	/* If the program is not going to be detached immediately,	*/
+	/* trap incoming signals so that they can be forwarded.		*/
+  { struct sigaction	temp;
+    if (sigaction(SIGINT,NULL, &temp) < 0)
+     { fputs("remote: failed to access signal handling facilities.\n", stderr);
+       return(EXIT_FAILURE);
+     }
+    temp.sa_handler = &my_signalhandler;
+    temp.sa_flags  |= SA_ASYNC;
+    if (sigaction(SIGINT, &temp, NULL) < 0)
+     { fputs("remote: failed to modify signal handling facilities.\n", stderr);
+       return(EXIT_FAILURE);
+     }
+  }
+	/* If running outside a session, system library-level Execute()	*/
+	/* calls will be required. Posix does not provide a sensible	*/
+	/* of detaching or of specifying a processor.			*/
+	/* If there is a TFM then the Resource Management library's	*/
+	/* RmExecuteTask() routine should be used.			*/
+#ifndef NoRmLib
+  tfm = find_tfm();
+  if (tfm ne NULL)
+   result = rmlib_run(processor_name, command_args, detach);  
+  else
+#endif
+   result = simple_run(processor_name, command_args, detach);
+
+  return(result);
+}
+
+/*}}}*/
+@
+
+
+1.9
+log
+@fixed compile time warnings
+@
+text
+@d17 1
+a17 1
+/* RcsId: $Header: /users/nickc/RTNucleus/network/RCS/remote.c,v 1.8 1993/08/11 10:42:44 bart Exp nickc $*/
+d137 1
+a137 1
+     fprintf(stderr, "      : error was %s\n", RmMapErrorToString(RmErrno));
+@
+
+
+1.8
+log
+@memory reduction
+@
+text
+@d17 1
+a17 1
+/* RcsId: $Header: /hsrc/network/RCS/remote.c,v 1.7 1993/06/22 14:10:30 bart Exp $*/
+d44 1
+d46 2
+a47 1
+
+d263 1
+a264 1
+/*{{{  main() */
+d267 1
+d269 1
+d315 1
+@
+
+
+1.7
+log
+@There is now a compile-time option such that the program does not
+require RmLib. This is primarily for C40 systems which are low on
+memory.
+@
+text
+@d17 1
+a17 3
+#ifdef __TRAN
+static char *rcsid = "$Header: /hsrc/network/RCS/remote.c,v 1.6 1993/04/01 12:46:16 nickc Exp nickc $";
+#endif
+@
+
+
+1.6
+log
+@removed compile time warnings
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /hsrc/network/RCS/remote.c,v 1.5 1992/12/04 13:41:18 bart Exp nickc $";
+d54 1
+d57 1
+d66 1
+d83 73
+a262 71
+/*{{{  run the program using RmLib calls */
+/**
+*** Use the Resource Management library to run the shell on a particular
+*** processor.
+**/
+static int rmlib_run(char *processor_name, char **command_args, bool detach)
+{ RmNetwork	 real_network	= RmGetNetwork();
+  RmProcessor	 real_processor;
+  RmProcessor	 obtained_processor;
+  RmTask	 command_template;
+  RmTask	 running_command;
+  char		 command_name[IOCDataMax];
+  int		 rc;
+  int		 i;
+
+  
+  if (real_network eq (RmNetwork) NULL)
+   { fputs("remote: failed to get network details.\n", stderr);
+     return(EXIT_FAILURE);
+   }
+  real_processor = RmLookupProcessor(real_network, processor_name);
+  if (real_processor eq NULL)
+   { fprintf(stderr, "remote: failed to find processor %s in the network.\n",
+		processor_name);
+     return(EXIT_FAILURE);
+   }
+  
+  obtained_processor = RmObtainProcessor(real_processor);
+  if (obtained_processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "remote: failed to get access to processor %s\n", processor_name);
+     return(EXIT_FAILURE);
+   }
+
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+  
+  command_template	= RmNewTask();
+  if (command_template eq (RmTask) NULL)
+   { fputs("remote: out of memory.\n", stderr);
+     return(EXIT_FAILURE);
+   }
+
+  RmSetTaskId(command_template, command_args[0]);
+  RmSetTaskCode(command_template, command_name);
+  for (i = 1; command_args[i] ne NULL; i++)
+   RmAddTaskArgument(command_template, i, command_args[i]);
+     
+  running_command = RmExecuteTask(obtained_processor, command_template, NULL);
+  
+  if (running_command eq (RmTask) NULL)
+   { fputs("remote: failed to execute command.\n", stderr);
+     fprintf(stderr, "      : error was %s\n", RmMapErrorToString(RmErrno));
+     return(EXIT_FAILURE);
+   }
+  
+  Global_RunningTask = running_command;
+
+  if (detach)
+   { RmLeaveTask(running_command);
+     rc = 0;
+   }
+  else
+    {
+      rc = RmWaitforTask(running_command) >> 8;
+    }
+  
+  return(rc);
+}
+/*}}}*/
+a300 4
+  tfm = find_tfm();
+  if (tfm eq NULL)
+   result = simple_run(processor_name, command_args, detach);
+  else
+d303 3
+d307 3
+@
+
+
+1.5
+log
+@fixed typo in warning message
+@
+text
+@d17 3
+a19 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/remote.c,v 1.4 1992/09/30 16:02:45 bart Exp $";
+d175 1
+a175 1
+     rc = GetProgramInfo(program_stream, NULL, -1);
+d202 1
+d213 1
+d224 1
+d237 1
+d243 1
+d251 4
+a254 2
+   rc = RmWaitforTask(running_command) >> 8;
+
+a306 8
+
+
+
+
+
+
+
+
+@
+
+
+1.4
+log
+@Fixed various potential buglets revealed by C40 C compiler
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /m/giga/HeliosRoot/Helios/network/RCS/remote.c,v 1.3 1992/06/09 17:30:46 bart Exp $";
+d212 1
+a212 1
+   { fprintf(stderr, "remote: failed to get accesss to processor %s\n", processor_name);
+@
+
+
+1.3
+log
+@New version, uses the Resource Management library
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/remote.c,v 1.2 1991/08/30 11:36:50 bart Exp $";
+d177 2
+@
+
+
+1.2
+log
+@The command now generates a unique name for the fifo used to interact
+with the TFM. This avoids problems with running two remote commands
+in parallel.
+@
+text
+@d14 1
+d17 1
+d19 1
+a19 2
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/remote.c,v 1.1 1990/11/21 15:45:43 bart Exp $";
+
+d30 1
+d40 1
+d42 3
+a44 9
+/**
+*** forward declarations.
+**/
+static void	usage(void);
+static int	RunCommand(char *processor, char **, bool);
+static Object	*work_out_controller(char *processer, Object **objv, char **argv);
+static Object	*go_through_tfm(char *processor, Object **objv, char **argv);
+static void	mysignalhandler(int);
+static Object	*running_command;
+d46 5
+a50 13
+int main(int argc, char **argv)
+{ char		**command_args;
+  int		rc;
+  char		*processor_name = Null(char);
+  bool		detach = FALSE;
+  
+  if (argc < 3) usage();
+
+  if ((!strcmp(argv[1], "-d")) || (!strcmp(argv[1], "-D")))
+   { if (argc < 4) usage();
+     processor_name = argv[2];
+     command_args = &(argv[3]);
+     detach = TRUE;
+d52 2
+a53 7
+  else
+   { processor_name = argv[1];
+     command_args   = &(argv[2]);
+   }
+
+  rc = RunCommand(processor_name, command_args, detach);
+  return(rc);
+d55 2
+a56 1
+
+d58 1
+a58 1
+{ fprintf(stderr, "remote : usage, remote [processor]\n");
+d61 6
+d68 11
+d80 2
+a81 5
+*** This runs a command using Helios calls only. The environment is built
+*** up, and an attempt is made to locate the program. If successful
+*** it is necessary to work out how to execute the target program,
+*** a rather complicated operation that is done by a separate routine.
+*** The program is then executed inside the controller. 
+d83 6
+a88 7
+static int RunCommand(char *processor, char **command_args, bool detach)
+{ char		command_name[IOCDataMax];
+  Object	*objv[OV_End + 1];
+  Environ	*my_environ = getenviron();
+  Environ	sending;
+  Stream	*program_stream = Null(Stream);
+  int		rc = Err_Null;
+d90 24
+a113 1
+            
+d127 4
+a130 9
+  sending.Strv = my_environ->Strv;
+  sending.Objv = objv;
+  sending.Envv = my_environ->Envv;
+  sending.Argv = command_args;
+    
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+d132 18
+a149 7
+  objv[OV_Source] = Locate(CurrentDir, command_name);
+  if (objv[OV_Source] eq Null(Object))
+   { fprintf(stderr, "remote : failed to locate command %s\n", command_args[0]);
+     goto fail;
+   }  
+  
+  objv[OV_Code] = (Object *) MinInt;
+d151 4
+a154 13
+  controller = work_out_controller(processor, objv, command_args);
+  if (controller eq (Object *) MinInt) goto fail;
+  
+  objv[OV_Task] = Execute(controller, objv[OV_Source]);
+  if (objv[OV_Task] eq Null(Object))
+   { fprintf(stderr, "remote: failed to execute command %s\n",
+   	objv[OV_Source]->Name);
+     if (controller ne Null(Object))
+      { Fault(Result2(controller), command_name, IOCDataMax);
+        fprintf(stderr, "remote: fault was 0x%x (%s)\n", Result2(controller),
+        		command_name);
+      }
+     goto fail;
+d156 1
+a156 5
+  program_stream = Open(objv[OV_Task], Null(char), O_ReadWrite);
+  if (program_stream eq Null(Stream))
+   { fprintf(stderr, "remote: failed to open task %s\n", objv[OV_Task]->Name);
+     goto fail;
+   }
+d158 6
+a163 12
+  running_command = objv[OV_Task];
+
+  if (!detach)  
+   { struct sigaction	temp;
+     if (sigaction(SIGINT, Null(struct sigaction), &temp) ne 0)
+      { fprintf(stderr, "run: warning, failed to access signal handling facilities.\n");
+        goto skip_signal;
+      }
+     temp.sa_handler	= &mysignalhandler;
+     temp.sa_flags	|= SA_ASYNC;
+     if (sigaction(SIGINT, &temp, Null(struct sigaction)) ne 0)
+      fprintf(stderr, "run: warning, failed to modify signal handling facilities.\n");
+a164 1
+skip_signal:
+d166 1
+a166 1
+  (void) SendEnv(program_stream->Server, &sending);   
+d170 2
+a171 3
+      { fprintf(stderr, "run: failed to wait for task %s\n",
+      		objv[OV_Task]->Name);
+      	goto done;
+d173 1
+a173 1
+     rc = GetProgramInfo(program_stream, Null(WORD), -1);
+d175 1
+a175 1
+      rc = rc >> 8;	/* ignore bottom byte */
+d178 1
+a178 1
+done:
+a179 2
+  Close(objv[OV_Task]);
+  Close(objv[OV_Source]);
+a180 19
+  
+fail:  
+  if (program_stream ne Null(Stream)) Close(program_stream);
+  if (objv[OV_Task] ne Null(Object))
+   { (void) Delete(objv[OV_Task], Null(char));
+     (void) Close(objv[OV_Task]);
+   }
+  if (objv[OV_Source] ne Null(Object)) Close(objv[OV_Source]);
+  return(EXIT_FAILURE);
+} 
+
+static void mysignalhandler(int x)
+{ Stream	*program_stream = PseudoStream(running_command, O_ReadWrite);
+
+  if (program_stream ne Null(Stream))
+   { SendSignal(program_stream, SIGINT);
+     Close(program_stream);
+   }
+  x = x;
+d182 2
+a183 1
+
+d185 2
+a186 14
+*** Work out the controller. This can get quite nasty.
+***
+*** 1) If no particular processor has been specified,
+***    a) if there is a TFM, 
+***      i)  if CDL is set, use the TFM as the controller
+***      ii) else use the current processor as a controller
+***    b) if there is no TFM, always use the current processor
+***
+*** 2) If a particular processor has been specified,
+***    a) if there is no TFM, attempt to locate the processor manager
+***       and use that.
+***    b) otherwise use the TFM as the controller, and create a new
+***       file in a fifo specifying the task together with a
+***       puid attribute.
+d188 9
+d198 15
+a212 2
+static	Object	*work_out_controller(char *processor, Object **objv, char **argv)
+{ Environ *my_environ = getenviron();
+d214 8
+a221 12
+  if (processor eq Null(char))
+   { if (getenv("CDL") ne Null(char))
+      { Object	*tfm = my_environ->Objv[OV_TFM];
+        int	i;
+        for (i = 0; i < OV_TFM; i++)
+         if (my_environ->Objv[i] eq Null(Object))
+          { tfm = Null(Object); break; }
+        if (tfm eq (Object *) MinInt) tfm = Null(Object);       
+        return(tfm);
+      }
+     else	/* run it locally */
+      return(Null(Object));
+a222 13
+   
+  	/* a particular processor has been specified			   */
+  	/* Check whether or not there is a TFM in the current environment. */
+  { Object	*tfm = my_environ->Objv[OV_TFM];
+    int i;
+    for (i = 0; i < OV_TFM; i++)
+     if (my_environ->Objv[i] eq Null(Object))
+      { tfm = Null(Object); break; }
+    if (tfm eq (Object *) MinInt) tfm = Null(Object);
+    
+    if (tfm ne Null(Object))
+     return(go_through_tfm(processor, objv, argv));
+  }
+d224 4
+a227 12
+	/* there is no tfm in the current environment, so the work	*/
+	/* has to be done manually.					*/
+  { Object	*processor_obj;
+    Object	*procman;
+    static	char processor_name[IOCDataMax];
+    
+    if (processor[0] eq '/')
+     strcpy(processor_name, processor);
+    else
+     { processor_name[0] = '/';
+       strcpy(&(processor_name[1]), processor);
+     }
+d229 7
+a235 14
+    processor_obj = Locate(Null(Object), processor_name);
+    if (processor_obj eq Null(Object))
+     { fprintf(stderr, "remote: failed to locate processor %s\n", processor_name);
+       return((Object *) MinInt);
+     }
+    procman = Locate(processor_obj, "tasks");
+    if (procman eq Null(Object))
+     { fprintf(stderr, "remote: failed to locate %s/tasks\n", processor_obj->Name);
+       return((Object *) MinInt);
+     }
+    Close(processor_obj);
+    return(procman);
+  }
+}    
+d237 6
+a242 17
+/**
+*** Now for the worst hack in Helios 1.2. To run a program remotely via
+*** the Taskforce Manager should involve calls to the Resource Management
+*** library. Sadly that bit has not been finished. Hence this program
+*** creates a pseudo-CDL binary for a single taskforce, containing a
+*** single task which is what should be executed.
+**/
+typedef	struct	CDL_Binary {
+	WORD		Type;		/* these go into the header */
+	WORD		NoComponents;
+	WORD		NoCStreams;
+	WORD		NoIStreams;
+	WORD		NoAttribs;
+	WORD		Ignore1;
+	WORD		CurrentDirIndex;
+	WORD		Ignore2;
+	WORD		TfNameIndex;
+d244 3
+a246 34
+	WORD		Ignore3;	/* This is a single component */
+	WORD		NameIndex;
+	WORD		Flags;
+	WORD		Ignore4;
+	WORD		Ignore5;
+	WORD		PuidIndex;
+	WORD		Ptype;
+	WORD		NumberAttribs;
+	WORD		AttribIndex;
+	List		Ignore6;
+	UWORD		Memory;
+	WORD		LifeTime;
+	UWORD		TimeLimit;
+	WORD		Priority;
+	WORD		NumberArguments;
+	WORD		Ignore7;
+	WORD		ArgumentsIndex;
+	WORD		CompIStreams;
+	WORD		IStreamIndex;
+	WORD		Ignore8;
+	WORD		StdinIndex;
+	WORD		StdinMode;
+	WORD		StdinStandard;
+	WORD		StdoutIndex;
+	WORD		StdoutMode;
+	WORD		StdoutStandard;
+	WORD		StderrIndex;
+	WORD		StderrMode;
+	WORD		StderrStandard;
+	WORD		StddbgIndex;
+	WORD		StddbgMode;
+	WORD		StddbgStandard;
+	WORD		Junk;
+} CDL_Binary;
+d248 7
+a254 1
+static	BYTE	CDL_Buffer[1024];
+d256 11
+a266 7
+static	Object	*go_through_tfm(char *processor, Object **objv, char **argv)
+{ int		index		= 0;
+  BYTE		*strings	= &(CDL_Buffer[sizeof(CDL_Binary)]);
+  CDL_Binary	*binary		= (CDL_Binary *) CDL_Buffer;
+  Object	*processor_obj;
+  int		len;
+  int		i;  
+d268 20
+a287 2
+  if (*processor eq '/')
+   processor_obj = Locate(Null(Object), processor);
+d289 3
+a291 38
+   { CDL_Buffer[0] = '/';
+     strcpy(&(CDL_Buffer[1]), processor);
+     processor_obj = Locate(Null(Object), CDL_Buffer);
+   }
+  if (processor_obj eq Null(Object))
+   { fprintf(stderr, "remote: failed to locate processor %s\n", processor);
+     return((Object *) MinInt);
+   }
+   
+  binary->Type			= 0x12345677;
+  binary->NoComponents		= 1;
+  binary->NoCStreams		= 0;
+  binary->NoIStreams		= 4;
+  binary->NoAttribs		= 0;
+  binary->Ignore3		= 0x12345677;
+  binary->Flags			= 0;
+  binary->Ptype			= 0;
+  binary->NumberAttribs		= 0;
+  binary->AttribIndex		= 0;
+  binary->Memory		= 0;
+  binary->LifeTime		= 0;
+  binary->TimeLimit		= 0;
+  binary->Priority		= 1;
+  binary->NumberArguments	= 1;
+  binary->CompIStreams		= 4;
+  binary->IStreamIndex		= 0;
+  binary->StdinIndex		= -1; 
+  binary->StdinMode		= 1;
+  binary->StdinStandard		= 0;
+  binary->StdoutIndex		= -1; 
+  binary->StdoutMode		= 2;
+  binary->StdoutStandard	= 1;
+  binary->StderrIndex		= -1; 
+  binary->StderrMode		= 2;
+  binary->StderrStandard	= 2;
+  binary->StddbgIndex		= -1; 
+  binary->StddbgMode		= 2;
+  binary->StddbgStandard	= 3;
+d293 3
+a295 4
+  len = strlen(objv[OV_Cdir]->Name);
+  strcpy(&(strings[index]), objv[OV_Cdir]->Name);
+  binary->CurrentDirIndex	= index;
+  index += (len + 1);
+a296 4
+  len = strlen("remote");
+  strcpy(&(strings[index]), "remote");
+  binary->TfNameIndex		= index;
+  index += (len + 1);
+a297 4
+  len = strlen(objv[OV_Source]->Name);
+  strcpy(&(strings[index]), objv[OV_Source]->Name);
+  binary->NameIndex		= index;
+  index += (len + 1);
+a298 4
+  len = strlen(processor_obj->Name);
+  strcpy(&(strings[index]), processor_obj->Name);
+  binary->PuidIndex		= index;
+  index += (len + 1);
+a299 6
+  { char	*temp = objname(objv[OV_Source]->Name);
+    len = strlen(temp);
+    strcpy(&(strings[index]), temp);
+    binary->ArgumentsIndex = index;
+    index += (len + 1);
+  }
+a300 11
+  for (i = 1; argv[i] ne Null(char); i++)
+   { int	temp = i;
+     binary->NumberArguments++;
+     strings[index++] = '$';
+     if (temp >= 100)
+      { strings[index++] = '0' + (temp / 100); temp %= 100; }
+     if (temp >= 10)
+      { strings[index++] = '0' + (temp / 10); temp %= 10; }
+     strings[index++] = '0' + temp;
+     strings[index++] = '\0';
+   }
+a301 4
+  { Object	*fifo_server = Locate(Null(Object), "/fifo");
+    Object	*fifo_obj;
+    Stream	*fifo_file;
+    char	name_buf[NameMax];
+a302 5
+    if (fifo_server eq Null(Object))
+     { fputs("remote: failed to locate fifo server.\n", stderr);
+       return((Object *) MinInt);
+     }
+    sprintf(name_buf, "remote.%d.%d", GetDate(), clock());
+a303 17
+    fifo_obj = Create(fifo_server, name_buf, Type_Fifo, 0, Null(BYTE));
+    if (fifo_obj eq Null(Object))
+     { fputs("remote: failed to create fifo file.\n", stderr);
+       return((Object *) MinInt);
+     }
+    fifo_file = Open(fifo_obj, Null(char), O_WriteOnly + O_Create);
+    if (fifo_file eq Null(Stream))
+     { fputs("remote: failed to create fifo file.\n", stderr);
+       return((Object *) MinInt);
+     }
+    (void) Write(fifo_file, CDL_Buffer, sizeof(CDL_Binary) + index, -1);
+    Close(fifo_file);
+    objv[OV_Source] = fifo_obj;
+   }
+ return(objv[OV_TFM]);
+/* return((Object *) MinInt);*/
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/remote.c,v 1.1 90/09/12 14:57:10 jon Exp $";
+d28 1
+d420 2
+a421 1
+    
+d426 3
+a428 1
+    fifo_obj = Create(fifo_server, "remote", Type_Fifo, 0, Null(BYTE));
+@

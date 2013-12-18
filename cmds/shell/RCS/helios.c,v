@@ -1,0 +1,500 @@
+head	1.9;
+access;
+symbols
+	Helios_1_3_1:1.9
+	Helios_C40_1_3_Official_Release:1.8
+	Alenia_release:1.8
+	Helios1_3:1.8
+	C40_Field_Test_2:1.8
+	C40_Field_Test_R1:1.8
+	Helios13_beta:1.8
+	Helios1_2_2:1.8
+	Helios1_2_2Beta:1.7
+	Helios1_2_1:1.7
+	Helios1_2:1.6;
+locks; strict;
+comment	@ * @;
+
+
+1.9
+date	93.08.12.15.55.16;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.10.31.14.57.32;	author martyn;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	90.12.06.11.41.30;	author martyn;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.11.23.18.06.17;	author martyn;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.11.22.12.34.06;	author martyn;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.16.11.21.29;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.25.12.47.00;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.25.12.35.06;	author jon;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.23.16.00.50;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@fixed compile time warnings
+@
+text
+@/**
+*
+* Title:  Helios Shell - Helios dependent parts.
+*
+* Author: Andy England
+*
+* Date:   May 1988
+*
+*         (c) Copyright 1988, Perihelion Software Ltd.
+*
+*         All Rights Reserved.
+*
+* $Header: /hsrc/cmds/shell/RCS/helios.c,v 1.8 1991/10/31 14:57:32 martyn Exp nickc $
+*
+**/
+#include "shell.h"
+#include <helios.h>
+#include <signal.h>
+#include <attrib.h>
+#include <ioevents.h>
+#include <message.h>
+#include <root.h>
+#include <fault.h>
+#include <termios.h>
+
+#define SYSERR_MAX 36
+int sys_nerr = SYSERR_MAX;
+char *sys_errlist[SYSERR_MAX + 1] =
+{
+  "Error 0",
+  "Arg list too long",
+  "Permission denied",
+  "Resource temporarily unavailable",
+  "Bad file number",
+  "Resource busy",
+  "No child process",
+  "Resource deadlock would occur",
+  "Domain error",
+  "File exists",
+  "Bad address",
+  "File too large",
+  "Interrupted system call",
+  "Invalid argument",
+  "I/O error",
+  "Is a directory",
+  "Too many files",
+  "Too many links",
+  "Filename too long",
+  "Too many open files",
+  "No such device",
+  "No such file or directory",
+  "Exec format error",
+  "No locks available",
+  "Not enough space",
+  "No space left on device",
+  "Not a directory",
+  "Directory not empty",
+  "Inappropriate I/O control operation",
+  "No such device or address",
+  "Operation not permitted",
+  "Broken pipe",
+  "Result too large",
+  "Read-only file system",
+  "Invalid seek",
+  "No such process",
+  "Improper link"
+};
+
+PUBLIC int fifo(int fds[2])
+{
+  char fifoname[NUMSTR_MAX + 12];
+  static int fifocount = 0;
+
+  sprintf(fifoname, "/fifo/pipe.%d", fifocount++);
+  if ((fds[WRITE] = open(fifoname, O_WRONLY | O_CREAT)) == -1) return -1;
+  if ((fds[READ] = open(fifoname, O_RDONLY)) == -1)
+  {
+    close(fds[WRITE]);
+    return -1;
+  }
+  return 0;
+}
+
+PUBLIC BOOL isdir(DIRENT *dirent, char *path)
+{
+  return ((dirent->d_type & Type_Directory) == Type_Directory) ? TRUE : FALSE;
+  path = path;				/* keep the compiler happy...	*/
+}
+
+PUBLIC BOOL isexec(DIRENT *dirent, char *path)
+{
+  /* JMP used to check for LTaskForce as well */
+  return ((dirent->d_type & Type_Directory) == Type_Directory) ? FALSE : TRUE;
+  path = path;				/* keep the compiler happy...	*/
+}
+
+PRIVATE Stream *console;
+
+PUBLIC void sysinit(void)
+{
+  terminit();
+  cooked();
+  initenv();
+}
+
+PUBLIC void ctrlcbegin(void)
+{
+#ifdef DEBUGGING
+	DEBUG("ctrlcbegin()");
+#endif
+	tcsetpgrp(0,getpid());
+}
+
+PUBLIC void putctrlc()
+{
+    Attributes attr;
+    GetAttributes(console, &attr);
+    RemoveAttribute(&attr, ConsolePause);
+    SetAttributes(console, &attr);
+    Write(console, "^C\n", 3, -1);
+}
+
+
+PUBLIC void systidy(void)
+{
+  freeenv();
+}
+
+PUBLIC void initenv(void)
+{
+  int count = 0;
+  char **envp = environ;
+  char *env;
+
+  environ = (char **)newmemory(sizeof(char *) * (lenargv(envp) + 1));
+  until ((env = *envp++) == NULL) environ[count++] = strdup(env);
+  environ[count] = NULL;
+}
+
+PUBLIC void freeenv(void)
+{
+  char **envp = environ;
+  char *env;
+
+  until ((env = *envp++) == NULL) freememory((int *)env);
+  freememory((int *)environ);
+}
+
+PUBLIC char *newenv(char *name, char *value)
+{
+  int length = strlen(name);
+  char *env = (char *)newmemory(length + strlen(value) + 2);
+
+  strcpy(env, name);
+  env[length] = '=';
+  strcpy(env + length + 1, value);
+  return env;
+}
+
+PUBLIC void setenv(char *name, char *value)
+{
+  int count = 0;
+  int length = strlen(name);
+  char *env;
+  char **newenviron;
+
+  until ((env = environ[count]) == NULL)
+  {
+    if (strnequ(name, env, length) AND env[length] == '=')
+    {
+      freememory((int *)env);
+      environ[count] = newenv(name, value);
+      return;
+    }
+    count++;
+  }
+  newenviron = (char **)newmemory(sizeof(char *) * (count + 2));
+  memmove(newenviron, environ, sizeof(char *) * count);
+  newenviron[count] = newenv(name, value);
+  newenviron[count + 1] = NULL;
+  freememory((int *)environ);
+  environ = newenviron;
+}
+
+PUBLIC void delenv(char *name)
+{
+  int count = 0;
+  int length = strlen(name);
+  int offset = -1;
+  char *env;
+  char **newenviron;
+
+  until ((env = environ[count]) == NULL)
+  {
+    if (strnequ(name, env, length) AND env[length] == '=') offset = count;
+    count++;
+  }
+  unless (offset == -1)
+  {
+    newenviron = (char **)newmemory(sizeof(char *) * count);
+    memmove(newenviron, environ, sizeof(char *) * offset);
+    memmove(newenviron + offset, environ +  offset + 1,
+      sizeof(char *) * (count - offset));
+    freememory((int *)environ[offset]);
+    freememory((int *)environ);
+    environ = newenviron;
+  }
+}
+
+PRIVATE Attributes cookedattr, rawattr;
+
+PUBLIC void terminit(void)
+{
+  setvbuf(stdin, NULL, _IONBF, 0);
+  console = Heliosno(stdin);
+  GetAttributes(console, &cookedattr);
+  rawattr = cookedattr;
+  RemoveAttribute(&rawattr, ConsoleEcho);
+  RemoveAttribute(&rawattr, ConsolePause);
+  RemoveAttribute(&rawattr, ConsoleIgnoreBreak);
+  RemoveAttribute(&rawattr, ConsoleBreakInterrupt);
+  RemoveAttribute(&rawattr, ConsoleRawOutput);
+  AddAttribute(&rawattr, ConsoleRawInput);
+}
+
+PUBLIC void raw(void)
+{
+  fflush(stdout);
+  SetAttributes(console, &rawattr);
+}
+
+PUBLIC int termgetc(FILE *file)
+{
+  int c;
+
+  if ((c = fgetc(file)) == EOF)
+  {
+    clearerr(file);
+    c = CTRL_D;
+  }
+  return c;
+}
+
+PUBLIC void cooked(void)
+{
+  fflush(stdout);
+  SetAttributes(console, &cookedattr);
+}
+
+PUBLIC void fault(unsigned long code)
+{
+  char msg[128];
+
+  Fault(code, msg, 128);
+  printf("%08lx: %s.\n", code, msg);
+}
+@
+
+
+1.8
+log
+@changed signal handling
+@
+text
+@d13 1
+a13 1
+* $Header: /giga/HeliosRoot/Helios/cmds/shell/RCS/helios.c,v 1.7 1990/12/06 11:41:30 martyn Exp martyn $
+d24 1
+d255 1
+a255 1
+  printf("%08x: %s.\n", code, msg);
+@
+
+
+1.7
+log
+@new fixes to clean up after a stream write error
+@
+text
+@d13 1
+a13 1
+* $Header: /usr/perihelion/Helios/cmds/shell/RCS/helios.c,v 1.4 90/11/16 11:21:29 nick Exp $
+a100 1
+  ctrlcbegin();
+@
+
+
+1.6
+log
+@more changes to fix CTRL-C and error recovery longjmp bugs
+@
+text
+@a100 1
+  raw();
+d102 1
+@
+
+
+1.5
+log
+@changes to try and fix CTRL-C processing
+@
+text
+@a256 27
+
+#if 0 /* BLV - 1.2 changes */
+PUBLIC void quit(int code)
+{
+  MCB mcb;
+
+  InitMCB(&mcb, 0, ((GetRoot()->Links)[0])->RemoteIOCPort, NullPort, -1);
+  PutMsg(&mcb);
+}
+
+PUBLIC void quit(int code)
+{
+  LinkInfo **info = GetRoot()->Links;
+  MCB mcb;
+  int i;
+
+  for ( i = 0; i < 4; i++ ) 
+    if ( info[i]->Flags & Link_Flags_parent )
+      break;
+  if ( i == 4 ) i = 0;
+  
+  InitMCB(&mcb, 0, info[i]->RemoteIOCPort, NullPort, -1);
+  PutMsg(&mcb);
+  code = code;				/* keep the compiler happy...	*/
+}
+#endif
+
+@
+
+
+1.4
+log
+@signal handling changed to make use of new posix library signal handling
+@
+text
+@d13 1
+a13 1
+* $Header: /usr/perihelion/Helios/cmds/shell/RCS/helios.c,v 1.3 90/09/25 12:47:00 paul Exp $
+d101 1
+@
+
+
+1.3
+log
+@arm and barts 1.2 changes
+@
+text
+@d13 1
+a13 1
+* $Header: /usr/perihelion/Helios/cmds/shell/RCS/helios.c,v 1.1 90/08/23 16:00:50 james Exp Locker: jon $
+a96 1
+PRIVATE Port ctrlcport = NullPort;
+d110 1
+a110 4
+	
+  unless (ctrlcport == NullPort) FreePort(ctrlcport);
+  if ((ctrlcport = EnableEvents(console, Event_Break)) == NullPort) return;
+  unless (Fork(STACK_SIZE, ctrlcwaiter, 0)) ctrlcend();
+d113 1
+a113 1
+PUBLIC void ctrlcend(void)
+a114 25
+#ifdef DEBUGGING
+	DEBUG("ctrlcend()");
+#endif
+	
+  unless (ctrlcport == NullPort)
+  {
+    FreePort(ctrlcport);
+    ctrlcport = NullPort;
+  }
+}
+
+PRIVATE MCB message;
+PRIVATE BYTE data[IOCDataMax];
+
+PUBLIC void ctrlcwaiter(void)
+{
+#ifdef DEBUGGING
+	DEBUG("ctrlcwaiter()");
+#endif
+	
+  message.Data = data;
+  message.MsgHdr.Dest = ctrlcport;
+  message.Timeout = -1;
+  while (GetMsg(&message) > 0)
+  {
+a115 1
+
+a119 2
+    sighandler(SIGINT);
+  }
+d121 1
+@
+
+
+1.2
+log
+@student work?
+@
+text
+@d288 1
+a288 1
+/*
+a295 1
+*/
+d312 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d13 1
+a13 1
+* $Header$
+d91 2
+a92 2
+  return ((dirent->d_type & Type_LTaskForce) == Type_LTaskForce) ? TRUE :
+         ((dirent->d_type & Type_Directory) == Type_Directory) ? FALSE : TRUE;
+@

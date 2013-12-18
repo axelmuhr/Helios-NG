@@ -1,0 +1,55 @@
+#include <stdlib.h>
+#include "tripos.h"
+
+int result2;   /* Result2 of sendpkt */
+
+void initsyscall( GLOBNUM n, int (*f)(...), int nargs )
+{
+   SysCall *s = (SysCall *)malloc(sizeof(SysCall));
+   union {
+       struct {
+            insword hi;
+            insword lo;
+            } parts;
+       inslong whole;
+   } f1;
+
+   s->lea1    = LEA1INS;
+   f1.whole   = (inslong)f;
+   s->routinehi = f1.parts.hi;
+   s->routinelo = f1.parts.lo;
+   s->move1   = MOVE1INS;
+   f1.whole   = (inslong)nargs;
+   s->nargshi = f1.parts.hi;
+   s->nargslo = f1.parts.lo;
+   s->move2   = MOVE2INS;
+   s->extgoff = G_CALLEXT*4;
+   s->jmp     = JMPINS;
+   s->savedf  = Global(n);
+
+   Global(n)  = (int)s;
+}
+
+void uninitsyscall( GLOBNUM i )
+{
+   SysCall *s = (SysCall *)Global(i);
+
+   Global(i) = (int)(s->savedf);
+   free(s);
+}
+
+extern int sendpkt(packet *link, td_id id, int type,...)
+{   td_id destination = id;
+    packet *p = (packet *)(&link);
+    type = type;  /*keeps the compiler happy*/
+    if ( tr_qpkt(p) == 0)
+    {   tr_abort(181,0);
+         return 0;
+    }
+    else
+    {   while ( tr_pktwait(destination, p) != p)
+            tr_abort(182,0);
+        result2 = p->res2;
+        return p->res1;
+    }
+}

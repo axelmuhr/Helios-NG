@@ -1,0 +1,1547 @@
+head	1.6;
+access;
+symbols
+	Helios_1_3_1:1.6
+	Helios_C40_1_3_Official_Release:1.6
+	Alenia_release:1.6
+	Helios1_3:1.6
+	C40_Field_Test_2:1.6
+	C40_Field_Test_R1:1.6
+	Helios13_beta:1.5
+	Helios1_2_2:1.4
+	Helios1_2_2Beta:1.4
+	Helios1_2_1:1.4
+	Helios1_2:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.6
+date	92.06.30.12.49.58;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.12.06.11.53.30;	author martyn;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.10.30.11.05.29;	author alan;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.10.26.15.09.48;	author martyn;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.17.24;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.26.29;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@displays the head of a text file
+@
+
+
+1.6
+log
+@converted to the one tru brace style
+added -help and -d(ebug) options
+@
+text
+@/* head.c - the UNIX head command
+ *
+ * Author:	N Clifton
+ * Version:	$Id$
+ * Date:	$Date$
+ *
+ * Copyright (c) 1990 - 1992 Perihelion Software Ltd.
+ *
+ * All rights reserved
+ *
+ */
+
+/*
+ * ToDo :-
+ *
+ * handle the following :-
+ *
+ *	head fred -5 jim -20 harry
+ *
+ * (showing 10 lines from fred, 5 from jim and 20 from harry)
+ *
+ *	head fred -20
+ *
+ * (showing 20 lines from fred)
+ *
+ *	head -5 fred -20
+ *
+ * (showing 5 lines from fred and printing a warning about the unused -20)
+ *
+ *	head -5 -20 fred
+ *
+ * (showing 20 lines from fred and printing a warning about the unused -5)
+ *
+ *	head -help
+ *
+ * (showing a help message and terminating)
+ *
+ */ 
+
+static char *rcsid = "$Header: /hsrc/cmds/textutil/RCS/head.c,v 1.5 1991/12/06 11:53:30 martyn Exp $";
+
+#include <helios.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <posix.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define NO_COUNT_FOUND		-1
+#define DEFAULT_NUM_UNITS	10
+#define HEAD_BUF_LEN		1024
+
+
+#define streq( a, b )		(strcmp( a, b ) == 0)
+
+static char *	ProgName 	= NULL;
+static bool	count_lines 	= TRUE;
+static int	debugging	= 0;
+static char *	file_name	= NULL;	
+
+
+static void
+inform(
+       const char *	format,
+       ... )
+/*
+ * print a message
+ */
+{
+  va_list	args;
+  
+  
+  va_start( args, format );
+
+  fflush( stderr );
+
+  fseek( stderr, 0L, SEEK_END );
+
+  fprintf( stderr, "%s: ", ProgName );
+  
+  vfprintf( stderr, format, args );
+  
+  fprintf( stderr, "\n" );
+  
+  fflush( stderr );
+  
+  va_end( args );
+  
+  return;
+  
+} /* inform */
+
+
+static bool
+head(
+     int		file,
+     unsigned int	num_units )
+/*
+ * read 'num_units' of lines or bytes from the given file
+ * descriptor and write them to stdout
+ * returns true upon success, false upon failure
+ */
+{
+  static char	buffer[ HEAD_BUF_LEN + 1 ];		/* XXX */
+  int		amount;
+  int		res;
+  
+  
+  if (num_units < 1)
+    return false;
+  
+  if (file < 0)
+    return false;
+  
+  if (debugging)
+    inform( "displaying %d %s of file %s", num_units, count_lines ? "lines" : "chars", file_name );
+  	   
+  if (count_lines)
+    {
+      unsigned int	num_lines;
+      char *		start;
+      char *		end;
+      
+      
+      /*
+       * counting lines is difficult.  For efficiency
+       * we would like to read large blocks, but this might
+       * block on a fifo.  For expediency we should read a
+       * character at a time, but this is very slow
+       *
+       * for now we will do big reads
+       *
+       */
+      
+      start = end = buffer;
+      num_lines   = 0;
+      
+      while (num_lines < num_units)
+	{
+	  int		len;
+	  char *	ptr;
+	  
+	  
+	  /* read some data if necessary */
+	  
+	  if (end == start)
+	    {
+	      start = buffer;
+	      
+	      res = read( file, start, HEAD_BUF_LEN );
+	      
+	      if (res < 0)
+		{
+		  inform( "error whilst reading input, errno = %d", errno );
+		  
+		  return false;
+		}				
+	      
+	      if (res == 0)
+		{
+		  /* end-of-file */
+		  
+		  return true;
+		}
+
+	      end = start + res;
+	    }
+	  
+	  forever
+	    {
+	      /* look for a line in the data */
+	      
+	      for (ptr = start; ptr < end; ptr++)
+		{
+		  if (*ptr == '\n')
+		    {
+		      /* found a new-line */
+		      
+		      break;
+		    }
+		}
+	      
+	      if (ptr < end)
+		{
+		  /* found a line - print it out */
+		  
+		  amount = 0;
+		  
+		  len = (ptr - start) + 1;	/* include new-line in output */
+		  
+		  while (amount < len)
+		    {	
+		      res = write( fileno( stdout ), start + amount, len - amount );
+		      
+		      if (res < 0)
+			{
+			  inform( "error whilst writing output, errno = %d", errno );
+			  
+			  return false;
+			}
+		      
+		      amount += res;
+		    }
+		  
+		  /* reset start */
+		  
+		  start = ptr + 1;
+		  
+		  /* increment line count */
+		  
+		  ++num_lines;
+		  
+		  /* break out of forever loop */
+		  
+		  break;	
+		}
+	      else
+		{
+		  if (end == buffer + HEAD_BUF_LEN)
+		    {
+		      /*
+		       * no more room for data
+		       * try shuffling the data down
+		       */
+		      
+		      if (start > buffer)
+			{
+			  memcpy( buffer, start, end - start );
+			  
+			  end = buffer + (end-start);
+			  
+			  start = buffer;
+			}
+		      else
+			{
+			  /*
+			   * buffer is full, and it does not contain a line
+			   * flush the buffer and read a new line
+			   */
+			  
+			  amount = 0;
+			  
+			  while (amount < HEAD_BUF_LEN)
+			    {	
+			      
+			      res = write( fileno( stdout ), buffer + amount, HEAD_BUF_LEN - amount );
+			      
+			      if (res < 0)
+				{
+				  inform( "error whilst writing output, errno = %d", errno );
+				  
+				  return false;
+				}
+			      
+			      amount += res;
+			    }
+			  
+			  start = end = buffer;
+			  
+			  break;
+			}
+		    }
+		  
+		  /* no line found - read more data and repeat */
+		  
+		  res = read( file, end, HEAD_BUF_LEN - (end - buffer) );
+		  
+		  if (res < 0)
+		    {
+		      inform( "error whilst reading input, errno = %d", errno );
+		    }
+		  
+		  if (res == 0)
+		    {
+		      /* end-of-file */
+		      
+		      return true;
+		    }
+		  
+		  end += res;
+		}
+	    }
+	}
+    }
+  else
+    {
+      while (num_units > HEAD_BUF_LEN)
+	{
+	  /* read in a buffer full */
+	  
+	  res = read( file, buffer , HEAD_BUF_LEN );
+	  
+	  if (res < 0)
+	    {
+	      inform( "error whilst reading input, errno = %d", errno );
+	      return false;
+	    }
+	  
+	  if (res == 0)
+	    /* end-of-file */
+	    return true;
+	  
+	  /* write out data */
+	  
+	  res = write( fileno( stdout ), buffer, res );
+	  
+	  if (res < 0)
+	    {
+	      inform( "error whilst writing output, errno = %d", errno );
+	      return false;
+	    }
+	  
+	  num_units -= res;
+	}
+      
+      /* read in remainder */
+      
+      res = read( file, buffer, num_units );
+      
+      if (res < 0)
+	{
+	  inform( "error whilst reading input, errno = %d", errno );
+	  return false;
+	}
+      
+      if (res == 0)
+	/* end-of-file */
+	return true;
+      
+      
+      /* write out data */
+      
+      res = write( fileno( stdout ), buffer, num_units );
+      
+      if (res < 0)
+	{
+	  inform( "error whilst writing output, errno = %d", errno );
+	  return false;
+	}
+    }
+  
+  if (debugging)
+    inform( "displayed file %s", file_name );
+  	   
+  return true;
+  
+} /* head */
+
+
+int
+main(
+     int	argc,
+     char **	argv )
+/*
+ * main loop
+ */
+{
+  signed int	num_units;		/* number of lines to read */
+  int		i;
+  int		j;
+  
+  
+  /* save name of program */
+  
+  if (strrchr( argv[ 0 ], '/' ))
+    {
+      ProgName = strrchr( argv[ 0 ], '/' ) + 1;
+    }
+  else
+    {
+      ProgName = argv[ 0 ];
+    }
+  
+  /*
+   * scan arguments looking for a <-count> option.
+   * If one is found, remove it and set 'num_units'
+   * If more than one is found, print a informing and
+   * use latest value
+   */
+  
+  num_units = NO_COUNT_FOUND;
+  
+  for (i = j = 1; i < argc; i++)
+    {
+      char *	arg = argv[ i ];
+      
+      
+      if (arg[ 0 ] == '-')
+	{
+	  switch (arg[ 1 ])
+	    {
+	    case '\0':
+	      /* an argument of '-' on its own means read stdin */
+	      
+	      if (j < i)
+		argv[ j ] = arg;
+	      
+	      j++;
+
+	      break;
+
+	    case 'c':
+	      if (arg[ 2 ] == '\0')
+		count_lines = false;
+	      else
+		inform( "unrecognised command line option %s", arg );
+	      break;
+
+	    case 'l':
+	      if (arg[ 2 ] == '\0')
+		count_lines = true;
+	      else
+		inform( "unrecognised command line option %s", arg );
+	      break;
+
+	    case 'n':
+		{
+		  signed int	n;
+		  
+		  
+		  if (arg[ 2 ] == '\0')
+		    {
+		      if (++i == argc)
+			{
+			  inform( "number must follow -n option" );
+			  
+			  exit( 3 );
+			}
+		      
+		      n = atoi( argv[ i ] );
+		      
+		      if (n < 1)
+			{
+			  inform( "unexpected value for -n option: %s, - ignored", argv[ i ] );
+			}
+		      else
+			{
+			  if (num_units != NO_COUNT_FOUND)
+			    {
+			      inform( "more than one '-n' option found, using latest value (%d)", n );
+			    }
+			  
+			  num_units = n;
+			}
+		    }
+		  else
+		    {
+		      n = atoi( &argv[ i ][ 2 ] );
+		      
+		      if (n < 1)
+			{
+			  inform( "unexpected value for -n option: %s, - ignored", arg );
+			}
+		      else
+			{
+			  if (num_units != NO_COUNT_FOUND)
+			    {
+			      inform( "more than one '-n' option found, using latest value (%d)", n );
+			    }
+			  
+			  num_units = n;
+			}
+		    }
+		}
+	      break;
+
+	    case '0':
+	    case '1':
+	    case '2':
+	    case '3':
+	    case '4':
+	    case '5':
+	    case '6':
+	    case '7':
+	    case '8':
+	    case '9':
+		{
+		  signed int	n;
+		  
+		  
+		  n = atoi( &arg[ 1 ] );
+		  
+		  if (n < 1)
+		    {
+		      inform( "unexpected option: %s, - ignored", arg );
+		    }
+		  else
+		    {
+		      if (num_units != NO_COUNT_FOUND)
+			{
+			  inform( "more than one '-count' option found, using latest value (%d)", n );
+			}
+		      
+		      num_units = n;
+		    }
+		}
+	      break;
+
+	    case 'd':
+	      debugging++;
+	      break;
+
+	    case 'h':
+	    case '?':
+	      inform( "command line options" );
+	      inform( "-c     => count characters" );
+	      inform( "-l     => count lines" );
+	      inform( "<num>  => number of lines or characters to display" );
+	      inform( "-d     => enable debugging" );
+	      inform( "-help  => display this information" );
+	      inform( "<file> => file to display" );
+	      inform( "-      => display from stdin" );
+	      
+	      return EXIT_SUCCESS;
+	      
+	    default:
+	      inform( "unknown command line argument %s", arg );
+	      break;
+	    }
+	}
+      else
+	{
+	  /* copy arg */
+	  
+	  if (j < i)
+	    argv[ j ] = arg;
+	  
+	  j++;
+	}
+    }
+  
+  /* adjust argc to take account of delete arguments */
+  
+  argc = j;
+  
+  if (num_units == NO_COUNT_FOUND)
+    num_units = DEFAULT_NUM_UNITS;
+  
+  /*
+   * now read input files
+   */
+  
+  if (argc > 1)
+    {
+      for (i = 1; i < argc; i++)
+	{
+	  file_name = argv[ i ];	  
+	  
+	  if (streq( file_name, "-" ))
+	    {
+	      file_name = "<stdin>";
+	    }
+	  
+	  if (argc > 2)
+	    {
+	      /* print a header */
+	      
+	      if (i == 1)
+		{
+		  fprintf( stdout, "==> %s <==\n", file_name );
+		}
+	      else
+		{
+		  fprintf( stdout, "\n==> %s <==\n", file_name );
+		}
+	    }
+	  
+	  if (streq( argv[ i ], "-" ))
+	    {
+	      /* a filename of '-' means read stdin */
+	      
+	      if (!head( fileno( stdin ), num_units ))
+		{
+		  inform( "failed to process %s", file_name );
+		}
+	    }
+	  else
+	    {
+	      struct stat	stat_buf;
+	      int		file;
+	      
+	      
+	      /* try to stat the file */
+	      
+	      if (stat( file_name, &stat_buf ) != 0)
+		{
+		  switch (errno)
+		    {
+		    case EACCES:
+		      inform( "%s - permission denied", file_name );
+		      break;
+		      
+		    case ENOENT:
+		      inform( "cannot find %s", file_name );
+		      break;
+		      
+		    case ENOTDIR:
+		      inform( "%s has a path name with a non-directory component", file_name );
+		      break;
+		      
+		    case ENAMETOOLONG:
+		      inform( "the path name %s is too long", file_name );
+		      break;
+		      
+		    default:
+		      inform( "unexpected error stating %s, errno = %d", file_name, errno );
+		      break;
+		    }
+		  
+		  continue;
+		}
+	      
+	      if (!S_ISREG( stat_buf.st_mode ) && !S_ISFIFO( stat_buf.st_mode ))
+		{
+		  if (S_ISDIR( stat_buf.st_mode ))
+		    {
+		      inform( "%s is a directory - ignoring", file_name );
+		    }
+		  else
+		    {
+		      inform( "%s is an unknown type of file (stat mode = %x)- ignoring",
+			   stat_buf.st_mode, file_name );
+		    }
+		  
+		  continue;
+		}
+	      
+	      /* try to open the file */
+	      
+	      if ((file = open( file_name, O_RDONLY )) < 0)
+		{
+		  /* open failed */
+		  
+		  switch (errno)
+		    {
+		    case EACCES:
+		      inform( "unable to open %s for reading", file_name );
+		      break;
+		      
+		    case EINTR:
+		      inform( "open interrupted by a signal - aborting" );
+		      exit( 1 );
+		      
+		    case ENFILE:	
+		    case EMFILE:
+		      inform( "too many open files - aborting" );
+		      exit( 2 );
+		      
+		    default:
+		      inform( "unexpected error trying to open %s, errno = %d",
+			   file_name, errno );
+		      break;
+		    }
+		  
+		  continue;
+		}
+	      
+	      /* read the file */
+	      
+	      if (!head( file, num_units ))
+		{
+		  inform( "failed to process %s", file_name );
+		}
+	      
+	      /* close the file */
+	      
+	      if (close( file ) != 0)
+		{
+		  inform( "error whilst closing file %s, errno = %d",
+		       file_name, errno );
+		}
+	      
+	      /* do next file */
+	    }
+	}
+    }
+  else
+    {
+      /* no filenames given - read stdin */
+
+      file_name = "<stdin>";
+      
+      if (!head( fileno( stdin ), num_units ))
+	{
+	  inform( "failed to process <stdin>" );
+	}
+    }
+  
+  /*
+   * finished
+   */
+  
+  return EXIT_SUCCESS;
+
+  rcsid = rcsid;
+  
+} /* main */
+@
+
+
+1.5
+log
+@Helios-ised
+@
+text
+@d4 2
+a5 2
+ * Version:	0.1
+ * Date:	3/7/90
+d7 1
+a7 1
+ * Copyright (c) 1990 Perihelion Software Ltd.
+d40 1
+a40 1
+static char *rcsid = "$Header: /hsrc/cmds/textutil/RCS/head.c,v 1.4 1990/10/30 11:05:29 alan Exp martyn $";
+d62 2
+d67 3
+a69 3
+warn(
+	const char *	format,
+	... )
+d71 1
+a71 1
+ * print a warning message
+d74 22
+a95 2
+	va_list	args;
+	
+a96 15
+	va_start( args, format );
+	
+	fprintf( stderr, "%s - ", ProgName );
+	
+	vfprintf( stderr, format, args );
+	
+	fprintf( stderr, "\n" );
+	
+	fflush( stderr );
+	
+	va_end( args );
+	
+	return;
+	
+} /* warn */
+a97 1
+
+d100 2
+a101 2
+	int		file,
+	unsigned int	num_units )
+d108 35
+a142 13
+	static char	buffer[ HEAD_BUF_LEN + 1 ];		/* XXX */
+	int		amount;
+	int		res;
+	
+
+	if (num_units < 1)
+		return false;
+		
+	if (file < 0)
+		return false;
+		
+	
+	if (count_lines)
+d144 25
+a168 38
+		unsigned int	num_lines;
+		char *		start;
+		char *		end;
+		
+	
+		/*
+		 * counting lines is difficult.  For efficiency
+		 * we would like to read large blocks, but this might
+		 * block on a fifo.  For expediency we should read a
+		 * character at a time, but this is very slow
+		 *
+		 * for now we will do big reads
+		 *
+		 */
+	
+		start = end = buffer;
+		num_lines   = 0;
+		
+		while (num_lines < num_units)
+		{
+			int	len;
+			char *	ptr;
+			
+		
+			/* read some data if necessary */
+			
+			if (end == start)
+			{
+				start = buffer;
+				
+				res = read( file, start, HEAD_BUF_LEN );
+	
+				if (res < 0)
+				{
+					warn( "error whilst reading input, errno = %d", errno );
+					
+					return false;
+				}				
+d170 30
+a199 11
+				if (res == 0)
+				{
+					/* end-of-file */
+					
+					return true;
+				}
+
+				end = start + res;
+			}
+		
+			forever
+d201 3
+a203 112
+				/* look for a line in the data */
+			
+				for (ptr = start; ptr < end; ptr++)
+				{
+					if (*ptr == '\n')
+					{
+						/* found a new-line */
+					
+						break;
+					}
+				}
+			
+				if (ptr < end)
+				{
+					/* found a line - print it out */
+			
+					amount = 0;
+			
+					len = (ptr - start) + 1;	/* include new-line in output */
+					
+					while (amount < len)
+					{	
+						
+						res = write( fileno( stdout ), start + amount, len - amount );
+					
+						if (res < 0)
+						{
+							warn( "error whilst writing output, errno = %d", errno );
+						
+							return false;
+						}
+					
+						amount += res;
+					}
+					
+					/* reset start */
+					
+					start = ptr + 1;
+					
+					/* increment line count */
+					
+					++num_lines;
+					
+					/* break out of forever loop */
+					
+					break;	
+				}
+				else
+				{
+					if (end == buffer + HEAD_BUF_LEN)
+					{
+						/*
+						 * no more room for data
+						 * try shuffling the data down
+						 */
+					 
+						if (start > buffer)
+						{
+							memcpy( buffer, start, end - start );
+							
+							end = buffer + (end-start);
+							
+							start = buffer;
+						}
+						else
+						{
+							/*
+							 * buffer is full, and it does not contain a line
+							 * flush the buffer and read a new line
+							 */
+							 
+							amount = 0;
+
+							while (amount < HEAD_BUF_LEN)
+							{	
+						
+								res = write( fileno( stdout ), buffer + amount, HEAD_BUF_LEN - amount );
+					
+								if (res < 0)
+								{
+									warn( "error whilst writing output, errno = %d", errno );
+						
+									return false;
+								}
+					
+								amount += res;
+							}
+							
+							start = end = buffer;
+							
+							break;
+						}
+					}
+									
+					/* no line found - read more data and repeat */
+
+					res = read( file, end, HEAD_BUF_LEN - (end - buffer) );
+		
+					if (res < 0)
+					{
+						warn( "error whilst reading input, errno = %d", errno );
+					}
+					
+					if (res == 0)
+					{
+						/* end-of-file */
+					
+						return true;
+					}
+
+					end += res;
+				}
+d205 15
+d221 1
+a221 4
+	}
+	else
+	{
+		while (num_units > HEAD_BUF_LEN)
+d223 8
+a230 5
+			/* read in a buffer full */
+
+			res = read( file, buffer , HEAD_BUF_LEN );
+			
+			if (res < 0)
+d232 5
+a236 2
+				warn( "error whilst reading input, errno = %d", errno );
+				return false;
+d238 1
+a238 10
+
+			if (res == 0)
+						/* end-of-file */
+				return true;
+	
+			/* write out data */
+			
+			res = write( fileno( stdout ), buffer, res );
+				
+			if (res < 0)
+d240 25
+a264 2
+				warn( "error whilst writing output, errno = %d", errno );
+				return false;
+d266 19
+a284 2
+			
+			num_units -= res;
+d286 42
+a327 25
+
+		/* read in remainder */
+		
+		res = read( file, buffer, num_units );
+		
+		if (res < 0)
+		{
+			warn( "error whilst reading input, errno = %d", errno );
+			return false;
+		}
+
+		if (res == 0)
+				/* end-of-file */
+			return true;
+	
+			
+		/* write out data */
+		
+		res = write( fileno( stdout ), buffer, num_units );
+			
+		if (res < 0)
+		{
+			warn( "error whilst writing output, errno = %d", errno );
+			return false;
+		}
+d329 3
+a331 1
+	
+d333 18
+a350 1
+	
+d356 2
+a357 2
+	int	argc,
+	char **	argv )
+d362 31
+a392 8
+	signed int	num_units;		/* number of lines to read */
+	int		i;
+	int		j;
+	
+
+	/* save name of program */
+	
+	if (strrchr( argv[ 0 ], '/' ))
+d394 27
+a420 22
+		ProgName = strrchr( argv[ 0 ], '/' ) + 1;
+	}
+	else
+	{
+		ProgName = argv[ 0 ];
+	}
+	
+	/*
+	 * scan arguments looking for a <-count> option.
+	 * If one is found, remove it and set 'num_units'
+	 * If more than one is found, print a warning and
+	 * use latest value
+	 */
+	 
+	num_units = NO_COUNT_FOUND;
+	
+	for (i = j = 1; i < argc; i++)
+	{
+		char *	arg = argv[ i ];
+		
+	
+		if (arg[ 0 ] == '-')
+d422 6
+a427 1
+			if (arg[ 1 ] != '\0')
+d429 3
+a431 78
+				if (streq( arg, "-c" ))
+				{
+					count_lines = false;
+				}
+				else if (streq( arg, "-l" ))
+				{
+					count_lines = true;
+				}
+				else if (arg[ 1 ] == 'n')
+				{
+					signed int	n;
+					
+				
+					if (arg[ 2 ] == '\0')
+					{
+						if (++i == argc)
+						{
+							warn( "number must follow -n option" );
+							
+							exit( 3 );
+						}
+						
+						n = atoi( argv[ i ] );
+				
+						if (n < 1)
+						{
+							warn( "unexpected value for -n option: %s, - ignored", argv[ i ] );
+						}
+						else
+						{
+		 					if (num_units != NO_COUNT_FOUND)
+							{
+								warn( "more than one '-n' option found, using latest value (%d)", n );
+							}
+
+							num_units = n;
+						}
+					}
+					else
+					{
+						n = atoi( &argv[ i ][ 2 ] );
+				
+						if (n < 1)
+						{
+							warn( "unexpected value for -n option: %s, - ignored", arg );
+						}
+						else
+						{
+		 					if (num_units != NO_COUNT_FOUND)
+							{
+								warn( "more than one '-n' option found, using latest value (%d)", n );
+							}
+
+							num_units = n;
+						}
+					}
+				}
+				else
+				{
+					signed int	n;
+				
+			
+					n = atoi( &arg[ 1 ] );
+				
+					if (n < 1)
+					{
+						warn( "unexpected option: %s, - ignored", arg );
+					}
+					else
+					{
+		 				if (num_units != NO_COUNT_FOUND)
+						{
+							warn( "more than one '-count' option found, using latest value (%d)", n );
+						}
+
+						num_units = n;
+					}
+				}
+d433 4
+a436 1
+			else
+d438 1
+a438 6
+				/* an argument of '-' on its own means read stdin */
+				
+				if (j < i)
+					argv[ j ] = arg;
+					
+				j++;
+d440 1
+a440 31
+		}
+		else
+		{
+			/* copy arg */
+			
+			if (j < i)
+				argv[ j ] = arg;
+
+			j++;
+		}
+	}
+	
+	/* adjust argc to take account of delete arguments */
+	
+	argc = j;
+	
+	if (num_units == NO_COUNT_FOUND)
+		num_units = DEFAULT_NUM_UNITS;
+		
+	/*
+	 * now read input files
+	 */
+	 
+	if (argc > 1)
+	{
+		for (i = 1; i < argc; i++)
+		{
+			char *		file_name = argv[ i ];	
+			
+		
+			if (streq( file_name, "-" ))
+d442 6
+a447 1
+				file_name = "<stdin>";
+d449 6
+a454 3
+
+
+			if (argc > 2)
+d456 1
+a456 10
+				/* print a header */
+			
+				if (i == 1)
+				{
+					fprintf( stdout, "==> %s <==\n", file_name );
+				}
+				else
+				{
+					fprintf( stdout, "\n==> %s <==\n", file_name );
+				}
+d458 1
+a458 2
+		
+			if (streq( argv[ i ], "-" ))
+d460 6
+a465 6
+				/* a filename of '-' means read stdin */
+			
+				if (!head( fileno( stdin ), num_units ))
+				{
+					warn( "failed to process %s", file_name );
+				}
+d467 27
+a493 1
+			else
+d495 1
+a495 95
+				struct stat	stat_buf;
+				int		file;
+
+			
+				/* try to stat the file */
+			
+				if (stat( file_name, &stat_buf ) != 0)
+				{
+					switch (errno)
+					{
+					case EACCES:
+						warn( "%s - permission denied", file_name );
+						break;
+					
+					case ENOENT:
+						warn( "cannot find %s", file_name );
+						break;
+					
+					case ENOTDIR:
+						warn( "%s has a path name with a non-directory component", file_name );
+						break;
+					
+					case ENAMETOOLONG:
+						warn( "the path name %s is too long", file_name );
+						break;
+					
+					default:
+						warn( "unexpected error stating %s, errno = %d", file_name, errno );
+						break;
+					}
+				
+					continue;
+				}
+			
+				if (!S_ISREG( stat_buf.st_mode ) && !S_ISFIFO( stat_buf.st_mode ))
+				{
+					if (S_ISDIR( stat_buf.st_mode ))
+					{
+						warn( "%s is a directory - ignoring", file_name );
+					}
+					else
+					{
+						warn( "%s is an unknown type of file (stat mode = %x)- ignoring",
+							stat_buf.st_mode, file_name );
+					}
+				
+					continue;
+				}
+			
+				/* try to open the file */
+			
+				if ((file = open( file_name, O_RDONLY )) < 0)
+				{
+					/* open failed */
+				
+					switch (errno)
+					{
+					case EACCES:
+						warn( "unable to open %s for reading", file_name );
+						break;
+					
+					case EINTR:
+						warn( "open interrupted by a signal - aborting" );
+						exit( 1 );
+				
+					case ENFILE:	
+					case EMFILE:
+						warn( "too many open files - aborting" );
+						exit( 2 );
+					
+					default:
+						warn( "unexpected error trying to open %s, errno = %d",
+							file_name, errno );
+						break;
+					}
+				
+					continue;
+				}
+			
+				/* read the file */
+			
+				if (!head( file, num_units ))
+				{
+					warn( "failed to process %s", file_name );
+				}
+			
+				/* close the file */
+			
+				if (close( file ) != 0)
+				{
+					warn( "error whilst closing file %s, errno = %d",
+						file_name, errno );
+				}
+				
+				/* do next file */
+d497 3
+d501 32
+d534 16
+a549 1
+	else
+d551 121
+a671 4
+		/* no filenames given - read stdin */
+		
+
+		if (!head( fileno( stdin ), num_units ))
+d673 2
+a674 1
+			warn( "failed to process <stdin>" );
+d676 3
+d680 21
+a700 7
+	
+	/*
+	 * finished
+	 */
+	 
+	return 0;
+	
+@
+
+
+1.4
+log
+@fix problem with -n option when refilling buffer
+@
+text
+@d40 1
+a40 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/head.c,v 1.3 90/10/26 15:09:48 martyn Exp Locker: alan $";
+a58 2
+
+static char sccsid[] = "@@(#)head.c	1.4 Copyright (C) 1990, Perihelion Software Ltd";
+@
+
+
+1.3
+log
+@fixed pipe output problem #439 and -c processing
+@
+text
+@d40 1
+a40 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/head.c,v 1.2 90/08/23 10:17:24 james Exp $";
+d229 1
+a229 1
+							end = buffer + (start - buffer);
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d40 1
+a40 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/head.c,v 1.1 90/08/22 16:26:29 james Exp Locker: james $";
+a190 1
+						(void) lseek( fileno( stdout ), 0, SEEK_END );
+a243 1
+								(void) lseek( fileno( stdout ), 0, SEEK_END );
+d290 3
+a292 5
+			amount = 0;
+	
+			/* read in data */
+					
+			while (amount < HEAD_BUF_LEN)
+d294 3
+a296 8
+				res = read( file, buffer + amount, HEAD_BUF_LEN - amount );
+			
+				if (res < 0)
+				{
+					warn( "error whilst reading input, errno = %d", errno );
+					
+					return false;
+				}
+d298 4
+a301 10
+				if (res == 0)
+				{
+					/* end-of-file */
+					
+					return true;
+				}
+
+				amount += res;
+			}
+			
+d304 3
+a306 3
+			amount = 0;
+			
+			while (amount < num_units)
+d308 2
+a309 14
+				(void) lseek( fileno( stdout ), 0, SEEK_END );
+						
+				res = write( fileno( stdout ), buffer + amount, HEAD_BUF_LEN - amount );
+				
+				if (res < 0)
+				{
+					warn( "error whilst writing output, errno = %d", errno );
+					
+					return false;
+				}
+				else
+				{
+					amount += res;
+				}
+d312 1
+a312 1
+			num_units -= HEAD_BUF_LEN;
+d317 3
+a319 5
+		amount = 0;
+	
+		/* read in data */
+					
+		while (amount < num_units)
+d321 3
+a323 8
+			res = read( file, buffer + amount, num_units - amount );
+		
+			if (res < 0)
+			{
+				warn( "error whilst reading input, errno = %d", errno );
+				
+				return false;
+			}
+d325 1
+a325 2
+			if (res == 0)
+			{
+d327 3
+a329 7
+				
+				return true;
+			}
+
+			amount += res;
+		}
+		
+d332 3
+a334 3
+		amount = 0;
+		
+		while (amount < num_units)
+d336 2
+a337 14
+			(void) lseek( fileno( stdout ), 0, SEEK_END );
+						
+			res = write( fileno( stdout ), buffer + amount, num_units - amount );
+			
+			if (res < 0)
+			{
+				warn( "error whilst writing output, errno = %d", errno );
+			
+				return false;
+			}
+			else
+			{
+				amount += res;
+			}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d40 1
+a40 1
+static char rcsid[] = "$Header$";
+@

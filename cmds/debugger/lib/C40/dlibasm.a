@@ -1,0 +1,228 @@
+-- File:	dlibasm.a
+-- Subsystem:	'C40 Helios Source Debugger
+-- Author:	Nick Clifton
+-- Date:	Oct '92
+--
+-- This file is Copyright (c) 1992 by Perihelion Software Ltd
+-- All Rights Reserved
+--
+-- Description:
+--
+--	This file contains support functions needed by
+--	the Helios Source Debugger when it is running on
+--	the C40.
+--
+-- RcsId: $Id: dlibasm.a,v 1.1 1992/10/16 17:39:21 nickc Exp $
+--
+-- RcsLog: $Log: dlibasm.a,v $
+-- Revision 1.1  1992/10/16  17:39:21  nickc
+-- assembly language routines neede by the debugger run-time library
+--
+--
+--
+
+include c40.m
+include c40mtab.m
+include module.m
+include root.m
+
+Function get_module_table
+--
+--	wordptr get_module_table( void )
+--
+-- Upon Entry:
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	word pointer to module table
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Returns the module table of the current thread.
+--
+	ldi	R_MT, R_A1result
+	b	R_LR
+--
+-- end of get_module_table
+--
+
+Function patchfork
+--
+--	wordptr patchfork( wordptr newfork )
+--
+-- Upon Entry:
+--	R_A1	address of new Fork() routine
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	address of old Fork() routine
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Changes the entry for Fork() in the Util library's
+--	code table slot in the module table of the current
+--	process.  The address of the previous entry in
+--	Fork()'s slot is returned.
+--
+	BuD	     R_LR			-- return (delayed)
+patchinstr(
+	   PATCHC40MASK8ADD, shift ( -2, DATAMODULE ( _Fork ) ),
+	   LDI	   *+R_MT( 0 ), R_ATMP		-- get hold of Fork's module's code table
+	  )	
+patchinstr(
+	   PATCHC40MASK16ADD, shift ( -2, CODESYMB ( _Fork ) ),
+	   ADDI      0,         R_ATMP		-- add in offset of Fork() into code table
+	  )
+	   LDI	   *+R_ATMP(0), R_A1		-- get hold of current value for Fork()
+	    || STI   R_A1,    *+R_ATMP(0)	-- install new value
+--
+-- end of patchfork
+--
+
+Function patchgetmsg
+--
+--	wordptr patchgetmsg( wordptr newgetmsg )
+--
+-- Upon Entry:
+--	R_A1	address of new GetMsg() routine
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	address of old GetMsg() routine
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Changes the entry for GetMsg() in the Util library's
+--	code table slot in the module table of the current
+--	process.  The address of the previous entry in
+--	GetMsg()'s slot is returned.
+--
+	BuD	     R_LR			-- return (delayed)
+patchinstr(
+	   PATCHC40MASK8ADD, shift ( -2, DATAMODULE ( _GetMsg ) ),
+	   LDI	   *+R_MT( 0 ), R_ATMP		-- get hold of GetMsg()'s module's code table
+	  )	
+patchinstr(
+	   PATCHC40MASK16ADD, shift ( -2, CODESYMB ( _GetMsg ) ),
+	   ADDI      0,         R_ATMP		-- add in offset of GetMsg() into code table
+	  )
+	   LDI	   *+R_ATMP(0), R_A1		-- get hold of current value for GetMsg()
+	    || STI   R_A1,    *+R_ATMP(0)	-- install new value
+--
+-- end of patchgetmsg
+--
+
+Function patchputmsg
+--
+--	wordptr patchputmsg( wordptr newputmsg )
+--
+-- Upon Entry:
+--	R_A1	address of new PutMsg() routine
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	address of old PutMsg() routine
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Changes the entry for PutMsg() in the Util library's
+--	code table slot in the module table of the current
+--	process.  The address of the previous entry in
+--	PutMsg()'s slot is returned.
+--
+	BuD	     R_LR			-- return (delayed)
+patchinstr(
+	   PATCHC40MASK8ADD, shift ( -2, DATAMODULE ( _PutMsg ) ),
+	   LDI	   *+R_MT( 0 ), R_ATMP		-- get hold of PutMsg()'s module's code table
+	  )	
+patchinstr(
+	   PATCHC40MASK16ADD, shift ( -2, CODESYMB ( _PutMsg ) ),
+	   ADDI      0,         R_ATMP		-- add in offset of PutMsg() into code table
+	  )
+	   LDI	   *+R_ATMP(0), R_A1		-- get hold of current value for Putmsg()
+	    || STI   R_A1,    *+R_ATMP(0)	-- install new value
+--
+-- end of patchputmsg
+--
+
+Function DoCall
+--
+--	word DoCall( VoidFnPtr func, word argsize, word * args )
+--
+-- Upon Entry:
+--	R_A1	address of function to be called
+--	R_A2	number of bytes of arguments
+--	R_A3	byte offset to arguments
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	return value of function
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+-- 	Calls the indicated function with the indicated arguments.
+--	Returns the result of executing the function.
+--
+	LDI	R_A1,		R_ATMP		-- save address of function to be called
+	STI	R_LR,	    *\--R_USP(1)	-- save return address on stack
+	STI	R_V1,	    *\--R_USP(1)	-- save variable register on stack
+	
+	LSH3   -2,	R_A2,	R_V1		-- convert byte count into word count in variable register
+	Beq	done_args			-- if nothing to copy then continue
+	LSH3   -2,	R_A3,	R_ADDR1		-- convert byte offset into word offset
+	ADDI	R_BASE,		R_ADDR1		-- convert word offset to word address
+
+	LDI    *R_ADDR1++(1),	R_A1		-- load first argument into first argument register
+	SUBI	1,		R_V1		-- decrement argument count
+	Beq	done_args			-- if finished skip to function call
+
+	LDI    *R_ADDR1++(1),	R_A2		-- load second argument into second argument register
+	SUBI	1,		R_V1		-- decrement argument count
+	Beq	done_args			-- if finished skip to function call
+
+	LDI    *R_ADDR1++(1),	R_A3		-- load third argument into third argument register
+	SUBI	1,		R_V1		-- decrement argument count
+	Beq	done_args			-- if finished skip to function call
+
+	LDI    *R_ADDR1++(1),	R_A4		-- load fourth argument into fourth argument register
+	SUBI	1,		R_V1		-- decrement argument count
+	Beq	done_args			-- if finished skip to function call
+
+	LDI	R_V1,		R_T1		-- copy count of remaining args into temporary register
+loop:
+	LDI    *R_ADDR1++(1),	R_FT1		-- get next arg
+	STI	R_FT1,	    *\--R_USP(1)	-- save on stack
+	SUBI	1,	        R_T1		-- decrement temporary count
+	Bne	loop				-- continue until done
+
+done_args:
+	LAJu	R_ATMP				-- call function
+	NOP
+	NOP
+	NOP
+
+	ADDI	R_V1,		R_USP		-- remove extra words placed on stack
+	LDI    *R_USP++(1),	R_V1		-- recover contents of variable register
+	LDI    *R_USP++(1),	R_LR		-- recover return address
+
+	Bu	R_LR				-- return, result is already in R_A1
+--
+-- end of DoCall
+--
+
+-- end of dlibasm.a

@@ -1,0 +1,235 @@
+head	1.1;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	92.01.16.13.22.17;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@The memory testing component of a hardware test suite taskforce
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/**
+*** Memory.c
+***
+*** BLV, 6.9.91
+***
+***  The purpose of this program is to perform continuous
+***  checksumming of a large block of memory and report failures.
+***  The run will be terminated by a message sent by a controller
+***  program.
+***
+***  In its current form the program only performs read cycles. It does
+***  not check write cycles, block moves, etc.
+***
+*** Arguments:	argv[1] worker number, 0 => first worker of this type
+***		argv[2] memory block size
+***
+*** Streams : stdin (0)  < control
+***	      stdout (1) > control
+***	      rest	   inherited
+**/
+
+#include <stdio.h>
+#include <helios.h>
+#include <nonansi.h>
+#include <time.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include "packet.h"
+
+/**-----------------------------------------------------------------------------
+*** Macros
+**/
+		/* Stream allocation					*/
+#define 	From_Control	0
+
+		/* Stack size for spawned threads.			*/
+#define		Stack_Size	2000
+
+/**-----------------------------------------------------------------------------
+*** Static variables.
+**/
+	/* Terminate is set when the control program sends a terminate	*/
+	/* request, and will abort any activity after a while.		*/
+static bool	Terminate	= FALSE;
+
+	/* WorkerNumber uniquely identifies this worker program. It is	*/
+	/* set up by the CDL script and used for error messages.	*/
+static int	WorkerNumber	= -1;
+
+/**-----------------------------------------------------------------------------
+*** Forward declarations.
+**/
+	/* WaitforControl() is a separate thread used to get requests	*/
+	/* from the control program, e.g. to terminate.			*/
+static void	WaitforControl(void);
+
+	/* CheckMemory() is the active part of this program. It		*/
+	/* allocates a buffer of the specified size and checksums it	*/
+	/* until the control program sends a terminate. If this is the	*/
+	/* first worker then statistics are produced.			*/
+static void	CheckMemory(int blocksize);
+
+	/* usage() produces an error message if invalid arguments are	*/
+	/* supplied to this program.					*/
+static void	usage(void);
+
+	/* Redefine the random number generators to produce 32-bit	*/
+	/* random numbers instead of 16-bit ones.			*/
+#define rand()		my_rand()
+#define srand(a)	my_srand(a)
+static	unsigned int	my_rand(void);
+static	void		my_srand(unsigned int);
+
+/**-----------------------------------------------------------------------------
+*** Code.
+**/
+int main(int argc, char **argv)
+{ int			blocksize	= 0;
+  ExControlPacket	packet;
+
+  if (argc != 3) usage();
+  WorkerNumber	= atoi(argv[1]);
+  blocksize	= atoi(argv[2]);
+  
+	/* Synchronise with control during startup.			*/
+  if (read(From_Control, (char *) &packet, sizeof(ExControlPacket)) 
+	!= sizeof(ExControlPacket))
+   { fprintf(stderr, "memory(%d): failed to read initial packet from control.\n",
+		WorkerNumber);
+     exit(EXIT_FAILURE);
+   }
+
+  unless(Fork(Stack_Size, &WaitforControl, 0))
+   { fprintf(stderr, "memory(%d): failed to Fork() control process\n",
+		WorkerNumber);
+     exit(EXIT_FAILURE);
+   }
+
+  CheckMemory(blocksize);
+  return(EXIT_SUCCESS);
+}
+
+static void usage(void)
+{ fputs("memory: usage, memory <worker number> <block size>\n", stderr);
+  exit(EXIT_FAILURE);
+}
+
+	/* Alternative random number generators, taken from ANSI C	*/
+	/* library but without discarding the top 16 bits.		*/
+static unsigned int next = 1;
+
+static unsigned int rand()
+{ next = (next * 1103515245) + 12345;
+  return(next);
+}
+
+static void srand(unsigned int seed)
+{ next = seed;
+}
+
+/**-----------------------------------------------------------------------------
+*** WaitforControl():
+***   This runs as a separate thread within the program, continually
+***   reading control packets. When such packets arrive the thread
+***   sets suitable global flags, which will be picked up by any other
+***   threads running within the program.
+**/
+static void WaitforControl(void)
+{ ExControlPacket	packet;
+
+  forever 
+   { if (read(From_Control, (BYTE *) &packet, sizeof(ExControlPacket)) 
+	  != sizeof(ExControlPacket))
+      { fprintf(stderr, "Memory(%d): failed to read packet from control.\n",
+		WorkerNumber);
+	exit(EXIT_FAILURE);
+      }
+
+     switch(packet.FnRc)
+      { case	ExR_Init	: continue;
+	case	ExR_Terminate	: Terminate = TRUE; return;
+
+	default : fprintf(stderr, "Memory(%d): invalid control request %x\n",
+			WorkerNumber, packet.FnRc);
+		  exit(EXIT_FAILURE);
+      }
+   }
+}
+
+/**-----------------------------------------------------------------------------
+*** CheckMemory():
+***   This is called inside the main thread. The routine allocates the
+***   specified amount of memory, or as large a chunk as it can, then
+***   initialises it with random numbers,
+***   and calculates a checksum. Then, until the control program sends
+***   a terminate request, the routine continually rechecks this sum and
+***   reports inconsistencies. If this is the first worker then some
+***   statistics are displayed at the end of the run.
+**/
+static void CheckMemory(int blocksize)
+{ BYTE	*bbuffer;
+  WORD	*buffer;
+  int	wordsize;
+  int	checksum, new_checksum;
+  int	loops;
+  int	i;
+
+  while (((bbuffer = malloc(blocksize)) == NULL) && (blocksize > 0))
+   blocksize -= (10 * 1024);
+  wordsize = blocksize / sizeof(WORD);
+
+  if (bbuffer == NULL)
+   { fprintf(stderr, "memory(%d): failed to allocate buffer.\n",
+		WorkerNumber);
+     exit(EXIT_FAILURE);
+   }
+  buffer = (WORD *) bbuffer;
+
+  srand(clock() + time(NULL));
+  for (i = 0; i < wordsize; i++)
+   buffer[i] = rand();
+
+  checksum = 0;
+  for (i = 0; i < wordsize; i++)
+   checksum += buffer[i];
+
+  loops = 0;
+  while (!Terminate)
+   { loops	   += 1;
+
+     new_checksum   = 0;
+     for (i = 0; i < wordsize; i++)
+      new_checksum += buffer[i];
+
+     if (new_checksum != checksum)
+      { fprintf(stderr, "memory (%d):CHECKSUM FAILURE, old %d, new %d\n",
+		WorkerNumber, checksum, new_checksum);
+        checksum = new_checksum;
+      }
+   }
+
+  if (WorkerNumber == 0)
+   fprintf(stderr, "Memory: run %d cycles with a blocksize of %d bytes.\n",
+		loops, blocksize);
+}
+
+
+
+@

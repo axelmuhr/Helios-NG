@@ -1,0 +1,738 @@
+head	1.7;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.5
+	Alenia_release:1.5
+	Helios1_3:1.5
+	C40_Field_Test_2:1.5
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2_Fault:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.7
+date	94.03.01.12.39.58;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.08.12.14.24.59;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.09.30.16.02.45;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.08.04.14.38.48;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.07.21.11.04.51;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.03.25.18.03.41;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.01.15.11.07.10;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@Miscellaneous routines in the TFM
+@
+
+
+1.7
+log
+@fixed compile time warning for ARM world
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- tfmmisc.c								--
+--                                                                      --
+--	This module of the Taskforce Manager contains various utility	--
+--	routines.							--
+--                                                                      --
+--	Author:  BLV 4/9/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/*$Header: /hsrc/network/RCS/tfmmisc.c,v 1.6 1993/08/12 14:24:59 nickc Exp nickc $*/
+
+/*{{{  headers */
+#include <stdio.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <sem.h>
+#include <codes.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <posix.h>
+#include <ctype.h>
+#include <nonansi.h>
+#include <attrib.h>
+#include <pwd.h>
+#include <signal.h>
+#include <module.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include "exports.h"
+#include "private.h"
+#include "netutils.h"
+#include "rmlib.h"
+#include "tfmaux.h"
+/*}}}*/
+/*{{{  statics and module initialisation */
+void	InitMisc(void)
+{
+}
+/*}}}*/
+/*{{{  FullRead() */
+/**
+*** A little utility routine to cope with the fact that pipe reads do
+*** not necessarily return the amount of data requested.
+**/
+word FullRead(Stream *pipe, BYTE *buffer, word amount, word timeout)
+{ word	read = 0;
+  word	temp;
+
+  forever  
+  { temp = Read(pipe, &(buffer[read]), amount - read, timeout);
+    if (temp < 0)
+     return((read eq 0) ? temp : read);
+    read += temp;
+    if (read >= amount) return(read);
+    if (timeout ne -1) return(read);
+  }
+}
+/*}}}*/
+/*{{{  BuildName() */
+/**
+*** Build the full processor name into the specified buffer
+**/
+char *BuildName(char *buffer, RmProcessor Processor)
+{ const char *name;
+
+  if (Processor eq (RmProcessor) RmRootNetwork(Processor))
+   { 
+     if (NetworkName[0] eq '\0')	/* cope with SingleProcessor system */
+      return(buffer);
+     name = NetworkName;
+     *buffer++ = '/';
+     for ( ; *name ne '\0'; ) *buffer++ = *name++;
+     return(buffer);
+   }
+  else
+   { 
+     buffer = BuildName(buffer, (RmProcessor) RmParentNetwork(Processor));
+     *buffer++ = '/';
+     name = (RmIsNetwork(Processor)) ? RmGetNetworkId((RmNetwork) Processor) :
+     			(const char *) Processor->ObjNode.Name;
+     for ( ; *name ne '\0'; ) *buffer++ = *name++;
+     *buffer = '\0';
+     return(buffer);
+   }
+}
+/*}}}*/
+/*{{{  MatchProcessor() */
+
+/**
+*** Match a processor with a template. This can get quite complicated.
+*** 1) Exclusive access has to be checked. The application may require
+***    exclusive access, or some other application may already have it
+*** 2) purpose must be checked. If the processor is currently native it
+***    is not useful unless the template specifies a native processor.
+***    If the template specifies native then the processor must support it.
+*** 3) if the template has any attributes then the processor must
+***    have the same attributes, but not vice versa
+*** 4) various combinations of processor types may or may not match
+*** 5) the real processor must have at least the amount of memory requested
+**/
+
+bool	MatchProcessor(RmProcessor real, RmProcessor Template)
+{ int		attribute_count = RmCountProcessorAttributes(Template);
+  int		template_ptype;
+  int		real_ptype;
+
+  unless (RmGetProcessorState(real) & RmS_Running)
+   return(FALSE);
+
+  if ((Template->AllocationFlags & RmF_Exclusive) ||
+      (real->AllocationFlags & RmF_Exclusive))
+   { DomainEntry	*domain_entry;
+     domain_entry = GetDomainEntry(real);
+     if (domain_entry->NumberUsers > 0)
+      return(FALSE);
+   }
+
+  if (Template->Purpose eq RmP_Native)
+   { unless(RmGetProcessorControl(real) & RmC_Native) return(FALSE);
+   }
+  elif (real->Purpose eq RmP_Native)
+   return(FALSE);
+
+  if (attribute_count > 0)
+   { char	*attribs[10];
+     char	**real_attribs;
+     int	i;
+
+	/* very simple test, to start with */
+     if (attribute_count > RmCountProcessorAttributes(real)) return(FALSE);
+
+     if (attribute_count > 10)
+      { real_attribs = (char **) Malloc((word) attribute_count * sizeof(char *));
+        if (real_attribs eq Null(char *)) return(FALSE);
+      }
+     else
+      real_attribs = attribs;
+     if (RmListProcessorAttributes(Template, real_attribs) ne RmE_Success)
+      { if (attribute_count > 10) Free(real_attribs);
+        return(FALSE);
+      }
+     for (i = 0; i < attribute_count; i++)
+      unless(RmTestProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+       { if (attribute_count > 10) Free(real_attribs);
+         return(FALSE);
+       }
+    if (attribute_count > 10) Free(real_attribs); 
+   }
+
+  if (RmGetProcessorMemory(real) < RmGetProcessorMemory(Template))
+   return(FALSE);
+
+  template_ptype	= RmGetProcessorType(Template);
+  real_ptype		= RmGetProcessorType(real);
+  if (template_ptype ne RmT_Default)
+   { if (template_ptype ne real_ptype)
+     return(FALSE);
+   }
+
+  	/* I have no way of working out the exact requirement */
+  return(TRUE);
+}
+
+/*}}}*/
+/*{{{  MatchTask() */
+
+/**
+*** Almost the same code, but matching a processor and a task
+**/
+bool	MatchTask(RmProcessor real, RmTask Template)
+{ int	attribute_count = RmCountTaskAttributes(Template);
+  int	template_ptype;
+  int	real_ptype;
+
+  unless(RmGetProcessorState(real) & RmS_Running)
+   return(FALSE);
+
+  unless(RmGetProcessorPurpose(real) eq RmP_Helios)
+   return(FALSE);
+
+  if (attribute_count > 0)
+   { char	*attribs[10];
+     char	**real_attribs;
+     int	i;
+
+	/* very simple test, to start with */
+     if (attribute_count > RmCountProcessorAttributes(real)) return(FALSE);
+
+     if (attribute_count > 10)
+      { real_attribs = (char **) Malloc((word) attribute_count * sizeof(char *));
+        if (real_attribs eq Null(char *)) return(FALSE);
+      }
+     else
+      real_attribs = attribs;
+     if (RmListTaskAttributes(Template, real_attribs) ne RmE_Success)
+      { if (attribute_count > 10) Free(real_attribs);
+        return(FALSE);
+      }
+     for (i = 0; i < attribute_count; i++)
+      unless(RmTestProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+       { if (attribute_count > 10) Free(real_attribs);
+         return(FALSE);
+       }
+    if (attribute_count > 10) Free(real_attribs); 
+   }
+
+  if (RmGetProcessorMemory(real) < RmGetTaskMemory(Template))
+   return(FALSE);
+
+  template_ptype	= RmGetTaskType(Template);
+  real_ptype		= RmGetProcessorType(real);
+  if (template_ptype ne RmT_Default)
+   { if (template_ptype eq real_ptype)
+      return(TRUE);
+     else
+      return(FALSE);
+   }
+  else
+  	/* I have no way of determining the real processor type */
+   return(TRUE);
+}
+
+/*}}}*/
+/*{{{  TfmMapProcessorToObject() */
+/**
+*** Mapping processor to object, there is a very similar routine in netboot.c
+**/
+Object	*TfmMapProcessorToObject(RmProcessor Processor)
+{ char		*buf = (char *) Malloc(IOCDataMax);
+  Object	*result;
+  Capability	*Cap;
+
+  if (buf eq Null(char)) return(Null(Object));
+  (void) BuildName(buf, Processor);
+
+  Cap = RmGetProcessorCapability(Processor, TRUE);
+  if (*((word *) Cap) eq 0)
+   result = Locate(Null(Object), buf);
+  else
+   result = NewObject(buf, Cap);
+
+  Free(buf);
+  return(result);
+}
+/*}}}*/
+/*{{{  tfm_GetEnv() and tfm_FreeEnv() */
+
+/**
+*** Get an environment. The system library's GetEnv cannot be used
+*** because the initial message has been received already. This has been
+*** copied from the system library with some modifications.
+**/
+Port tfm_GetEnv(Port port, MCB *m, Environ *env)
+{
+	Port reply;
+	word *control;
+	word *buffer;
+	byte *data;
+	word e = Err_Null;
+	word	*envsize = m->Control;
+	bool	newenv = TRUE;
+	bool	failed = FALSE;
+	
+	env->Argv = Null(char *);
+	env->Envv = Null(char *);
+	env->Objv = Null(Object *);
+	env->Strv = Null(Stream *);
+	
+	newenv = m->MsgHdr.FnRc & 1;
+
+	reply = m->MsgHdr.Reply;
+	
+	buffer = control = (word *)Malloc(envsize[0]*sizeof(word) + envsize[1]);
+
+	if( control == Null(word) ) 
+		e = EC_Error+SS_SysLib+EG_NoMemory+EO_Message;
+	else
+		e = newenv;
+			
+	InitMCB(m,0,reply,port,e);
+        reply = NullPort;
+        
+	if((e = PutMsg(m)) < Err_Null) goto done;
+
+	if( control == Null(word) ) goto done;
+		
+	/* we are now ready for the environment message */
+
+	m->MsgHdr.Dest	= port;
+	m->Control	= control;
+	data		= (byte *)(control + envsize[0]);
+
+	if (newenv) m->Data = (byte *) control;
+	else	    m->Data = data;
+	
+	m->Timeout	= 30 * OneSec;
+
+	if((e = GetMsg(m)) < Err_Null ) goto done;
+
+	reply = m->MsgHdr.Reply;
+
+	/* now we can un-marshal the environ ment data */
+	/* argv first */
+	env->Argv = (string *)control;
+	while( *control != -1 ) 
+	{
+		*control = (word)&data[*control];
+		control++;
+	}
+	*control++ = NULL;
+
+	/* now envv */
+	env->Envv = (string *)control;
+	while( *control != -1 )
+	{
+		*control = (word)&data[*control];
+		control++;
+	}
+	*control++ = NULL;
+
+	/* now objects */
+	env->Objv = (Object **)control;
+	while( *control != -1 )
+	{
+		if( *control != MinInt )
+		{	
+			ObjDesc *o = (ObjDesc *)&data[*control];
+			*control = (word)NewObject(o->Name,&o->Cap);
+			if (*control == NULL)
+			 { failed = TRUE; goto done; }
+		}
+		control++;
+	}
+	*control++ = NULL;
+	
+	/* and finally streams */
+	env->Strv = (Stream **)control;
+	while( *control != -1 )
+	{
+		if( *control != MinInt )
+		{
+			if( (*control&0xFFFF0000) == 0xFFFF0000 )
+			{
+				word ix = *control & 0x0000FFFF;
+				*control = (word)(env->Strv[ix]);
+			}
+			else
+			{
+				StrDesc *s = (StrDesc *)&data[*control];
+				word	openonget = (s->Mode & Flags_OpenOnGet);
+				s->Mode &= ~Flags_OpenOnGet;
+				*control = (word)NewStream(s->Name,&s->Cap,s->Mode);
+				if (*control == NULL)
+				 { failed = TRUE; goto done; }
+				((Stream *)(*control))->Pos = s->Pos;
+				if (openonget ne 0)
+				 ((Stream *)(*control))->Flags |= Flags_OpenOnGet;
+			}
+		}
+		control++;
+	}
+	*control++ = NULL;
+
+  if (DebugOptions & dbg_Environ)
+   { int i;
+     report("received environment");
+     for (i = 0; env->Argv[i] ne Null(char); i++)
+      report("argument %d is %s", i, env->Argv[i]);
+     for (i = 0; env->Envv[i] ne Null(char); i++)
+      report("environment string %d is %s", i, env->Envv[i]);
+     for (i = 0; env->Strv[i] ne Null(Stream); i++)
+      if (env->Strv[i] ne (Stream *) MinInt)
+       report("stream %d is %S", i, env->Strv[i]);
+     for (i = 0; env->Objv[i] ne Null(Object); i++)
+      if (env->Objv[i] ne (Object *) MinInt)
+       report("object %d is %O", i, env->Objv[i]);
+   }
+   
+done:
+  if ((failed) && (buffer != Null(WORD)))
+   { int i;
+     Debug(dbg_Environ, ("error receiving environment"));
+     if (env->Objv != Null(Object *))
+      { for (i = 0; env->Objv[i] != Null(Object); i++)
+         if (env->Objv[i] != (Object *) MinInt)
+          Close(env->Objv[i]);
+      }
+     if (env->Strv != Null(Stream *))
+      { for (i = 0; env->Strv[i] != Null(Stream); i++)
+         if (env->Strv[i] != (Stream *) MinInt)
+          Close(env->Strv[i]);
+      }
+     Free(buffer);
+     InitMCB(m, 0, reply, NullPort, EC_Error + EG_NoMemory + EO_Message);
+     PutMsg(m);
+   }
+  return(reply);
+}
+
+void tfm_FreeEnv(Environ *received)
+{ Stream	**streams, **streams2;
+  Object	**objects;
+
+  for (streams = received->Strv; *streams ne Null(Stream); streams++)
+   if (*streams ne (Stream *) MinInt)
+    { Close(*streams);
+		/* With the new environment, the same stream object may */
+		/* be present more than once. It should be closed once	*/
+		/* only.						*/
+      for (streams2 = &(streams[1]); *streams2 ne Null(Stream); streams2++)
+       if (*streams2 eq *streams)
+        *streams2 = (Stream *) MinInt;
+       *streams = (Stream *) MinInt;          
+    }
+
+  for (objects = received->Objv; *objects ne Null(Object); objects++)
+   if (*objects ne (Object *) MinInt)
+    { Close(*objects); *objects = (Object *) MinInt; }
+
+  Free(received->Argv);	/* Environment info starts here */
+}
+
+/*}}}*/
+
+
+
+@
+
+
+1.6
+log
+@fixed compile time warnings
+@
+text
+@d17 1
+a17 1
+/*$Header: /hsrc/network/RCS/tfmmisc.c,v 1.5 1992/09/30 16:02:45 bart Exp nickc $*/
+d110 2
+a111 2
+bool	MatchProcessor(RmProcessor real, RmProcessor template)
+{ int		attribute_count = RmCountProcessorAttributes(template);
+d118 1
+a118 1
+  if ((template->AllocationFlags & RmF_Exclusive) ||
+d126 1
+a126 1
+  if (template->Purpose eq RmP_Native)
+d146 1
+a146 1
+     if (RmListProcessorAttributes(template, real_attribs) ne RmE_Success)
+d158 1
+a158 1
+  if (RmGetProcessorMemory(real) < RmGetProcessorMemory(template))
+d161 1
+a161 1
+  template_ptype	= RmGetProcessorType(template);
+d178 2
+a179 2
+bool	MatchTask(RmProcessor real, RmTask template)
+{ int	attribute_count = RmCountTaskAttributes(template);
+d203 1
+a203 1
+     if (RmListTaskAttributes(template, real_attribs) ne RmE_Success)
+d215 1
+a215 1
+  if (RmGetProcessorMemory(real) < RmGetTaskMemory(template))
+d218 1
+a218 1
+  template_ptype	= RmGetTaskType(template);
+@
+
+
+1.5
+log
+@Fixed various potential buglets revealed by C40 C compiler
+@
+text
+@d17 1
+a17 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmmisc.c,v 1.4 1992/08/04 14:38:48 bart Exp $*/
+d96 1
+d141 1
+a141 1
+      { real_attribs = (char **) Malloc(attribute_count * sizeof(char *));
+d171 1
+d174 1
+d198 1
+a198 1
+      { real_attribs = (char **) Malloc(attribute_count * sizeof(char *));
+d230 1
+d255 1
+d352 1
+a352 1
+				int ix = *control & 0x0000FFFF;
+d358 1
+a358 1
+				int	openonget = (s->Mode & Flags_OpenOnGet);
+d430 1
+@
+
+
+1.4
+log
+@Fixed a problem in the mapping algorithm when a processor type was specified
+@
+text
+@d17 1
+a17 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmmisc.c,v 1.2 1992/03/25 18:03:41 bart Exp $*/
+d166 1
+a166 1
+  else
+d168 1
+a168 1
+   return(TRUE);
+@
+
+
+1.3
+log
+@1) cleaned up the diagnostics routines
+2) now uses RmLookupProcessor instead of TfmLookupProcessor
+3) fixed bug in executing mapped taskforces through the Resource Management
+   library.
+@
+text
+@d218 4
+a221 2
+   { if (template_ptype ne real_ptype)
+     return(FALSE);
+@
+
+
+1.2
+log
+@Various changes including:
+1) first attempt at C40 support
+2) RmLib execute support (not yet fully tested)
+3) faster bootstrap, taskforce load, and better mapping
+@
+text
+@d17 1
+a17 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmmisc.c,v 1.1 1992/01/15 11:07:10 bart Exp $*/
+a94 61
+/*{{{  LookupProcessor() */
+/**
+*** Given a network, look up the processor. Allow for the fact that
+*** the root name is different.
+*** Arguments : Network, the root structure or a subnet
+***             name, something like Cluster/00
+*** 
+*** The routine determines the last bit of the name, e.g. 00, and
+*** searches the network. When a processor is reached whose ID matches
+*** this last bit of the name, the search goes back up the tree trying
+*** to match all the parents.
+**/
+static int	LookupAux1(RmProcessor, ...);
+
+RmProcessor	LookupProcessor(RmNetwork Network, char *name)
+{ char		*temp = name + strlen(name);
+
+  if (*name eq '/') name++;
+
+  for ( ; (temp >= name) && (*temp ne '/'); temp--);
+
+  return((RmProcessor) RmSearchProcessors(Network, &LookupAux1, name, ++temp));
+}
+
+static int LookupAux1(RmProcessor Processor, ...)
+{ va_list	args;
+  char		*name;
+  char		*last_name;
+  RmNetwork	current;
+  RmNetwork	root_net;
+  int		amount;
+      
+  va_start(args, Processor);
+  name		= va_arg(args, char *);
+  last_name	= va_arg(args, char *);
+  va_end(args);
+  
+	/* Unless the last bit matches, do not bother to check */  
+  if (strcmp(Processor->ObjNode.Name, last_name)) return(0);
+
+  current	= (RmNetwork) Processor;
+  root_net	= RmRootNetwork(Processor);
+  
+  while (last_name > name)	/* If name is 00, match is immediate	*/
+   { last_name--; last_name--;  /* Skip the / and get to last char	*/
+     for ( amount = 0; (last_name >= name) && (*last_name ne '/'); 
+           last_name--, amount++);
+     last_name++;		/* should now be Cluster */
+     current = RmParentNetwork((RmProcessor) current);
+     if (current eq (RmNetwork) NULL) return(0);
+
+     if (current eq root_net)
+      { if (strncmp(NetworkName, last_name, amount)) return(0);
+      }
+     else
+      { if (strncmp(current->DirNode.Name, last_name, amount)) return(0); 
+      }
+   }
+  return((int) Processor);
+}
+/*}}}*/
+d374 1
+a374 1
+       report("stream %d is %s", i, env->Strv[i]->Name);
+d377 1
+a377 1
+       report("object %d is %s", i, env->Objv[i]->Name);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+/*$Header: /users/bart/netbak/RCS/tfmjobs.c,v 1.3 1991/08/21 16:07:10 bart Exp $*/
+d19 1
+d42 2
+a43 1
+
+d47 2
+a48 1
+
+d66 2
+d94 2
+a95 1
+
+d111 3
+a113 1
+  
+d155 2
+a156 1
+
+d181 1
+a181 1
+     domain_entry = (DomainEntry *) RmGetProcessorPrivate(real);
+d227 3
+a229 6
+  elif ((real_ptype ne RmT_Default) && (real_ptype ne RmT_T800) &&
+        (real_ptype ne RmT_T414) && (real_ptype ne RmT_T425) &&
+        (real_ptype ne RmT_T400))
+   return(FALSE);
+
+  return(TRUE);  
+d231 2
+a232 1
+
+d282 3
+a284 6
+  elif ((real_ptype ne RmT_Default) && (real_ptype ne RmT_T800) &&
+        (real_ptype ne RmT_T414) && (real_ptype ne RmT_T425) &&
+        (real_ptype ne RmT_T400))
+   return(FALSE);
+
+  return(TRUE);  
+d286 2
+a287 1
+
+d308 2
+a309 1
+
+d484 3
+@

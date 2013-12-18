@@ -1,0 +1,495 @@
+head	1.15;
+access;
+symbols
+	beta_release:1.14;
+locks; strict;
+comment	@ * @;
+
+
+1.15
+date	94.06.07.12.28.28;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.06.19.11.20.16;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.05.22.17.01.00;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.05.22.15.35.41;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.05.22.14.38.33;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.05.21.16.55.38;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.05.20.17.12.21;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.05.13.17.07.45;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.05.13.14.26.48;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.05.13.13.04.19;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.05.02.11.25.06;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.04.28.14.42.25;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.04.28.09.07.57;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.04.24.10.35.47;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.04.23.16.14.21;	author nickc;	state Exp;
+branches;
+next	;
+
+
+desc
+@Header file for the C40 C compiler's peepholer
+@
+
+
+1.15
+log
+@fixed prototype for flush_peepholer
+@
+text
+@/*
+ * peep.h - Header file for the C40 peepholer
+ *
+ *   Copyright (c) 1992 Perihelion Software Ltd.
+ *   All rights reserved.
+ *
+ * Author :	N Clifton
+ * Version :	$Revision: 1.3 $
+ * Date :	$Date: 1993/08/04 14:44:17 $
+ * Id :		$Id: peep.h,v 1.3 1993/08/04 14:44:17 nickc Exp $
+ */
+
+#ifndef _peep_h
+#define _peep_h
+
+#include "target.h"	/* for register aliases and target name */
+#include "host.h"	/* for int32 */
+#include "defs.h"	/* for Symstr */
+#include "cgdefs.h"	/* for RealRegister */
+
+#ifdef DEBUG
+#define DBG( x )	x
+#else
+#define DBG( x )
+#endif
+
+#define	indirect_addr_reg( op )		(((op) >> 8) & 0x07)
+#define real_addr_reg( reg )		((reg) + hardware_register( RR_AR0 ))
+
+#define examines0()			0
+#define examines1( r1 )			 regbit( r1 )
+#define examines2( r1, r2 )		(regbit( r1 ) | regbit( r2 ))
+#define examines3( r1, r2, r3 )		(regbit( r1 ) | regbit( r2 ) | regbit( r3 ))
+#define examines4( r1, r2, r3, r4 )	(regbit( r1 ) | regbit( r2 ) | regbit( r3 ) | regbit( r4 ))
+#define alters0()			examines0()
+#define alters1( r1 )			examines1( r1 )
+#define alters2( r1, r2 )		examines2( r1, r2 )
+#define alters3( r1, r2, r3 )		examines3( r1, r2, r3 )
+#define alters4( r1, r2, r3, r4 )	examines4( r1, r2, r3, r4 )
+
+#define is_float( reg ) 	is_C40_float_register( reg )
+
+#define is_op(      instruction, op_code )	 (((instruction) >> 23)        == (op_code))
+#define is_mode(    instruction, mode )		((((instruction) >> 21) & 0x3) == (mode))
+#define is_diadic(  instruction )		 (((instruction) >> 29)        == 0)
+#define is_triadic( instruction )		 (((instruction) >> 29)        == 1)
+#define is_normal(  instruction )		 (((instruction) >> 30)        == 0)
+#define dest_of(    instruction )		 (((instruction) >> 16) & 0x1f)
+#define source_of(  instruction )		  ((instruction) & 0xffff)
+#define has_indirect_side_effects( instruction )((((instruction) >> 11) & 0x6) != 0)
+
+#define is_load(    instruction )		(is_op( instruction, OP_LDI ) || \
+						 is_op( instruction, OP_LDA ) || \
+						 is_op( instruction, OP_LDF ) )
+
+#define is_monadic( instruction )		(is_op( instruction, OP_ABSF  ) || \
+						 is_op( instruction, OP_ABSI  ) || \
+  						 is_op( instruction, OP_FIX   ) || \
+  						 is_op( instruction, OP_FLOAT ) || \
+  						 is_op( instruction, OP_NEGF  ) || \
+  						 is_op( instruction, OP_NEGI  ) || \
+  						 is_op( instruction, OP_NOT   ) )
+typedef enum
+  {
+    OUT_NULL,		/* a padding op-code that can potentially be eliminated 		*/
+    OUT_INSTR,		/* normal op-code 							*/
+    OUT_DELAYED,	/* a delayed instruction 						*/
+    OUT_SYMREF,		/* op-code that references a symbol 					*/
+    OUT_DELSYMREF,	/* (delayed) op-code that references a symbol 				*/
+    OUT_XREF,		/* op-code that cross references a symbol 				*/
+    OUT_SYMXREF,	/* op-code that references and cross references a symbol 		*/
+    OUT_DELSYMXREF,	/* (delayed) op-code that references and cross references a symbol 	*/
+    OUT_LABREF,		/* op-code that references a label 					*/
+    OUT_DELLABREF	/* (delayed) op-code that references a label				*/
+  }
+peep_type;
+
+typedef enum
+  {
+    PUSH_INT,
+    PUSH_FLOAT,
+    PUSH_DOUBLE
+  }
+push_type;
+
+
+/* functions */
+
+#ifdef __HELIOS
+#pragma -v1
+#endif
+
+/* in gen.c */
+extern void	IOdebug(			const char * format, ... );
+
+/* in peep.c */
+void		peepf( 				const char *, ... );
+
+#ifdef __HELIOS
+#pragma -v0
+#endif
+
+/* address register peepholing */
+
+void		peep_change_addr_offset( 	RealRegister, int32 );
+void		peep_forget_about( 		RealRegister );
+void		peep_corrupt_addr_reg(		RealRegister );
+void		peep_corrupt_all_addr_regs(	void );
+void		peep_note_addr_reg_loaded(	RealRegister, RealRegister, int32, bool );
+RealRegister	peep_find_loaded_addr_reg(	RealRegister, int32 *, bool * );
+RealRegister	peep_get_free_addr_reg(		RealRegister );
+void		peep_init_addr_regs(		int32 );
+
+/* push peepholing */
+
+void		add_pending_push(		RealRegister, push_type );
+int		pop_pending_push(		RealRegister, bool );
+void		flush_pending_pushes(		void );
+void		maybe_flush_pending_push(	RealRegister );
+
+/* instruction peepholing */
+
+void		peep_xref( 			int32, Symstr * );
+void		peep_symref(			Symstr * );
+void		peep_fref(			LabelNumber *, int32 );
+int		peep_shift_back(		int );
+void		append_peep(			peep_type, int32, int32, int32, Symstr *, LabelNumber *,int32 );
+bool		peep_reg_transfer_to(		RealRegister  );
+bool		peep_sets_status_reg(		RealRegister  );
+bool		peep_refs_label(		LabelNumber * );
+RealRegister	peep_eliminate_reg_transfer(	RealRegister  );
+void		flush_peepholer(
+#ifdef DEBUG
+				const char *
+#else
+				void
+#endif
+				);
+
+/* initialisation */
+
+void		peep_init( 			void );
+void		peep_tidy(			void );
+
+/* variables */
+
+/* in peep.c */
+extern int32	peep_protect_pc;		/* number of instructions to protect  */
+extern int32	peep_eliminated;		/* number of instructions eliminated  */
+extern int32	peep_transformed;		/* number of instructions transformed */
+extern int32	peep_swapped;			/* number of instructions swapped     */
+extern int32	death;				/* registers dead at end of execution of current J_opcode */
+
+/* in gen.c */
+extern int32	stack_move;
+extern int32	stack_offset;
+
+#endif /* _peep_h */
+
+/* do not put anything beyond this #endif */
+
+/* @@@@ emacs customization */
+
+/* Local Variables: */
+/* mode: c */
+/* End: */
+@
+
+
+1.14
+log
+@added norcroft print pragmas
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.13 $
+ * Date :	$Date: 1992/05/22 17:01:00 $
+ * Id :		$Id: peep.h,v 1.13 1992/05/22 17:01:00 nickc Exp nickc $
+d21 6
+d132 7
+a138 1
+void		flush_peepholer(		const char *  );
+@
+
+
+1.13
+log
+@added is_mode() type macros
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.12 $
+ * Date :	$Date: 1992/05/22 15:35:41 $
+ * Id :		$Id: peep.h,v 1.12 1992/05/22 15:35:41 nickc Exp nickc $
+d83 4
+a91 1
+extern void	debug(				const char *, ... );
+d93 3
+@
+
+
+1.12
+log
+@cancelled previous delta
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.11 $
+ * Date :	$Date: 1992/05/22 14:38:33 $
+ * Id :		$Id: peep.h,v 1.11 1992/05/22 14:38:33 nickc Exp nickc $
+d37 20
+@
+
+
+1.11
+log
+@added prototype for peep_change_type()
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.10 $
+ * Date :	$Date: 1992/05/21 16:55:38 $
+ * Id :		$Id: peep.h,v 1.10 1992/05/21 16:55:38 nickc Exp nickc $
+a100 1
+void		peep_change_type(		peep_type     );
+@
+
+
+1.10
+log
+@added prototype for peep_change_addr_offset()
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.9 $
+ * Date :	$Date: 1992/05/20 17:12:21 $
+ * Id :		$Id: peep.h,v 1.9 1992/05/20 17:12:21 nickc Exp nickc $
+d101 1
+@
+
+
+1.9
+log
+@added macro "alters4()"
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.8 $
+ * Date :	$Date: 1992/05/13 17:07:45 $
+ * Id :		$Id: peep.h,v 1.8 1992/05/13 17:07:45 nickc Exp nickc $
+d73 1
+@
+
+
+1.8
+log
+@added more prototypes
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.7 $
+ * Date :	$Date: 1992/05/13 14:26:48 $
+ * Id :		$Id: peep.h,v 1.7 1992/05/13 14:26:48 nickc Exp nickc $
+d33 1
+@
+
+
+1.7
+log
+@added references to stack_move and stack_offset
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.6 $
+ * Date :	$Date: 1992/05/13 13:04:19 $
+ * Id :		$Id: peep.h,v 1.6 1992/05/13 13:04:19 nickc Exp nickc $
+a64 1
+
+d67 2
+d92 1
+@
+
+
+1.6
+log
+@removed definitions of "fits_in_..."
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.5 $
+ * Date :	$Date: 1992/05/02 11:25:06 $
+ * Id :		$Id: peep.h,v 1.5 1992/05/02 11:25:06 nickc Exp nickc $
+d60 1
+d62 5
+d105 1
+d112 3
+a114 1
+extern void	IOdebug(			const char * format, ... );
+@
+
+
+1.5
+log
+@added declaration of death
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.4 $
+ * Date :	$Date: 1992/04/28 14:42:25 $
+ * Id :		$Id: peep.h,v 1.4 1992/04/28 14:42:25 nickc Exp nickc $
+a32 7
+
+#define fits_in_5_bits_signed( val )	(((val) & 0xfffffff0U) == 0 || ((val) & 0xfffffff0U) == 0xfffffff0U)
+#define fits_in_8_bits_signed( val )	(((val) & 0xffffff80U) == 0 || ((val) & 0xffffff80U) == 0xffffff80U)
+#define fits_in_8_bits_unsigned( val )	(((val) & 0xffffff00U) == 0 )
+#define fits_in_16_bits_signed( val )	(((val) & 0xffff8000U) == 0 || ((val) & 0xffff8000U) == 0xffff8000U)
+#define fits_in_16_bits_unsigned( val )	(((val) & 0xffff0000U) == 0 )
+#define fits_in_24_bits_signed( val )	(((val) & 0xff800000U) == 0 || ((val) & 0xff800000U) == 0xff800000U)
+@
+
+
+1.4
+log
+@added IOdebug
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.3 $
+ * Date :	$Date: 1992/04/28 09:07:57 $
+ * Id :		$Id: peep.h,v 1.3 1992/04/28 09:07:57 nickc Exp nickc $
+d110 1
+@
+
+
+1.3
+log
+@added two more prototypes (peep_init(), and peep_tidy() )
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.2 $
+ * Date :	$Date: 1992/04/24 10:35:47 $
+ * Id :		$Id: peep.h,v 1.2 1992/04/24 10:35:47 nickc Exp nickc $
+d106 6
+a111 4
+extern int32		peep_protect_pc;	/* number of instructions to protect  */
+extern int32		peep_eliminated;	/* number of instructions eliminated  */
+extern int32		peep_transformed;	/* number of instructions transformed */
+extern int32		peep_swapped;		/* number of instructions swapped     */
+@
+
+
+1.2
+log
+@tidied up
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision: 1.1 $
+ * Date :	$Date: 1992/04/23 16:14:21 $
+ * Id :		$Id: peep.h,v 1.1 1992/04/23 16:14:21 nickc Exp nickc $
+d98 5
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d8 3
+a10 3
+ * Version :	$Revision$
+ * Date :	$Date$
+ * Id :		$Id$
+d16 4
+a19 1
+#include "cgdefs.h"
+d21 84
+a104 7
+void		peep_forget( RealRegister reg );
+void		peep_corrupt( RealRegister reg );
+void		peep_corrupt_all( void );
+void		peep_addr_reg_loaded( RealRegister addr_reg, RealRegister contents, int32 offset, bool biased );
+RealRegister	peep_reg_is_loaded( RealRegister contents, int32 * offset_return, bool * biased_return );
+RealRegister	peep_get_address_reg( RealRegister exclude );
+void		peep_init_addr_regs( int32 reg_mask );
+@

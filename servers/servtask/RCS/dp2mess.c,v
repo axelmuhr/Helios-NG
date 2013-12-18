@@ -1,0 +1,116 @@
+head	1.1;
+access;
+symbols
+	Helios_1_3_1:1.1
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1
+	C40_Field_Test_2:1.1
+	C40_Field_Test_R1:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	90.10.17.13.46.41;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@a demonstration program for showing message passing between Helios and
+applications running on the host.
+@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/* RcsId: $Id$ (C) Copyright 1988 Perihelion Software Ltd. */
+#include <stdio.h>
+#include <syslib.h>
+#include <message.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define eq	==
+#define ne	!=
+
+Object *DP2Obj    = Null(Object);
+Stream *DP2Stream = Null(Stream);
+Port	 myport   = NullPort;
+void reopen(void);
+
+int main(void)
+{ MCB mcb;
+  BYTE	 data[128]; WORD control[16];
+  BYTE   *text  = "Hello inside a Helios message.\n";
+  int	 i, count, temp;
+
+  reopen();
+  
+  for (count = 0; count < 100; count++)
+   { mcb.MsgHdr.DataSize	= strlen(text);
+     mcb.MsgHdr.ContSize	= 5;
+     mcb.MsgHdr.Flags		= MsgHdr_Flags_preserve;
+     mcb.MsgHdr.Dest		= DP2Stream->Server;
+     mcb.MsgHdr.Reply		= myport;
+     mcb.MsgHdr.FnRc		= 0x12345678;
+     mcb.Timeout		= 20 * OneSec;
+     mcb.Data			= &(data[0]);
+     mcb.Control		= &(control[0]);
+     strcpy(mcb.Data, text);
+     for (i = 0; i < 5; i++) control[i] = count + i;
+    
+     if ((temp = PutMsg(&mcb)) < 0)
+      { printf("Warning : PutMsg failed : %x, reopening\n", temp);
+	fflush(stdout);
+        reopen();
+        continue;
+      }
+  
+     mcb.MsgHdr.Dest	= myport;
+     mcb.Timeout	= 20 * OneSec;
+
+     if ((temp = GetMsg(&mcb)) < 0)
+      { printf("Warning : GetMsg failed with %x.\n", temp);
+        reopen();
+        continue;
+      }
+
+     printf("Message received from miniserver : %x\n", temp);
+     if (mcb.MsgHdr.ContSize > 0) printf("Control : ");
+     for (i = 0; i < mcb.MsgHdr.ContSize; i++)
+       printf("%8x ", control[i]);
+     putchar('\n');
+     if (mcb.MsgHdr.DataSize > 0) printf("Text : ");
+     for (i = 0; i < mcb.MsgHdr.DataSize; i++)
+       putchar(data[i]);
+     putchar('\n');
+   }
+  
+  Close(DP2Stream); Close(DP2Obj); FreePort(myport);
+}
+
+void reopen(void)    
+{ if (DP2Obj ne Null(Object)) Close(DP2Obj);
+  if (DP2Stream ne Null(Stream)) Close(DP2Stream);
+  if (myport ne NullPort) FreePort(myport);
+  
+  if ((DP2Obj = Locate(NULL, "/DP2Mess")) eq Null(Object))
+   { printf("Unable to locate DP2Mess.\n"); exit(1); }
+   
+  if ((DP2Stream = Open(DP2Obj, "/DP2Mess", O_ReadOnly)) eq Null(Stream))
+   { printf("Unable to open DP2 stream.\n"); exit(1); }
+   
+  if ((myport = NewPort()) eq NullPort)
+   { printf("Unable to get a port.\n"); exit(1); }
+} 
+@

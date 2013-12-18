@@ -1,0 +1,91 @@
+
+/* Pragmas: syntax allowed (we can argue more later) is:
+ * "#pragma -<letter><optional digit> Argument_List -<letter><optional digit>".
+ * The effect of "#pragma -<letter>" is to set pp_pragmavec[letter-a] to -1
+ * and "#pragma -<letter><digit>" to set pp_pragmavec[letter-a] to <digit>-0.
+ * For the majority of these options a long-winded spelt out word can also
+ * be give, as in
+ * "#pragma no_warn_deprecated no_warn_implicit_fns"
+ * where the particular words that are recognised and their expansions into
+ * the more primitive -xn form are given in a table here.
+ * (note: does anybody want to change these names? 21 March 89 is ACN's
+ *  first bash at such a list and is probably in need of further refinement)
+ */
+
+typedef struct pragma_spelling
+{
+    char *name;
+    short int code;
+    short int value;
+} pragma_spelling;
+
+static pragma_spelling pragma_words[] =
+{
+    { "warn_implicit_fn_decls",     'a', 1},
+    { "warn_deprecated",            'd', 1},
+
+    { "optimise_crossjump",         'j', 1},
+#ifdef TARGET_IS_ARM
+    { "optimise_multiple_loads",    'm', 1},
+#endif
+    { "optimise_cse",               'z', 1},
+
+    { "continue_after_hash_error",  'e', 1},
+    { "lisp_support",               'l', 1},
+    { "profile",                    'p', 1},
+    { "profile_statements",         'p', 2},
+    { "side_effects",               'y', 0},
+
+#ifdef TARGET_IS_ARM
+    { "check_stack",                's', 0},
+#endif
+    { "check_memory_accesses",      'c', 1},
+    { "check_printf_formats",       'v', 1},
+    { "check_scanf_formats",        'v', 2},
+    { "check_formats",              'v', 3}
+};
+
+#define NPRAGMAS (sizeof(pragma_words)/sizeof(pragma_spelling))
+
+static void pp_pragma(int pp_ch)
+{ /* note that ANSI say it is NOT an error to fail to parse a #pragma */
+  /* that does not stop us warning on syntax we fail to recognise     */
+  for (;;)
+  { pp_skipb1(pp_ch);
+    switch (pp_ch)
+    { default:
+            {    char pragma_name[32];
+                 int p = 0, no = 0;
+ /*
+ * Read a word starting with whatever non-blank character happens, but
+ * following on through alphanumeric characters plus _ (plus maybe $).
+ * Case fold the word that is read, and truncate it to 30 characters.
+ */
+                 do
+                 { if (p<30) pragma_name[p++] = safe_tolower(pp_ch);
+                   pp_ch = pp_rdch();
+                 } while (pp_cidchar(pp_ch));
+                 pragma_name[p] = 0;
+                 if (p > 3 && strncmp(pragma_name, "no_", 3) == 0) no = 3;
+/* For the small number of available options linear search seems OK */
+                 for (p = 0; p < NPRAGMAS; p++)
+                   if (strcmp(pragma_words[p].name, pragma_name+no) == 0)
+                     break;
+                 if (p < NPRAGMAS)
+                 { if (!pp_skipping)
+                   { int val = pragma_words[p].value;
+                     if (no) val = !val; 
+                     pp_pragmavec[pragma_words[p].code - 'a'] = val;
+                   }
+                   break;
+                 }
+                 cc_warn(pp_warn_bad_pragma);
+                 pp_skip_linetokens(pp_ch);
+                 return;
+            }
+      case '\n': pp_unrdch(pp_ch);
+                 return;
+
+etc etc etc
+
+

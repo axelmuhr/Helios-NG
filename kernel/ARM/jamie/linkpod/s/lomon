@@ -1,0 +1,2362 @@
+        TTL     Loader Monitor                                          > lomon
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Simple lo-level monitor (interfaced via transputer link adaptor):
+        ;       JGSmith         1990-1991
+        ;       DFlynn          1991
+        ;
+        ; Memory test based on one written by Roger Wilson of Acorn Computers.
+        ;
+        ; ---------------------------------------------------------------------
+
+                GBLL    debug
+debug           SETL    {TRUE}          ; debugging information displayed
+
+                GBLL    RAMbodge        ; allow simple execution in RAM
+RAMbodge        SETL    {TRUE}          ; normally this code would be ROM based
+
+        ; ---------------------------------------------------------------------
+
+                [       (RAMbodge)
+sysRAM_base     *       &00000000
+sysRAM_size     *       &00000200 
+                ]       ; EOF (RAMbodge)
+
+RAM_limit       *       (32 :SHL: 20)    ; end of logical memory on MEMC system
+
+LINK_read       *       &00
+LINK_write      *       &04
+LINK_rstatus    *       &08
+LINK_wstatus    *       &0C
+
+LINK_rxflag     *       &01     ; buffer full
+LINK_txflag     *       &01     ; buffer empty
+
+        ; ----------------------------------------------------------------------
+        ; Registers
+
+r0      RN      0
+r1      RN      1
+r2      RN      2
+r3      RN      3
+r4      RN      4
+r5      RN      5
+r6      RN      6
+r7      RN      7
+r8      RN      8
+r9      RN      9  ; Used globally to control reflection in getput
+r10     RN      10 ; Used globally to hold memory write address for `+' command
+r11     RN      11
+r12     RN      12
+r13     RN      13
+r14     RN      14
+r15     RN      15
+
+fp      RN      r11
+ip      RN      r12
+sp      RN      r13
+lr      RN      r14
+pc      RN      r15
+
+        ; ----------------------------------------------------------------------
+        ; Other constants
+
+word    *       4
+
+
+; PSR bits
+
+SVCINTSOFF * &0C000003          ; IRQ and FIQ off, SVC mode
+INTflags   * &0C000000
+MODEmask   * &00000003
+USERmode   * &00000000
+FIQmode    * &00000001
+IRQmode    * &00000002
+SVCmode    * &00000003
+Nbit       * &80000000
+Zbit       * &40000000
+Cbit       * &20000000
+Vbit       * &10000000
+IRQbit     * &08000000
+FIQbit     * &04000000
+
+
+        MACRO
+$label  NOP
+$label  MOV   r0,r0
+        MEND
+
+
+        ; ---------------------------------------------------------------------
+        ; Other constants
+
+NewLine         *       &0A
+LineFeed        *       &0A
+CarriageReturn  *       &0D
+NL              *       NewLine
+LF              *       LineFeed
+CR              *       CarriageReturn
+Escape          *       &1B
+ESC             *       Escape
+null            *       0
+
+
+        ; ---------------------------------------------------------------------
+        ; Codes for the Brazil SWIs (not all of which are implemented here yet)
+
+mon_WriteC      *       0       ; write single character (in r0) to output
+mon_WriteS      *       1       ; write in-line string (NULL terminated)
+mon_Write0      *       2       ; write NULL terminated string referenced by r0
+mon_NewLine     *       3       ; write CR/LF to output
+mon_ReadC       *       4       ; read single character into r0 from input
+;mon_CLI        *       5       ; operating system Command Line Interpreter
+mon_Byte        *       6       ; OS_Byte call
+;mon_Word       *       7       ; OS_Word call
+;mon_File       *       8       ; OS_File call
+;mon_Args       *       9       ; OS_Args call
+;mon_BGet       *       10      ; OS_BGet call
+;mon_BPut       *       11      ; OS_BPut call
+;mon_GBPB       *       12      ; OS_GBPB call
+;mon_Find       *       13      ; OS_Find call
+mon_ReadLine    *       14      ; OS_ReadLine call
+mon_Control     *       15
+mon_GetEnv      *       16      ; OS_GetEnv call
+mon_Exit        *       17      ; exit the monitor (return to the Executive)
+mon_SetEnv      *       18      ; OS_SetEnv call
+mon_IntOn       *       19      ; enable processor IRQs
+mon_IntOff      *       20      ; disable processor IRQs
+;mon_CallBack   *       21
+mon_EnterSVC    *       22      ; enter SVC mode
+;mon_BreakPT    *       23
+;mon_BreakCTRL  *       24
+;mon_UnusedSWI  *       25
+;mon_UpdateMEMC *       26
+
+mon_WriteI      *       256     ; base of single character output SWI set
+
+        ; ---------------------------------------------------------------------
+        ; Some more (non-Brazil) SWIs, from 32 onwards...
+
+mon_ReadX       *       32      ; read a hex number from the link
+mon_WriteX      *       33      ; write a word in hex to the link
+mon_WriteXB     *       34      ; write a byte in hex to the link
+mon_HWPeek      *       35      ; peek HW word
+mon_HWPoke      *       36      ; poke HW word                   
+mon_HWPokeB     *       37      ; poke HW byte
+mon_MaxSWI      *       37      ; highest valid SWI number
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Fixed addresses used by the monitor.
+        ; Space is reserved in RAM for the register dump produced by
+        ; unhandled traps. Its address should be an immediate constant.
+
+        ; leave 16 words for register save area
+mon_register_dump       *       ((sysRAM_base + sysRAM_size) - (16 * word))
+mon_dumped_r8           *       (mon_register_dump + (8 * word))
+mon_dumped_r14          *       (mon_register_dump + (14 * word))
+mon_dumped_r15          *       (mon_register_dump + (15 * word))
+
+        ; The SVC mode stack is should also be in RAM addresable via an
+        ; immediate constant.
+
+mon_SVC_stack   *       mon_register_dump
+
+                ^       &00             
+vectors         #       (8 * word)      ; 8 vectors
+vector_tab      #       (8 * word)      ; 8 indirection pointers
+vector_soft     #       (null)          ; 8 S/W indirection pointers
+userswi_vec     #       word            ;  for Brazil emulation!
+error_vec       #       word
+error_buf       #       word
+escape_vec      #       word
+event_vec       #       word
+exit_vec        #       word
+ram_size        #       word
+ram_top         #       word
+escflag         #       word
+callback        #       word
+last_addr       #       word            ; last <addr> storage
+last_data       #       word            ; last <data> storage
+
+locals          #       (null)          ; local storage for monitor
+link_base       #       word            ; address of the link podule
+
+        ; ---------------------------------------------------------------------
+
+codeBase
+        B       monitor_reset           ; jump into the code
+        [       (RAMbodge)
+        ; At the moment we are always loaded at logical address &00000000.
+        ; However, we want to place the vectors (and workspace) into the area,
+        ; so some padding bytes are included in the code.
+        %       (sysRAM_size - 4)       ; take off the branch instruction
+        ]       ; EOF {boolean}
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Default vector table
+mon_vectortable
+        LDR     pc,mon_VECTOR0  ; branch through zero
+        LDR     pc,mon_VECTOR1  ; illegal instruction
+        LDR     pc,mon_VECTOR2  ; SWI
+        LDR     pc,mon_VECTOR3  ; prefetch abort
+        LDR     pc,mon_VECTOR4  ; data abort
+        LDR     pc,mon_VECTOR5  ; address exception
+        LDR     pc,mon_VECTOR6  ; IRQ
+        LDR     pc,mon_VECTOR7  ; FIQ
+
+        ; and the default vector contents
+        ; These values are just the offsets from the start of the Executive.
+        ; They need to be patched during the copying down to reference the
+        ; the TRUE addresses.
+mon_VECTOR0     &       (branch0_trap   - codeBase)     ; reset
+mon_VECTOR1     &       (undef_handler  - codeBase)     ; undefined
+mon_VECTOR2     &       (swi_handler    - codeBase)     ; SWI
+mon_VECTOR3     &       (pabort_handler - codeBase)     ; prefetch
+mon_VECTOR4     &       (dabort_handler - codeBase)     ; data
+mon_VECTOR5     &       (addrex_handler - codeBase)     ; address
+mon_VECTOR6     &       (irq_handler    - codeBase)     ; IRQ
+mon_VECTOR7     &       (fiq_handler    - codeBase)     ; FIQ
+mon_VECTOR8     &       (swi_notimplemented -codeBase); userswi
+mon_VECTOR9     &       (error_handler  - codeBase)     ; error
+mon_VECTORA     &       (dabort_handler - codeBase)     ; error buff
+mon_VECTORB     &       (escape_handler - codeBase)     ; prefetch abort
+mon_VECTORC     &       (event_handler  - codeBase)     ; event handler
+mon_VECTORD     &       (exit_handler   - codeBase)     ; exit handler
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; We are entered here from the Executive main startup thread.
+        ; This is also a restart point internally, so the processor mode is
+        ; undefined.
+        ; Switch into SVC mode and disable processor interrupts (which will not
+        ; work if we are in USR mode).
+        ;
+monitor_reset
+        MOV     r0,#(INTflags :OR: SVCmode)
+        TEQP    r0,#&00                         ; SVC mode; IRQs/FIQs disabled
+        NOP                                     ; wait for mapping
+        MOV     sp,#mon_SVC_stack               ; default monitor SVC stack
+
+        ; Find the link podule
+        MOV     r0,#&033C0000           ; simple synchronised
+        MOV     r2,#0
+floop
+        LDRB    r1,[r0,#&00]            ; ID byte
+        TSTS    r1,#(1 << 1)
+        BNE     nploop
+        ANDS    r1,r1,#&38
+        BNE     nploop
+
+        LDRB    r1,[r0,#&1C]            ; country
+        CMP     r1,#&00                 ; UK
+        LDREQB  r1,[r0,#&0C]            ; product LO
+        CMPEQ   r1,#&24
+        LDREQB  r1,[r0,#&10]            ; product HI
+        CMPEQ   r1,#&00
+        LDREQB  r1,[r0,#&14]            ; manufacturer LO
+        CMPEQ   r1,#&0E
+        LDREQB  r1,[r0,#&18]            ; manufacturer HI
+        CMPEQ   r1,#&00
+        BEQ     pfound
+nploop
+        ADD     r0,r0,#&00004000
+        ADD     r2,r2,#1
+        CMP     r2,#4
+        BCC     floop                   ; look at next podule
+
+fatal   ; podule not found
+        ; We should really display something on the screen
+        B       fatal
+
+pfound
+        ; r0 = synchronised podule base
+        SUB     r1,r0,#&033C0000
+        ADD     r1,r1,#&03340000
+        ADD     r1,r1,#&00002000
+        ; r1 = base address of link adaptor hardware
+        MOV     r0,#&00000000
+        STR     r1,[r0,#link_base]      ; remember the link hardware address
+
+        MOV     r0,#(1 << 3)
+        STRB    r0,[r1,#&10]
+
+        ; wait for a short period of time
+        MOV     r0,#&00200000
+dloop
+        SUBS    r0,r0,#&01
+        BNE     dloop
+
+        MOV     r0,#&00                 ; 10MHz
+       ;MOV     r0,#(1 << 2)            ; 20MHz
+        STRB    r0,[r1,#&10]
+
+        ; Initialise FastRAM (vectors) and registers as we require them...
+        MOV     r0,#sysRAM_base
+        ADRL    r9,mon_vectortable
+        LDMIA   r9!,{r1-r8}             ; copy 8 words of code
+        STMIA   r0!,{r1-r8}
+        LDMIA   r9!,{r1-r8}             ; load 8 words of vectors
+        ADRL    r9,codeBase             ; reference the start of the Executive
+        ADD     r1,r1,r9                ; and update the vector addresses
+        ADD     r2,r2,r9
+        ADD     r3,r3,r9
+        ADD     r4,r4,r9
+        ADD     r5,r5,r9
+        ADD     r6,r6,r9
+        ADD     r7,r7,r9
+        ADD     r8,r8,r9
+        STMIA   r0!,{r1-r8}             ; store the modified vectors in RAM
+; BRAZIL emulation bits
+        ADRL    r9,mon_VECTOR8
+        LDMIA   r9!,{r1-r8}             ; load 8 words of vectors
+        ADRL    r9,codeBase             ; reference the start of the Executive
+        ADD     r1,r1,r9                ; and update the vector addresses
+        ADD     r2,r2,r9
+        ADD     r3,r3,r9
+        ADD     r4,r4,r9
+        ADD     r5,r5,r9
+        ADD     r6,r6,r9                ; R7, R8 are constants NOT vectors to patch!
+        STMIA   r0!,{r1-r8}             ; store the modified vectors in RAM
+        MOV     r0,#0                   ; and clear last few flags
+        MOV     r1,#sysRAM_base
+        STR     r0,[r1,#escflag]
+        STR     r0,[r1,#callback]
+        STR     r0,[r1,#last_addr]
+        STR     r0,[r1,#last_data]
+
+        MOV     r9,#&00                         ; suppress echo mode on startup
+        ; and fall through to ... next_command
+
+        ; ---------------------------------------------------------------------
+        ; Main body of monitor.
+        ; The code of all the commands avoids using any stack and does IO
+        ; using SWIs so that it can run in USR mode with all the memory 
+        ; mapped out. This means that there is a maximum of one level of 
+        ; subroutine call ONLY.
+        ;
+next_command    ; main command loop (may be in any processor mode here)
+        ; prompt if local echo allows
+        CMP     r9,#&00
+        BEQ     next_command_get
+        ; display the prompt
+        SWI     mon_WriteS
+        =       "Arc LoMon> ",null  ; the default prompt
+        ALIGN
+next_command_get
+        ; r9  = command echo state
+        ; r10 = address of next write (for incremental commands)
+        SWI     mon_ReadC                       ; get a command character
+        ; r0 = character read
+        ADRL    r1,mon_command_table            ; address the commands
+        MOV     r2,#&00                         ; current table index
+        LDR     r4,=(mon_command_table_end - mon_command_table)
+mon_find_cmd_loop
+        ADD     r2,r2,#word                     ; step over the function offset
+        LDRB    r3,[r1,r2]                      ; and load the command byte
+        CMP     r0,r3                           ; check for command
+        BEQ     mon_found_cmd
+
+        ADD     r2,r2,#&01                      ; reference the length byte
+        LDRB    r3,[r1,r2]                      ; and load it
+        ADD     r2,r2,#&01                      ; reference the first text byte
+
+        ADD     r2,r2,r3                        ; step to the end of the text
+        ADD     r2,r2,#(word - 1)               ; and word align the index
+        BIC     r2,r2,#(word - 1)               ; value upwards
+        CMP     r2,r4                           ; check for table end
+        BLT     mon_find_cmd_loop               ; if not, then continue
+
+        ; command not found in table
+        MOV     r9,#&01                         ; ensure prompt is echoed
+
+        TEQ     r0,#CarriageReturn              ; check for simple line
+        TEQNE   r0,#NewLine                     ; end commands
+        SWIEQ   mon_NewLine                     ; perform the NewLine
+        BEQ     next_command                    ; and go around again
+
+        ; unrecognised command
+        SWI     mon_WriteS
+        =       LF,"Unknown command: use 'h' for help",LF,null
+        ALIGN
+        B       next_command                    ; and go around again
+
+        ; ---------------------------------------------------------------------
+
+mon_found_cmd
+        ; r2 references the function information
+        ADD     r2,r1,r2                        ; reference the command entry
+        LDR     r2,[r2,#-word]                  ; and load the function offset
+        ; r0 = command character
+        ; r1 = command table
+        ; r2 = function offset from command table
+        CMP     r9,#&00                         ; check for echo disabled
+        TEQNE   r0,#"+"                         ; only explicit not echoing cmd
+        SWINE   mon_WriteC                      ; otherwise echo the character
+        ADD     pc,r1,r2                        ; enter the command handler
+
+        ; ---------------------------------------------------------------------
+
+        MACRO
+$label  COMMAND $letter,$text,$function
+$label  &       ($function - mon_command_table)
+        =       "$letter",((:LEN: "$text") + &01),"$text",null
+        ALIGN   ; to next word boundary
+        MEND
+
+mon_command_table
+        COMMAND "b","<from> <to> <n> : Block copy bytes",cmd_blockcopy
+        COMMAND "d","<start> <end>   : Dump words to display",cmd_dumpwords
+        COMMAND "D","<start> <end>   : Dump bytes to display",cmd_dumpbytes
+        COMMAND "g","<addr>          : Goto (call) code at <addr>",cmd_goto
+        COMMAND "h","                : Print help and current state",cmd_help
+        COMMAND "H","                : Print help and current state",cmd_help
+        COMMAND "i","                : IRQ off",cmd_intoff
+        COMMAND "I","                : IRQ on",cmd_inton
+        COMMAND "m","                : Memory test (main RAM)",cmd_memtestmain
+        COMMAND "M","<start> <end>   : Memory test",cmd_memtest
+        COMMAND "p","<addr>          : Poll word at <addr>",cmd_pollword
+        COMMAND "P","<addr>          : Poll byte at <addr>",cmd_pollbyte
+        COMMAND "q","                : Quit monitor (reinitialise)",cmd_quit
+        COMMAND "r","<addr>          : Read word at <addr>",cmd_readword
+        COMMAND "R","<addr>          : Read byte at <addr>",cmd_readbyte
+        COMMAND "s","                : Size main RAM",cmd_sizemain
+        COMMAND "S","<addr>          : Size memory from <addr>",cmd_size
+        COMMAND "t","<addr> <size>   : Transfer binary data to memory",cmd_bin
+        COMMAND "u","                : Enter USR mode",cmd_usr
+        COMMAND "v","                : Enter SVC mode",cmd_svc
+        COMMAND "w","<addr> <value>  : Write word <value> to <addr>",cmd_word
+        COMMAND "W","<addr> <value>  : Write byte <value> to <addr>",cmd_byte
+        COMMAND "+","<value>         : Write <value> to next word",cmd_noecho
+        COMMAND "z","<size>          : Download and execute",cmd_download
+        COMMAND ";","                : comment line (echo)",cmd_comment
+        COMMAND "?","                : Print state information",cmd_info
+mon_command_table_end
+
+        LTORG
+
+        ; ---------------------------------------------------------------------
+
+cmd_help
+        SWI     mon_WriteS
+        =       LF,"Arc Loader Monitor v0.03",LF
+        =       "Commands are:",LF,null
+        ALIGN
+        ADRL    r1,mon_command_table            ; address the commands
+        ADRL    r2,mon_command_table_end        ; end of the table
+cmd_help_loop
+        ADD     r1,r1,#word                     ; step over the function offset
+        LDRB    r0,[r1],#&01                    ; command character
+        SWI     mon_WriteC                      ; and display the character
+        MOV     r0,#" "                         ; padding character
+        SWI     mon_WriteC                      ; and display padding character
+        LDRB    r3,[r1],#&01                    ; load the help text length
+        MOV     r0,r1                           ; the help text address
+        SWI     mon_Write0                      ; display the help text
+        SWI     mon_NewLine                     ; and newline
+        ADD     r1,r1,r3                        ; step over the help text
+        ADD     r1,r1,#(word - 1)               ; and word-align the address
+        BIC     r1,r1,#(word - 1)               ; upwards
+        CMP     r1,r2                           ; check for the table end
+        BLT     cmd_help_loop                   ; if not, then around again
+        SWI     mon_WriteS
+        =       LF,"All arguments are hexadecimal numbers",LF,null
+        ALIGN
+        ; and fall through to... cmd_info
+
+        ; ---------------------------------------------------------------------
+        ; Print some information on the current state of the monitor
+
+cmd_info
+        SWI     mon_NewLine
+        BL      printmode                       ; print mode name
+        SWI     mon_WriteS
+        =       " mode, flags: ",null
+        ALIGN
+        ; print PSR bits
+        ADRL    r1,mon_psr_flags                ; address the flag names
+        MOV     r2,pc,LSR #26                   ; move PSR bits into lo6bits
+        MOV     r3,#(1 :SHL: 5)                 ; flag display index
+mon_psr_flags_loop
+        LDRB    r0,[r1],#&01                    ; load the flag character
+        TST     r2,r3                           ; check flag condition
+        ANDNE   r0,r0,#&DF                      ; upper-case if bit set
+        SWI     mon_WriteC                      ; and display the character
+        MOVS    r3,r3,LSR #1                    ; shift down the index
+        BNE     mon_psr_flags_loop              ; and onto the next flag
+        ; display other useful information
+        SWI     mon_WriteS
+        =       ", pc = 0x",null
+        ALIGN
+        MOV     r0,pc
+        SWI     mon_WriteX
+        SWI     mon_WriteS
+        =       LF,"Command loop starts at 0x",null
+        ALIGN
+        ADRL    r0,next_command
+        SWI     mon_WriteX
+        SWI     mon_NewLine
+        MOV     r9,#&01                         ; ensure the prompt is echoed
+        B       next_command                    ; and around again
+
+        ; ---------------------------------------------------------------------
+
+mon_psr_modes
+                =       "USR",null
+                =       "FIQ",null
+                =       "IRQ",null
+                =       "SVC",null
+mon_psr_flags   =       "nzcvif",null
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+cmd_quit
+        B       reenter
+
+        ; ---------------------------------------------------------------------
+
+cmd_comment
+        SWI     mon_ReadC
+        AND     r0,r0,#&7F
+        CMP     r0,#NL
+        CMPNE   r0,#CR
+        SWINE   mon_WriteC
+        BNE     cmd_comment
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_readword
+        SWI     mon_ReadX       ; get the address
+        LDR     r0,[r0,#&00]    ; read the word
+        SWI     mon_WriteX      ; and then print it
+        SWI     mon_NewLine
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_readbyte
+        SWI     mon_ReadX
+        LDRB    r0,[r0,#&00]
+        SWI     mon_WriteXB
+        SWI     mon_NewLine
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_word
+        SWI     mon_ReadX       ; get address
+        MOV     r10,r0          ; r10 used globally for last write address
+        SWI     mon_ReadX       ; get new value
+        STR     r0,[r10],#&04   ; leave next address in r10 for cmd_noecho
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; Incrementing write command: uses address after that in last write
+        ; or incwrite command (in r10), and does not reflect any characters 
+        ; (so it goes faster).
+
+cmd_noecho
+        SWI     mon_ReadX       ; get new value
+        STR     r0,[r10],#&04   ; leave next address in r10
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_byte
+        SWI     mon_ReadX       ; get address
+        MOV     r1,r0
+        SWI     mon_ReadX       ; get new value
+        STRB    r0,[r1,#&00]
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_bin                         ; perform simple binary download
+        SWI     mon_ReadX       ; get start address
+        MOV     r1,r0           ; into r1
+        SWI     mon_ReadX       ; get size value
+        MOV     r2,r0           ; into r2
+
+cmd_bin_loop                    ; read "r2" bytes from the link to "r1"
+        BL      getc            ; get byte into r0
+        STRB    r0,[r1],#&01    ; store byte and increment address
+        SUBS    r2,r2,#&01      ; decrement counter
+        BNE     cmd_bin_loop    ; around again if not terminated
+
+        MOV     r9,#&00         ; disable echo after a binary download
+        B       next_command    ; and finish this command
+
+        ; ---------------------------------------------------------------------
+        ; The download copies the amount of binary data given to the end of
+        ; memory (1024byte-aligned). It then starts execution at the start of
+        ; the downloaded code.
+
+cmd_download                    ; perform download and execution
+        BL      ramsize         ; size the main RAM
+        MOV     r1,r0           ; into r1
+        SWI     mon_ReadX       ; get size value
+        MOV     r2,r0           ; into r2
+        ; Create 1024byte-aligned base address
+        MOV     r3,#1024
+        SUB     r3,r3,#1
+        SUB     r1,r1,r2
+        BIC     r1,r1,r3
+        MOV     r3,r1           ; remember the base address
+
+cmd_dload_loop                  ; read "r2" bytes from the link to "r1"
+        BL      getc            ; get byte into r0
+        STRB    r0,[r1],#&01    ; store byte and increment address
+        SUBS    r2,r2,#&01      ; decrement counter
+        BNE     cmd_dload_loop  ; around again if not terminated
+
+        MOV     lr,pc           ; performs subroutine call rather than goto
+        MOV     pc,r3           ; enter the code
+        B       next_command    ; and go around for the next command
+
+        ; ---------------------------------------------------------------------
+
+cmd_dumpbytes
+        SWI     mon_ReadX       ; get start address
+        MOV     r1,r0           ; into r1
+        SWI     mon_ReadX       ; get end address
+        MOV     r2,r0           ; into r2
+        SWI     mon_NewLine     ; ensure display starts on newline
+cmd_dumpbytes_outer_loop
+        MOV     r0,r1           ; current address
+        SWI     mon_WriteX      ; display it
+        SWI     mon_WriteS
+        =       " : ",null      ; display padding string
+        ALIGN
+        MOV     r3,#0           ; byte index into line
+cmd_dumpbytes_inner_loop_hex
+        LDRB    r0,[r1,r3]      ; load data byte
+        SWI     mon_WriteXB     ; and display byte
+        SWI     mon_WriteI + " "
+        ADD     r3,r3,#1        ; step onto next byte
+        CMP     r3,#16          ; 16bytes per line
+        BNE     cmd_dumpbytes_inner_loop_hex
+        MOV     r3,#0           ; byte index into line
+cmd_dumpbytes_inner_loop_char
+        LDRB    r0,[r1,r3]      ; load data byte
+        CMP     r0,#" "         ; check against space (for control codes)
+        MOVCC   r0,#"."
+        CMP     r0,#127         ; check against delete (for top-bit set)
+        MOVCS   r0,#"."
+        SWI     mon_WriteC      ; and display character
+        ADD     r3,r3,#1        ; step onto next byte
+        CMP     r3,#16          ; 16bytes per line
+        BNE     cmd_dumpbytes_inner_loop_char
+        SWI     mon_NewLine
+        ADD     r1,r1,#16       ; number of bytes printed
+        CMP     r1,r2
+        BLT     cmd_dumpbytes_outer_loop
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_dumpwords
+        SWI     mon_ReadX               ; get start address
+        BIC     r1,r0,#(word - 1)       ; into r1 (word-aligned downwards)
+        SWI     mon_ReadX               ; get end address
+        ADD     r2,r0,#(word - 1)       ; into r2 (word-aligned upwards)
+        BIC     r2,r2,#(word - 1)
+        SWI     mon_NewLine             ; ensure display starts on new line
+
+cmd_dumpwords_outer_loop
+        MOV     r0,r1           ; current address
+        SWI     mon_WriteX      ; display it
+        SWI     mon_WriteS
+        =       " : ",null      ; display padding string
+        ALIGN
+        MOV     r3,#0           ; word index into line
+cmd_dumpwords_inner_loop_hex
+        LDR     r0,[r1,r3]      ; load data word
+        SWI     mon_WriteX      ; and display word
+        SWI     mon_WriteI + " "
+        ADD     r3,r3,#&04      ; step onto next word
+        CMP     r3,#(4 * word)  ; 4words per line
+        BNE     cmd_dumpwords_inner_loop_hex
+
+        MOV     r3,#0           ; byte index into line
+cmd_dumpwords_inner_loop_char
+        LDRB    r0,[r1,r3]      ; load data byte
+        CMP     r0,#" "         ; check against space (for control codes)
+        MOVCC   r0,#"."
+        CMP     r0,#127         ; check against delete (for top-bit set codes)
+        MOVCS   r0,#"."
+        SWI     mon_WriteC      ; and display character
+        ADD     r3,r3,#1        ; step onto next byte
+        CMP     r3,#(4 * word)  ; 4words per line
+        BNE     cmd_dumpwords_inner_loop_char
+
+        SWI     mon_NewLine
+        ADD     r1,r1,#(4 * word)
+        CMP     r1,r2
+        BLT     cmd_dumpwords_outer_loop
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_goto
+        SWI     mon_ReadX
+        MOV     lr,pc           ; performs subroutine call rather than goto
+        MOV     pc,r0
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+
+cmd_blockcopy
+        SWI     mon_ReadX       ; get source address
+        MOV     r3,r0
+        SWI     mon_ReadX       ; get destination address
+        MOV     r1,r0
+        SWI     mon_ReadX       ; get number of bytes
+        MOV     r2,r0
+        MOV     r0,r3
+        BL      bcopy
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; Block copy routine.
+        ; Source in r0, destination in r1, number of bytes in r2.
+        ; Corrupts r0 - r3 (but avoids using any stack).
+        ; This is a very slow implementation! but who cares!
+
+bcopy
+        ADD     r2,r2,r0        ; end address of source in r2
+bcopy1
+        CMP     r0,r2
+        LDRNEB  r3,[r0],#1
+        STRNEB  r3,[r1],#1
+        BNE     bcopy1
+        MOVS    pc,lr
+
+        LTORG
+
+        ; ---------------------------------------------------------------------
+        ; Memory test for main RAM
+
+cmd_memtestmain
+        BL      ramsize         ; Get size of RAM in r0
+        [       (RAMbodge)
+        MOV     r1,r0           ; end of RAM is size of RAM
+        ADRL    r0,end_of_monitor
+        |
+        MOV     r1,r0           ; end of RAM is size of RAM
+        MOV     r0,#&00000000   ; start of RAM
+        ]
+        B       memtest         ; Do the memory test
+
+        ; ---------------------------------------------------------------------
+        ; Memory test between given addresses
+
+cmd_memtest
+        SWI     mon_ReadX       ; Get start address in r0
+        MOV     r4,r0
+        SWI     mon_ReadX       ; Get end address in r0
+        MOV     r1,r0           ; Juggle registers
+        MOV     r0,r4
+        B       memtest         ; Do the memory test
+
+        ; ---------------------------------------------------------------------
+        ; Memory test code.
+        ; First address to test is in r0
+        ; First address not to test is in r1
+        ; Exits to `next_command' on error, otherwise carries on for ever.
+
+memtest
+        SWI     mon_WriteS
+        =       LF,"Testing memory from 0x",null
+        ALIGN
+        SWI     mon_WriteX
+        SWI     mon_WriteS
+        =       " up to (but not including) 0x",null
+        ALIGN
+        MOV     r11,r0          ; Start address lives in r11 for whole test
+        MOV     r0,r1
+        SWI     mon_WriteX
+        SWI     mon_NewLine
+        MOV     r12,r1          ; Save end of memory address
+        MOV     r10,r12
+
+; Start address in r11, end address in r12
+
+memtest_restart
+
+; Incrementing pattern test
+        SWI     mon_WriteS
+        =       LF,"Phase one: incrementing pattern: ",null
+        ALIGN
+        MOV     r7,#4           ; R7 holds loop count for repeats of whole test
+        MOV     r8,#0           ; R8 holds number of errors in this phase
+        LDR     r3,p1ptn        ; R3 holds initial pattern for this iteration
+
+phase1  MOV     r0,r3           ; Initial pattern in r3
+        LDR     r1,p1inc
+        MOV     r4,r11          ; Get base address in R4
+ph1fill STR     r0,[r4],#4      ; Loop filling memory with incrementing pattern
+        ADD     r0,r0,r1
+        TEQ     r4,r12
+        BNE     ph1fill
+
+        MOV     r0,#"."
+        SWI     mon_WriteI + "."        ; Finished writing
+; Now check the memory contents
+        MOV     r4,r11          ; r4 holds memory address
+        MOV     r0,r3           ; Initial pat in r3; r0 holds current pattern
+ph1chk  LDR     r2,[r4],#4
+        TEQ     r2,r0           ; Check one word of memory
+        BNE     ph1fail
+
+ph1cont ADD     r0,r0,r1
+        TEQ     r4,r12
+        BNE     ph1chk
+
+        MOV     r3,r0           ; New initial pattern for next iteration
+        SUBS    r7,r7,#1
+        BNE     phase1          ; Repeat whole test with different patterns
+
+        TEQ     r8,#0           ; Were there any errors?
+        BNE     phasedead
+
+; TRUE hierarchy test
+; Set all of memory to 0 except with bit 2**n set in their address
+; (where n is incremented on each iteration)
+
+        SWI     mon_WriteS
+        =       LF,"Phase two: TRUE hierarchy: ",null
+        ALIGN
+        MOV     r0,#0
+        MVN     r1,#0
+        MOV     r2,#2           ; r2 holds address bit being tested
+; Shared code for phases 2 and 3
+phase2  MOV     r4,r11          ; Get base address in r4
+phase2a TST     r4,r2           ; Fill memory with r0 except locations
+        STREQ   r0,[r4],#4      ; with the bit in r2 set in their address
+        STRNE   r1,[r4],#4
+        CMP     r4,r12
+        BCC     phase2a
+
+        SWI     mon_WriteI +"."      ; Memory filled
+        MOV     r4,r11          ; Get base address in r4
+phase2b TST     r4,r2
+        LDR     r3,[r4],#4
+        BNE     phase2b1
+phase2b2
+        CMP     r0,r3           ; Location should hold R0
+        BNE     ph2fail
+        B       ph2cont
+phase2b1
+        CMP     r1,r3           ; Location should hold r1
+        BNE     ph2fail
+
+ph2cont CMP     r4,r12          ; Reached end of memory?
+        BCC     phase2b         ; No - test next word
+
+        CMP     r2,r12          ; Special location reached end of memory?
+        ADDCC   r2,r2,r2        ; No - shift address bit being tested
+        BCC     phase2
+
+        TEQ     r8,#0           ; Any errors?
+        BNE     phasedead
+        TEQ     r1,#0           ; Different exits from phase 2/3 shared code
+        BEQ     phase4          ; Skip phase 3 code if just done phase 3
+
+; FALSE hierarchy
+
+        SWI     mon_WriteS
+        =       LF,"Phase three: FALSE hierarchy: ",null
+        ALIGN
+        MVN     r0,#0
+        MOV     r1,#0
+        MOV     r2,#2
+        B       phase2          ; Share code with phase 2
+phase4  TEQ     r8,#0
+        BNE     phasedead
+
+; Cycling bits
+
+        SWI     mon_WriteS
+        =       LF,"Phase four: Cycling bits: ",null
+        ALIGN
+        MOV     r7,#1
+phase4a MOV     r4,r11          ; Get base address in r4
+        MOV     r2,r7
+phase4a1
+        STR     r2,[r4],#4      ; Fill memory with cycling bit pattern
+        MOV     r2,r2,ROR #31
+        CMP     r4,r12
+        BCC     phase4a1
+
+        SWI     mon_WriteI +"."
+        MOV     r4,r11          ; Get base address in r4
+        MOV     r2,r7
+phase4b1
+        LDR     r1,[r4],#4
+        CMP     r1,r2
+        BNE     ph4fail
+ph4cont MOV     r2,r2,ROR #31
+        CMP     r4,r12
+        BCC     phase4b1
+
+        ADDS    r7,r7,r7        ; Shift starting bit posn and repeat
+        BCC     phase4a
+        TEQ     r8,#0
+        BNE     phasedead
+
+        SWI     mon_WriteS
+        =       LF,LF,"  PASSED......",null
+        ALIGN
+        B       memtest_restart ; All OK, so do it again
+
+phasedead
+        SWI     mon_WriteS
+        =       LF,"  There were 0x",null
+        ALIGN
+        MOV     r10,r8
+        BL      wordhx
+        SWI     mon_WriteS
+        =       " failures in total",LF,null
+        ALIGN
+        SWI     mon_WriteS
+        =       LF,"   TESTING ABORTED",LF,null
+        ALIGN
+        B       memtest_exit    ; Give up
+
+; ph1fail must not use r3 (among others!)
+ph1fail CMP     r8,#10          ; Limit number of messages per phase
+        ADD     r8,r8,#1
+        BCS     ph1cont
+
+        SWI     mon_WriteS
+        =       LF,"  Phase 1 fail at 0x",null
+        ALIGN
+        MOV     r5,r0
+        SUB     r10,r4,#4
+        BL      wordhx
+        SWI     mon_WriteS
+        =       " with 0x",null
+        ALIGN
+        MOV     r10,r2
+        BL      wordhx
+        SWI     mon_WriteS
+        =       " instead of 0x",null
+        ALIGN
+        MOV     r10,r5
+        BL      wordhx
+        MOV     r0,r5
+        B       ph1cont
+
+ph2fail CMP     r8,#10          ; Limit no. of messages per phase
+        ADD     r8,r8,#1
+        BCS     ph2cont
+        SWI     mon_WriteS
+        =       LF,"  Phase 2 fail at 0x",null
+        ALIGN
+        SUB     r10,r4,#4
+        MOV     r5,r0
+        BL      wordhx
+        SWI     mon_WriteS
+        =       " with 0x",null
+        ALIGN
+        MOV     r10,r3
+        BL      wordhx
+        SWI     mon_WriteS
+        =       " instead of 0x",null
+        ALIGN
+        TST     r4,r2
+        MOVNE   r10,r1
+        MOVEQ   r10,r5
+        BL      wordhx
+        MOV     r0,r5
+        B       ph2cont
+
+ph4fail CMP     r8,#10
+        ADD     r8,r8,#1
+        BCS     ph4cont
+        SWI     mon_WriteS
+        =       LF,"  Phase 4 fail at 0x",null
+        ALIGN
+        SUB     r10,r4,#4
+        BL      wordhx
+        SWI     mon_WriteS
+        =       " with 0x",null
+        ALIGN
+        MOV     r10,r1
+        BL      wordhx
+        SWI     mon_WriteS
+        =       " instead of 0x",null
+        ALIGN
+        MOV     r10,r2
+        BL      wordhx
+        B       ph4cont
+
+memtest_exit
+        MOV     r0,#&01                 ; ensure prompt is echoed
+        B       next_command
+
+p1ptn   &       &86427531
+p1inc   &       &0F020501
+
+wordsp  SWI     mon_WriteI +" "      ; Print r10 in hex with leading space
+;print r10 using R0,R6,r9
+wordhx  MOV     r6,#32-4
+wordlp  MOV     r0,r10,LSR r6
+        AND     r0,r0,#15
+        CMP     r0,#9
+        ORRLS   r0,r0,#"0"
+        ADDHI   r0,r0,#"A"-10
+        SWI     mon_WriteC
+        SUBS    r6,r6,#4
+        BPL     wordlp
+        MOV     pc,lr
+
+        ; ---------------------------------------------------------------------
+        ; Print size of main RAM
+
+cmd_sizemain
+        BL      ramsize                 ; get RAM size in R0
+        SWI     mon_WriteS
+        =       LF,"RAM size is 0x",null
+        ALIGN
+        SWI     mon_WriteX              ; print it
+        SWI     mon_WriteS
+        =       " bytes",LF,null
+        ALIGN
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; Find size of memory starting at given address
+
+cmd_size
+        SWI     mon_ReadX               ; get start address in r0
+        MOV     r8,r0                   ; keep safe copy
+        MOV     r1,#1                   ; check every byte (step 1)
+        BL      findsize                ; get size in r0 (corrupts r1-r6)
+        SWI     mon_WriteS
+        =       "Memory extends to 0x",null
+        ALIGN
+        MOV     r1,r0
+        ADD     r0,r8,r0                ; address of byte past end
+        SUB     r0,r0,#1                ; address of last byte
+        SWI     mon_WriteX
+        SWI     mon_WriteS
+        =       " (size 0x",null
+        ALIGN
+        MOV     r0,r1                   ; retrieve size
+        SWI     mon_WriteX
+        SWI     mon_WriteS
+        =       " bytes)",LF,null
+        ALIGN
+        B       next_command
+        
+        ; ---------------------------------------------------------------------
+        ; Find size of main RAM and return in r0. r1-r6 corrupted.
+
+ramsize
+        [       (RAMbodge)
+        MOV     r1,#1024
+        SUB     r1,r1,#1        ; r1 = 1023
+        ADRL    r0,end_of_monitor
+        ADD     r0,r0,r1
+        BIC     r0,r0,r1
+        |
+        MOV     r0,#&00000000   ; start at base of RAM
+        ]       ; (RAMbodge)
+        MOV     r1,#1024        ; 1K grain is fine enough
+        ; Drop into findsize
+
+        ; Find size of memory from address in r0 upwards and return in r0.
+        ; r1 specifies the address step to be used.
+        ; Memory is left intact after the size test (unless there is an abort).
+        ; r1-r6 corrupted.
+
+findsize
+        ; r0 = base address
+        ; r1 = sizing step (grain)
+
+        [       {TRUE}          ; new RAM sizing
+        ; Perform non-destructive memory sizing of the main RAM. We do not
+        ; size the FastRAM (if any) at this point (since it is implicit in the
+        ; processor description).
+        ;
+        STMFD   sp!,{r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,lr}
+
+        ; Define the "data abort" handler to deal with touching ROM.
+        ADRL    r2,sizemem_abort        ; branch destination address
+        MOV     r3,#&00000010           ; branch source address (data abort)
+        LDR     r11,[r3,#&00]           ; load current vector contents
+        ADD     r4,r3,#&08              ; source = source + 8
+        SUB     r2,r2,r4                ; offset = destination - source
+        MOV     r2,r2,LSR #2            ; offset = offset >> 2
+        ORR     r2,r2,#&EA000000        ; "BAL" opcode
+        STR     r2,[r3,#&00]            ; and write into vector
+
+        ADD     r2,r1,r0                ; base search address (starting)
+        LDR     r3,=&12345678           ; a funny bit pattern
+        ADR     r6,ramsize_end          ; where we go when we abort
+        ORR     r6,r6,#(INTflags :OR: SVCmode)  ; and ensure processor state
+
+        ; Note: We change the data-bus contents between the write and read.
+        ;       This code may also abort if we are touching ROM.
+        LDR     r9,[r0,#&00]            ; load (and preserve) the base word
+        STR     r3,[r0,#&00]            ; and store bit pattern into the RAM
+        LDR     r4,=&AAAAAAAA           ; another funny bit pattern
+        LDR     r8,[r0,#&00]            ; reload the bit pattern
+        CMP     r8,r3                   ; and check for ROM at dataRAMblk
+
+        BNE     fatal_noRAM             ; this is a very bad condition
+
+        ; now look for a ghost copy (or abort in the process)
+ramsize_loop
+        ADRL    r8,codeBase             ; where we are executing from
+        CMP     r2,r8                   ; top of possible system RAM
+        BEQ     ramsize_end             ; assumes RAM beneath ROM image
+
+        LDR     r8,[r2,#&00]            ; load the word at the next address
+        CMP     r8,r3                   ; check for bit pattern
+        ADDNE   r2,r2,r1                ; step upto the next RAM bank
+        BNE     ramsize_loop            ; and around again
+
+        ; and then check that it is a true ghost copy
+        STR     r4,[r0,#&00]            ; write our second bit pattern
+        LDR     r3,=&12345678           ; change the data-bus
+        LDR     r8,[r2,#&00]            ; and reload the second bit pattern
+        CMP     r8,r4                   ; check for bit pattern
+        ADDNE   r2,r2,r1                ; step upto the next RAM bank
+        BNE     ramsize_loop            ; since the memory does not ghost
+
+                                        ; memory has ghosted at "r2" or   
+ramsize_end                             ; memory has aborted at "r2"
+        STR     r9,[r0,#&00]            ; restore original word at RAM base
+size_memory_completed
+        SUB     r0,r2,r0                ; get size of memory in r0
+        MOV     r3,#&00000010           ; data abort
+        STR     r11,[r3,#&00]           ; restore vector contents
+        LDMFD   sp!,{r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,pc}^
+
+        ; ---------------------------------------------------------------------
+
+fatal_noRAM
+        SWI     mon_WriteS
+        =       "No RAM found",null
+        ALIGN
+        MOV     r0,#&00000000           ; no RAM found
+        MOV     r3,#&00000010           ; data abort
+        STR     r11,[r3,#&00]           ; restore vector contents
+        LDMFD   sp!,{r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,pc}^
+
+        ; ---------------------------------------------------------------------
+
+sizemem_abort
+        ; entered when a "data abort" has occured during RAM sizing
+        ; r0 = base address
+        ; r1 = size of RAM bank
+        ; r2 = address being read
+        ; r3 = bit pattern 1
+        ; r4 = bit pattern 2 if first RAM write succeeded (otherwise undefined)
+        ; r5 = ROM start address
+        ; r6 = return address (and processor state)
+        ; r8 = temporary work register
+        ; r9 = original "r0" contents
+
+        ; The data abort marked the end of the RAM (since it must appear
+        ; in multiples of "r1")
+        MOVS    pc,r6
+
+        |
+
+        MOV     r5,r1           ; keep step size in r5  
+        MOV     r1,r0           ; keep start address in r1
+        MOV     r2,r1           ; r2 holds current probe address
+        LDRB    r4,[r2,#0]      ; use original base contents as 2nd pattern
+        EOR     r3,r4,#&FF      ; use inverse byte as first pattern
+
+        ; Move up memory in steps, probing each location with two different
+        ; patterns to see if memory is present, and checking the base of
+        ; memory too (to detect aliasing).
+        ; Handling memory abort TBD.
+
+        MOV     r6,r4           ; save contents of current location in r6
+        STRB    r3,[r2,#0]      ; store first pattern at base
+        B       ramsize2        ; enter loop avoiding wraparound test
+ramsize1
+        LDRB    r6,[r2,#0]      ; save original contents in r6
+        STRB    r3,[r2,#0]      ; store first pattern (inverse of base)
+        LDRB    r0,[r1,#0]      ; see if it appears at base of memory
+        CMP     r0,r3
+        BEQ     ramsize3        ; yes - memory has wrapped round
+ramsize2
+        LDRB    r0,[r2,#0]      ; read back written location
+        CMP     r0,r3           ; is it correct?
+        BNE     ramsize3        ; no working memory here (and no abort!)
+        STRB    r4,[r2,#0]      ; store second pattern
+        LDRB    r0,[r2,#0]      ; read back written location
+        CMP     r0,r4           ; ss it correct?
+        STREQB  r6,[r2,#0]      ; yes - restore original contents
+        ADDEQ   r2,r2,r5        ; yes - step pointer
+        BEQ     ramsize1        ; and carry on
+
+        ; Address of first absent location in r2, original contents in r6
+        ; Original contents of base in r6
+ramsize3
+        STRB    r6,[r2,#0]      ; restore original contents of current location
+        STRB    r4,[r1,#0]      ; restore original contents of base (2nd pat)
+        SUB     r0,r2,r1        ; get size of memory in r0
+        MOV     pc,lr           ; completed
+        ]       ; EOF {boolean}
+
+        ; ---------------------------------------------------------------------
+        ; Enter USR mode
+
+cmd_usr
+        SWI     mon_WriteS
+        =       LF,"Entering USR mode",LF,null
+        ALIGN
+        TEQP    pc,#0           ; Enter USR mode and clear all flags
+                                ; `Fails' if already in USR mode!
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; Enter SVC mode
+
+cmd_svc
+        SWI     mon_WriteS
+        =       LF,"Entering SVC mode",LF,null
+        ALIGN
+        SWI     mon_EnterSVC    ; Enter SVC mode via a SWI
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; IRQ enable
+
+cmd_inton
+        SWI     mon_WriteS
+        =       LF,"Enabling IRQs",LF,null
+        ALIGN
+        SWI     mon_IntOn
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; IRQ disable
+
+cmd_intoff
+        SWI     mon_WriteS
+        =       LF,"Disabling IRQs",LF,null
+        ALIGN
+        SWI     mon_IntOff
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; Poll a word location 
+
+cmd_pollword
+        SWI     mon_ReadX       ; get the address into r0
+        MOV     r1,r0           ; pointer
+poll1
+        MOV     r2,#1024        ; loop count
+poll2
+        LDR     r0,[r1,#0]
+        SUBS    r2,r2,#1        ; decrement
+        BNE     poll2
+
+        MOV     r0,#&00000000
+        LDR     r0,[r0,#link_base]
+        LDRB    r0,[r0,#LINK_rstatus]
+        ANDS    r0,r0,#LINK_rxflag
+        BEQ     poll1
+
+        B       next_command
+
+        ; ---------------------------------------------------------------------
+        ; Poll a byte location
+
+cmd_pollbyte
+        SWI     mon_ReadX       ; get the address into r0
+        MOV     r1,r0           ; pointer
+pollb1
+        MOV     r2,#1024        ; loop count
+pollb2
+        LDRB    r0,[r1,#0]
+        SUBS    r2,r2,#1        ; decrement
+        BNE     pollb2
+
+        MOV     r0,#&00000000
+        LDR     r0,[r0,#link_base]
+        LDRB    r0,[r0,#LINK_rstatus]
+        ANDS    r0,r0,#LINK_rxflag
+        BEQ     pollb1
+
+        B       next_command
+        
+        ; ---------------------------------------------------------------------
+        ; Print name of current processor mode. Corrupts r0 and r1
+
+printmode
+        STMFD   sp!,{r0,r1,lr}
+        AND     r1,lr,#MODEmask         ; since pc would not give PSR bits
+        ADRL    r0,mon_psr_modes
+        ADD     r0,r0,r1,LSL #2         ; r0 = r0 + (r1 * 4)
+        SWI     mon_Write0
+        LDMFD   sp!,{r0,r1,pc}^
+
+        ; ---------------------------------------------------------------------
+        ; SWI handler
+
+swi_handler
+        NOP
+        STMFD   sp!,{r10,r11,r12}   ; save context
+        AND     r10,r14,#INTflags   ; preserve INT state
+        TEQP    r10,#SVCmode
+
+        BIC     r12,r14,#&FC000003  ; extract return address
+; Get SWI opcode with possible translation
+        TST     r14,#3              ; check call mode
+        SUB     r11,r12,#4          ; SWI opcode address
+; i/o addr
+        MOV     r12,#&00000000
+        LDR     r12,[r12,#link_base]
+        LDREQT  r11,[r11]           ; user via translation
+        LDRNE   r11,[r11]           ; else physical
+        BIC     r11,r11,#&FF000000  ; extract SWI number
+        CMP     r11,#&0200 ;=512    ; user SWI base?
+        BGE     swi_user
+        CMP     r11,#&0100 ;=256    ; SWI WRITEI+n?
+        BGE     swi_writei          ;  branch if so
+        CMP     r11,#mon_MaxSWI     ; out of range?
+        BHI     swi_notimplemented
+        ADR     r10,swi_dispatch_table  ;  ADR table
+        ADD     pc,r10,r11,LSL #2   ; load swi dispatch vector
+
+; r14 is return
+; r13 is stack FD with {r10,r11,r12} on it
+; r12 is Link base address
+; r11 is SWI number
+; r10 is temp
+swi_dispatch_table
+        B       swi_writec          ; writec
+        B       swi_writes          ; writes
+        B       swi_write0          ; write0
+        B       swi_newline         ; newline
+        B       swi_readc           ; readc
+        B       swi_notimplemented  ; cli
+        B       swi_osbyte          ; byte
+        B       swi_notimplemented  ; word
+        B       swi_notimplemented  ; file
+        B       swi_notimplemented  ; args
+        B       swi_notimplemented  ; bget
+        B       swi_notimplemented  ; bput
+        B       swi_notimplemented  ; multiple
+        B       swi_notimplemented  ; open
+        B       swi_readline        ; readline
+        B       swi_control         ; control
+        B       swi_getenv          ; getenv
+        B       swi_exit            ; exit
+        B       swi_setenv          ; setenv
+        B       swi_inton           ; inton
+        B       swi_intoff          ; intoff
+        B       swi_notimplemented  ; callback
+        B       swi_enteros         ; enteros
+        B       swi_notimplemented  ; breakpt
+        B       swi_notimplemented  ; breakct
+        B       swi_notimplemented  ; unused
+        B       swi_notimplemented  ; setmemc      26
+        B       swi_notimplemented  ; setcallback  27
+        B       swi_notimplemented  ; mouse        28
+        B       swi_notimplemented  ; last_swi     29
+        B       swi_notimplemented  ;              30
+        B       swi_notimplemented  ;              31
+; extensions
+        B       swi_readx           ; get hex number    32
+        B       swi_writex          ; put hex number    33
+        B       swi_writexb         ; put hex byte      34
+        B       swi_hwpeek          ; peek physmap      35
+        B       swi_hwpoke          ; poke physmap      36
+        B       swi_hwpokeb         ; poke physmap byte 37
+
+;-------------------------------------------------------
+; Unsupported SWI: number in r11, return address in r14
+; Set up for entry to generic trap code.
+
+swi_user
+swi_notimplemented
+        STMFD   sp!,{r14}
+        MOV     r14,#mon_register_dump
+        STMIA   r14,{r0-r7}     ; Dump unbanked regs
+        MOV     r0,r14          ; Put dump area address in free reg
+        LDMFD   sp!,{r14}       ; restore sp and aborted pc
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Dump aborted pc
+        SWI     mon_WriteS      ; Recursive SWI loses r14_svc
+        =       LF,"*** Unimplemented SWI : 0x",null
+        MOV     r0,r11
+        SWI     mon_WriteX
+        B       trap            ; Enter generic trap handler
+
+; **********************************************************************
+; The following IO routines are called only from SWI routines, so that
+; the monitor will still work in user mode.
+; **********************************************************************
+
+;-------------------------------------------------------
+; put char byte in r0 to link at base r12
+; uses r11 as temporary
+putc
+        MOV     r12,#&00000000
+        LDR     r12,[r12,#link_base]
+putc_link
+        LDRB    r11,[r12,#LINK_wstatus] ; poll tube?
+        TST     r11,#LINK_txflag
+        BEQ     putc_link
+        STRB    r0 ,[r12,#LINK_write] ; write char in r0
+        MOV     pc,r14
+
+; ----------------------------------------------------------------------
+; Write the byte in r0 out in hex. Preserves all registers.
+; uses r10 as temporary
+
+puthexByte
+        STMFD   sp!,{r0-r1,r14}
+        MOV     r1,r0           ; r1 holds original value
+        MOV     r10,#32-28      ; r10 holds shift for next nybble
+        B       puthex1         ; Share code with putvalue
+
+; Write the word in r0 out in hex. Preserves all registers.
+puthex
+        STMFD   sp!,{r0-r1,r14}
+        MOV     r1,r0           ; r1 holds original value
+        MOV     r10,#32-4       ; r10 holds shift for next nybble
+puthex1
+        MOV     r0,r1,LSR r10
+        AND     r0,r0,#15       ; Extract next nybble
+        CMP     r0,#9
+        ORRLS   r0,r0,#"0"
+        ADDHI   r0,r0,#"A"-10
+        BL      putc
+        SUBS    r10,r10,#4
+        BPL     puthex1
+        LDMFD   sp!,{r0-r1,pc}
+
+;-------------------------------------------------------
+; get char byte in r0 to link at base r12
+getc
+        MOV     r12,#&00000000
+        LDR     r12,[r12,#link_base]
+getc_link
+        LDRB    r0,[r12,#LINK_rstatus] ; poll tube?
+        TST     r0,#LINK_rxflag
+        BEQ     getc_link
+        LDRB    r0 ,[r12,#LINK_read] ; char read in r0
+        MOV     pc,r14
+
+; ----------------------------------------------------------------------
+; Get a character from the link, reflect it to the link, and return it in r0
+; Reflection is disabled if r9 is zero.
+
+getput 
+        STMFD   sp!,{r14}; Save the link
+        BL      getc
+        AND     r0, r0, #&7F
+        CMP     r9,#0   ; Reflection enabled?
+        BLNE    putc
+        LDMFD   sp!,{pc} ; Return
+
+; ----------------------------------------------------------------------
+; Read and reflect a hex number. Preserves all registers.
+;
+; set carry flag on error
+; uses r10 as temporary
+gethex
+        STMFD   sp!,{r1,r14}
+gethexStart
+        MOV     r1,#0           ; clear result register
+        MOV     r10,#0          ; char count
+        BL      getput          ; get first char
+        BL      hexchar         ; convert it
+        BPL     gethexNext      ; ok
+        CMP     r0,#" "         ; leading spaces
+        BEQ     gethexStart     ; .. are ignored
+        B       gethexFail    ; any other char is fatal
+gethexNext
+        ADD     r10,r10,#1        ; inc count
+        ORR     r1,r0,r1,LSL #4 ; merge result
+gethexCont
+        BL      getput          ; get first char
+        BL      hexchar         ; convert it
+        BPL     gethexNext      ; ok
+        CMP     r0,#CR          ; terminate with CR
+        BEQ     gethexDone      ;
+        CMP     r0,#" "         ; terminate with SPACE
+        BEQ     gethexDone      ;
+        CMP     r0,#NL          ; terminate or LF
+        BEQ     gethexDone      ;
+        CMP     r0,#127         ; delete?
+        BEQ     gethexUndo      ;  try undo
+        CMP     r0,#8           ; backspace?
+        BEQ     gethexUndo      ;  try undo 
+        B       gethexFail      ; else fail
+gethexUndo
+        MOV     r1,r1,LSR #4    ; remove last nibble
+        SUBS    r10,r10,#1        ; dec count
+        BLE     gethexStart     ; start again if last digit
+        MOV     r0,#NL
+        BL      putc
+        MOV     r0,r1           ; reecho the number
+        BL      puthex
+        B       gethexCont
+gethexDone
+        MOV     r0,r1           ; the result
+        LDMFD   sp!,{r1,r14}
+        BICS    pc,r14,#Cbit
+gethexFail
+        MVN     r0,#0
+        LDMFD   sp!,{r1,r14}
+        MOV     r0,r1           ; return default value
+        ORRS    pc,r14,#Cbit
+
+; ----------------------------------------------------------------------
+; Convert one hex digit to binary
+; entry: char in r0 (low byte masked)
+; +ve return low nibble of r0 = hex
+; -ve return indicates r0 = invalid hex char low byte...
+
+hexchar
+        AND     r0,r0,#&FF
+        CMP     r0,#"0"
+        BLT     hexcharerror
+        CMP     r0,#"9"
+        BGT     hexcharuc
+        SUB     r0,r0,#"0"      ; leave (0 or) +ve result
+        BICS    pc,r14,#Nbit    ; return with flags
+hexcharuc
+        CMP     r0,#"A"
+        BLT     hexcharerror
+        CMP     r0,#"F"
+        BGT     hexcharlc
+        SUB     r0,r0,#"A"-10   ; leave (0 or) +ve result
+        BICS    pc,r14,#Nbit    ; return with flags
+hexcharlc
+        CMP     r0,#"a"
+        BLT     hexcharerror
+        CMP     r0,#"f"
+        BGT     hexcharerror
+        SUB     r0,r0,#"a"-10   ; leave (0 or) +ve result
+        BICS    pc,r14,#Nbit    ; return with flags
+hexcharerror
+        AND     r0,r0,#&ff      ; but mask result to 8 bit
+        ORRS    pc,r14,#Nbit
+        
+
+
+;-------------------------------------------------------
+; WRITEI - output low byte of SWI opcode as char
+swi_writei
+        STMFD   sp!,{r0 ,r14}
+        AND     r0 ,r11,#&FF ;=255
+        BL      putc
+; fall thro" to
+; return restoring 2 regs
+swi_return_restore
+        LDMFD   sp!,{r0 ,r14}     ; and fall through
+
+swi_return
+;   TEQP    pc ,#&08000003 ; INTs disabled?
+        LDMFD   sp!,{r10,r11,r12} ; exit
+        BICS    pc ,r14,#Vbit
+
+;-------------------------------------------------------
+; WRITEC - output r0b as character
+;  (and internal swi_return)
+swi_writec
+        MOV     r10,r14 ; use r10 to save link
+        BL      putc
+        MOV     r14,r10
+        B       swi_return
+
+;-------------------------------------------------------
+; WRITES - in-line 0-terminated string write
+;   return to next aligned word
+swi_writes
+        MOV     r10,r14      ; mode bit copy
+        BIC     r10,r10,#&FC000003
+swi_writes_loop
+        TST     r14,#MODEmask
+        LDREQBT r11,[r10],#1 ; user translate
+        LDRNEB  r11,[r10],#1 ; phys map
+        TEQ     r11,#0
+        BEQ     swi_writes_done
+        STMFD   sp!,{r0,r14}
+        MOV     r0,r11
+        BL      putc   
+        LDMFD   sp!,{r0,r14}
+        B       swi_writes_loop
+swi_writes_done
+        ADD     r10,r10,#3
+        BIC     r10,r10,#&FC000003
+        AND     r14,r14,#&FC000003
+        ORR     r14,r14,r10
+        B       swi_return
+
+;-------------------------------------------------------
+; WRITE0 - r0-> 0-terminated string write
+;   return r0 updated to terminator+1
+swi_write0
+        MOV     r10,r0 
+swi_write0_loop
+        TST     r14,#MODEmask
+        LDREQBT r0,[r10],#1 ; user translate
+        LDRNEB  r0,[r10],#1 ; phys map
+        TEQ     r0 ,#0
+        BEQ     swi_write0_done
+        STMFD   sp!,{r14}
+        BL      putc
+        LDMFD   sp!,{r14}
+        B       swi_write0_loop
+swi_write0_done
+        MOV     r0 ,r10
+        B       swi_return
+
+;-------------------------------------------------------
+; NEWLINE output CR, LF
+swi_newline
+        STMDB   sp!,{r0 ,r14}
+        MOV     r0 ,#CR
+        BL      putc
+        MOV     r0 ,#LF
+        BL      putc
+        B       swi_return_restore
+
+;-------------------------------------------------------
+; READC input a character, C set for escape
+swi_readc
+        STMFD   sp!,{r14}
+        BL      getc
+        CMP     r0 ,#ESC ;=128   ; escape flag?
+        MOV     r10,#escflag
+        MOV     r11,#128
+        STREQ   r11,[r10]
+        LDMFD   sp!,{r14}
+        BIC     r14,r14,#Cbit
+        ORREQ   r14,r14,#Cbit      ; escape flag return
+        B       swi_return
+
+;-------------------------------------------------------
+; Enable Interrupt Mask
+swi_inton
+        BIC     r14,r14,#&08000000
+        B       swi_return
+
+;-------------------------------------------------------
+; Disable Interrupt Mask
+swi_intoff
+        ORR     r14,r14,#&08000000
+        B       swi_return
+
+;-------------------------------------------------------
+; Enter OS mode (Explode if translation on!)
+swi_enteros
+        ORR     r14,r14,#3
+        B       swi_return
+
+;-------------------------------------------------------
+; SWI_EXIT - return to monitor
+;  dumps registers
+
+swi_exit
+        STMFD   sp!,{r14}       ; save return
+        MOV     r14,#mon_register_dump
+        STMIA   r14,{r0-r7}     ; Dump unbanked regs
+        MOV     r0,r14          ; Put dump area address in free reg
+        LDMFD   sp!,{r14}       ; restore sp and aborted pc
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Dump aborted pc
+        SWI     mon_WriteS      ; Recursive SWI loses r14_svc
+        =       LF,"*** EXIT TO MONITOR",LF,null
+        ALIGN
+        MOV     r9,#1           ; ensure echo mode
+; restore stack      
+; Set SVC mode stack pointer
+        MOV     sp,#mon_SVC_stack
+        B       next_command
+
+;-------------------------------------------------------
+; READX: read a hex number from the link and return value in r0
+; r1 default returned if invalid terminator to number
+; Reflection is disabled if r9 is zero (not useful from FIQ mode!)
+swi_readx
+        STMFD   sp!,{r14}
+        BL      gethex          ; Read number into r0
+        MOVCS   r0,r1           ; fix up error
+        LDMFD   sp!,{r14}
+        B       swi_return         ; and return
+
+;-------------------------------------------------------
+; WRITEX: write out the word in r0 in hex
+
+swi_writex
+        STMFD   sp!,{r14}
+        BL      puthex          ; Print word in r0
+        LDMFD   sp!,{r14}
+        B       swi_return
+
+;-------------------------------------------------------
+; WRITEXB: write out the byte in r0 in hex
+
+swi_writexb
+        STMFD   sp!,{r14}
+        BL      puthexByte      ; Print byte in r0
+        LDMFD   sp!,{r14}
+        B       swi_return
+
+;-------------------------------------------------------
+; HWPEEK: stacked r1-> address, r0 returns WORD READ
+
+swi_hwpeek
+        BIC     r0, r1, #&FC000003 ; safe address
+        LDR     r0, [r0]
+        B       swi_return         ; and return
+
+;-------------------------------------------------------
+; HWPOKE: r1-> address, r0 word data and returns WORD READ
+
+swi_hwpoke
+        BIC     r10, r1, #&FC000003 ; safe address
+        MOV     r11, r0          ; save entry r0
+        LDR     r0, [r10]        ; get original value
+        STR     r11, [r10]        ; store new value
+        B       swi_return         ; and return
+
+;-------------------------------------------------------
+; HWPOKE: r1-> address, r0 word data and returns WORD READ
+
+swi_hwpokeb
+        BIC     r10, r1, #&FC000003 ; safe address
+        MOV     r11, r0          ; save entry r0
+        LDRB    r0, [r10]        ; get original value
+        STRB    r11, [r10]        ; store new value
+        B       swi_return         ; and return
+
+;-------------------------------------------------------
+; byte
+swi_osbyte
+        MOV     r11, #0         ; zero for C clear on exit
+swi_osbyte_126
+        CMP     r0, #126  ; &7E ; clear ESC
+        BNE     swi_osbyte_200
+        MOV     r10, #0         ; bit 6 flag set on ESC
+        MOV     r12, #0         ; no callback
+        LDR     r11, [r10,#escflag]     ; check esc_flag
+        CMP     r10, #0
+        MOVEQ   r1, #0
+        BEQ     swi_osbyte_return
+        STR     r12, [r12,#escflag]     ; clear esc flag
+        STMFD   sp!, {r14}      ; must call escape handler
+        MOV     r10, #escape_vec ; get escape vector pointer
+        MOV     r14,pc          ; set return address
+        LDR     pc, [r10]       ; enter handler
+        NOP
+        MOV     r1, #&FF        ; return here and return ack status
+        B       swi_osbyte_return
+
+swi_osbyte_200
+        CMP     r0, #200 ; &C8 ; read ESC effect
+        BNE     swi_osbyte_217
+        B       swi_osbyte_notimplemented
+        MOV     r1, #0
+        B       swi_osbyte_return
+swi_osbyte_217
+        CMP     r0, #217 ; &D9 ; clear/read page mode lines
+        BNE     swi_osbyte_218
+        MOV     r1, #0
+        B       swi_osbyte_return
+swi_osbyte_218
+        CMP     r0, #218 ; &DA ; read VDU queue length
+        BNE     swi_osbyte_220
+        MOV     r1, #0
+        B       swi_osbyte_return
+swi_osbyte_220
+        CMP     r0, #220 ; &DC ; read ESC char
+        BNE     swi_osbyte_229
+        B       swi_osbyte_notimplemented
+        MOV     r1, #ESC
+        MOV     r2, #ESC
+        B       swi_osbyte_return
+swi_osbyte_229
+        CMP     r0, #229 ; &E5 ; read ESC key action
+        BNE     swi_osbyte_xxx
+        B       swi_osbyte_notimplemented
+        MOV     r1, #0
+        B       swi_osbyte_return
+
+swi_osbyte_xxx
+        B       swi_osbyte_notimplemented
+        STMFD   sp!,{r0 ,r14}
+        MOV     r10,r0 
+        CMP     r10,#&7F ;=127
+        BEQ     swi_osbyte_127
+        BHI     swi_osbyte_hi
+swi_osbyte_lo
+        B       swi_return_restore
+
+swi_osbyte_127
+        CMP     r1 ,#&0100 ;=256
+        BCC     swi_osbyte_lo
+        MOVCC   r1 ,#0
+        MVNCS   r1 ,#0
+        B       swi_return_restore
+swi_osbyte_hi
+        LDMFD   sp!,{r0 ,r14}       ; preserved r0
+swi_osbyte_return
+        BIC     r14,r14,#&20000000   ; clear C
+        TST     r11,#&80 ;=128       ; check error status
+        ORRNE   r14,r14,#&20000000
+        B       swi_return
+
+;-------------------------------------------------------
+; Unsupported OSBYTE: number in r0, r1, r2
+; Set up for entry to generic trap code.
+
+swi_osbyte_notimplemented
+        STMFD   sp!,{r14}
+        MOV     r14,#mon_register_dump
+        STMIA   r14,{r0-r7}      ; Dump unbanked regs
+        MOV     r10,r14          ; Put dump area address in free reg
+        LDMFD   sp!,{r14}        ; restore sp and aborted pc
+        STR     r14,[r10,#(mon_dumped_r15 - mon_register_dump)] ; Dump aborted pc
+        SWI     mon_WriteS       ; Recursive SWI loses r14_svc
+        =       LF,"*** Unimplemented OSBYTE",LF,null
+        ALIGN
+        SWI     mon_NewLine
+        SWI     mon_WriteX
+        SWI     mon_WriteI+","
+        MOV     r0, r1
+        SWI     mon_WriteX
+        SWI     mon_WriteI+","
+        MOV     r0, r2
+        SWI     mon_WriteX
+        SWI     mon_NewLine
+        B       trap            ; Enter generic trap handler
+
+;-------------------------------------------------------
+; READLINE
+
+swi_readline
+        TST     r14,#MODEmask
+        BEQ     swi_readlineT ; user translate
+
+        STMFD   sp!,{r0 ,r14}
+        STMFD   sp!,{r1 ,r2 }
+        MOV     r0 ,#&D9 ;=217   ; read VDU page mode line count
+        MOV     r1 ,#0
+        MOV     r2 ,#0
+        SWI     mon_Byte
+        LDMFD   sp!,{r1 ,r2 }
+        LDR     r10,[sp],#0
+        MOV     r11,r10
+swi_readline_loop
+        SWI     mon_ReadC
+        AND     r0, r0, #&7F
+        BCS     swi_readline_error
+        TEQ     r0 ,#&7F ;=127
+        BNE     swi_readline_1
+        TEQ     r10,r11              ; rubout processing
+        SWINE   mon_WriteC
+        SUBNE   r10,r10,#1
+        B       swi_readline_loop
+swi_readline_1
+        TEQ     r0 ,#&15 ;=21   CTRL-U
+        BNE     swi_readline_3
+swi_readline_2                  ; delete line processing
+        TEQ     r10,r11
+        BEQ     swi_readline_loop
+        SWI     mon_WriteI+127
+        SUB     r10,r10,#1
+        B       swi_readline_2
+swi_readline_3                  ; normal char
+        ADD     r11,r11,r1 
+        CMP     r10,r11
+        SUB     r11,r11,r1 
+        SWICS   mon_WriteI+7
+        BCS     swi_readline_loop
+        STMFD   sp!,{r0 ,r1 ,r2 }
+        MOV     r0 ,#&DA ;=218   bytes in VDU queue
+        MOV     r1 ,#0
+        MOV     r2 ,#&FF ;=255
+        SWI     mon_Byte
+        TEQ     r1 ,#0
+        LDMFD   sp!,{r0 ,r1 ,r2 }
+        SWINE   mon_WriteC
+        BNE     swi_readline_loop
+
+        TEQ     r0 ,#LF ;=10
+        MOVEQ   r0 ,#CR ;=13
+        CMP     r0 ,r2 
+        CMPCS   r3 ,r0 
+        STRCSB  r0 ,[r10],#1
+        TEQ     r0 ,#CR ;=13
+        SWINE   mon_WriteC
+        BNE     swi_readline_loop
+swi_readline_done
+        SWI     mon_NewLine
+        CMP     r0 ,r2 
+        STRCCB  r0 ,[r10],#1
+        SUB     r1 ,r10,#1
+        LDMFD   sp!,{r0 ,r14}
+        SUB     r1 ,r1 ,r0 
+        BIC     r14,r14,#&20000000
+        B       swi_return
+swi_readline_error
+        LDMFD   sp!,{r0 ,r14}
+        ORR     r14,r14,#&20000000
+        B       swi_return
+
+; special Translation forcing version for user mode buffer
+swi_readlineT
+        STMFD   sp!,{r0 ,r14}
+        STMFD   sp!,{r1 ,r2 }
+        MOV     r0 ,#&D9 ;=217   ; read VDU page mode line count
+        MOV     r1 ,#0
+        MOV     r2 ,#0
+        SWI     mon_Byte
+        LDMFD   sp!,{r1 ,r2 }
+        LDR     r10,[sp],#0
+        MOV     r11,r10
+swi_readlineT_loop
+        SWI     mon_ReadC
+        AND     r0, r0, #&7F
+        BCS     swi_readlineT_error
+        TEQ     r0 ,#&7F ;=127
+        BNE     swi_readlineT_1
+        TEQ     r10,r11              ; rubout processing
+        SWINE   mon_WriteC
+        SUBNE   r10,r10,#1
+        B       swi_readlineT_loop
+swi_readlineT_1
+        TEQ     r0 ,#&15 ;=21   CTRL-U
+        BNE     swi_readlineT_3
+swi_readlineT_2                 ; delete line processing
+        TEQ     r10,r11
+        BEQ     swi_readlineT_loop
+        SWI     mon_WriteI+127
+        SUB     r10,r10,#1
+        B       swi_readlineT_2
+swi_readlineT_3                 ; normal char
+        ADD     r11,r11,r1 
+        CMP     r10,r11
+        SUB     r11,r11,r1 
+        SWICS   mon_WriteI+7
+        BCS     swi_readlineT_loop
+        STMFD   sp!,{r0 ,r1 ,r2 }
+        MOV     r0 ,#&DA ;=218   bytes in VDU queue
+        MOV     r1 ,#0
+        MOV     r2 ,#&FF ;=255
+        SWI     mon_Byte
+        TEQ     r1 ,#0
+        LDMFD   sp!,{r0 ,r1 ,r2 }
+        SWINE   mon_WriteC
+        BNE     swi_readlineT_loop
+
+        TEQ     r0 ,#LF ;=10
+        MOVEQ   r0 ,#CR ;=13
+        CMP     r0 ,r2 
+        CMPCS   r3 ,r0 
+        STRCSBT r0 ,[r10],#1
+        TEQ     r0 ,#CR ;=13
+        SWINE   mon_WriteC
+        BNE     swi_readlineT_loop
+swi_readlineT_done
+        SWI     mon_NewLine
+        CMP     r0 ,r2 
+        STRCCBT r0 ,[r10],#1
+        SUB     r1 ,r10,#1
+        LDMFD   sp!,{r0 ,r14}
+        SUB     r1 ,r1 ,r0 
+        BIC     r14,r14,#&20000000
+        B       swi_return
+swi_readlineT_error
+        LDMFD   sp!,{r0 ,r14}
+        ORR     r14,r14,#&20000000
+        B       swi_return
+
+
+swi_control
+        MOV     r10,#0
+        LDR     r11,[r10,#error_vec]
+        TEQ     r0 ,#0
+        STRNE   r0 ,[r10,#error_vec]
+        MOV     r0 ,r11
+        LDR     r11,[r10,#error_buf]
+        TEQ     r1 ,#0
+        STRNE   r1 ,[r10,#error_buf]
+        MOV     r1 ,r11
+        LDR     r11,[r10,#escape_vec]
+        TEQ     r2 ,#0
+        STRNE   r2 ,[r10,#escape_vec]
+        MOV     r2 ,r11
+        LDR     r11,[r10,#event_vec]
+        TEQ     r3 ,#0
+        STRNE   r3 ,[r10,#event_vec]
+        MOV     r3 ,r11
+        B       swi_return
+
+
+swi_getenv
+        MOV     r12,#0
+        ADR     r0, set_env_string
+        LDR     r1,[r12,#ram_top]
+        ADR     r2, set_env_time
+        B       swi_return
+
+set_env_string
+        = "command_string -help", 0
+        ALIGN
+
+set_env_time
+        = 1,2,3,4,5
+        ALIGN
+
+swi_setenv
+        MOV     r12,#0
+        LDR     r11,[r12,#exit_vec]
+        TEQ     r0 ,#0
+        STRNE   r0 ,[r12,#exit_vec]
+        MOV     r0 ,r11
+        LDR     r11,[r12,#ram_top]
+        TEQ     r1 ,#0
+        STRNE   r1 ,[r12,#ram_top]
+        MOV     r1 ,r11
+        LDR     r11,[r12,#ram_size]
+        TEQ     r2 ,#0
+        STRNE   r2 ,[r12,#ram_size]
+        MOV     r2 ,r11
+        MOV     r3 , #0
+        LDR     r11,[r12,#((8+1)*4)] ; VECTOR 1 for undefined
+        TEQ     r4 ,#0
+        STRNE   r4 ,[r12,#((8+1)*4)]
+        MOV     r4 ,r11
+        LDR     r11,[r12,#((8+3)*4)] ; VECTOR 3 for prefetch abort
+        TEQ     r5 ,#0
+        STRNE   r5 ,[r12,#((8+3)*4)]
+        MOV     r5 ,r11
+        LDR     r11,[r12,#((8+4)*4)] ; VECTOR 4 for data abort
+        TEQ     r6 ,#0
+        STRNE   r5 ,[r12,#((8+4)*4)]
+        MOV     r6 ,r11
+        LDR     r11,[r12,#((8+5)*4)] ; VECTOR 4 for address exception
+        TEQ     r7 ,#0
+        STRNE   r5 ,[r12,#((8+5)*4)]
+        MOV     r7 ,r11
+        B       swi_return
+
+swi_breakpt
+        LDMIA   sp!,{r10,r11,r12}
+        MOV     sp,#0
+        LDR     sp,[sp,#2364]
+        STMIA   sp,{r0-r12,sp,r14}^
+        SUB     r14,r14,#4
+        STR     r14,[sp,#60]
+        MOV     sp,#&0E00 ;=3584
+        MOV     r14,#0
+        LDR     pc ,[r14,#2360]
+
+swi_unused
+        MOV     r12,#0
+        LDR     r11,[r12,#userswi_vec]
+        TEQ     r0 ,#0
+        STRNE   r0 ,[r12,#userswi_vec]
+        MOV     r0 ,r11
+        B       swi_return
+
+set_callback
+        MOV     r12,#0
+        MOV     r10,#1
+        STR     r10,[r12,#callback]    ; callback return patch
+        LDMIA   sp!,{r10,r11,r12}
+        BICS    pc ,r14,#&10000000
+
+        ; ---------------------------------------------------------------------
+        ; Undefined instruction handler
+
+undef_handler
+        NOP
+        TEQP    pc,#(INTflags :OR: SVCmode) ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** Undefined instruction",LF,null
+        ALIGN
+        B       trap
+
+        ; ---------------------------------------------------------------------
+        ; Prefetch abort handler
+
+pabort_handler
+        NOP
+        TEQP    pc,#(INTflags :OR: SVCmode) ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** Prefetch abort",LF,null
+        ALIGN
+        B       trap
+
+        ; ---------------------------------------------------------------------
+        ; Data abort handler
+
+dabort_handler
+        NOP
+        TEQP    pc,#(INTflags :OR: SVCmode) ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** Data abort",LF,null
+        ALIGN
+        B       trap
+
+        ; ---------------------------------------------------------------------
+        ; Address exception handler
+
+addrex_handler
+        NOP
+        TEQP    pc,#(INTflags :OR: SVCmode) ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** Address exception",LF,null
+        ALIGN
+        B       trap
+
+        ; ---------------------------------------------------------------------
+        ; branch through 0 (RAM reset vector) trap
+
+branch0_trap
+        NOP
+        TEQP    pc,#(INTflags :OR: SVCmode) ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** Branch through 0 trap",LF,null
+        ALIGN
+        B       trap
+
+        ; ---------------------------------------------------------------------
+        ; IRQ handler
+
+irq_handler
+        NOP
+        TEQP    pc,#(INTflags :OR: SVCmode) ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** IRQ",LF,null
+        ALIGN
+        B       trap
+
+        ; ---------------------------------------------------------------------
+        ; FIQ handler
+
+fiq_handler
+        NOP
+        TEQP    pc,#(INTflags :OR: SVCmode) ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** FIQ",LF,null
+        ALIGN
+        B       trap
+
+
+; ----------------------------------------------------------------------
+; Error handler
+
+error_handler
+        NOP
+        TEQP    pc,#SVCINTSOFF  ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** ERROR HANDLER",LF,null
+        ALIGN
+        B       trap
+
+; ----------------------------------------------------------------------
+; Escape handler
+
+escape_handler
+        NOP
+        TEQP    pc,#SVCINTSOFF  ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** ESCAPE HANDLER",LF,null
+        ALIGN
+        B       trap
+
+; ----------------------------------------------------------------------
+; event handler
+
+event_handler
+        NOP
+        TEQP    pc,#SVCINTSOFF  ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** EVENT HANDLER",LF,null
+        ALIGN
+        B       trap
+
+; ----------------------------------------------------------------------
+; Exit handler
+
+exit_handler
+        NOP
+        TEQP    pc,#SVCINTSOFF  ; IRQ and FIQ disabled, SVC mode
+        STMFD   sp!,{r0}        ; Save one register on stack
+        MOV     r0,#mon_register_dump ; Get address of fixed dump area
+        STMIA   r0,{r0-r7}      ; Save unbanked regs (with bogus r0)
+        LDMFD   sp!,{r1}        ; Retrieve original r0 into r1
+        STR     r1,[r0,#0]      ; Save correct r0 in register dump
+        STR     r14,[r0,#(mon_dumped_r15 - mon_register_dump)] ; Save aborted pc
+
+        SWI     mon_WriteS
+        =       LF,"*** EXIT HANDLER",LF,null
+        ALIGN
+        B       trap
+
+
+
+        ; ---------------------------------------------------------------------
+        ; Common exit for all unhandled traps. Entered in SVC mode with ints
+        ; off. Expects r0-r7 and aborted pc to be stored at `mon_register_dump'
+        ; Reenters the monitor on exit.
+
+trap
+        MOV     r3,#mon_register_dump       ; Address for the (possibly)
+        ADD     r3,r3,#(mon_dumped_r8 - mon_register_dump) ; mapped regs
+
+        LDR     r2,[r3,#(mon_dumped_r15 - mon_dumped_r8)] ; Retrieve aborted pc
+        TST     r2,#MODEmask
+        STMEQIA r3,{r8-r14}^            ; USR mode aborted
+        BEQ     printregs
+
+        TST     r2,#IRQmode
+        TSTNE   r2,#FIQmode
+        BNE     mon_wasSVCmode
+
+        ; IRQ or FIQ mode abort
+        ORR     r2,r2,#INTflags         ; ensure IRQ/FIQ disabled
+        TEQP    r2,#&00                 ; and enter the aborted mode
+        NOP                             ; allow time for register remapping
+        STMIA   r3,{r8-r14}             ; and stack the correct registers
+        TEQP    pc,#(INTflags :OR: SVCmode) ; and re-enter SVC mode (IRQ/FIQ off)
+        B       printregs
+
+deadval &       &DEADDEAD
+
+mon_wasSVCmode      ; we were in SVC mode when the abort occured
+        STMIA   r3,{r8-r13}             ; and stack the easy registers
+        LDR     r2,deadval           ; the abort corrupted svc_r14
+        STR     r2,[r3,#(mon_dumped_r14 - mon_dumped_r8)]
+
+        ; All registers now dumped into "mon_register_dump"
+        ; SVC mode; IRQs and FIQs disabled
+printregs
+        SWI     mon_NewLine
+        MOV     r1,#mon_register_dump   ; r1 holds pointer into dump
+        MOV     r2,#0                   ; r2 holds register number
+printregs1
+        SWI     mon_WriteI + "r"
+        MOV     r3,r2                   ; Copy register number
+        CMP     r3,#9                   ; Big register number?
+        SUBHI   r3,r3,#10               ; Get second digit
+        SWIHI   mon_WriteI + "1"        ; Write first digit
+        ADD     r0,r3,#"0"              ; Char for second (or only) digit
+        SWI     mon_WriteC
+        CMP     r2,#9                   ; Leave space after single digit
+        SWILS   mon_WriteI + " "
+        SWI     mon_WriteI + " "
+        LDR     r0,[r1],#4              ; Get register contents
+        SWI     mon_WriteX              ; and print
+        ADD     r2,r2,#1                ; Next register number
+        TST     r2,#3                   ; Multiple of 4?
+        SWIEQ   mon_NewLine             ; Yes - start new line
+        SWINE   mon_WriteI + " "        ; No - print spaces
+        SWINE   mon_WriteI + " "      
+        CMP     r2,#16                  ; Printed all regs?
+        BNE     printregs1              ; Not yet
+
+        ; ---------------------------------------------------------------------
+        ; Reenter monitor
+reenter
+        SWI     mon_WriteS
+        =       LF,"*** Re-entering monitor in ",null
+        ALIGN
+        BL      printmode
+        SWI     mon_WriteS
+        =       " mode",LF,null
+        ALIGN
+        B       monitor_reset
+
+        ; ---------------------------------------------------------------------
+
+        LTORG
+
+end_of_monitor
+        ; ---------------------------------------------------------------------
+        END

@@ -1,0 +1,2889 @@
+#include <stdio.h>
+#include <stdlib.h>
+/*
+ * File:	rules_C40.ypp
+ * Subsystem:	Generic (C40) Assembler
+ * Author:	P.A.Beskeen
+ * Date:	Sept '91
+ *
+ * Description: YACC grammer rules and actions to implement the TMS320C40
+ *		specific parts of the parser.
+ *
+ *
+ * RcsId: $Id: rules_C40.ypp,v 1.9 1994/01/18 16:21:07 paul Exp $
+ *
+ * (C) Copyright 1991 Perihelion Software Ltd.
+ * 
+ * $RcsLog$
+ *
+ */
+
+/*
+ * The rules define the syntax of acceptable input, enabling the parser to
+ * identify individual instructions, operands and addressing modes. If the
+ * input does not match these rules, then a syntax error is generated and
+ * the parser will attempt to recover and find the next instruction to parse.
+ *
+ * The actions associated with the rules add Instruction type parse items
+ * into the parse tree, incrementing the logical program counter (curPC)
+ * as they do so. These items are then used by the second pass CPU
+ * specific module to place binary instructions into the object code.
+ *
+ */
+
+
+/* ******************************************************************** */
+/* 'C40 CPU addressing modes:						*/
+/* ******************************************************************** */
+
+
+/* *** REGISTER ADDRESSING ********************************************	*/
+
+		/* used in diadic instructions */
+reg:		R0 | R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11
+		| AR0 | AR1 | AR2 | AR3 | AR4 | AR5 | AR6 | AR7
+		| DP | IR0 | IR1 | BK | SP | ST | DIE | IIE | IIF | RS | RE | RC
+		| error
+		{	Error("Expecting a register");	}
+		;
+
+		/* used in triadic and fp load instructions */
+Dreg:		R0 | R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 | R10 | R11
+		| error
+		{	Error("Expecting a register (R0-R11)");	}
+		;
+
+		/* used as first destination register in // instructions */
+Dreg0_1:	R0 | R1
+		| error
+		{	Error("Expecting register R0 or R1");	}
+		;
+
+		/* used as second destination register  in // instructions */
+Dreg2_3:	R2 | R3
+		| error
+		{	Error("Expecting register R2 or R3");	}
+		;
+
+		/* used for source arguments in // instructions */
+Dreg0_7:	R0 | R1 | R2 | R3 | R4 | R5 | R6 | R7
+		| error
+		{	Error("Expecting a register R0-R7");	}
+		;
+
+		/* used in indirect addressing */
+Areg:		AR0 | AR1 | AR2 | AR3 | AR4 | AR5 | AR6 | AR7
+#if 0
+		| error
+		{	Error("Expecting an address register");	}
+#endif
+		;
+
+		/* used in LDA's addressing */
+Addr_reg:	AR0 | AR1 | AR2 | AR3 | AR4 | AR5 | AR6 | AR7 |
+		IR0 | IR1 | DP | BK | SP
+		| error
+		{	Error("Unknown address register");	}
+		;
+
+		/* used by LDPE and LDEP */
+Exp_reg:	IVTP | TVTP
+		| error
+		{	Error("Unknown expansion file register");	}
+		;
+
+
+/* *** DIRECT ADDRESSING  *********************************************	*/
+
+		/* used in diadic instructions */
+direct:		'@' constexpr
+		{
+			if (CurInstr->combine) {
+				/* default to diadic direct addr. */
+				CurInstr->combine2 = COM_DIA_DIR;
+				$$ = CurInstr->optexpr2 = $2;
+			}
+			else {
+				/* default to diadic direct addr. */
+				CurInstr->combine = COM_DIA_DIR;
+				$$ = CurInstr->optexpr = $2;
+			}
+		}
+		;
+
+
+/* *** IMMEDIATE ADDRESSING *******************************************	*/
+
+/* Second pass will check that immediate will fit in 8 bits or 16 bits	*/
+/* depending on type of instruction.					*/
+/* 	Type 2, triadic instructions = 8 bits				*/
+/* 	Diadic instructions = 16 bits					*/
+
+immediate:	constexpr
+		{
+			if (CurInstr->combine) {
+				/* default to diadic 16 bit immediate */
+				CurInstr->combine2 = COM_DIA_IMM;
+				$$ = CurInstr->optexpr2 = $1;
+			}
+			else {
+				/* default to diadic 16 bit immediate */
+				CurInstr->combine = COM_DIA_IMM;
+				$$ = CurInstr->optexpr = $1;
+			}
+		}
+		;
+
+
+fp_immediate:	imm_fp_constexpr
+		{
+			$$ = (int) IEEE_64ToC40_16($1);
+		}
+		;
+
+
+/* *** INDIRECT ADDRESSING ********************************************	*/
+
+/*
+ * Indirect addressing in diadic instructions may use the full range
+ * of pre/post inc/decrements and have an indirection of up to eight bits.
+ *
+ * Indirect addressing for triadic type 2 instructions can only use
+ * the forms *ARn | *+ARn(disp), with a displacement that fits into 5 bits.
+ *
+ * In triadic type 1, and parallel instructions
+ * all forms allowed, but displacement is limited to 0 or 1. One is always
+ * assumed but zero can be achieved by not using inc/dec/+/- operators.
+ *
+ * When the code is being output in the second pass, the displacement
+ * expressions are evaluated and invalid indirection displacement sizes
+ * will raise errors.
+ *
+ * For an explanation of indirect addressing and the format of its sub fields
+ * see page 5.5 - "Types of Addressing" section in the 'C40 Users Guide
+ */
+
+		/* Returns concatenated mod and ARn fields */
+indirect:	'*' Areg
+			/* assumes 0 displacement */
+		{	$$ = MOD(B_11000) | IND_AREG($2);	}
+		| '*' prefix Areg displacement
+		{	$$ = MOD($2 | $4) | IND_AREG($3);	}
+		| '*' Areg postfix
+		{	$$ = MOD($3) | IND_AREG($2);		}
+		| '*' error
+		{
+			Error("format of indirection is incorrect");
+		}
+		;
+
+/* pre-inc/decrement operators */
+prefix:		/* Return operator sub field of mod */
+		'+'
+		{	$$ = B_000;		}
+		| '-'
+		{	$$ = B_001;		}
+		| PLUSPLUS
+		{	$$ = B_010;		}
+		| MINUSMINUS
+		{	$$ = B_011;		}
+		;
+
+postfix:	/* Returns mod = disp selector sub field | operator sub field */
+		PLUSPLUS '(' IR0 ')' bitreverse
+		{	$$ = B_11001;		}
+		| PLUSPLUS displacement
+		{	$$ = $2 | B_100;	}
+		| MINUSMINUS displacement
+		{	$$ = $2 | B_101;	}
+		| PLUSPLUS displacement '%'
+		{	$$ = $2 | B_110;	}
+		| MINUSMINUS displacement '%'
+		{	$$ = $2 | B_111;	}
+		;
+
+/* Diadic = 8 bit displacement						*/
+/* Triadic type 2 = 5 bit displacement.					*/
+/* Triadic type 1 and parallel instruction  =  assumed			*/
+/* 	displacement of	1 or 0 only.					*/
+/*									*/
+/* These constraints must be check by the second pass.			*/
+
+displacement:	/* empty */
+		{
+			/* empty - so assume displacement of 1 */
+			/* '(' constexpr ')' equiv. */
+			if (CurInstr->combine) {
+				/* fake expr of 1 */
+				CurInstr->optexpr2 = NewExprNum(1);
+				CurInstr->combine2 = COM_DIA_IND;
+			}
+			else {
+				/* fake expr of 1 */
+				CurInstr->optexpr = NewExprNum(1);
+				CurInstr->combine = COM_DIA_IND;
+			}
+			$$ = 0; /* $$ = MOD_DISP(B_00); - defaults to this */
+		}
+		| '(' constexpr ')'
+		{
+			if (CurInstr->combine) {
+				CurInstr->optexpr2 = $2;
+				CurInstr->combine2 = COM_DIA_IND;
+			}
+			else {
+				CurInstr->optexpr = $2;
+				CurInstr->combine = COM_DIA_IND;
+			}
+			$$ = 0; /* $$ = MOD_DISP(B_00); - defaults to this */
+		}
+		| '(' IR0 ')'
+		{	$$ = MOD_DISP(B_01);	}
+		| '(' IR1 ')'
+		{	$$ = MOD_DISP(B_10);	}
+		;
+
+		/* check for bit reversal addressing specifier character 'B' */
+bitreverse:	NAME
+		{
+			if (!(strcmp("BIT", $1) == 0 || strcmp("bit", $1) == 0)) {
+				char err[128];
+				
+				strcpy(err, "'");
+				strcat(err, $1);
+				strcat(err, "' is not a valid bitreversal addressing specifier - use 'bit'");
+				Error(err);
+			}
+		}
+		;
+
+
+/* *** PC RELATIVE ADDRESSING  ****************************************	*/
+
+pcrel:		/* used in branches/jumps/calls */
+		constexpr
+		{
+			/* default to 16 bit cond branch */
+			CurInstr->combine = COM_CBR_PCREL;
+			$$ = CurInstr->optexpr = $1;
+		}
+		| '@' constexpr
+		{
+			/* default to 16 bit cond. branch */
+			CurInstr->combine = COM_CBR_PCREL;
+			$$ = CurInstr->optexpr = $2;
+		}
+		;
+
+
+
+/* ******************************************************************** */
+/* C40 CPU addressing mode groups:					*/
+/* ******************************************************************** */
+
+/* ********************************************************************	*/
+/* *** Addressing Modes For Load Instructions *************************	*/
+
+
+/* *** NORMAL LOADS ***************************************************	*/
+
+int_ld_Addr_reg_modes:
+		reg ',' Addr_reg
+		{	$$ = G_REG | DST_REG($3) | SRC_REG($1); }
+		| indirect ',' Addr_reg
+		{	$$ = G_IND | DST_REG($3) | MOD_FIELD($1); }
+		| direct ',' Addr_reg
+		{	$$ = G_DIR | DST_REG($3); }
+		| immediate ',' Addr_reg
+		{	$$ = G_IMM | DST_REG($3); }
+		| error
+		{	Error("illegal addressing mode for an integer load");	}
+		;
+
+
+/* ********************************************************************	*/
+/* *** Addressing Modes For Store Instructions ************************	*/
+
+st_addr_modes:
+		reg ',' direct
+		{	$$ = G_DIR | ST_SRC_REG($1); }
+		| reg ',' indirect
+		{	$$ = G_IND | ST_SRC_REG($1) | MOD_FIELD($3); }
+		| reg ',' error
+		{
+			Error("illegal addressing mode for store instruction");
+		}
+		;
+
+/* ********************************************************************	*/
+/* *** Logical and Arithmetic Addressing Mode Groups ******************	*/
+
+
+/* *** INTEGER UNARY ADDRESSING MODE **********************************	*/
+int_unary_op_mode:
+		reg
+			/* duplicate register for both src and dst */
+		{	$$ = G_REG | DST_REG($1) | SRC_REG($1); }
+		;
+
+
+/* *** FP UNARY ADDRESSING MODE ***************************************	*/
+fp_unary_op_mode:
+		Dreg
+			/* duplicate register for both src and dst */
+		{	$$ = G_REG | DST_REG($1) | SRC_REG($1); }
+		;
+
+
+/* *** INTEGER LOAD and DIADIC ADDRESSING MODES ***********************	*/
+int_diadic_modes:
+		reg ',' reg
+		{	$$ = G_REG | DST_REG($3) | SRC_REG($1); }
+		| direct ',' reg
+		{	$$ = G_DIR | DST_REG($3); }
+		| indirect ',' reg
+		{	$$ = G_IND | DST_REG($3) | MOD_FIELD($1); }
+		| immediate ',' reg
+		{	$$ = G_IMM | DST_REG($3); }
+		;
+
+
+/* *** FP LOAD and DIADIC ADDRESSING MODES ****************************	*/
+fp_diadic_modes:
+		Dreg ',' Dreg
+		{	$$ = G_REG | DST_REG($3) | SRC_REG($1); }
+		| direct ',' Dreg
+		{	$$ = G_DIR | DST_REG($3); }
+		| indirect ',' Dreg
+		{	$$ = G_IND | DST_REG($3) | MOD_FIELD($1); }
+		| fp_immediate ',' Dreg	/* @@@ should allow float const exprs */
+		{	$$ = G_IMM | $1 | DST_REG($3); }
+		;
+
+
+/* *** FLOAT ADDRESSING MODES *****************************************	*/
+float_diadic_modes:
+		reg ',' Dreg
+		{	$$ = G_REG | DST_REG($3) | SRC_REG($1); }
+		| direct ',' Dreg
+		{	$$ = G_DIR | DST_REG($3); }
+		| indirect ',' Dreg
+		{	$$ = G_IND | DST_REG($3) | MOD_FIELD($1); }
+		| immediate ',' Dreg	/* @@@ should allow float const exprs */
+		{	$$ = G_IMM | DST_REG($3); }
+		;
+
+
+/* *** INTEGER TRIADIC ADDRESSING MODES *******************************	*/
+int_triadic_modes:
+		/* Triadic / type 1 ***********************************	*/
+
+		reg ',' reg ',' reg
+		{
+			$$ = T1_REGREG | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+		}
+		|  reg ',' indirect ',' reg
+		{
+			$$ = T1_REGIND | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+			CurInstr->combine = COM_TRI_IND1_A2;
+		}
+
+		/* Triadic / type 2 ***********************************	*/
+
+		| immediate ',' reg ',' reg
+		{
+			$$ = T2_IMMREG | TRI_A2($3) | DST_REG($5);
+			CurInstr->combine = COM_TRI_IMM_A1;
+		}
+
+		| immediate ',' indirect ',' reg
+		{
+			$$ = T2_IMMIND | TRI_A2($3) | DST_REG($5);
+			CurInstr->combine = COM_TRI_IMM_A1;
+			if (!ISMODTYPE2($3)) {
+				Error("Only *+ARn format indirections allowed for type 2 triadic instructions");
+			}
+			CurInstr->combine2 = COM_TRI_IND2_A2;
+		}
+
+
+		/* Triadic / type 1 or 2 ******************************	*/
+		/* Find out which type is being used and generate an	*/
+		/* instruction template accordingly.			*/
+		/* Second pass will check displacement sizes and insert	*/
+		/* displacement into instruction.			*/
+
+		| indirect ',' reg ',' reg
+		{
+			if (ISMODTYPE2($1)) {
+				$$ = T2_INDREG | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND2_A1;
+			}
+			else {
+				$$ = T1_INDREG | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND1_A1;
+			}
+		}
+		| indirect ',' indirect ',' reg
+		{
+			if (ISMODTYPE2($1) && ISMODTYPE2($3)) {
+				$$ = T2_INDIND | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND2_A1;
+				CurInstr->combine2 = COM_TRI_IND2_A2;
+			}
+			else {
+				$$ = T1_INDIND | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND1_A1;
+				CurInstr->combine2 = COM_TRI_IND1_A2;
+			}
+		}
+		;
+
+
+#if 0
+/* @@@ if src ops in triadic ash/lsh really are swapped */
+/* *** SHIFT TRIADIC ADDRESSING MODES *********************************	*/
+shift_triadic_modes:
+		/* @@@ remember that src1 and src2 are swapped around */
+		/* from the normal order */
+
+		/* Triadic / type 1 ***********************************	*/
+
+		reg ',' reg ',' reg
+
+		|  indirect ',' reg ',' reg
+
+		/* Triadic / type 2 ***********************************	*/
+
+		| reg ',' immediate ',' reg
+
+		| indirect ',' immediate ',' reg
+
+		/* Triadic / type 1 or 2 ******************************	*/
+		/* @@@ in second pass depending on wether displacement	*/
+		/* is 1/0 or 5 bit and if the indirect mod field is of	*/
+		/* the right type, generate type 1 or type 2		*/
+		/* instruction.						*/
+
+		| reg ',' indirect ',' reg
+
+		| indirect ',' indirect ',' reg
+		;
+
+#endif
+
+/* *** FP TRIADIC ADDRESSING MODES ************************************	*/
+fp_triadic_modes:	
+		/* Triadic / type 1 ***********************************	*/
+		Dreg ',' Dreg ',' Dreg
+		{
+			$$ = T1_REGREG | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+		}
+		|  Dreg ',' indirect ',' Dreg
+		{
+			$$ = T1_REGIND | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+			CurInstr->combine = COM_TRI_IND1_A2;
+		}
+
+		/* Triadic / type 2 ***********************************	*/
+		/* No type 2 immediate addressing modes allowed for 	*/
+		/* fp operations.					*/
+
+
+		/* Triadic / type 1 or 2 ******************************	*/
+		/* Find out which type is being used and generate an	*/
+		/* instruction template accordingly.			*/
+		/* Second pass will check displacement sizes and insert	*/
+		/* displacement into instruction.			*/
+
+		| indirect ',' Dreg ',' Dreg
+		{
+			if (ISMODTYPE2($1)) {
+				$$ = T2_INDREG | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND2_A1;
+			}
+			else {
+				$$ = T1_INDREG | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND1_A1;
+			}
+		}
+		| indirect ',' indirect ',' Dreg
+		{
+			if (ISMODTYPE2($1) && ISMODTYPE2($3)) {
+				$$ = T2_INDIND | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND2_A1;
+				CurInstr->combine2 = COM_TRI_IND2_A2;
+			}
+			else {
+				$$ = T1_INDIND | TRI_A1($1) | TRI_A2($3) | DST_REG($5);
+				CurInstr->combine = COM_TRI_IND1_A1;
+				CurInstr->combine2 = COM_TRI_IND1_A2;
+			}
+		}
+		;
+
+
+/* *** INTEGER TRIADIC PARALLEL STORE ADDRESSING MODE *****************	*/
+/* We have to check the regs are Dreg0-7 by hand as YACC only has a one	*/
+/* token look ahead and this causes conflicts with other rules		*/
+/* (CHK_Dreg0_7).							*/
+
+tri_par_sti_mode:
+		indirect ',' reg ',' reg BARBAR STI Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($3); CHK_Dreg0_7($5);
+			$$ = PST_S1($1) | PST_S2($3) | PST_D1($5) | PST_SS($8) \
+				| PST_D2($10);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		| indirect ',' reg BARBAR STI Dreg0_7 ',' indirect
+		{
+			/* assume src2 and dst1 regs are the same */
+			/* Optional syntax #13 */
+
+			CHK_Dreg0_7($3);
+			$$ = PST_S1($1) | PST_S2($3) | PST_D1($3) | PST_SS($6) \
+				| PST_D2($8);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** INTEGER DIADIC PARALLEL STORE ADDRESSING MODE ******************	*/
+dia_par_sti_mode:
+		indirect ',' reg BARBAR STI Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($3);
+			$$ = PST_S1($1) | PST_D1($3) | PST_SS($6) | PST_D2($8);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** SHIFTS/SUB TRIADIC PARALLEL STORE ADDRESSING MODE **************	*/
+/* Note that shifts/sub par stores have swapped order of src1 and src2	*/
+
+shift_tri_par_sti_mode:
+		reg ',' indirect ',' reg BARBAR STI Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($1); CHK_Dreg0_7($5);
+			$$ = PST_S2($1) | PST_S1($3) | PST_D1($5) | PST_SS($8) \
+				| PST_D2($10);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** FP PARALLEL STORE ADDRESSING MODE ******************************	*/
+/* We have to check the regs are Dreg0-7 by hand as YACC only has a one	*/
+/* token look ahead and this causes conflicts with other rules		*/
+/* (CHK_Dreg0_7).							*/
+
+tri_par_stf_mode:
+		indirect ',' Dreg ',' Dreg BARBAR STF Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($3); CHK_Dreg0_7($5);
+			$$ = PST_S1($1) | PST_S2($3) | PST_D1($5) | PST_SS($8) \
+				| PST_D2($10);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		| indirect ',' Dreg BARBAR STF Dreg0_7 ',' indirect
+		{
+			/* assume src2 and dst1 regs are the same */
+			/* Optional syntax #13 */
+
+			CHK_Dreg0_7($3);
+			$$ = PST_S1($1) | PST_S2($3) | PST_D1($3) | PST_SS($6) \
+				| PST_D2($8);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** FP DIADIC PARALLEL STORE ADDRESSING MODE ***********************	*/
+dia_par_stf_mode:
+		indirect ',' Dreg BARBAR STF Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($3);
+			$$ = PST_S1($1) | PST_D1($3) | PST_SS($6) | PST_D2($8);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** SHIFTS/SUB FP PARALLEL STORE ADDRESSING MODE ***************************	*/
+/* Swapped order of operands to normal instructions */
+
+shift_tri_par_stf_mode:
+		Dreg ',' indirect ',' Dreg BARBAR STF Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($1); CHK_Dreg0_7($5);
+			$$ = PST_S2($1) | PST_S1($3) | PST_D1($5) | PST_SS($8) \
+				| PST_D2($10);
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** PARALLEL MPY's and ADD/SUB's ***********************************	*/
+
+/* Construct opcode templates for MPYI/F parallel opcodes. The only 	*/
+/* differences between par_mpyi/f are the source registers that are	*/
+/* checked. @@@ could probably simplify the parser by inserting		*/
+/* a flag that is read by the register check routines that specifies if */
+/* the operation is fp or integer? We have to check some of the src	*/
+/* regs (Dreg0-7) and dest regs (R0-1, R2-3) by hand as YACC only has a */
+/* one token look ahead and this causes conflicts with other rules	*/
+/* (CHK_Dreg0_7 / CHK_Dreg0_1 / CHK_Dreg2_3)				*/
+
+
+/* MPYF || SUB/ADD ****************************************************	*/
+
+par_mpyi_mode:
+					indirect ',' indirect ',' reg
+		BARBAR	par_mpyi_op2	Dreg0_7 ',' Dreg0_7 ',' Dreg2_3
+		{
+			/* check registers are valid */
+			CHK_Dreg0_1($5);
+
+			/* construct address mode and operand fields to */
+			/* insert into instruction template */
+			/* subtract 2 from Dreg2_3 to make 1 bit reg selector */
+			$$ = $7 | P_I1I2R2R1 \
+				| PM_I1($3) | PM_I2($1) | PM_D1($5) \
+				| PM_R2($8) | PM_R1($10) | PM_D2($12 - 2);
+
+			/* Second pass to check that disp.'s are only 1 or 0 */
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' reg ',' reg
+		BARBAR par_mpyi_op2	indirect ',' Dreg0_7 ',' Dreg2_3
+		{
+			/* check registers are valid */
+			CHK_Dreg0_7($3); CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			reg ',' indirect ',' Dreg0_1
+		BARBAR par_mpyi_op2	indirect ',' Dreg0_7 ',' Dreg2_3
+		{
+			/* same as previous, but allowing for commutative mpy */
+			/* Optional syntax #14 */
+
+			CHK_Dreg0_7($1);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_I1($3) | PM_R1($1) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			reg ',' reg ',' Dreg0_1
+		BARBAR par_mpyi_op2	indirect ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($1); CHK_Dreg0_7($3);
+
+			$$ = $7 | P_R1R2I2I1 \
+				| PM_R1($3) | PM_R2($1) | PM_D1($5) \
+				| PM_I2($8) | PM_I1($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' reg ',' reg
+		BARBAR par_mpyi_op2	Dreg0_7 ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($3); CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1R1R2I2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($5) \
+				| PM_R2($8) | PM_I2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			reg ',' indirect ',' Dreg0_1
+		BARBAR par_mpyi_op2	Dreg0_7 ',' indirect ',' Dreg2_3
+		{
+			/* same again but allowing for commutative mpy */
+			/* Optional syntax #14 */
+
+			CHK_Dreg0_7($1);
+
+			$$ = $7 | P_I1R1R2I2 \
+				| PM_I1($3) | PM_R1($1) | PM_D1($5) \
+				| PM_R2($8) | PM_I2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+
+		/* repeated again, but defaulting MPY dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			indirect ',' reg
+		BARBAR par_mpyi_op2	indirect ',' Dreg0_7 ',' Dreg2_3
+		{
+			CHK_Dreg0_1($3);
+
+			$$ = $5 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($3) \
+				| PM_I2($6) | PM_R2($8) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			reg ',' reg
+		BARBAR par_mpyi_op2	indirect ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($1); CHK_Dreg0_1($3);
+
+			$$ = $5 | P_R1R2I2I1 \
+				| PM_R1($3) | PM_R2($1) | PM_D1($3) \
+				| PM_I2($6) | PM_I1($8) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' reg
+		BARBAR par_mpyi_op2	Dreg0_7 ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_1($3);
+
+			$$ = $5 | P_I1R1R2I2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($3) \
+				| PM_R2($6) | PM_I2($8) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+
+		/* same again, but defaulting MPY dest reg to src2 reg */
+		/* AND in 2nd operation too */
+		/* optional syntax #13 */
+		|			indirect ',' reg
+		BARBAR par_mpyi_op2	indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_1($3);
+
+			$$ = $5 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($3) \
+				| PM_I2($6) | PM_R2($8) | PM_D2($8 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+
+		/* Finally just defaulting 2nd operation dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			indirect ',' indirect ',' reg
+		BARBAR	par_mpyi_op2	Dreg0_7 ',' Dreg2_3
+		{
+			CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1I2R2R1 \
+				| PM_I1($3) | PM_I2($1) | PM_D1($5) \
+				| PM_R2($8) | PM_R1($10) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' reg ',' reg
+		BARBAR par_mpyi_op2	indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($3); CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			reg ',' indirect ',' Dreg0_1
+		BARBAR par_mpyi_op2	indirect ',' Dreg2_3
+		{
+			/* same again but allowing for commutative * */
+			/* Optional syntax #14 */
+
+			CHK_Dreg0_7($1);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_R1($1) | PM_I1($3) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		;
+
+
+/* As par_mpyi_mode is only called by MPYI3 ||, we can set the opcodes with */
+/* confidence. */
+
+par_mpyi_op2:		SUBI
+			{	$$ = OP_MPYI3_SUBI3; }
+			| ADDI
+			{	$$ = OP_MPYI3_ADDI3; }
+			| SUBI3
+			{	$$ = OP_MPYI3_SUBI3; }
+			| ADDI3
+			{	$$ = OP_MPYI3_ADDI3; }
+			;
+
+
+/* MPYF || SUB/ADD ****************************************************	*/
+
+par_mpyf_mode:
+					indirect ',' indirect ',' Dreg
+		BARBAR	par_mpyf_op2	Dreg0_7 ',' Dreg0_7 ',' Dreg2_3
+		{
+			/* check registers are valid */
+			CHK_Dreg0_1($5);
+
+			/* construct address mode and operand fields to */
+			/* insert into instruction template */
+			/* subtract 2 from Dreg2_3 to make 1 bit reg selector */
+			$$ = $7 | P_I1I2R2R1 \
+				| PM_I1($3) | PM_I2($1) | PM_D1($5) \
+				| PM_R2($8) | PM_R1($10) | PM_D2($12 - 2);
+
+			/* Second pass to check that disp.'s are only 1 or 0 */
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' Dreg ',' Dreg
+		BARBAR par_mpyf_op2	indirect ',' Dreg0_7 ',' Dreg2_3
+		{
+			/* check registers are valid */
+			CHK_Dreg0_7($3); CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			Dreg ',' indirect ',' Dreg0_1
+		BARBAR par_mpyf_op2	indirect ',' Dreg0_7 ',' Dreg2_3
+		{
+			/* same as previous, but allowing for commutative mpy */
+			/* Optional syntax #14 */
+
+			CHK_Dreg0_7($1);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_I1($3) | PM_R1($1) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			Dreg ',' Dreg ',' Dreg0_1
+		BARBAR par_mpyf_op2	indirect ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($1); CHK_Dreg0_7($3);
+
+			$$ = $7 | P_R1R2I2I1 \
+				| PM_R1($3) | PM_R2($1) | PM_D1($5) \
+				| PM_I2($8) | PM_I1($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' Dreg ',' Dreg
+		BARBAR par_mpyf_op2	Dreg0_7 ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($3); CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1R1R2I2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($5) \
+				| PM_R2($8) | PM_I2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			Dreg ',' indirect ',' Dreg0_1
+		BARBAR par_mpyf_op2	Dreg0_7 ',' indirect ',' Dreg2_3
+		{
+			/* same again but allowing for commutative mpy */
+			/* Optional syntax #14 */
+
+			CHK_Dreg0_7($1);
+
+			$$ = $7 | P_I1R1R2I2 \
+				| PM_I1($3) | PM_R1($1) | PM_D1($5) \
+				| PM_R2($8) | PM_I2($10) | PM_D2($12 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+
+		/* repeated again, but defaulting MPY dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			indirect ',' Dreg
+		BARBAR par_mpyf_op2	indirect ',' Dreg0_7 ',' Dreg2_3
+		{
+			CHK_Dreg0_1($3);
+
+			$$ = $5 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($3) \
+				| PM_I2($6) | PM_R2($8) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			Dreg ',' Dreg
+		BARBAR par_mpyf_op2	indirect ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($1); CHK_Dreg0_1($3);
+
+			$$ = $5 | P_R1R2I2I1 \
+				| PM_R1($3) | PM_R2($1) | PM_D1($3) \
+				| PM_I2($6) | PM_I1($8) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' Dreg
+		BARBAR par_mpyf_op2	Dreg0_7 ',' indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_1($3);
+
+			$$ = $5 | P_I1R1R2I2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($3) \
+				| PM_R2($6) | PM_I2($8) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+
+		/* same again, but defaulting MPY dest reg to src2 reg */
+		/* AND in 2nd operation too */
+		/* optional syntax #13 */
+		|			indirect ',' Dreg
+		BARBAR par_mpyf_op2	indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_1($3);
+
+			$$ = $5 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($3) \
+				| PM_I2($6) | PM_R2($8) | PM_D2($8 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+
+		/* Finally just defaulting 2nd operation dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			indirect ',' indirect ',' Dreg
+		BARBAR	par_mpyf_op2	Dreg0_7 ',' Dreg2_3
+		{
+			CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1I2R2R1 \
+				| PM_I1($3) | PM_I2($1) | PM_D1($5) \
+				| PM_R2($8) | PM_R1($10) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' Dreg ',' Dreg
+		BARBAR par_mpyf_op2	indirect ',' Dreg2_3
+		{
+			CHK_Dreg0_7($3); CHK_Dreg0_1($5);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_I1($1) | PM_R1($3) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			Dreg ',' indirect ',' Dreg0_1
+		BARBAR par_mpyf_op2	indirect ',' Dreg2_3
+		{
+			/* same again but allowing for commutative * */
+			/* Optional syntax #14 */
+
+			CHK_Dreg0_7($1);
+
+			$$ = $7 | P_I1R1I2R2 \
+				| PM_R1($1) | PM_I1($3) | PM_D1($5) \
+				| PM_I2($8) | PM_R2($10) | PM_D2($10 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		;
+
+
+/* As par_mpyf_mode is only called by MPYF3 ||, we can set the opcodes with */
+/* confidence. */
+
+par_mpyf_op2:		SUBF
+			{	$$ = OP_MPYF3_SUBF3; }
+			| ADDF
+			{	$$ = OP_MPYF3_ADDF3; }
+			| SUBF3
+			{	$$ = OP_MPYF3_SUBF3; }
+			| ADDF3
+			{	$$ = OP_MPYF3_ADDF3; }
+			;
+
+
+/* *** REVERSE PARALLEL MPYI MODE *************************************	*/
+/* Allows order of parallel operations in instruction to be swapped	*/
+/* syntactically (but not semantically): SUBI || MPYI, ADDI || MPYI	*/
+
+/* We have to check the source regs are Dreg0-7 and dest regs R0-1,	*/
+/* R2-3 by hand as YACC only has a one token look ahead and this causes */
+/* conflicts with other rules (CHK_Dreg0_7 / CHK_Dreg0_1 / CHK_Dreg2_3).*/
+
+rev_par_mpyi_mode:
+					reg ',' reg ',' Dreg2_3
+		BARBAR	mpyi2_3		indirect ',' indirect ',' Dreg0_1
+		{
+			/* check registers are valid */
+			CHK_Dreg0_7($1); CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			/* construct address mode and operand fields to */
+			/* insert into instruction template */
+			/* subtract 2 from Dreg2_3 to make 1 bit reg selector */
+			$$ = P_I1I2R2R1 \
+				| PM_I1($10) | PM_I2($8) | PM_D1($12) \
+				| PM_R2($1) | PM_R1($3) | PM_D2($5 - 2);
+
+			/* Second pass to check that disp.'s are only 1 or 0 */
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' reg ',' reg
+		BARBAR mpyi2_3		indirect ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($12) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' reg ',' reg
+		BARBAR mpyi2_3		Dreg0_7 ',' indirect ',' Dreg0_1
+		{
+			/* same again but allowing for commutative mpy */
+			/* Optional syntax #14 */
+			CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($10) | PM_R1($8) | PM_D1($12) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' indirect ',' Dreg2_3
+		BARBAR mpyi2_3		Dreg0_7 ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg2_3($5);
+
+			$$ = P_R1R2I2I1 \
+				| PM_R1($10) | PM_R2($8) | PM_D1($12) \
+				| PM_I2($1) | PM_I1($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			reg ',' indirect ',' reg
+		BARBAR mpyi2_3		indirect ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg0_7($1); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1R2I2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($12) \
+				| PM_R2($1) | PM_I2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			reg ',' indirect ',' reg
+		BARBAR mpyi2_3		Dreg0_7 ',' indirect ',' Dreg0_1
+		{
+			/* same again but allowing for commutative mpy */
+			/* Optional syntax #14 */
+			CHK_Dreg0_7($1); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1R2I2 \
+				| PM_I1($10) | PM_R1($8) | PM_D1($12) \
+				| PM_R2($1) | PM_I2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+
+		/* repeated again, but defaulting MPY dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			indirect ',' reg ',' reg
+		BARBAR mpyi2_3		indirect ',' Dreg0_1
+		{
+			CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($10) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' indirect ',' Dreg2_3
+		BARBAR mpyi2_3		Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg2_3($5);
+
+			$$ = P_R1R2I2I1 \
+				| PM_R1($10) | PM_R2($8) | PM_D1($10) \
+				| PM_I2($1) | PM_I1($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			reg ',' indirect ',' reg
+		BARBAR mpyi2_3		indirect ',' Dreg0_1
+		{
+			CHK_Dreg0_7($1); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1R2I2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($10) \
+				| PM_R2($1) | PM_I2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+
+		/* same again, but defaulting MPY dest reg to src2 reg */
+		/* AND in 2nd operation too */
+		/* optional syntax #13 */
+		|			indirect ',' reg
+		BARBAR mpyi2_3		indirect ',' Dreg0_1
+		{
+			CHK_Dreg2_3($3);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($6) | PM_R1($8) | PM_D1($8) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+
+		/* Finally just defaulting 2nd operation dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			reg ',' Dreg2_3
+		BARBAR	mpyi2_3		indirect ',' indirect ',' Dreg0_1
+		{
+			CHK_Dreg0_7($1); CHK_Dreg2_3($3);
+
+			$$ = P_I1I2R2R1 \
+				| PM_I1($8) | PM_I2($6) | PM_D1($10) \
+				| PM_R2($1) | PM_R1($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' reg
+		BARBAR mpyi2_3		indirect ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg2_3($3);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($6) | PM_R1($8) | PM_D1($10) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' reg
+		BARBAR mpyi2_3		Dreg0_7 ',' indirect ',' Dreg0_1
+		{
+			/* same again but allowing for commutative * */
+			/* Optional syntax #14 */
+
+			CHK_Dreg2_3($3);
+
+			$$ = P_I1R1I2R2 \
+				| PM_R1($6) | PM_I1($8) | PM_D1($10) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		;
+
+mpyi2_3:	MPYI | MPYI3 ;
+
+
+
+/* *** REVERSE PARALLEL MPYF MODE *************************************	*/
+/* Allows order of parallel operations in instruction to be swapped	*/
+/* syntactically (but not semantically): SUBF || MPYF, ADDF || MPYF	*/
+
+rev_par_mpyf_mode:
+					Dreg ',' Dreg ',' Dreg2_3
+		BARBAR	mpyf2_3		indirect ',' indirect ',' Dreg0_1
+		{
+			/* check registers are valid */
+			CHK_Dreg0_7($1); CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			/* construct address mode and operand fields to */
+			/* insert into instruction template */
+			/* subtract 2 from Dreg2_3 to make 1 bit reg selector */
+			$$ = P_I1I2R2R1 \
+				| PM_I1($10) | PM_I2($8) | PM_D1($12) \
+				| PM_R2($1) | PM_R1($3) | PM_D2($5 - 2);
+
+			/* Second pass to check that disp.'s are only 1 or 0 */
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' Dreg ',' Dreg
+		BARBAR mpyf2_3		indirect ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($12) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' Dreg ',' Dreg
+		BARBAR mpyf2_3		Dreg0_7 ',' indirect ',' Dreg0_1
+		{
+			/* same again but allowing for commutative mpy */
+			/* Optional syntax #14 */
+			CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($10) | PM_R1($8) | PM_D1($12) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' indirect ',' Dreg2_3
+		BARBAR mpyf2_3		Dreg0_7 ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg2_3($5);
+
+			$$ = P_R1R2I2I1 \
+				| PM_R1($10) | PM_R2($8) | PM_D1($12) \
+				| PM_I2($1) | PM_I1($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			Dreg ',' indirect ',' Dreg
+		BARBAR mpyf2_3		indirect ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg0_7($1); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1R2I2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($12) \
+				| PM_R2($1) | PM_I2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			Dreg ',' indirect ',' Dreg
+		BARBAR mpyf2_3		Dreg0_7 ',' indirect ',' Dreg0_1
+		{
+			/* same again but allowing for commutative mpy */
+			/* Optional syntax #14 */
+			CHK_Dreg0_7($1); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1R2I2 \
+				| PM_I1($10) | PM_R1($8) | PM_D1($12) \
+				| PM_R2($1) | PM_I2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+
+		/* repeated again, but defaulting MPY dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			indirect ',' Dreg ',' Dreg
+		BARBAR mpyf2_3		indirect ',' Dreg0_1
+		{
+			CHK_Dreg0_7($3); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($10) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' indirect ',' Dreg2_3
+		BARBAR mpyf2_3		Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg2_3($5);
+
+			$$ = P_R1R2I2I1 \
+				| PM_R1($10) | PM_R2($8) | PM_D1($10) \
+				| PM_I2($1) | PM_I1($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			Dreg ',' indirect ',' Dreg
+		BARBAR mpyf2_3		indirect ',' Dreg0_1
+		{
+			CHK_Dreg0_7($1); CHK_Dreg2_3($5);
+
+			$$ = P_I1R1R2I2 \
+				| PM_I1($8) | PM_R1($10) | PM_D1($10) \
+				| PM_R2($1) | PM_I2($3) | PM_D2($5 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+
+		/* same again, but defaulting MPY dest reg to src2 reg */
+		/* AND in 2nd operation too */
+		/* optional syntax #13 */
+		|			indirect ',' Dreg
+		BARBAR mpyf2_3		indirect ',' Dreg0_1
+		{
+			CHK_Dreg2_3($3);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($6) | PM_R1($8) | PM_D1($8) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+
+		/* Finally just defaulting 2nd operation dest reg to src2 reg */
+		/* optional syntax #13 */
+
+		|			Dreg ',' Dreg2_3
+		BARBAR	mpyf2_3		indirect ',' indirect ',' Dreg0_1
+		{
+			CHK_Dreg0_7($1); CHK_Dreg2_3($3);
+
+			$$ = P_I1I2R2R1 \
+				| PM_I1($8) | PM_I2($6) | PM_D1($10) \
+				| PM_R2($1) | PM_R1($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND1;
+			CurInstr->combine2 = COM_PMPY_IND2;
+		}
+		|			indirect ',' Dreg
+		BARBAR mpyf2_3		indirect ',' Dreg0_7 ',' Dreg0_1
+		{
+			CHK_Dreg2_3($3);
+
+			$$ = P_I1R1I2R2 \
+				| PM_I1($6) | PM_R1($8) | PM_D1($10) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		|			indirect ',' Dreg
+		BARBAR mpyf2_3		Dreg0_7 ',' indirect ',' Dreg0_1
+		{
+			/* same again but allowing for commutative * */
+			/* Optional syntax #14 */
+
+			CHK_Dreg2_3($3);
+
+			$$ = P_I1R1I2R2 \
+				| PM_R1($6) | PM_I1($8) | PM_D1($10) \
+				| PM_I2($1) | PM_R2($3) | PM_D2($3 - 2);
+			CurInstr->combine = COM_PMPY_IND2;
+			CurInstr->combine2 = COM_PMPY_IND1;
+		}
+		;
+
+mpyf2_3:	MPYF | MPYF3 ;
+
+
+
+
+/* ******************************************************************** */
+/* C40 CPU mnemonic grammer:						*/
+/* ******************************************************************** */
+
+machine_op:	{
+			/* create instr. template to be filled in by parser */
+			if ((CurInstr = (Instruction *)malloc(sizeof(Instruction))) == NULL)
+				Fatal("Out of Memory for new instruction");
+
+			/* initialise instruction template */
+			CurInstr->opcode = 0;
+			CurInstr->optexpr = NULL;
+			CurInstr->combine = 0;
+			CurInstr->optexpr2 = NULL;
+			CurInstr->combine2 = 0;
+		}
+		C40_op	/* match 'C40 mneumonics */
+		{
+			/* add new instruction into the parse tree */
+			ParseTreeItem *pti = NewParseTreeItem(INSTRUCTION);
+			pti->type.instr = CurInstr;
+
+			curPC += sizeof(int);
+		}
+		;
+
+
+C40_op:		loads | stores | branches | stackops
+		| arith_logic_ops | miscops ;
+
+
+
+/* ********************************************************************	*/
+/* *** LOADS **********************************************************	*/
+
+loads:		load_ints
+		| par_load_int
+		| load_fp
+		| par_load_fp
+		| load_parts
+		| load_interlocked
+
+		/* load address register (read phase of pipeline)	*/
+		| LDA		int_ld_Addr_reg_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+
+		/* load imm. value into top 16bits of register		*/
+		| LDHI		immediate ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_IMM | DST_REG($4);
+			/* unsigned immediate */
+			CurInstr->combine = COM_DIA_IMM_UNSIGNED;
+		}
+
+		/* pseudo-op places 16 MSB's of imm. via LDPK or LDIU	*/
+		/* into DP. '@' = optional syntax #10			*/
+		| LDP		immediate ',' reg
+		{
+			if ($4 == R_DP) {
+				/* Second pass will >> 16 the immediate value */
+				CurInstr->combine = COM_DIA_IMM_LDP;
+				/* diadic points to a LDPK instruction */
+				/* immediate mode and DP reg already set */
+				/* in OP_LDPK */
+				CurInstr->opcode = $1->diadic;
+			}
+			else {
+				/* Second pass will >> 16 the immediate value */
+				CurInstr->combine = COM_DIA_IMM_LDP;
+				/* triadic points to a LDIU instruction */
+				CurInstr->opcode = $1->triadic | G_IMM | DST_REG($4);
+			}
+		}
+		| LDP		immediate
+		{
+				CurInstr->combine = COM_DIA_IMM_LDP;
+				CurInstr->opcode = $1->diadic;
+		}
+		| LDP		'@' immediate ',' reg
+		{
+			if ($5 == R_DP) {
+				CurInstr->combine = COM_DIA_IMM_LDP;
+				CurInstr->opcode = $1->diadic;
+			}
+			else {
+				CurInstr->combine = COM_DIA_IMM_LDP;
+				CurInstr->opcode = $1->triadic | G_IMM | DST_REG($5);
+			}
+		}
+		| LDP		'@' immediate
+		{
+				CurInstr->combine = COM_DIA_IMM_LDP;
+				CurInstr->opcode = $1->diadic;
+		}
+
+		/* place 16bit immediate into DP - straight, no messin' */
+		/* immediate mode and DP reg already set in OP_LDPK */
+		| LDPK		immediate
+		{	CurInstr->opcode = $1->diadic; }
+
+		/* load and store the contents of the expansion reg	*/
+		/* file regs						*/
+		| LDEP		Exp_reg ',' reg
+		{	CurInstr->opcode = $1->diadic | SRC_REG($2) | DST_REG($4); }
+		| LDPE		reg ',' Exp_reg
+		{	CurInstr->opcode = $1->diadic | SRC_REG($2) | DST_REG($4); }
+		;
+
+
+/* *** INTEGER LOADS **************************************************	*/
+/* All general addressing modes allowed.				*/
+
+load_ints:	LDIcond		int_diadic_modes
+		{ CurInstr->opcode = $1->diadic | $2; }
+		;
+
+
+/* *** FP LOADS *******************************************************	*/
+/* All addr. modes, but can only use data regs.				*/
+
+load_fp:	fp_loads	fp_diadic_modes
+		{ CurInstr->opcode = $1->diadic | $2; }
+		;
+
+fp_loads:		LDE | LDM | LDFcond ;
+
+
+/* *** PARALLEL INT LOADS AND LOAD/STORES *****************************	*/
+
+par_load_int:
+		LDI	reg ',' reg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_REG | DST_REG($4) | SRC_REG($2);
+		}
+		| LDI	direct ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_DIR | DST_REG($4);
+		}
+		| LDI	indirect ',' reg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_IND | DST_REG($4) | MOD_FIELD($2);
+		}
+		| LDI	immediate ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_IMM | DST_REG($4);
+		}
+		| LDI	indirect ',' reg     BARBAR LDI	indirect ',' reg
+		{
+			CHK_Dreg0_7($4);
+
+			/* triadic position used to hold par_ld opcode */
+			CurInstr->opcode = $1->triadic \
+			  | PST_S1($2) | PST_D1($4) | PLD_SRC($7) | PLD_DST($9);
+
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		| LDI	indirect ',' reg     BARBAR STI	Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($4);
+
+			CurInstr->opcode = $1->par_st \
+			    | PST_S1($2) | PST_D1($4) | PST_SS($7) | PST_D2($9);
+
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** Parallel FP loads and load/stores ******************************	*/
+
+par_load_fp:
+		LDF	Dreg ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic \
+			| G_REG | DST_REG($4) | SRC_REG($2);
+		}
+		| LDF	direct ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_DIR | DST_REG($4);
+		}
+		| LDF	indirect ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_IND | DST_REG($4) | MOD_FIELD($2);
+		}
+		| LDF	fp_immediate ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_IMM | $2 \
+				| DST_REG($4);
+		}
+		| LDF	indirect ',' Dreg    BARBAR LDF	indirect ',' Dreg
+		{
+			CHK_Dreg0_7($4);
+
+			/* triadic position used to hold par_ld opcode */
+			CurInstr->opcode = $1->triadic \
+			  | PST_S1($2) | PST_D1($4) | PLD_SRC($7) | PLD_DST($9);
+
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		| LDF	indirect ',' Dreg    BARBAR STF	Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($4);
+
+			CurInstr->opcode = $1->par_st \
+			   | PST_S1($2) | PST_D1($4) | PST_SS($7) | PST_D2($9);
+
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+		;
+
+
+/* *** BYTE AND PART WORD LOADS ***************************************	*/
+/* Only reg, direct and indirect addr. modes allowed.			*/
+
+load_parts:
+		part_loads	reg ',' reg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_REG | DST_REG($4) | SRC_REG($2);
+		}
+		| part_loads	direct ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_DIR | DST_REG($4);
+		}
+		| part_loads	indirect ',' reg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_IND | DST_REG($4) | MOD_FIELD($2);
+		}
+		;
+
+part_loads:		LBb | LBUb | LHw | LHUw | LWLct | LWRct | MBct | MHct ;
+
+
+/* *** INTERLOCKED LOADS **********************************************	*/
+/* Only direct and indirect addr. modes are allowed.			*/
+
+load_interlocked:
+		interlocked_loads	direct ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_DIR | DST_REG($4);
+		}
+		| interlocked_loads	indirect ',' reg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_IND | DST_REG($4) | MOD_FIELD($2);
+		}
+		;
+
+interlocked_loads:	LDFI | LDII | SIGI ;
+
+
+
+/* ********************************************************************	*/
+/* *** STORES *********************************************************	*/
+
+stores:
+		/* general stores *************************************	*/
+		genstores		st_addr_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		/* five bit immediate */
+		| STIK			immediate ',' direct
+		{
+			/* STIK uses REG mode for direct mode */
+			CurInstr->opcode = $1->diadic | G_REG;
+
+			/* In 2nd pass, check immediate is <= 5bits */
+			CurInstr->combine = COM_STIK_IMM;
+		}
+		| STIK			immediate ',' indirect
+		{
+			/* STIK uses IMMediate mode for indirect mode */
+			CurInstr->opcode = $1->diadic | G_IMM | MOD_FIELD($4);
+			CurInstr->combine = COM_STIK_IMM;
+		}
+
+		| STF			Dreg ',' direct
+		{
+			CurInstr->opcode = $1->diadic | G_DIR | ST_SRC_REG($2);
+		}
+		| STF			Dreg ',' indirect
+		{
+			CurInstr->opcode = $1->diadic | G_IND | ST_SRC_REG($2) \
+				| MOD_FIELD($4);
+		}
+
+		| STI			reg ',' direct
+		{
+			CurInstr->opcode = $1->diadic | G_DIR | ST_SRC_REG($2);
+		}
+		| STI			reg ',' indirect
+		{
+			CurInstr->opcode = $1->diadic | G_IND | ST_SRC_REG($2) \
+				| MOD_FIELD($4);
+		}
+
+
+		/* Parallel Stores ************************************	*/
+
+		/* We have to check the regs are Dreg0-7 by hand as	*/
+		/* YACC only has a one token look ahead and this causes */
+		/* a shift reduce conflict with normal STF/STI		*/
+		/* operations (CHK_Dreg0_7).				*/
+
+		/* STF || STF *****************************************	*/
+		| STF			Dreg ',' indirect
+		BARBAR STF		Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($2);
+
+			CurInstr->opcode = $1->par_st \
+				| PSTST_SRC($2) | PSTST_DST($4) \
+				| PST_SS($7) | PST_D2($9);
+
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+
+
+		/* STF || LDF *****************************************	*/
+		/* optional syntax #11 - swapped order of LDF||STF */
+		| STF			Dreg ',' indirect
+		BARBAR LDF		indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_D1($9) \
+				| PST_SS($2) | PST_D2($4);
+
+			CurInstr->combine =  COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+
+		/* OP||STF -> STF||OP *********************************	*/
+
+		/* Optional syntax #11 - swapped order of OP||STF	*/
+		/* triadic parallel stores */
+		| STF			Dreg ',' indirect
+		BARBAR tri_swap_par_stf	indirect ',' Dreg0_7 ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_S2($9) | PST_D1($11) \
+				| PST_SS($2) | PST_D2($4);
+
+			CurInstr->combine =  COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+		/* and with dst register same as 2nd source reg */
+		/* Optional syntax #13 */
+		| STF			Dreg ',' indirect
+		BARBAR tri_swap_par_stf	indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_S2($9) | PST_D1($9)
+				| PST_SS($2) | PST_D2($4);
+			CurInstr->combine = COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+		/* diadic parallel stores */
+		| STF			Dreg ',' indirect
+		BARBAR dia_swap_par_stf	indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_D1($9) \
+				| PST_SS($2) | PST_D2($4);
+			CurInstr->combine = COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+		/* swapped operand shift instructions */
+		| STF			Dreg ',' indirect
+		BARBAR shift_swap_par_stf Dreg0_7 ',' indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S2($7) | PST_S1($9) | PST_D1($11) \
+				| PST_SS($2) | PST_D2($4);
+
+			CurInstr->combine = COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+
+
+		/* STI || STI *****************************************	*/
+
+		| STI			reg ',' indirect
+		BARBAR STI		Dreg0_7 ',' indirect
+		{
+			CHK_Dreg0_7($2);
+
+			CurInstr->opcode = $1->par_st \
+				| PSTST_SRC($2) | PSTST_DST($4) \
+				| PST_SS($7) | PST_D2($9);
+
+			CurInstr->combine = COM_PST_IND_S1;
+			CurInstr->combine2 = COM_PST_IND_D2;
+		}
+
+		/* STI || LDI *****************************************	*/
+		/* optional syntax #11 - swapped order of LDF||STF */
+		| STI			reg ',' indirect
+		BARBAR LDI		indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_D1($9) \
+				| PST_SS($2) | PST_D2($4);
+
+			CurInstr->combine = COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+
+		/* OP||STI -> STI||OP *********************************	*/
+
+		/* Optional syntax #11 - swapped order of OP||STI */
+
+		/* triadic parallel stores */
+		| STI			reg ',' indirect
+		BARBAR tri_swap_par_sti	indirect ',' Dreg0_7 ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_S2($9) | PST_D1($11) \
+				| PST_SS($2) | PST_D2($4);
+
+			CurInstr->combine =  COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+		/* and with dst register same as 2nd source reg */
+		/* Optional syntax #13 */
+		| STI			reg ',' indirect
+		BARBAR tri_swap_par_sti	indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_S2($9) | PST_D1($9)
+				| PST_SS($2) | PST_D2($4);
+			CurInstr->combine = COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+
+		/* diadic parallel stores */
+		| STI			reg ',' indirect
+		BARBAR dia_swap_par_sti	indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S1($7) | PST_D1($9) \
+				| PST_SS($2) | PST_D2($4);
+			CurInstr->combine = COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+
+		/* swapped operand shift instructions */
+		| STI			reg ',' indirect
+		BARBAR shift_swap_par_sti Dreg0_7 ',' indirect ',' Dreg0_7
+		{
+			CHK_Dreg0_7($2);
+			CurInstr->opcode = $6->par_st \
+				| PST_S2($7) | PST_S1($9) | PST_D1($11) \
+				| PST_SS($2) | PST_D2($4);
+
+			CurInstr->combine = COM_PST_IND_D2;
+			CurInstr->combine2 = COM_PST_IND_S1;
+		}
+		;
+
+
+genstores:		STFI | STII ;
+
+
+tri_swap_par_sti:	ADDI | ADDI3 | AND | AND3 | FIX |
+			MPYI | MPYI3 | OR | OR3 | XOR | XOR3 ;
+
+dia_swap_par_sti:	ABSI | NEGI | NOT ;
+
+shift_swap_par_sti:	ASH3 | ASH |  LSH3 | LSH | SUBI | SUBI3 ;
+
+
+tri_swap_par_stf:	ADDF | ADDF3 | MPYF | MPYF3 ;
+
+dia_swap_par_stf:	ABSF | FLOAT | FRIEEE | TOIEEE ;
+
+shift_swap_par_stf:	SUBF | SUBF3 ;
+
+
+
+/* ********************************************************************	*/
+/* *** BRANCHES *******************************************************	*/
+
+branches:	bigbranches
+		| condbranches
+		| decbranches
+		| returns
+		| traps
+		| repeats
+		;
+
+
+bigbranches:	bigbranch_ops pcrel
+		{
+			CurInstr->opcode = $1->diadic;
+
+			/* specifies 24 bit pcrel value */
+			CurInstr->combine = COM_BR_PCREL;
+		}
+		;
+
+bigbranch_ops:	BR | BRD | CALL | LAJ
+		;
+
+
+condbranches:	condbranch	pcrel
+		{	CurInstr->opcode = $1->diadic | BR_PCREL; }
+		| condbranch	reg
+		{	CurInstr->opcode = $1->diadic | BR_REG | SRC_REG($2); }
+		;
+
+condbranch:	Bcond | BcondAF | BcondAT | BcondD | CALLcond | LAJcond
+		;
+
+
+decbranches:	DBcond		Areg ',' reg
+		{	
+			CurInstr->opcode = $1->diadic \
+				| BR_REG | DB_AREG($2) | SRC_REG($4);
+		}
+		| DBcond	Areg ',' pcrel
+		{
+			CurInstr->opcode = $1->diadic \
+				| BR_PCREL | DB_AREG($2);
+		}
+		| DBcondD	Areg ',' reg
+		{
+			CurInstr->opcode = $1->diadic \
+				| BR_REG | DB_AREG($2) | SRC_REG($4);
+		}
+		| DBcondD	Areg ',' pcrel
+		{
+			CurInstr->opcode = $1->diadic \
+				| BR_PCREL | DB_AREG($2);
+		}
+		;
+
+
+returns:	ret_ops
+		{	CurInstr->opcode = $1->diadic; }
+		;
+
+
+ret_ops:	RETIcond | RETIcondD | RETScond ;
+
+
+traps:		trap_ops immediate
+		{
+			CurInstr->opcode = $1->diadic;
+			CurInstr->combine = COM_TRAP;
+		}
+		;
+
+trap_ops:	LATcond | TRAPcond ;
+
+
+repeats:	rptb_ops	pcrel
+		{
+			CurInstr->opcode = $1->diadic;
+
+			/* check and insert 24 bit pc rel offset */
+			CurInstr->combine = COM_BR_PCREL;
+		}
+		| rptb_ops	reg
+		{
+			/* note that "RPTB reg" and "RPTB pcrel" have */
+			/* completely different opcodes! The reg version */
+			/* is held in the triadic position */
+			CurInstr->opcode = $1->triadic | SRC_REG($2);
+		}
+
+		| RPTS		reg
+		{	CurInstr->opcode = $1->diadic | G_REG | SRC_REG($2); }
+		| RPTS		direct
+		{	CurInstr->opcode = $1->diadic | G_DIR; }
+		| RPTS		immediate
+		{
+			CurInstr->opcode = $1->diadic | G_IMM;
+			/* immediate is unsigned */
+			CurInstr->combine = COM_DIA_IMM_UNSIGNED;
+		}
+		| RPTS		indirect
+		{	CurInstr->opcode = $1->diadic | G_IND | MOD_FIELD($2); }
+		;
+
+rptb_ops:	RPTB | RPTBD ;
+
+
+/* ********************************************************************	*/
+/* *** STACK OPERATIONS ***********************************************	*/
+
+stackops:
+		/* stack operations (rising stack) */
+		PUSH		reg		/* *SP++ */
+		{	CurInstr->opcode = $1->diadic | DST_REG($2); }
+		| PUSHF		Dreg
+		{	CurInstr->opcode = $1->diadic | DST_REG($2); }
+		| POP		reg		/* *--SP */
+		{	CurInstr->opcode = $1->diadic | DST_REG($2); }
+		| POPF		Dreg
+		{	CurInstr->opcode = $1->diadic | DST_REG($2); }
+		;
+
+
+/* ********************************************************************	*/
+/* *** MISC OPERATIONS ************************************************	*/
+
+miscops:
+		IACK		direct
+		{	CurInstr->opcode = $1->diadic | G_DIR; }
+		| IACK		indirect
+		{	CurInstr->opcode = $1->diadic | G_IND | MOD_FIELD($2); }
+
+		| IDLE
+		{	CurInstr->opcode = $1->diadic; }
+
+		| NOP		indirect
+		{	CurInstr->opcode = $1->diadic | G_IND | MOD_FIELD($2); }
+		| NOP
+		{	CurInstr->opcode = $1->diadic; }
+
+		| SWI
+		{	CurInstr->opcode = $1->diadic; }
+		;
+
+
+
+/* ********************************************************************	*/
+/* *** Arithmetic and Logical Operations ******************************	*/
+/* ********************************************************************	*/
+
+
+/*
+ * The following classification may seem a little long-winded, but due to
+ * YACC's one token look ahead and the required compatibility with Texas's
+ * optional syntax (triadic opcodes dont need the trailing 3, unary 2
+ * opcodes can leave out the second destination register, etc) they have had
+ * to be compartmentalised in this fashion.
+ */
+
+arith_logic_ops:
+		int_unary_only | fp_unary_only
+		| int_diadic_only | fp_diadic_only
+		| int_triadic_only | int_both_2_3
+		| int_par_st_unary | fp_par_st_unary | float_par_st_unary
+		| unsigned_int_par_st_3 | unsigned_int_par_st_2_3
+		| shift_int_par_st_3 | shift_int_par_st_2_3
+		| fp_par_st_mpy_3 | fp_par_st_mpy_2_3
+		| shift_fp_par_st_mpy_3 | shift_fp_par_st_mpy_2_3
+		| int_par_st_mpy_3 | int_par_st_mpy_2_3
+		| shift_int_par_st_mpy_3 | shift_int_par_st_mpy_2_3
+		| mpy | reciprocals | rotates
+		| cmp | frieee | toieee | fix
+		;
+
+
+
+/* ********************************************************************	*/
+/* *** OPERATION AND ADDRESSING MODE COMBINATIONS *********************	*/
+
+/* 
+ * For each group of instruction types, define what the instructions are and
+ * what addressing modes can be legally combined with them.
+ */
+
+/* *** INTEGER UNARY DIADIC OPERATIONS ONLY ***************************	*/
+
+int_unary_only:
+		NEGB	int_unary_op_mode
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| NEGB	int_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		;
+
+
+/* *** FP UNARY DIADIC OPERATIONS ONLY ********************************	*/
+
+fp_unary_only:
+		fp_unary_only_ops	fp_unary_op_mode
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| fp_unary_only_ops	fp_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		;
+
+fp_unary_only_ops:	NORM | RND ;
+
+
+/* *** INTEGER DIADIC OPERATIONS ONLY *********************************	*/
+
+int_diadic_only:
+		int_diadic_only_ops	int_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		;
+
+int_diadic_only_ops:	SUBC | SUBRB | SUBRI ;
+
+
+
+/* *** FP DIADIC OPERATIONS ONLY **************************************	*/
+
+fp_diadic_only:
+		SUBRF	fp_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		;
+
+
+/* *** INTEGER TRIADIC OPERATIONS ONLY ********************************	*/
+
+int_triadic_only:
+		int_triadic_only_ops	int_triadic_modes
+		{
+			CurInstr->opcode = $1->triadic | $2;
+			if ($1->token == ANDN3 || $1->token == MPYUHI3) {
+				/* convert pass2 immediate tests to unsigned */
+				if (CurInstr->combine == COM_TRI_IMM_A1)
+					CurInstr->combine = COM_TRI_IMM_A1_UNSIGNED;
+				else if (CurInstr->combine2 == COM_TRI_IMM_A1)
+					CurInstr->combine2 = COM_TRI_IMM_A1_UNSIGNED;
+			}
+		}
+		;
+
+int_triadic_only_ops:	ADDC3 | ANDN3 | MPYSHI3 | MPYUHI3 | SUBB3 ;
+
+
+/* *** BOTH DIADIC AND TRIADIC INTEGER OPERATIONS *********************	*/
+
+int_both_2_3:
+		int_both_2_3_ops	int_diadic_modes
+		{
+			CurInstr->opcode = $1->diadic | $2;
+			if ($1->token == ANDN || $1->token == MPYUHI) {
+				/* convert pass2 immediate tests to unsigned */
+				if (CurInstr->combine == COM_DIA_IMM)
+					CurInstr->combine = COM_DIA_IMM_UNSIGNED;
+			}
+		}
+		| int_both_2_3_ops	int_triadic_modes
+		{
+			CurInstr->opcode = $1->triadic | $2;
+			if ($1->token == ANDN || $1->token == MPYUHI) {
+				/* convert pass2 immediate tests to unsigned */
+				if (CurInstr->combine == COM_TRI_IMM_A1)
+					CurInstr->combine = COM_TRI_IMM_A1_UNSIGNED;
+				else if (CurInstr->combine2 == COM_TRI_IMM_A1)
+					CurInstr->combine2 = COM_TRI_IMM_A1_UNSIGNED;
+			}
+		}
+		;
+
+int_both_2_3_ops:	ADDC | ANDN | MPYSHI | MPYUHI | SUBB ;
+
+
+/* *** BOTH UNARY DIADIC INTEGER AND PARALLEL STORE OPERATIONS ********	*/
+
+int_par_st_unary:
+		int_par_st_unary_ops	int_unary_op_mode
+		{
+			CurInstr->opcode = $1->diadic | $2;
+		}
+		| int_par_st_unary_ops	int_diadic_modes
+		{
+			CurInstr->opcode = $1->diadic | $2;
+			if ($1->token == NOT && CurInstr->combine == COM_DIA_IMM) {
+				/* convert pass2 immediate tests to unsigned */
+				CurInstr->combine = COM_DIA_IMM_UNSIGNED;
+			}
+		}
+		| int_par_st_unary_ops	dia_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2;	}
+		;
+
+int_par_st_unary_ops:	ABSI | NEGI | NOT;
+
+
+/* *** BOTH UNARY DIADIC FP AND PARALLEL STORE OPERATIONS *************	*/
+
+fp_par_st_unary:
+		fp_par_st_unary_ops	fp_unary_op_mode
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| fp_par_st_unary_ops	fp_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| fp_par_st_unary_ops	dia_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+fp_par_st_unary_ops:	ABSF | NEGF ;
+
+/* *** FLOAT UNARY DIADIC FP AND PARALLEL STORE OPERATIONS ************	*/
+
+float_par_st_unary:
+		FLOAT	fp_unary_op_mode
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| FLOAT	float_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| FLOAT	dia_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+/* *** UNSIGNED TRIADIC, INTEGER AND PARALLEL STORE OPERATIONS ********	*/
+
+unsigned_int_par_st_3:
+		int_par_st_3_ops	int_triadic_modes
+		{
+			CurInstr->opcode = $1->triadic | $2;
+			/* convert pass2 immediate tests to unsigned */
+			if (CurInstr->combine == COM_TRI_IMM_A1)
+				CurInstr->combine = COM_TRI_IMM_A1_UNSIGNED;
+			else if (CurInstr->combine2 == COM_TRI_IMM_A1)
+				CurInstr->combine2 = COM_TRI_IMM_A1_UNSIGNED;
+		}
+		| int_par_st_3_ops	tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+int_par_st_3_ops:	AND3 | OR3 | XOR3 ;
+
+
+/* *** TRIADIC SHIFT AND PARALLEL STORE OPERATIONS ********************	*/
+
+shift_int_par_st_3:
+#if 1
+		shift_par_st_3_ops	int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+#else
+		/* @@@ if src ops in triadic ash/lsh really are swapped */
+		shift_par_st_3_ops	shift_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+#endif
+		| shift_par_st_3_ops	shift_tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+shift_par_st_3_ops:	ASH3 | LSH3 ;
+
+
+/* *** TRIADIC INTEGER AND PARALLEL STORE/MPY OPERATIONS **************	*/
+/* With swapped order of subi operands */
+
+shift_int_par_st_mpy_3:
+		SUBI3		int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| SUBI3		shift_tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| SUBI3		rev_par_mpyi_mode
+		{	CurInstr->opcode = OP_MPYI3_SUBI3 | $2; }
+		;
+
+
+/* *** TRIADIC INTEGER AND PARALLEL STORE/MPY OPERATIONS **************	*/
+/* Normal order of operands */
+
+int_par_st_mpy_3:
+		ADDI3		int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| ADDI3		tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| ADDI3		rev_par_mpyi_mode
+		{	CurInstr->opcode = OP_MPYI3_ADDI3 | $2; }
+		;
+
+
+/* *** BOTH TRIADIC FP AND PARALLEL STORE OPERATIONS ******************	*/
+/* Swapped order of operands for sub */
+
+shift_fp_par_st_mpy_3:
+		SUBF3		fp_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| SUBF3		shift_tri_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| SUBF3 	rev_par_mpyf_mode
+		{	CurInstr->opcode = OP_MPYF3_SUBF3 | $2; }
+		;
+
+
+/* *** BOTH TRIADIC FP AND PARALLEL STORE OPERATIONS ******************	*/
+/* Normal order of operands */
+
+fp_par_st_mpy_3:
+		ADDF3		fp_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| ADDF3		tri_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| ADDF3		rev_par_mpyf_mode
+		{	CurInstr->opcode = OP_MPYF3_ADDF3 | $2; }
+		;
+
+
+/* *** UNSIGNED DIADIC, TRIADIC INTEGER AND PARALLEL STORE OPERATIONS *	*/
+
+unsigned_int_par_st_2_3:
+		int_par_st_2_3_ops	int_diadic_modes
+		{
+			CurInstr->opcode = $1->diadic | $2;
+			/* convert pass2 immediate tests to unsigned */
+			if (CurInstr->combine == COM_DIA_IMM)
+				CurInstr->combine = COM_DIA_IMM_UNSIGNED;
+		}
+		| int_par_st_2_3_ops	int_triadic_modes
+		{
+			CurInstr->opcode = $1->triadic | $2;
+			/* convert pass2 immediate tests to unsigned */
+			if (CurInstr->combine == COM_TRI_IMM_A1)
+				CurInstr->combine = COM_TRI_IMM_A1_UNSIGNED;
+			else if (CurInstr->combine2 == COM_TRI_IMM_A1)
+				CurInstr->combine2 = COM_TRI_IMM_A1_UNSIGNED;
+		}
+		| int_par_st_2_3_ops	tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+int_par_st_2_3_ops:	AND | OR | XOR ;
+
+
+/* *** DIADIC, TRIADIC SHIFT AND PARALLEL STORE OPERATIONS ************	*/
+
+shift_int_par_st_2_3:
+		shift_par_st_2_3_ops	int_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+#if 1
+		| shift_par_st_2_3_ops	int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+#else
+		/* @@@ if src ops in triadic ash/lsh really are swapped */
+		| shift_par_st_2_3_ops	shift_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+#endif
+		| shift_par_st_2_3_ops	shift_tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+shift_par_st_2_3_ops:	ASH | LSH ;
+
+
+/* *** DIADIC, TRIADIC INTEGER AND PARALLEL STORE/MPY OPERATIONS ******	*/
+/* With swapped order of operands for sub || sti */
+
+shift_int_par_st_mpy_2_3:
+		SUBI		int_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| SUBI		int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| SUBI		shift_tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| SUBI		rev_par_mpyi_mode
+		{	CurInstr->opcode = OP_MPYI3_SUBI3 | $2; }
+		;
+
+
+/* *** DIADIC, TRIADIC INTEGER AND PARALLEL STORE/MPY OPERATIONS ******	*/
+/* normal order of operands */
+int_par_st_mpy_2_3:
+		ADDI		int_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| ADDI		int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| ADDI		tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| ADDI		rev_par_mpyi_mode
+		{	CurInstr->opcode = OP_MPYI3_ADDI3 | $2; }
+		;
+
+
+/* *** DIADIC, TRIADIC FP AND PARALLEL STORE/MPY OPERATIONS ***********	*/
+
+shift_fp_par_st_mpy_2_3:
+		SUBF		fp_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| SUBF		fp_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| SUBF		shift_tri_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| SUBF		rev_par_mpyf_mode
+		{	CurInstr->opcode = OP_MPYF3_SUBF3 | $2; }
+		;
+
+
+/* *** DIADIC, TRIADIC FP AND PARALLEL STORE/MPY OPERATIONS ***********	*/
+
+fp_par_st_mpy_2_3:
+		ADDF		fp_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| ADDF		fp_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| ADDF		tri_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| ADDF		rev_par_mpyf_mode
+		{	CurInstr->opcode = OP_MPYF3_ADDF3 | $2; }
+		;
+
+
+
+/* ********************************************************************	*/
+/* *** Non Standard Format Arithmetic and Logical Operations **********	*/
+/* ********************************************************************	*/
+
+
+/* ********************************************************************	*/
+/* *** MULTIPLY *******************************************************	*/
+
+mpy:	mpyf_3 | mpyf_2_3 | mpyi_3 | mpyi_2_3 ;
+
+
+/* *** FP MULTIPLY ****************************************************	*/
+
+/* Floating point multiply can be either diadic or triadic formats	*/
+/* Both of which can also be used in a parallel format:			*/
+/* ||STI, ||ADDF(3) and ||SUBI(3).					*/
+
+/* Triadic or parallel operations MPYF3.				*/
+mpyf_3:
+		MPYF3		fp_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| MPYF3		tri_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| MPYF3		par_mpyf_mode
+		{	CurInstr->opcode = $2; }
+		;
+
+/* Diadic or triadic or parallel operations MPYF.			*/
+mpyf_2_3:
+		MPYF		fp_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| MPYF		fp_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| MPYF		tri_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| MPYF		par_mpyf_mode
+		{	CurInstr->opcode = $2; }
+		;
+
+
+/* *** INTEGER MULTIPLY ***********************************************	*/
+
+/* Integer multiply can be either diadic or triadic,			*/
+/* both can also be used in a parallel format.				*/
+
+/* Triadic or parallel operations MPYI3.				*/
+mpyi_3:
+		MPYI3		int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| MPYI3		tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| MPYI3		par_mpyi_mode
+		{	CurInstr->opcode = $2; }
+		;
+
+/* Diadic or triadic or parallel operations MPYI.			*/
+mpyi_2_3:
+		MPYI		int_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+		| MPYI		int_triadic_modes
+		{	CurInstr->opcode = $1->triadic | $2; }
+		| MPYI		tri_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		| MPYI		par_mpyi_mode
+		{	CurInstr->opcode = $2; }
+		;
+
+
+/* ********************************************************************	*/
+/* *** ROTATES ********************************************************	*/
+/* Only allow unary register addressing for a 1 bit shift.		*/
+
+rotates:	rotate_ops	reg
+		{	CurInstr->opcode = $1->diadic | DST_REG($2); }
+		;
+
+rotate_ops:	ROL | ROLC | ROR | RORC	;
+
+
+
+/* ********************************************************************	*/
+/* *** RECIPROCALS ****************************************************	*/
+/* Odd in that they cannot use immediate addressing mode.		*/
+
+reciprocals:	recip_ops	Dreg ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_REG | SRC_REG($2) | DST_REG($4);
+		}
+		| recip_ops	direct ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_DIR | DST_REG($4);
+		}
+		| recip_ops	indirect ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic \
+				| G_IND | MOD_FIELD($2) | DST_REG($4);
+		}
+		;
+
+recip_ops:	RCPF | RSQRF ;
+
+
+/* ********************************************************************	*/
+/* *** COMPARES *******************************************************	*/
+/* Odd in that their 3 operand versions only take 2 operands!		*/
+
+cmp:	cmpi | cmpf | cmpi3 | cmpf3 ;
+
+
+/*
+ * YUK - the triadic cmp's can be confused with the diadic ones
+ * as many look the same without the usual triadic trailing destination
+ * register. The following addr. modes can only be accessed from diadic
+ * addressing instuctions:
+ * 	cmp	reg, reg
+ *	cmp 	indr, reg
+ *	cmp	imm. reg
+ *
+ * Only allow these instructions if cmpf/i3 is stated explicitly.
+ */
+
+/* *** CMPI ***********************************************************	*/
+
+cmpi:
+		/* Diadic versions ************************************	*/
+		cmpi_ops	int_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+
+		/* Triadic / type 1 ***********************************	*/
+		| cmpi_ops	reg ',' indirect
+		{
+			CurInstr->opcode = $1->triadic \
+				| T1_REGIND | TRI_A1($2) | TRI_A2($4);
+			CurInstr->combine = COM_TRI_IND1_A2;
+		}
+
+		/* Triadic / type 2 ***********************************	*/
+		| cmpi_ops	immediate ',' indirect
+		{
+			if (!ISMODTYPE2($4)) {
+				Error("Only *+ARn format indirections allowed for \"cmpi3 immediate, indirect\"");
+			}
+			CurInstr->opcode = $1->triadic \
+				| T2_IMMIND | TRI_A2($4);
+			if ($1->token == TSTB)
+				CurInstr->combine = COM_TRI_IMM_A1_UNSIGNED;
+			else
+				CurInstr->combine = COM_TRI_IMM_A1;
+			CurInstr->combine2 = COM_TRI_IND2_A2;
+		}
+
+		/* Triadic / type 1 or 2 ******************************	*/
+
+		/* is 1/0 or 5 bit and if the indirect mod field is of	*/
+		/* the right type, generate type 1 or type 2		*/
+		/* instruction.						*/
+
+		| cmpi_ops	indirect ',' indirect
+		{
+			if (ISMODTYPE2($2) && ISMODTYPE2($4)) {
+				CurInstr->opcode = $1->triadic \
+					| T2_INDIND | TRI_A1($2) | TRI_A2($4);
+
+				CurInstr->combine = COM_TRI_IND2_A1;
+				CurInstr->combine2 = COM_TRI_IND2_A2;
+			}
+			else {
+				CurInstr->opcode = $1->triadic \
+					| T1_INDIND | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND1_A1;
+				CurInstr->combine2 = COM_TRI_IND1_A2;
+			}
+		}
+		;
+
+cmpi_ops:	CMPI | TSTB ;
+
+
+/* *** CMPF ***********************************************************	*/
+
+cmpf:
+		/* Diadic versions ************************************	*/
+		CMPF	fp_diadic_modes
+		{	CurInstr->opcode = $1->diadic | $2; }
+
+		/* Triadic / type 1 ***********************************	*/
+		| CMPF	Dreg ',' indirect
+		{
+			CurInstr->opcode = $1->triadic \
+				| T1_REGIND | TRI_A1($2) | TRI_A2($4);
+			CurInstr->combine = COM_TRI_IND1_A2;
+		}
+
+		/* Triadic / type 2 ***********************************	*/
+		/* no immediates allowed for floating point */
+
+		/* Triadic / type 1 or 2 ******************************	*/
+
+		/* is 1/0 or 5 bit and if the indirect mod field is of	*/
+		/* the right type, generate type 1 or type 2		*/
+		/* instruction.						*/
+
+		| CMPF	indirect ',' indirect
+		{
+			if (ISMODTYPE2($2) && ISMODTYPE2($4)) {
+				CurInstr->opcode = $1->triadic \
+					| T2_INDIND | TRI_A1($2) | TRI_A2($4);
+
+				CurInstr->combine = COM_TRI_IND2_A1;
+				CurInstr->combine2 = COM_TRI_IND2_A2;
+			}
+			else {
+				CurInstr->opcode = $1->triadic \
+					| T1_INDIND | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND1_A1;
+				CurInstr->combine2 = COM_TRI_IND1_A2;
+			}
+		}
+		;
+
+
+/* *** CMPI3 **********************************************************	*/
+
+cmpi3:
+		/* Triadic / type 1 ***********************************	*/
+		cmpi3_ops	reg ',' reg
+		{
+			CurInstr->opcode = $1->triadic | T1_REGREG \
+				| TRI_A1($2) | TRI_A2($4);
+		}
+		| cmpi3_ops	reg ',' indirect
+		{
+			CurInstr->opcode = $1->triadic | T1_REGIND \
+				| TRI_A1($2) | TRI_A2($4);
+			CurInstr->combine = COM_TRI_IND1_A2;
+		}
+		/* Triadic / type 2 ***********************************	*/
+		| cmpi3_ops	immediate ',' reg
+		{
+			CurInstr->opcode = $1->triadic | T2_IMMREG | TRI_A2($4);
+			if ($1->token == TSTB3)
+				CurInstr->combine = COM_TRI_IMM_A1_UNSIGNED;
+			else
+				CurInstr->combine = COM_TRI_IMM_A1;
+		}
+
+		| cmpi3_ops	immediate ',' indirect
+		{
+			CurInstr->opcode = $1->triadic | T2_IMMIND | TRI_A2($4);
+			if ($1->token == TSTB3)
+				CurInstr->combine = COM_TRI_IMM_A1_UNSIGNED;
+			else
+				CurInstr->combine = COM_TRI_IMM_A1;
+
+			if (!ISMODTYPE2($4))
+				Error("Only *+ARn format indirections allowed for type 2 triadic instructions");
+
+			CurInstr->combine2 = COM_TRI_IND2_A2;
+		}
+
+		/* Triadic / type 1 or 2 ******************************	*/
+
+		/* @@@ in second pass depending on wether displacement	*/
+		/* is 1/0 or 5 bit and if the indirect mod field is of	*/
+		/* the right type, generate type 1 or type 2		*/
+		/* instruction.						*/
+
+		/* Following mode can only be accessed via diadic mode.	*/
+		| cmpi3_ops	indirect ',' reg
+		{
+			if (ISMODTYPE2($2)) {
+				CurInstr->opcode = $1->triadic \
+					| T2_INDREG | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND2_A1;
+			}
+			else {
+				CurInstr->opcode = $1->triadic \
+					| T1_INDREG | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND1_A1;
+			}
+		}
+		| cmpi3_ops	indirect ',' indirect
+		{
+			if (ISMODTYPE2($2) && ISMODTYPE2($4)) {
+				CurInstr->opcode = $1->triadic \
+					| T2_INDIND | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND2_A1;
+				CurInstr->combine2 = COM_TRI_IND2_A2;
+			}
+			else {
+				CurInstr->opcode = $1->triadic \
+					| T1_INDIND | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND1_A1;
+				CurInstr->combine2 = COM_TRI_IND1_A2;
+			}
+		}
+		;
+
+cmpi3_ops:	CMPI3 | TSTB3;
+
+
+/* *** CMPF3 **********************************************************	*/
+
+cmpf3:
+		/* Triadic / type 1 ***********************************	*/
+		CMPF3	Dreg ',' Dreg
+		{
+			CurInstr->opcode = $1->triadic | T1_REGREG \
+				| TRI_A1($2) | TRI_A2($4);
+		}
+		| CMPF3	Dreg ',' indirect
+		{
+			CurInstr->opcode = $1->triadic | T1_REGIND \
+				| TRI_A1($2) | TRI_A2($4);
+			CurInstr->combine = COM_TRI_IND1_A2;
+		}
+
+		/* Triadic / type 2 ***********************************	*/
+		/* no immediates allowed for floating point */
+
+		/* Triadic / type 1 or 2 ******************************	*/
+
+		/* @@@ in second pass depending on wether displacement	*/
+		/* is 1/0 or 5 bit and if the indirect mod field is of	*/
+		/* the right type, generate type 1 or type 2		*/
+		/* instruction.						*/
+
+		| CMPF3	indirect ',' Dreg
+		{
+			if (ISMODTYPE2($2)) {
+				CurInstr->opcode = $1->triadic \
+					| T2_INDREG | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND2_A1;
+			}
+			else {
+				CurInstr->opcode = $1->triadic \
+					| T1_INDREG | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND1_A1;
+			}
+		}
+		| CMPF3	indirect ',' indirect
+		{
+			if (ISMODTYPE2($2) && ISMODTYPE2($4)) {
+				CurInstr->opcode = $1->triadic \
+					| T2_INDIND | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND2_A1;
+				CurInstr->combine2 = COM_TRI_IND2_A2;
+			}
+			else {
+				CurInstr->opcode = $1->triadic \
+					| T1_INDIND | TRI_A1($2) | TRI_A2($4);
+				CurInstr->combine = COM_TRI_IND1_A1;
+				CurInstr->combine2 = COM_TRI_IND1_A2;
+			}
+		}
+		;
+
+
+
+/* ********************************************************************	*/
+/* *** FIX - FP to INT ************************************************	*/
+/* Odd in that it takes FP src and produces int result.			*/
+
+fix:
+		FIX			Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_REG \
+				| DST_REG($2) | SRC_REG($2);
+		}
+		| FIX			Dreg ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_REG \
+				| DST_REG($4) | SRC_REG($2);
+		}
+		| FIX			direct ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_DIR \
+				| DST_REG($4);
+		}
+		| FIX			indirect ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_IND \
+				| DST_REG($4) | MOD_FIELD($2);
+		}
+		| FIX			fp_immediate ',' reg
+		{
+			CurInstr->opcode = $1->diadic | G_IMM | $2 \
+				| DST_REG($4);
+		}
+
+		/* Parallel store *************************************	*/
+		| FIX			dia_par_sti_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+
+/* ********************************************************************	*/
+/* *** TOIEEE - FP to IEEEE *******************************************	*/
+/* Odd in that it doesn't allow immediate addressing mode.		*/
+
+toieee:
+		TOIEEE			Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_REG \
+				| DST_REG($2) | SRC_REG($2);
+		}
+		| TOIEEE		Dreg ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_REG \
+				| DST_REG($4) | SRC_REG($2);
+		}
+		| TOIEEE		direct ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_DIR \
+				| DST_REG($4);
+		}
+		| TOIEEE		indirect ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_IND \
+				| DST_REG($4) | MOD_FIELD($2);
+		}
+
+		/* Parallel store *************************************	*/
+		| TOIEEE		dia_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+
+/* ********************************************************************	*/
+/* *** FRIEEE - IEEEE to FP *******************************************	*/
+/* Odd in that it doesn't allow register OR immediate addressing modes. */
+
+frieee:
+		FRIEEE			direct ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_DIR \
+				| DST_REG($4);
+		}
+		| FRIEEE		indirect ',' Dreg
+		{
+			CurInstr->opcode = $1->diadic | G_IND \
+				| DST_REG($4) | MOD_FIELD($2);
+		}
+
+		/* Parallel store *************************************	*/
+		| FRIEEE		dia_par_stf_mode
+		{	CurInstr->opcode = $1->par_st | $2; }
+		;
+
+
+
+/* ******************************************************************** */
+/* C40 CPU specific linker instruction patches				*/
+/* ******************************************************************** */
+/* These patches are implemented by the target CPU's linker.		*/
+/* They enable instructions to be patched with data that is only	*/
+/* available at link time, such as the module number, or offsets into	*/
+/* the module table for static data. The patch usually masks in the	*/
+/* information into the immediate data area of specific instructions.	*/
+/* The instrpatch rule fakes up a Expression structure to allow normal	*/
+/* expressions to be used as patch number arguments as well.		*/
+/* ******************************************************************** */
+
+instrpatch:	constexpr
+		| c40patches
+		{
+			/* fake up constexpr item with our patch number */
+			$$ = NewExprNum($1);
+		}
+		;
+
+c40patches:
+		PATCHC40DATAMODULE1
+		| PATCHC40DATAMODULE2
+		| PATCHC40DATAMODULE3
+		| PATCHC40DATAMODULE4
+		| PATCHC40DATAMODULE5
+		| PATCHC40MASK8ADD
+		| PATCHC40MASK16ADD
+		| PATCHC40MASK24ADD
+		;
+
+
+
+/* end of rules_C40.ypp */

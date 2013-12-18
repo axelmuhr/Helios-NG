@@ -1,0 +1,471 @@
+head	1.3;
+access;
+symbols;
+locks;
+comment	@! @;
+
+
+1.3
+date	94.02.08.11.31.38;	author vlsi;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	94.01.05.16.45.38;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.02.14.22.07.45;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@revised version of fpdirect.a for hobjasm
+@
+
+
+1.3
+log
+@Removed _huge_val definition from assembler file, since it is defined 
+and initialised in the library header file.
+@
+text
+@	TTL  Floating Point support functions                      > fpdirect/s
+	;    Copyright (c) 1993, VLSI Technology Ltd, Cambridge, United Kingdom
+	;    Copyright (c) 1988, Acorn Computers Ltd, Cambridge, United Kingdom
+	; ---------------------------------------------------------------------
+	; These functions utilise direct instruction calls to the FPE (the FP
+	; hardware does not implement the complete IEEE specification).
+	;
+	; This sourse is derived from the Acorn library source "s.cl_body".
+	;
+	; ---------------------------------------------------------------------
+	; ---------------------------------------------------------------------
+	; -- Standard Helios include files ------------------------------------
+	GET	listopts.s	; assembly listing control directives
+	GET	arm.s		; ARM processor description
+	GET	exmacros.s	; assembler macros
+
+	; ---------------------------------------------------------------------
+
+ERANGE  *       2
+EDOM    *       1
+
+	; ---------------------------------------------------------------------
+
+        MACRO
+$label  DisableFPInterrupts
+        ; Disables all FP exceptions, remembering the exception mask in "ip"
+        ; for subsequent reinstatement by ReEnableFPInterrupts. ("ip" must
+        ; therefore be left alone by the FP procedures which call this macro).
+$label
+	MOV     r1,#&00000000
+        RFS     ip
+        WFS     r1
+        MEND
+
+        MACRO
+$label  ReEnableFPInterrupts
+        ; Reinstates the exception mask state which prevailed before the call
+        ; to DisableFPInterrupts; sets "r1" to the current FP flags.
+$label
+	RFS     r1
+        WFS     ip
+        MEND
+
+	; ---------------------------------------------------------------------
+
+	AREA	fpdirect,CODE,REENTRANT,PIC,READONLY
+
+	; ---------------------------------------------------------------------
+	; double _ldfp(void *x) ;
+	; converts packed decimal at x to a double
+
+_ldfp	FnHeadEx
+	DisableFPInterrupts
+
+        LDFP    f0,[r0,#0]
+        ADFD    f0,f0,#0	; (round to D format)
+
+        ReEnableFPInterrupts
+
+        TST     r1,#&0F
+        MOVEQS  pc,lr
+        TST     r1,#&07
+        BNE     ldfp_overflow
+
+        B       underflow_error
+
+	; ---------------------------------------------------------------------
+	; void _stfp(double d,void *x) ;
+	; stores packed decimal at x
+_stfp	FnHeadEx
+	STMFD   sp!,{r0,r1}
+        LDFD    f0,[sp],#8
+        STFP    f0,[r2,#0]
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+sin	FnHeadEx
+	STMFD   sp!,{r0,r1}
+        LDFD    f0,[sp],#8
+        SIND    f0,f0
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+cos	FnHeadEx
+	STMFD   sp!,{r0,r1}
+        LDFD    f0,[sp],#8
+        COSD    f0,f0
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+exp	FnHeadEx
+	STMFD   sp!,{r0,r1}
+
+        DisableFPInterrupts
+
+        LDFD    f0,[sp],#8
+        EXPD    f0,f0
+
+        ReEnableFPInterrupts
+
+        TST     r1,#&0F
+        MOVEQS  pc,lr
+
+        TST     r1,#&08
+        BNE     underflow_error
+
+        B       huge_error
+
+	; ---------------------------------------------------------------------
+
+ldfp_overflow
+        LDR     r0,[r0,#0]
+        CMPS    r0,#&00000000
+        BPL     huge_error
+
+huge_negative_result
+	LDR	r1,adr_errno		; address the posix errno
+        MOV     r0,#ERANGE
+        STR     r0,[r1,#0]
+        LDFD    f0,negative_huge_val	; @@@@@@@@!!!!
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+	; This is a constant... and should be OK here
+negative_huge_val
+        DCD     &FFEFFFFF               ; put constant where it is easy to find
+        DCD     &FFFFFFFF
+
+	; ---------------------------------------------------------------------
+
+huge_error
+	LDR	r1,adr_errno
+        MOV     r0,#ERANGE
+        STR     r0,[r1,#0]
+	[	{TRUE}
+	LDR	r1,adr_huge_val
+	LDFD	f0,[r1,#0]
+	|
+        LDFD    f0,_huge_val		; @@@@@@@@!!!!
+	]
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+negative_error
+	LDR	r1,adr_errno
+        MOV     r0,#EDOM
+        STR     r0,[r1,#0]
+        LDFD    f0,negative_huge_val	; @@@@@@@@!!!!
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+underflow_error
+	LDR	r1,adr_errno
+        MOV     r0,#ERANGE
+        STR     r0,[r1,#0]
+        MVFD    f0,#0
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+log10	FnHeadEx
+	STMFD   sp!,{r0,r1}
+        LDFD    f0,[sp],#8
+        CMFE    f0,#0
+        BEQ     huge_negative_result
+        BMI     negative_error
+        LOGD    f0,f0
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+log	FnHeadEx
+	STMFD   sp!,{r0,r1}
+        LDFD    f0,[sp],#8
+        CMFE    f0,#0
+        BEQ     huge_negative_result
+        BMI     negative_error
+        LGND    f0,f0
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+sqrt	FnHeadEx
+	STMFD   sp!,{r0,r1}
+        LDFD    f0,[sp],#8
+        CMFE    f0,#0
+        BMI     negative_error
+        SQTD    f0,f0
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+tan	FnHeadEx
+	STMFD   sp!,{r0,r1}
+
+        DisableFPInterrupts
+
+        LDFD    f0,[sp],#8
+        TAND    f0,f0
+
+        ReEnableFPInterrupts
+
+        TST     r1,#&07
+        MOVEQS  pc,lr
+        B       huge_error
+
+	; ---------------------------------------------------------------------
+
+atan	FnHeadEx
+	STMFD   sp!,{r0,r1}
+        LDFD    f0,[sp],#8
+        ATND    f0,f0
+        MOVS    pc,lr
+
+	; ---------------------------------------------------------------------
+
+asin	FnHeadEx
+	STMFD   sp!,{r0,r1}
+
+        DisableFPInterrupts
+
+        LDFD    f0,[sp],#8
+        ASND    f0,f0
+
+        ReEnableFPInterrupts
+
+        ; A range error is not possible; any error must be a domain error.
+        ; (And the only plausible error flag is IVO, but I don't check).
+        ; Dunno what result is sensible.
+        TST     r1,#&07
+        MOVEQS  pc,lr
+        B       negative_error
+
+	; ---------------------------------------------------------------------
+
+acos	FnHeadEx
+	STMFD   sp!,{r0,r1}
+
+        DisableFPInterrupts
+
+        LDFD    f0,[sp],#8
+        ACSD    f0,f0
+
+        ReEnableFPInterrupts
+
+        ; A range error is not possible; any error must be a domain error.
+        ; (And the only plausible error flag is IVO, but I don't check).
+        ; Dunno what result is sensible.
+        TST     r1,#&07
+        MOVEQS  pc,lr
+        B       negative_error
+
+	; ---------------------------------------------------------------------
+
+pow	FnHeadEx
+	STMFD   sp!,{r0,r1,r2,r3}
+
+        DisableFPInterrupts
+
+        LDFD    f0,[sp],#8
+        LDFD    f1,[sp],#8
+        CMFE    f0,#0
+        BEQ     POWFirstArgZero
+
+        POWD    f0,f0,f1
+
+        ReEnableFPInterrupts
+        ; Plausibly, there may have been either an overflow or IVO error.
+        ; I assume that the former is always a range error, and the latter
+        ; corresponds to one of the possible C domain errors (first arg
+        ; negative, second non-integer).
+        ; (DVZ assumed impossible).
+        TST     r1,#&0F
+        MOVEQS  pc,lr
+
+        TST     r1,#1
+        BNE     negative_error
+
+        TST     r1,#8
+        BNE     underflow_error
+
+        B       huge_error
+
+	; ---------------------------------------------------------------------
+
+POWFirstArgZero
+        CMFE    f1,#0
+
+        ReEnableFPInterrupts
+
+        MOVGTS  pc,lr
+        B       negative_error
+
+	; ---------------------------------------------------------------------
+
+	[	{TRUE}	; also defined in "fpstart.a" at the moment
+	IMPORT	_huge_val
+	|
+	AREA	fpdirect_data,DATA
+
+	; This datum is exported, so needs to be provided in the data area.
+	EXPORT	_huge_val
+_huge_val
+        DCD     &7FEFFFFF               ; put constant where it is easy to find
+        DCD     &FFFFFFFF
+	]
+
+	; ---------------------------------------------------------------------
+
+	AREA	sbarea,DATA,READONLY,BASED r9
+	IMPORT	errno		; Posix error number
+adr_errno	DCD	errno	; address of the Posix errno variable
+adr_huge_val	DCD	_huge_val
+
+	; ---------------------------------------------------------------------
+        END
+@
+
+
+1.2
+log
+@New - Improved Jamie version
+@
+text
+@d301 3
+d311 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 2
+a2 2
+	TTL  Floating Point support functions                      > fpdirect/a
+	;    Copyright (c) 1989, Active Book Company, Cambridge, United Kingdom
+d15 1
+a15 19
+	GET	basic.s		; default labels and variables
+	GET	structs.s	; structure construction MACROs
+	GET	module.s	; Helios object module construction MACROs
+	GET	error.s		; Helios error manifests
+	GET	queue.s		; Helios queue structures
+	GET	memory.s	; Helios memory structures
+	GET	task.s		; Helios Task structure
+	; -- Executive specific include files ---------------------------------
+	GET	exmacros.s	; Executive MACROs
+	GET	exstruct.s	; Executive structures
+        GET     SWIinfo.s	; Executive SWI definitions
+        GET     ROMitems.s	; BLOCK and ITEM formats
+        GET     manifest.s	; Executive manifests
+	GET	PCSregs.s	; standard PCS register definitions
+
+	; ---------------------------------------------------------------------
+	; This file should be assembled with the "-library" argument to hobjasm
+	LIB			; we are part of a library
+	ALIGN			; ensure word-aligned code
+a18 8
+	LABREF	errno		; Posix error number
+	; At the moment we use "SADR" to access the "errno" variable. This
+	; assumes that it can be accessed in a single LDR instruction from the
+	; start of the Posix static data area (This should possibly be changed
+	; if the Posix library header file is updated).
+
+	; ---------------------------------------------------------------------
+
+d45 4
+d52 1
+a52 1
+_ldfp	FnHead
+d70 1
+a70 1
+_stfp	FnHead
+d78 1
+a78 1
+sin	FnHead
+d86 1
+a86 1
+cos	FnHead
+d94 1
+a94 1
+exp	FnHead
+d120 1
+a120 1
+	SADR	r1,errno		; address the posix errno
+d135 1
+a135 1
+	SADR	r1,errno
+d138 6
+a143 1
+        LDFD    f0,huge_val		; @@@@@@@@!!!!
+a146 6
+	; This is a constant definition... and should be OK here
+huge_val
+        DCD     &7FEFFFFF               ; put constant where it is easy to find
+        DCD     &FFFFFFFF
+
+	; ---------------------------------------------------------------------
+d149 1
+a149 1
+	SADR	r1,errno
+d158 1
+a158 1
+	SADR	r1,errno
+d166 1
+a166 1
+log10	FnHead
+d177 1
+a177 1
+log	FnHead
+d188 1
+a188 1
+sqrt	FnHead
+d198 1
+a198 1
+tan	FnHead
+d214 1
+a214 1
+atan	FnHead
+d222 1
+a222 1
+asin	FnHead
+d241 1
+a241 1
+acos	FnHead
+d260 1
+a260 1
+pow	FnHead
+d298 17
+@

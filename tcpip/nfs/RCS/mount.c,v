@@ -1,0 +1,200 @@
+head	1.6;
+access;
+symbols
+	Helios_1_3_1:1.5
+	Helios_C40_1_3_Official_Release:1.5
+	Alenia_release:1.4
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	Helios13_beta:1.3
+	Alpha_100:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.6
+date	94.03.20.12.23.25;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	93.03.17.15.53.15;	author craig;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.12.08.16.05.19;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.06.19.17.12.21;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.02.25.15.16.13;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.11.21.11.07.35;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@mount protocol handling
+@
+
+
+1.6
+log
+@fixed compile time warning
+@
+text
+@
+#include <rpc/rpc.h>
+#include "mount.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
+/*
+-- crf: 17/03/93
+-- If mount fails, retry up to MAX_RETRIES times, every DELAY seconds
+*/
+#define MAX_RETRIES	20
+#define DELAY		5	/* seconds */
+
+fhandle nfsroot;
+
+extern int Mount(char *host, char *root)
+{
+	CLIENT *mountcl;
+	fhstatus *status;
+
+	
+	mountcl = clnt_create(host, MOUNTPROG, MOUNTVERS, "udp");
+
+	if( mountcl == NULL )
+	{
+	  clnt_pcreateerror(host);
+	  return 1;
+	}
+
+	mountcl->cl_auth = authunix_create_default();
+
+	for(;;)
+	{	
+		status = mountproc_mnt_1((dirpath *)&root, mountcl);
+
+		if( status->fhs_status == 0 )
+		{
+			memcpy(nfsroot,status->fhstatus_u.fhs_fhandle,sizeof(nfsroot));
+			break;
+		}
+		else
+		{
+			static int count = 0 ;
+			if (!count)
+				printf("NFS: Mount %s:%s failed, still trying\n",host,root);
+			if (count++ == MAX_RETRIES)
+				break ;
+			else
+				sleep (DELAY) ;
+		}
+	}
+
+	CLNT_DESTROY(mountcl);
+	
+	return status->fhs_status;
+}
+
+extern void DisMount(char *host, char *root)
+{
+	CLIENT *mountcl = clnt_create(host, MOUNTPROG, MOUNTVERS, "udp");
+
+	mountproc_umnt_1((dirpath *)&root, mountcl);
+
+	CLNT_DESTROY(mountcl);
+}
+@
+
+
+1.5
+log
+@If mount fails, retry every 5 seconds (maximum of 20 re-tries)
+@
+text
+@d6 1
+a6 1
+
+@
+
+
+1.4
+log
+@Now retrys the mount call forever, printing a message each time it
+fails.
+@
+text
+@d7 8
+d44 7
+a50 1
+			printf("NFS: Mount %s:%s failed, still trying\n",host,root);
+@
+
+
+1.3
+log
+@minor cosemtic changes
+@
+text
+@a11 1
+	int i;
+d25 1
+a25 1
+	for(i=0;i<10;i++)
+d33 4
+@
+
+
+1.2
+log
+@CLIENT for mount interface is not now retained for entire NFS lifetime.
+@
+text
+@a11 1
+
+d14 1
+d20 2
+a21 2
+		clnt_pcreateerror(host);
+		return 1;
+d23 1
+a35 2
+
+	/* IOdebug("mount error %d",status->fhs_status); */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a6 2
+CLIENT *mountcl;
+
+d11 2
+d32 1
+a32 1
+			return 0;
+d37 2
+d43 1
+a43 1
+extern void DisMount(char *root)
+d45 2
+d48 2
+@

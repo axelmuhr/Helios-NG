@@ -1,0 +1,190 @@
+From brian@abcl.co.uk Tue Apr 10 15:20:03 1990
+Return-Path: <brian@abcl.co.uk>
+Received: from abcl.co.uk by perisl.uucp (4.40/Am12)
+	id AA17884; Tue, 10 Apr 90 15:19:55 BST
+Received: by abcl.co.uk (5.51/Am12)
+	id AA04825; Tue, 10 Apr 90 15:16:01 BST
+Date: Tue, 10 Apr 90 15:16:01 BST
+From: brian@abcl.co.uk (Brian Knight)
+Message-Id: <9004101416.AA04825@abcl.co.uk>
+To: paul@perisl.uucp
+Subject: NCC bug list
+Status: R
+
+Helios C compiler: bug and wish list  15th March 1990
+-----------------------------------------------------
+
+Bugs
+----
+B1) Addressing of statics defined within function body
+B2) Addressing of externs defined within function body
+B3) No error report if exceed limit on static addressability
+B4) Array autoinitialisation with the -Zr option (<anon1_at_line_xx> problem).
+B5) Static float/int declaration order problem
+B6) Correct set of object modules for compiler to run under Helios
+    (mangled BSS problem).
+B7) Initialisation of static pointers.
+B8) Initialisation of large static structures (needs investigation).
+B9) The message printed on a fatal compiler error suggests that you
+    contact Acorn!
+
+
+Wishes
+------
+W1)  Implement split module table as described in PAB's document.
+W2)  Relax 4K limit on addressability of statics.
+W3)  Optimal addressing of statics (if 2 is done).
+W4)  Support new -l option (probably -Zl in our world).
+W5)  More efficient initialisation of static data areas (e.g. using memcpy)
+W6)  Put constant string arrays in the code rather than the static data
+     (to save RAM space and initialisation code size).
+W7)  Eliminate initialisation of static data to zero (as this is done
+     anyway on task initialisation).
+W8)  PCC mode working with Helios mods
+W9)  Make assembler output (-S) match Helios munge/ObjAsm assembler format.
+W10) Merge Helios C libraries with latest libraries
+W11) Consistent `&' address-of processing - i.e. always take the
+     address from the static data area rather than using the address of
+     the stub. (Would be needed for X port.)
+W12) Double initialisation of static data (so statics can be
+     initialised to addresses of functions for X).
+
+[W13) DBG debug output]
+
+-----------------------------------------------------------------------------
+
+Further information
+-------------------
+Most of these items are simply extracts from the original mail message
+describing the problem.
+
+-----------------------------
+B1)
+A second bug (I can work around this one) has come to light with the latest
+compiler. It is to do with the -Zr option and statics allocated within
+functions. Given the code fragment:
+
+char fred[10];
+static char fred2[10];
+
+int main()
+{
+	static stata[10];
+
+	printf(fred);
+	printf(fred2);
+	printf(stata);
+}
+
+
+The code output correctly references 'fred' and 'fred2' as '_fred' and
+'_fred2'. However 'stata' is referenced as '.stata'. We expect it to be
+referenced as '_stata'. Again this bug can be put on the back burner until the
+next iteration.
+
+-----------------------------
+B2)
+I have found another problem with the compiler, its one that I can work around,
+so no immediate action is required.
+
+The problem is to do with extern declarations within function bodies. - They
+dont work. I have not looked into this problem to deeply, as I have other
+things to do at the moment, briefly:
+
+{
+extern Attribute ostate;
+
+x = ostate.Time;
+}
+
+generates:
+
+ patch arm data transfer instruction (0x5997000) with datamodule of ostate
+ patch arm data transfer instruction (0x5977000) with datasymb of ostate
+
+rather than:
+
+ patch arm data transfer instruction (0x5997000) with datamodule of ostate
+ patch arm data processing instruction (0x2877000) with lsb datasymb of ostate
+ patch arm data processing instruction (0x2877000) with rest datasymb of ostate
+
+-----------------------------
+B4)
+The problem with automatic array initialisation is as follows:
+
+GIVEN:
+
+int main(char *trace, int null)
+{
+	int fred[] = {10,20,30,40};
+	char harry[5] = {'a','b','c', '\n', 0};
+	char *c;
+
+	c = harry;
+	while((*trace++ = *c++) != 0);/*nullstat*/
+
+	*trace++=0xff;
+	return 1;
+}
+
+YOU GET:
+
+ncc -I.,/helios/include -DARM -c ncctest.c
+Norcroft Helios ARM C vsn 3.00/331b [Jun  6 1989]
+"ncctest.c", line 6: Warning: '&' unnecessary for function or array 'fred'
+"ncctest.c", line 6: Warning: '&' unnecessary for function or array '<Anon1_at_line_6>'
+"ncctest.c", line 7: Warning: '&' unnecessary for function or array 'harry'
+"ncctest.c", line 7: Warning: '&' unnecessary for function or array '<Anon1_at_line_7>'
+ncctest.c: 4 warnings, 0 errors, 0 serious errors
+
+The initialisation looks ok doesn't it!? This problem also occurs under
+unix C. Under unix the strings actually do get initialised, but under
+Helios/ARM C they don't. Making fred and harry statics removes the warnings.
+
+-----------------------------
+B5)
+The following declarations:
+
+static double T, E1[5];
+int J;
+
+cause the compiler to crash:
+
+Norcroft Helios ARM C vsn 3.00/332 [Aug 16 1989]
+"#whet.c", line 4: Fatal internal error: Data seg generation confused
+
+If, however, you declare the int before the double, all is well.
+
+-----------------------------
+B6)
+The last set of object files (17/10/89) for the compiler to run under
+Helios were not quite correct Helios object modules:
+
+ - The code size field contains a number which is 26 too large.
+ - The BSS field should contain (32 - length of name string).
+
+-----------------------------
+B7)
+The following program illustrates the problem with the initialisation
+of static pointers:
+
+#include <stdio.h>
+
+struct fred {
+	     unsigned int word ;
+            } arrayfred[256] ;
+
+static struct fred *fredptr = arrayfred - 1  ;
+
+void display(void)
+{
+ printf("fred = &%08X\n",(int)arrayfred) ;
+ printf("fredptr = &%08X\n",(int)fredptr) ;
+ return ;
+}
+
+int main(void)
+{
+ return(0) ;
+}
+

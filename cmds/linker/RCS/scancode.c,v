@@ -1,0 +1,353 @@
+head	1.7;
+access;
+symbols
+	Helios_1_3_1:1.7
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.7
+	C40_Field_Test_2:1.7
+	C40_Field_Test_R1:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.7
+date	92.08.04.16.55.36;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.08.04.16.25.40;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.07.13.08.58.25;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.07.01.12.19.53;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.06.22.13.54.46;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.10.09.08.47.51;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.10.22.15.47.13;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@tidied up handling of multiple definitions of data
+@
+text
+@/************************************************************************/
+/* Helios Linker							*/
+/*                                                                      */
+/* File: scancode.c                                                     */
+/*                                                                      */
+/*                                                                      */
+/* Copyright (c) 1987 - 1991, Perihelion Software Ltd.                  */
+/*    All Rights Reserved.                                              */
+/************************************************************************/
+/* RcsId: $Id: scancode.c,v 1.6 1992/08/04 16:25:40 nickc Exp nickc $ */
+
+#include "link.h"
+
+#define trace if(traceflags&db_scancode) _trace
+
+void scancode()
+{
+  word 		datapos;
+  word		funcpos;
+  Symbol *	s;   
+  Code *	c;
+  asm_Module *	m;
+   
+   VMRef curblock;
+   
+   curmod = module0;
+   m = VMAddr(asm_Module,curmod);
+   curblock = m->start;
+   VMlock(curblock);
+   
+   c = VMAddr(Code,curblock);
+
+   VMDirty(curblock);
+   
+   datapos = funcpos = 0;
+   
+   for(;;)
+   {
+      word tag = c->type;
+      
+      trace("scan op %x",tag);
+      
+      switch( tag )
+      {
+         
+      /* go to new code page            */
+      case OBJNEWSEG:
+         trace("NEWSEG %x",c->value.v);
+         VMunlock(curblock);
+         curblock = c->value.v;
+         VMlock(curblock);
+         c = VMAddr(Code,curblock);
+         VMDirty(curblock);
+         continue;
+         
+      /* start new module            */
+      case OBJEND:
+         VMunlock(curblock);
+         m = VMAddr(asm_Module,curmod);
+         curmod = m->next;
+         if( NullRef(curmod) ) return;
+         m = VMAddr(asm_Module,curmod);
+         trace("NEW MODULE %x %d",curmod,m->id);
+         curblock = m->start;
+         VMlock(curblock);
+         c = VMAddr(Code,curblock);
+         VMDirty(curblock);
+         funcpos = datapos = 0;
+         continue;
+         
+      case OBJDATA:
+      {
+         word size;
+
+         s = VMAddr(Symbol,c->value.v);
+         trace("DATA %d %s %#x",s->value.w,s->name,c->value.v);
+
+         if ( s->type == S_DATADONE )
+	   {
+	     m = VMAddr( asm_Module, curmod );
+	     
+	     inform( "Duplicate definition of DATA symbol '%s' in files %s and %s - using the former",
+		  s->name, s->file_name, m->file_name );
+	   }
+         else if ( s->type != S_DATASYMB )
+	   {
+	     warn( "Illegal symbol '%s' in DATA directive of file %s", s->name, s->file_name );
+	   }
+	 else
+	   {
+	     s->type    = S_DATADONE;
+	     size       = s->value.w;
+	     s->value.w = datapos;
+	     datapos   += size;
+	     VMDirty(c->value.v);
+	   }	 
+         break;
+      }
+
+      case OBJCODETABLE:
+      {
+         s = VMAddr(Symbol,c->value.v);
+         trace("CODETABLE %s %#x (type %x)", s->name, c->value.v, s->type);
+         if( s->type == S_FUNCDONE ) 
+	   warn( "Duplicate definition of function '%s' in files %s and %s",
+		s->name + 1, s->file_name, m->file_name );
+         else if( s->type != S_FUNCSYMB ) 
+            warn("Illegal symbol '%s' in CODETABLE directive of file %s", s->name, s->file_name );
+         s->type = S_FUNCDONE;
+         s->value.w = funcpos;
+         funcpos += 4;
+         VMDirty(c->value.v);
+         break;
+      }
+
+      case OBJCOMMON:
+      {
+         word size;
+         s = VMAddr(Symbol,c->value.v);
+         trace("COMMON %d %s",s->value.w,s->name);
+         if( s->type == S_COMMSYMB ) 
+         {
+            s->type = S_COMMDONE;
+            size = s->value.w;
+            s->value.w = datapos;
+            datapos += size;
+            VMDirty(c->value.v);
+         }
+         break;
+      }
+      
+      default:
+         break;
+      }
+      
+      c++;
+   }
+}
+@
+
+
+1.6
+log
+@changed warning to inform() call, and fixed spelling
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: scancode.c,v 1.5 1992/07/13 08:58:25 nickc Exp nickc $ */
+d82 1
+a82 1
+	     inform( "Duplicate definition of DATA symbol '%s' in files %s and %s - using the latter",
+d85 12
+a96 7
+         else if ( s->type != S_DATASYMB ) 
+            warn( "Illegal symbol '%s' in DATA directive of file %s", s->name, s->file_name );
+         s->type    = S_DATADONE;
+         size       = s->value.w;
+         s->value.w = datapos;
+         datapos   += size;
+         VMDirty(c->value.v);
+@
+
+
+1.5
+log
+@fixed to support new patch CODESTUB
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: scancode.c,v 1.4 1992/07/01 12:19:53 nickc Exp nickc $ */
+d82 1
+a82 1
+	     warn( "Duplicate defintion of DATA symbol '%s' in files %s and %s",
+d86 1
+a86 1
+            warn("Illegal symbol '%s' in DATA directive of file %s", s->name, s->file_name );
+@
+
+
+1.4
+log
+@improved error
+messages
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: scancode.c,v 1.3 1992/06/22 13:54:46 nickc Exp $ */
+d18 5
+a22 4
+   word datapos, funcpos;
+   Symbol *s;   
+   Code *c;
+   Module *m;
+d27 1
+a27 1
+   m = VMAddr(Module,curmod);
+d59 1
+a59 1
+         m = VMAddr(Module,curmod);
+d62 1
+a62 1
+         m = VMAddr(Module,curmod);
+d80 1
+a80 1
+	     m = VMAddr( Module, curmod );
+@
+
+
+1.3
+log
+@improved warning messages
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: scancode.c,v 1.2 1991/10/09 08:47:51 paul Exp nickc $ */
+d76 9
+a84 1
+         if( s->type != S_DATASYMB ) 
+d86 2
+a87 2
+         s->type = S_DATADONE;
+         size = s->value.w;
+d89 1
+a89 1
+         datapos += size;
+@
+
+
+1.2
+log
+@NickC's changes for the 'C40 + some bug fixes
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: scancode.c,v 1.4 1991/08/30 16:18:41 nickc Exp $ */
+d77 1
+a77 1
+            warn("Illegal symbol in DATA directive: %s",s->name);
+d89 6
+a94 3
+         trace("CODETABLE %s %#x",s->name,c->value.v);
+         if( s->type != S_FUNCSYMB ) 
+            warn("Illegal symbol in CODETABLE directive: %s",s->name);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 2
+a8 1
+/* Copyright (c) 1987, Perihelion Software Ltd. All Rights Reserved.    */
+d10 1
+a10 1
+/* RcsId: $Id$ */
+d46 1
+a46 1
+      case t_newseg:
+d56 1
+a56 1
+      case t_end:
+d70 1
+a70 1
+      case t_data:
+d76 1
+a76 1
+         if( s->type != s_datasymb ) 
+d78 1
+a78 1
+         s->type = s_datadone;
+d86 1
+a86 1
+      case t_func:
+d90 1
+a90 1
+         if( s->type != s_funcsymb ) 
+d92 1
+a92 1
+         s->type = s_funcdone;
+d99 1
+a99 1
+      case t_common:
+d104 1
+a104 1
+         if( s->type == s_commsymb ) 
+d106 1
+a106 1
+            s->type = s_commdone;
+@

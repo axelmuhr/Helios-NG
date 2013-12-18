@@ -1,0 +1,358 @@
+head	1.3;
+access;
+symbols
+	Helios1_3:1.3
+	Helios13_beta:1.3
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.3
+date	91.03.26.17.39.47;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.03.07.11.56.47;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.03.05.18.51.59;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@all reference to original default address removed.
+SetInfo now saves address set to return to GetInfo
+@
+text
+@/*
+ * File name:	b407dev.c
+ *
+ *	Helios TCP/IP server - ethernet device driver functions for the 
+ *	IMS-B407 ethernet TRAM. 
+ *
+ * Version:	1.0
+ *
+ * Author:	Robert Wipfel
+ *
+ * Copyright INMOS Limited 1991
+ *
+ * Revision History:
+ *
+ *	15-FEB-1991	RAW	Created from Nick Garnett's `netdev.c'.
+ *	19-FEB-1991	RAW	Added a conditional compilation flag for
+ *				the code to support FG_SetInfo requests.
+ *
+ */
+
+#include "b407dev.h"
+
+/*
+ *	Reader() - Eagerly read ethernet packets.
+ *
+ *	Remove a buffer from the pending buffer queue and read an 
+ *	ethernet packet into it. Return buffer if packet read ok.
+ */
+
+PRIVATE void Reader( NetDCB *dcb )
+{
+	WORD		length;	/* Packet length read */
+	NetDevReq	*req;	
+
+	forever
+	{		
+		Wait( &dcb->nreq );	/* Wait for a buffer */
+		
+		Wait( &dcb->lock );	/* Lock buffer queue */
+		req = (NetDevReq *) RemHead( &dcb->readq );
+		Signal( &dcb->lock );	/* Release buffer queue */
+
+	again:
+		if ( req == NULL ) continue;	/* Null request */
+		
+		b407_read_packet( dcb->Link, req->Buf, &length );
+
+		if ( length == 0 ) 
+		{
+#ifdef B407_DEBUG	
+			IOdebug( "B407: %s", req->Buf );
+#endif	
+			goto again;
+		}
+#ifdef B407_DEBUG
+		{	
+			int	i;
+			char	*buf = (char *)req->Buf;
+
+			IOdebug( "B407 Read: %d [%", length );
+			for ( i = 0; i < 24; i++ ) 
+				IOdebug( "%x %", buf[i] );
+			IOdebug( "]" );
+		}
+#endif
+		req->Actual = length;
+		req->DevReq.Result = Err_Null;
+
+		( *req->DevReq.Action )( dcb, req );
+	}
+}
+
+/*
+ *	DevOperate() - Operate device, entry point
+ */
+
+PUBLIC void DevOperate( NetDCB *dcb, NetDevReq *req )
+{
+	NetInfoReq	*ireq = (NetInfoReq *)req;
+	NetInfo 	*info = &ireq->NetInfo;
+	
+	Wait( &dcb->lock );	/* Lock buffer queue */
+
+	switch( req->DevReq.Request )
+	{
+	case FG_Read:
+
+#ifdef B407_DEBUG
+		IOdebug( "B407 Read: %x %d", req->Buf, req->Size ); 
+#endif
+		AddTail( &dcb->readq, &req->DevReq.Node );
+		Signal( &dcb->nreq );	/* Another buffer in queue */
+
+		Signal( &dcb->lock );	/* Release buffer queue */
+
+		return;
+		
+	case FG_Write:
+
+#ifdef B407_DEBUG
+		{
+			int	i;
+			char	*buf = (char *)req->Buf;
+
+			IOdebug( "B407 Write: %d [%", req->Size );
+			for( i = 0; i < 24; i++ ) 
+				IOdebug( "%x %", buf[i] );
+			IOdebug( "]" );
+		}
+#endif
+		b407_write_packet( dcb->Link, req->Buf, req->Size );
+
+		req->Actual = req->Size;
+		req->DevReq.Result = Err_Null;
+		break;
+		
+	case FG_SetInfo:
+
+#ifdef B407_DEBUG
+		{
+			int	i;
+
+			IOdebug( "B407 SetInfo: %x %x %x [%",
+				info->Mask, info->Mode, info->State );
+			for ( i = 0; i < 6; i++ ) 
+				IOdebug( "%d %", info->Addr[i] );
+			IOdebug( "]" );
+		}
+#endif
+		memcpy(dcb->Addr,info->Addr,6);
+
+		if ( b407_init_firmware( dcb->Link, info->Addr ) )
+		{
+			/*
+	 		 * Start the ethernet reader
+			 */
+			Fork( 2000, Reader, 4, dcb );
+
+			req->DevReq.Result = Err_Null;
+		}
+		else
+			req->DevReq.Result = EG_UnknownError;
+		break;
+
+	case FG_GetInfo:
+
+		info->Mask = 7;
+		info->Mode = 0;
+		info->State = 0;
+
+		memcpy(info->Addr,dcb->Addr,6);
+
+#ifdef B407_DEBUG
+		{
+			int	i;
+			
+			IOdebug( "B407 GetInfo %x %x %x [%", req, ireq, info );
+			for( i = 0; i < 6; i++ ) 
+				IOdebug( "%d %", info->Addr[i] );
+			IOdebug( "]" );
+		}	
+#endif
+		break;
+
+	}
+	
+	Signal( &dcb->lock );
+	
+	( *req->DevReq.Action )( dcb, req );
+}
+
+/*
+ *	DevClose() - Close B407 interface and terminate
+ */
+
+PUBLIC WORD DevClose( NetDCB *dcb )
+{
+	Wait( &dcb->lock );	/* Block the Reader */
+	
+	b407_close_link( dcb->Link );	/* Release and close the link */
+	
+	Free( dcb );		/* Free network DCB */
+}
+
+/*
+ *	DevOpen() - Initialise B407 interface.
+ *
+ *	Start the B407 by loading and initialising it's firmware. 
+ *	Allocate a Network Device Control Block and initialise it. 
+ *	Initialise the read buffer queue. Start the eager reader.
+ */
+
+PUBLIC NetDCB *DevOpen( Device *dev, NetDevInfo  *info )
+{
+	NetDCB	*dcb;
+
+	/*
+	 * Start B407 firmware
+	 */
+	unless ( b407_open_link( info->Controller ) ) return( NULL );
+	unless ( b407_load_firmware( info->Controller ) ) return( NULL );
+
+	/*
+	 * Initialise network DCB
+	 */
+	dcb = Malloc( sizeof(NetDCB) );
+   	if ( dcb == NULL ) return( NULL );
+
+	dcb->dcb.Device = dev;
+	dcb->dcb.Operate = DevOperate;
+	dcb->dcb.Close = DevClose;
+
+	/*
+	 * Initialise read buffer queue 
+	 */
+	InitSemaphore( &dcb->lock, 1 );	/* Read queue lock */
+	InitList( &dcb->readq );	
+	InitSemaphore( &dcb->nreq, 0 );	/* Buffer queue empty */ 
+	dcb->Link = info->Controller;
+
+	return( dcb );
+}
+
+
+@
+
+
+1.2
+log
+@driver now uses NetDevInfo to set link and address
+@
+text
+@d130 1
+a131 1
+#if 1 /* def TCP_SETINFO */
+a142 3
+#else
+		req->DevReq.Result = Err_Null;
+#endif
+d147 1
+a147 1
+		info->Mask = 0;
+a149 9
+#ifdef TCP_SETINFO
+		req->DevReq.Result = 0;
+#else
+		info->Addr[0] = 0x00;
+		info->Addr[1] = 0x00;
+		info->Addr[2] = 0xc0;
+		info->Addr[3] = 0xb2;
+		info->Addr[4] = 0x04;
+		info->Addr[5] = 0x1b;	/* Hardwired ethernet address */
+d151 1
+a151 2
+		req->DevReq.Result = 18; 	/* Number of bytes in info */
+#endif
+a202 16
+#if 0 /* ndef TCP_SETINFO */
+	{
+		char	ethernet_address[6];
+	
+		ethernet_address[0] = 0x00;
+		ethernet_address[1] = 0x00;
+		ethernet_address[2] = 0xc0;
+		ethernet_address[3] = 0xb2;
+		ethernet_address[4] = 0x04;
+		ethernet_address[5] = 0x1b;	/* Fixed ethernet address */
+	
+		unless ( b407_init_firmware( info->Controller, ethernet_address ) ) 
+			return( NULL );
+	}
+#endif			
+
+a219 7
+
+#if 0 /* ndef TCP_SETINFO */
+	/*
+	 * Start the ethernet reader
+	 */
+	Fork( 2000, Reader, 4, dcb );
+#endif	
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d46 1
+a46 1
+		b407_read_packet( B407_LINK, req->Buf, &length );
+d111 1
+a111 1
+		b407_write_packet( B407_LINK, req->Buf, req->Size );
+d131 2
+a132 2
+#ifdef TCP_SETINFO 
+		if ( b407_init_firmware( B407_LINK, info->Addr ) )
+d193 1
+a193 1
+	b407_close_link( B407_LINK );	/* Release and close the link */
+d206 1
+a206 1
+PUBLIC NetDCB *DevOpen( Device *dev, void *info )
+d213 2
+a214 2
+	unless ( b407_open_link( B407_LINK ) ) return( NULL );
+	unless ( b407_load_firmware( B407_LINK ) ) return( NULL );
+d216 1
+a216 1
+#ifndef TCP_SETINFO
+d227 1
+a227 1
+		unless ( b407_init_firmware( B407_LINK, ethernet_address ) ) 
+d248 1
+d250 1
+a250 1
+#ifndef TCP_SETINFO
+@

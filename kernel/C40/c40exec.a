@@ -1,0 +1,723 @@
+/*
+ * File:	c40exec.a
+ * Subsystem:	'C40 Helios executive
+ * Author:	P.A.Beskeen
+ * Date:	Nov '91
+ *
+ * Description: `C40 Helios executive support assembler functions.
+ *
+ *		This source provides general support functions for the
+ *		Helios 'C40 executive.
+ *
+ * RcsId: $Id: c40exec.a,v 1.14 1993/08/10 13:24:41 nickc Exp $
+ *
+ * (C) Copyright 1991 Perihelion Software Ltd.
+ * 
+ * RcsLog: $Log: c40exec.a,v $
+-- Revision 1.14  1993/08/10  13:24:41  nickc
+-- fixed _ldtimer bug
+--
+-- Revision 1.13  1992/12/03  16:48:09  paul
+-- changed names of all WP_ functions to MP_
+--
+-- Revision 1.12  1992/11/20  17:22:20  nick
+-- FastRamSize now returns word size and address.
+-- Many small changes to make it work with a moving address base.
+--
+-- Revision 1.11  92/11/18  14:36:00  14:36:00  paul (Paul Beskeen)
+-- added _ldtimer() that will work for non 0 IR0's + SetUserStack() fn, plus
+-- conditionally removed InitCodes()
+-- 
+-- Revision 1.10  1992/11/12  20:54:42  paul
+-- made C40Word/CAddress compatible with IR0 != 0
+--
+-- Revision 1.9  1992/09/25  09:36:16  paul
+-- added SetSystemStack function, and include gexec.m
+--
+-- Revision 1.8  1992/09/24  16:10:22  paul
+-- added byte/word pointer copy functions and shared memory interlock functions
+--
+-- Revision 1.7  1992/09/23  17:21:09  paul
+-- added movable execroot support and fastram pool extension via IDROM FSIZE
+--
+-- Revision 1.6  1992/08/04  18:01:18  paul
+-- fix for AllocFast to work
+--
+-- Revision 1.5  1992/06/19  18:20:52  paul
+-- added assembler _GTrace() and removed unneeded include
+--
+-- Revision 1.4  1992/06/15  13:40:58  paul
+-- fixup for _linkreg fn
+--
+-- Revision 1.3  1992/05/14  10:44:15  paul
+-- added global bus debug trace
+-- Gread()/GWrite()
+--
+-- Revision 1.2  1992/04/21  09:54:56  paul
+-- alpha version
+--
+-- Revision 1.1  1991/12/03  11:53:02  paul
+-- Initial revision
+--
+ */
+
+
+include ../gexec.m	-- Executive manifests
+include module.m
+
+
+---------------------------------------------------------------------
+-- Return the address of the Executive ExecRoot data structure. This data
+-- structure contains global Executive information plus private data describing
+-- the currently active thread.
+--
+-- C40 bootstrap loads address of ExecRoot into tvtp expansion register
+-- (usually the first external memory location on the local bus)
+-- GetExecRoot() must return a C byte address.
+--
+-- ExecRoot * GetExecRoot(void);
+
+	Function 'GetExecRoot
+
+	bud	R_LR
+		ldep		tvtp, R_A1result
+		C40CAddress	R_A1result
+
+
+---------------------------------------------------------------------
+-- Hardware initialisation functions
+
+-- Reset the processor and restart boot sequence
+--
+-- void ResetCPU(void);
+
+	Function ResetCPU
+
+	-- software pseudo reset
+	-- set state to same as chip reset
+	-- and jump thru reset vector to boot ROM
+	ldi	0, st	-- disable interrupts
+	ldi	0, iie
+	ldi	0, iif
+	ldi	0, die
+	ldi	0, r0
+	ldpe	r0, ivtp
+	ldpe	r0, tvtp
+
+	-- get msb of periperal map address
+	ldhi	HiPeriAddr, ar0
+
+	ldi	0, R_TMP1	-- dont use STIK's due to prototype 'C40 bug.
+
+	-- reset timers ctrl/count/period
+	sti	R_TMP1, *+ar0(timer0_control)
+	sti	R_TMP1, *+ar0(timer1_control)
+	sti	R_TMP1, *+ar0(timer0_count)
+	sti	R_TMP1, *+ar0(timer1_count)
+	sti	R_TMP1, *+ar0(timer0_period)
+	sti	R_TMP1, *+ar0(timer1_period)
+
+	-- reset DMA ctrl/count/auxcount
+	sti	R_TMP1, *+ar0(dma0_control)
+	sti	R_TMP1, *+ar0(dma0_count)
+	sti	R_TMP1, *+ar0(dma0_auxcount)
+	sti	R_TMP1, *+ar1(dma0_control)
+	sti	R_TMP1, *+ar1(dma0_count)
+	sti	R_TMP1, *+ar1(dma0_auxcount)
+	sti	R_TMP1, *+ar2(dma0_control)
+	sti	R_TMP1, *+ar2(dma0_count)
+	sti	R_TMP1, *+ar2(dma0_auxcount)
+	sti	R_TMP1, *+ar3(dma0_control)
+	sti	R_TMP1, *+ar3(dma0_count)
+	sti	R_TMP1, *+ar3(dma0_auxcount)
+	sti	R_TMP1, *+ar4(dma0_control)
+	sti	R_TMP1, *+ar4(dma0_count)
+	sti	R_TMP1, *+ar4(dma0_auxcount)
+	sti	R_TMP1, *+ar5(dma0_control)
+	sti	R_TMP1, *+ar5(dma0_count)
+	sti	R_TMP1, *+ar5(dma0_auxcount)
+
+	-- comms ports control regs
+	sti	R_TMP1, *+ar0(port0_control)
+	sti	R_TMP1, *+ar0(port1_control)
+	sti	R_TMP1, *+ar0(port2_control)
+	sti	R_TMP1, *+ar0(port3_control)
+	sti	R_TMP1, *+ar0(port4_control)
+	sti	R_TMP1, *+ar0(port5_control)
+
+
+	-- should really reset mem ctrl regs
+	-- but this may cause problems if thats where we are currently executing!
+
+	-- jump thru reset vector
+	-- *WARNING* as we cannot read the ROMEN and RESETLOC pins this will not
+	-- work for external BOOT ROM systems
+	ldi	0, ar0
+	ldi	*ar0, ar1
+	
+	b	ar1	-- jump to on-chip bootstrap ROM
+
+
+-- Reset all on-chip links, canceling any current transfers
+-- nothing more can be done on a C40 - AbortLinkTx/Rx cancels any DMA.
+-- But the contents of the fifos will still be sent.
+--
+-- Called by C so must conform to PCS.
+-- void ResetLinkHardware(void);
+
+	Function ResetLinkHardware
+
+	b	R_LR
+
+
+_if _false [ -- NO LONGER REQUIRED - DELETE ME
+-- Set or get the system stack address.
+--
+-- If the new stack address is NULL, then return the existing stack address,
+-- otherwise set the system stack to the new address. Programs should return
+-- the stack to the original address before exiting. This function can be
+-- used to increase the size of the stack and/or place it in on-chip memory.
+-- @@@ For the C40 it may be the case we do not need to keep a copy of this
+-- address in the ExecRoot, this is for compatibility with other architectures.
+
+-- MPtr SetSystemStack(MPtr newstackaddr);
+
+	Function SetSystemStack
+
+	GetExecRoot R_ATMP
+
+	cmpi	NULL, R_A1
+	beq	GetSystemStack
+
+	bud	R_LR	-- plus guards the R_SSP change from interrupts
+		ldi	R_A1, R_SSP
+		sti	R_A1, *+R_ATMP(ExecRoot.SystemStack)
+		nop
+
+GetSystemStack:
+	ldi	*+R_ATMP(ExecRoot.SystemStack), R_A1result
+	b	R_LR
+]
+
+
+---------------------------------------------------------------------
+-- Module Table functions
+
+-- _SetModTab
+--
+-- Sets new module table pointer, returning the original
+--
+-- Called by C so must conform to PCS.
+-- word _SetModTab(word *modtab);
+
+	Function _SetModTab
+
+	-- Module table always held as a word address, so convert arg
+	C40WordAddress R_A1
+	-- implemented as a swap of the contents of arg1 and modtab reg.
+	xor	R_MT, R_A1
+	xor	R_A1, R_MT
+	bUd	R_LR	-- delayed branch return
+		xor	R_MT, R_A1result
+		-- convert result back to a C byte address
+		C40CAddress R_A1result
+
+
+-- _GetModTab
+--
+-- Returns current module table pointer
+--
+-- Called by C so must conform to PCS.
+-- word _GetModTab(void);
+
+	Function _GetModTab
+
+	bud	R_LR	-- delayed branch return
+		ldi	R_MT, R_A1result
+		C40CAddress R_A1	-- convert back to C pointer
+
+
+---------------------------------------------------------------------
+-- Memory sizing functions
+
+_if _false [	-- now done in C.
+-- StoreSize
+--
+-- Calculate the amount of available memory.
+-- StoreSize is passed the base of free memory, it should return the address
+-- of the first unusable byte (word) of RAM
+--
+-- @@@ Must be updated to cope with both local and global buses
+-- @@@ and IDROM
+-- @@@ Ignores mem_start argument (end of config vector)!
+--
+-- Called by C so must conform to PCS.
+-- byte *StoreSize(byte *mem_start) ;
+
+	Function StoreSize
+
+	GetExecRoot R_ATMP
+	ldi	*+R_ATMP(ExecRoot.StoreStart), r0	-- start of RAM
+	addi	*+R_ATMP(ExecRoot.StoreSize), r0	-- plus size
+	b	R_LR
+]
+
+-- FastStoreSize
+--
+-- Calculate and return the size of on-chip memory
+-- FastStoreSize is passed a pointer to a word where base address of the
+-- on-chip RAM will be placed. This pointer is updated and the function
+-- returns the size of the on-chip RAM in bytes.
+--
+-- Called by C so must conform to PCS.
+-- word FastStoreSize(byte **base)
+
+	Function FastStoreSize
+
+	ldi	r0, R_ATMP
+	C40WordAddress R_ATMP
+	-- get C byte address of start of on-chip RAM
+	-- @@@ assumes C address base (ir0) = 0
+	ldhi	0x2f, R_TMP1
+	or	0xf800, R_TMP1	-- WPTR = 0x0002f f800
+--	C40CAddress R_TMP1	-- convert to byte pointer
+
+	-- pass start address back to caller
+	sti	R_TMP1, *R_ATMP
+
+	-- get addr of saved IDROM
+	GetExecRoot R_ATMP
+	addi ExecRoot.ID_ROM, R_ATMP
+
+	-- default to just ON-CHIP RAM = 2 banks of 0x400 words
+	ldi	0x400 * 2, R_A1
+
+	-- does local bus strobe 0 start at 0x30 0000?
+	-- if so use the memory as part of the free pool.
+	ldi	*+R_ATMP(IDROM.LBASE0), R_TMP1
+	ldhi	0x30, R_TMP2
+	cmpi	R_TMP1, R_TMP2
+	beq	R_LR
+
+	-- if not, use the memory as part of the onchip ram pool
+--	mpyi	4, *+R_ATMP(IDROM.FSIZE), R_A1result
+	ldi	*+R_ATMP(IDROM.FSIZE), R_A1result
+	b	R_LR
+
+
+
+---------------------------------------------------------------------
+-- _ldtimer
+--
+-- Returns value of current microsecond clock.
+--
+-- return (Timer() + ( *0x100024 * GetExecRoot()->ID_ROM.CPU_CLK) / 1000);
+--
+-- Exported by Kernel.
+-- Called by C so must be PCS conformant
+
+	Function _ldtimer
+
+	-- Get address of ExecRoot struct.
+	GetExecRoot R_ADDR1
+
+	-- Save link register and V1 register
+	sti	R_LR, *\--R_USP
+	sti	R_V1, *\--R_USP
+
+	-- Get CPU's timer units (in nS)
+	-- Held as packed byte in IDROM, so extract with a shift and mask.
+	-- (This amazing hack coutesy of Nick "Mr Assembler" Clifton)
+	LBU$[_div IDROM.CPU_CLK.shift 8] 
+			*+R_ADDR1(ExecRoot.ID_ROM + IDROM.CPU_CLK.w_offset),
+			R_A2
+
+	-- Get address of CPU's timer Control Register
+	ldi32	0x100020 R_ATMP
+
+	-- get hold of timer control register
+	LDI    *R_ATMP, R_TMP1
+
+	-- load mask to set the (not) HOLD bit
+	LDI   0x80, R_TMP2
+
+	-- Copy timer control register to second temporary resetting the (not) HOLD bit
+	ANDN3	R_TMP2, R_TMP1, R_TMP2
+	
+	-- We are going to divide by 1000 to get uS units
+	ldi	1000, R_A1
+
+	-- store HOLD value of timer control register back into memory
+	STI      R_TMP2, *R_ATMP
+
+	-- call divide function (delayed)
+	patchinstr(PATCHC40MASK24ADD, shift(-2, codestub(.__divide)),
+		laj	0)
+
+		-- Get number of nS since last interrupt from timer 0
+		mpyi	*+R_ATMP(4), R_A2
+
+		-- Get hold of valuein Timer field whilst clock is held
+		-- NB/ MUST be done whilst clock is held as otherwise
+		-- time interrupt could occur, corrupting our calculation
+		ldi *+R_ADDR1(ExecRoot.Timer), R_V1
+ 
+		-- store ENABLE value of timer control register back into memory
+		STI      R_TMP1, *R_ATMP
+
+		-- Link and jump takes place
+
+	-- Add the value of Timer() to the result of our division
+	addi	 R_V1,    R_A1
+
+	-- Restore the Variable register
+	ldi	*R_USP++, R_V1
+
+	-- Restore link register
+	ldi	*R_USP++, R_LR
+	
+	bu	R_LR
+
+
+_if _defp 'CODES [
+---------------------------------------------------------------------
+-- InitErrorCodes
+--
+-- Returns pointer to errorcode array
+--
+-- Called by C so must be PCS conformant
+
+
+-- The error code array:
+
+..ErrorCodes:
+	word	0x81058001	-- 0 Err_Timeout 
+	word	0xa1098003	-- 1 Err_BadPort 
+	word	0xa1098004	-- 2 Err_BadRoute 
+	word	0xc1098012	-- 3 Err_DeadLink 
+	word	0xa1010000	-- 4 Err_NoMemory 
+	word	0x810b8004	-- 5 Err_Congestion 
+	word	0xe10e0004	-- 6 Err_Kill 
+	word	0xc10e0005	-- 7 Err_Abort 
+	word	0x810b8003	-- 8 Err_NotReady 
+	word	0xa1098012	-- 9 Err_BadLink 
+
+
+.InitErrorCodes:
+--	ldi	R_LR, R_ATMP			-- save return address
+--	LAJ	4
+--		-- get address of error codes
+--		addi	..ErrorCodes - 3, r11, R_A1
+--		C40CAddress R_A1		-- convert to C pointer
+--		ldi	R_ATMP, R_LR		-- restore original return addr
+
+	-- Get address of error codes
+	ldabs16	..ErrorCodes R_A1result
+	C40CAddress R_A1result		-- Convert to C pointer
+	b	R_LR
+]
+
+
+-- SetUserStackAndJump(arg1, arg2, void *stacktop, VoidFnPtr fn)
+--
+-- Set the user stack to the byte address passed.
+-- Called from C so must conform to PCS.
+
+	Function SetUserStackAndJump
+
+	bud	R_A4
+		C40WordAddress R_A3	-- two instructions
+		ldi	R_A3, R_USP	-- set word addressed user stack pointer
+
+
+---------------------------------------------------------------------
+-- Machine Pointer (MP_) full address range access functions
+--
+-- The main use of these functions is to access the global bus.
+-- This is due to byte pointers usually having an addess base of zero
+-- and therefore do not have the addressability to access the global bus.
+--
+
+
+-- Get word of data from a word address
+--
+-- word MP_GetWord(MPtr addr, word wordoffset);
+
+	Function MP_GetWord
+
+	bud	R_LR
+		addi	R_A1, R_A2, R_ATMP
+		nop
+		ldi	*R_ATMP, R_A1result
+
+
+-- Put a word of data to a word address
+--
+-- void MP_PutWord(MPtr addr, word wordoffset, word data);
+
+	Function MP_PutWord
+
+	bud	R_LR
+		addi	R_A1, R_A2, R_ATMP
+		nop
+		sti	R_A3, *R_ATMP
+
+
+-- Copy data from a word address to a byte address.
+--
+-- The byte (local bus) address is assumed to be word aligned.
+-- The amount is a word count.
+-- 
+-- void MP_GetData(void *dstbytepointer, MPtr addr, word wordoffset,
+--                word numwords);
+
+	Function MP_GetData
+
+	subi	1, R_A4, rc		-- setup and adjust loop count
+	-- must not adjust rc within rptbd delay slots
+
+	rptbd MP_GetDataLoop
+		-- three delayed slots before loop start
+		addi	R_A2, R_A3, R_ADDR1
+		-- convert byte address to word address
+		lsh	-2, R_A1, R_ADDR2
+		addi	R_BASE, R_ADDR2
+
+	-- do not attempt parallel instruction across buses - due to TMX C40 bug
+	-- do not use RPTS as this disables interrupts
+			-- These two instructions are looped
+			ldi	 *R_ADDR1++, R_A3
+	MP_GetDataLoop:	sti	R_A3, *R_ADDR2++
+		
+	b	R_LR
+
+
+-- Copy data from a byte address to a word address.
+--
+-- The byte (local bus) address is assumed to be word aligned.
+-- The amount is a word count.
+-- 
+-- void MP_PutData(MPtr addr, word wordoffset, void *srcbytepointer,
+--		  word wordcount);
+
+	Function MP_PutData
+
+	subi	1, R_A4, rc		-- setup and adjust loop count
+	-- must not adjust rc within rptbd delay slots
+
+	rptbd MP_PutDataLoop
+		-- three delayed slots before loop start
+		-- convert byte offset to word
+		lsh	-2, R_A3, R_ADDR2
+		addi	R_BASE, R_ADDR2
+		addi	R_A1, R_A2, R_ADDR1
+
+	-- do not attempt parallel instruction across buses - due to TMX C40 bug
+	-- do not use RPTS as this disables interrupts
+			-- These two instructions are looped
+			ldi	 *R_ADDR2++, R_A3
+	MP_PutDataLoop:	sti	R_A3, *R_ADDR1++
+
+	b	R_LR
+
+
+---------------------------------------------------------------------
+-- Shared memory functions.
+-- Allow callers to lock and unlock the shared bus, and implement
+-- spin lock counting semaphores.
+
+-- Lock shared memory and read an integer
+--
+-- word MP_ReadLock(MPtr lockaddr);
+
+	Function MP_ReadLock
+
+	bud	R_LR
+		ldi	R_A1, R_ATMP
+		nop	-- nop delay here as R_ATMP pipeline delay anyway
+		ldii	*R_ATMP, R_A1result
+
+
+-- Lock shared memory and read a single precision FP number
+--
+-- float MP_ReadFPLock(MPtr lockaddr);
+
+	Function MP_ReadFPLock
+
+	bud	R_LR
+		ldi	R_A1, R_ATMP
+		nop	-- nop delay here as R_ATMP pipeline delay anyway
+		ldfi	*R_ATMP, R_A1result
+	
+
+-- Write an integer and unlock the shared memory.
+--
+-- void MP_WriteUnlock(MPtr lockaddr, word data);
+
+	Function MP_WriteUnlock
+
+	bud	R_LR
+		ldi	R_A1, R_ATMP
+		nop	-- nop delay here as R_ATMP pipeline delay anyway
+		stii	R_A2, *R_ATMP
+	
+
+-- Write a single precison FP number and unlock the shared memory.
+--
+-- void MP_WriteFPUnlock(Mptr lockaddr, float data);
+
+	Function MP_WriteFPUnlock
+
+	bud	R_LR
+		ldi	R_A1, R_ATMP
+		nop	-- nop delay here as R_ATMP pipeline delay anyway
+		stfi	R_A2, *R_ATMP
+
+
+-- Signal a word addressed counting semaphore (spin lock) in shared memory.
+--
+-- Increments the semaphore count and returns the new current count value
+--
+-- word MP_Signal(MPtr countaddr);
+
+	Function MP_Signal
+
+	ldi	R_A1, R_ATMP
+
+	bud	R_LR
+		ldii	*R_ATMP, R_A1
+		addi	1, R_A1
+		stii	R_A1, *R_ATMP
+
+
+-- Wait on a word addressed counting semaphore (spin lock) in shared memory.
+--
+-- Busy waits while the semaphore count is zero, then decrements the 
+-- semaphore count and returns the new current semaphore count.
+--
+-- word MP_BusyWait(MPtr countaddr);
+
+	Function MP_BusyWait
+
+	ldi	R_A1, R_ATMP
+
+	ldi	0, R_A2
+MP_BusyWaitLoop:
+	ldii	*R_ATMP, R_A1
+	bzd	MP_BusyWaitLoop
+		ldinz	1, R_A2
+		subi	R_A2, R_A1
+		stii	R_A1, *R_ATMP
+
+	b	R_LR
+
+
+---------------------------------------------------------------------
+-- Debugging/trace functions
+--
+-- _linkreg, _fpreg, _spreg
+--
+-- Returns the value of the registers as used by the calling function.
+--
+-- @@@ N.B. following dont take account of stack extension - needs to be checked
+--
+-- Called from C so must be PCS compilent
+
+
+-- Return original link register value from callers caller
+-- As we are a leaf function FP should not have changed, so its one off this
+
+	procsym _linkreg
+._linkreg:
+_test _true [ -- quick bodge -not general - but then again we cant be!
+	ldi	*+R_USP(4), R_A1result
+][
+	ldi	*-R_FP(1), R_A1result
+]
+	b	R_LR
+
+
+-- Return current frame-pointer
+
+	procsym _fpreg
+._fpreg:
+	ldi	R_FP, R_A1result
+	b	R_LR
+
+
+-- Return original user stack pointer value from callers caller.
+-- As we are a leaf function this should not have changed.
+
+	procsym _spreg
+._spreg:
+	ldi	R_USP, R_A1result
+	b	R_LR
+
+
+-- Force Emulator interrupt
+-- void JTAGHalt(void);
+
+	Function JTAGHalt
+
+	ldhi	0x2f, R_A1
+delayloop:			/* delay for messages to get out */
+	subi	1, R_A1
+	bnz	delayloop
+
+	_test _true [
+		int	0x66ffffff
+	][
+		SWI
+	]
+	b	R_LR
+
+
+
+_if _defp 'SYSDEB [
+-- TMP DEBUGGING AIDS -- TMP DEBUGGING AIDS -- TMP DEBUGGING AIDS --
+
+-- debugs to write to global bus
+-- word GRead(word addr)
+
+.GRead:
+	bud	R_LR
+		ldi	R_A1, R_ATMP
+		ldi	*R_ATMP, R_A1
+		nop
+
+-- void GWrite(word addr, word data)
+
+.GWrite:
+	bud	R_LR
+		ldi	R_A1, R_ATMP
+		sti	R_A2, *R_ATMP
+		nop
+
+-- expects to be called with interrupts off
+-- and via a CALL
+-- ar0 passes trace info.
+
+._GTrace:
+	push	ar1
+	push	ar2
+	push	ar3
+
+	ldhi	0x8000, ar1
+	ldhi	0x803f, ar2
+
+	ldi	*ar1, ar3
+	cmpi	ar1, ar2
+	bhi	writeok
+	addi	4, ar1, ar3	-- start at top of trace again
+writeok:
+	sti	ar0, *ar3++
+	sti	ar3, *ar1
+
+	pop	ar3
+	pop	ar2
+	pop	ar1
+	RETSU
+]
+
+
+-- end of c40exec.a

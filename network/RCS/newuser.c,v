@@ -1,0 +1,309 @@
+head	1.6;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.5
+	Alenia_release:1.5
+	Helios1_3:1.5
+	C40_Field_Test_2:1.5
+	C40_Field_Test_R1:1.5
+	Helios13_beta:1.5
+	Helios1_2_2_Fault:1.5
+	Helios1_2_2_Native:1.5
+	Helios1_2_2_native_beta:1.5
+	Helios1_2_2:1.5
+	Helios1_2_2Beta:1.5
+	Helios1_2_1:1.4
+	Helios1_2:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.6
+date	93.08.11.10.37.17;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.06.03.13.09.23;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.21.15.03.32;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.11.01.14.52.39;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.20.17.41.13;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.14.40.31;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@memory reduction
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- newuser.c								--
+--		This is a strange little Helios program that registers	--
+--	a window with the Session Manager, causing the latter to	--
+--	run logins repeatedly inside that window. The real work is	--
+--	done by the the RmRegisterWindow() routine in session.lib	--
+--                                                                      --
+--	Author:  BLV 21/6/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/newuser.c,v 1.5 1991/06/03 13:09:23 bart Exp $*/
+
+#include <string.h>
+#include <stdarg.h>
+#include <posix.h>
+#include <syslib.h>
+#include <codes.h>
+#include <nonansi.h>
+#include "session.h"
+#include "exports.h"
+
+#ifndef eq
+#define eq ==
+#define ne !=
+#endif
+
+static	Stream	*DiagnosticsStream;
+static	void 	report(char *, ...);
+	
+int	main(void)
+{ char		*UserName;
+  Environ	env;
+  Object	*WindowServer;
+  WORD		error;
+  int		argc;
+  
+  if (GetEnv(MyTask->Port, &env) < Err_Null)
+   { IOputs("newuser: failed to receive environment");
+     Exit(0x100);
+   }
+
+  if ((env.Strv[0] eq Null(Stream)) || (env.Strv[1] eq Null(Stream)) ||
+      (env.Strv[2] eq Null(Stream)) || (env.Strv[2] eq (Stream *) MinInt))
+   { IOputs("newuser: failed to receive error stream in environment");
+     Exit(0x100);
+   }
+  DiagnosticsStream = env.Strv[2];
+  
+  if ((env.Strv[0] eq (Stream *) MinInt) || 
+      ((env.Strv[0]->Flags & Flags_Interactive) eq 0))
+   { report("must be run interactively");
+     Exit(0x100);
+   }
+   
+  for (argc = 0; env.Argv[argc] ne Null(char); argc++);
+  if (argc > 2)
+   { report("usage, newuser <username>\n");
+     Exit(0x100);
+   }
+   
+  { int i;
+    for (i = 0; i <= OV_CServer; i++)
+     if (env.Objv[i] eq Null(Object))
+      { report("incomplete environment");
+        Exit(0x100);
+      }
+  }
+  WindowServer  = env.Objv[OV_CServer];
+ 
+  if (argc eq 1)
+   UserName = Null(char);
+  else
+   UserName = env.Argv[1];
+
+  unless(RmTestSessionManager())
+   { report("failed to locate Session Manager.");
+     Exit(0x100);
+   }
+   
+  if (RmRegisterWindow(WindowServer, env.Strv[0], UserName, &error))
+   Exit(0x100);
+  else
+   { if ((error & SS_Mask) eq 0)
+      switch(error)
+       { case (EC_Error + EG_Unknown + EO_Server) :
+       	  report("failed to locate session manager");
+       	  break;
+       	 case EC_Error + EG_WrongSize + EO_Name :
+       	  report("cannot cope with window name %s", env.Strv[0]->Name);
+       	  break;
+       	 case EC_Error + EG_NoMemory + EO_Message :
+       	  report("not enough memory");
+       	  break;
+       	 default :
+       	  report("failed to register window, fault %x", error); 
+       }
+     else 
+      report("failed to register window, fault %x", error);
+     Exit(0x100);   
+   }
+}
+
+/**
+*** Usual formatted output routines
+**/
+static char	output_buffer[256];
+static char	*int_to_string(char *buffer, int x);
+
+static int	process_format(char *init, char *format, va_list args)
+{ char	*dest;
+
+  strcpy(output_buffer, init);
+  
+  for (dest = output_buffer + strlen(output_buffer); *format ne '\0'; format++)
+   { if (*format ne '%')
+      { *dest++ = *format; continue; }
+     switch (*(++format))
+      { case	'\0': *dest++ = '%'; format--; break;
+        case	'%' : *dest++ = '%'; break;
+        case    'c' : *dest++ = (char) va_arg(args, int); break;
+        case	's' : { char	*temp = va_arg(args, char *);
+			if (temp eq Null(char))
+			 { *dest++ = '<'; *dest++ = 'n'; *dest++ = 'u';
+			   *dest++ = 'l'; *dest++ = 'l'; *dest++ = '>';
+			   break;
+			 }
+                        while (*temp ne '\0') *dest++ = *temp++;
+                        break;
+                      }
+        case	'x' : { int	x = va_arg(args, int);
+        		int	shift;
+        		*dest++ = '0'; *dest++ = 'x';
+        		for (shift = 28; shift >= 0; shift -= 4)
+        		 { int temp = (x >> shift) & 0x0F;
+        		   if (temp <= 9)
+        		    *dest++ = '0' + temp;
+        		   else 
+        		    *dest++ = 'a' + temp - 10;
+        		 }
+        		break;
+        	      }
+	case	'd' : { int	temp = va_arg(args, int);
+	   		dest = int_to_string(dest, temp);
+	   		break;
+		      }  
+
+	default	    : *dest++ = '%'; *dest++ = *format; break;
+      }
+    }
+  *dest++ = '\n';
+  return(dest - output_buffer);
+}
+
+static char	*int_to_string_aux(char *buffer, unsigned int i)
+{ if (i > 9) buffer = int_to_string_aux(buffer, i / 10);
+  *buffer++	= (i % 10) + '0';
+  return(buffer);
+}
+
+static char	*int_to_string(char *buffer, int x)
+{ if (x < 0) { x = -x; *buffer++ = '-'; }
+  return(int_to_string_aux(buffer, (unsigned int ) x));
+}
+
+static void report(char *format, ...)
+{ va_list	args;
+  int		length;  
+  
+  va_start(args, format);
+  
+  length = process_format("newuser: ", format, args);
+  va_end(args);
+  (void) Write(DiagnosticsStream, output_buffer, length, -1);
+}
+
+@
+
+
+1.5
+log
+@stack checking now enabled
+@
+text
+@d18 1
+a18 2
+
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/newuser.c,v 1.4 90/11/21 15:03:32 bart Exp $";
+@
+
+
+1.4
+log
+@fixed a usage of va_arg() to let the ARM compiler cope
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/newuser.c,v 1.1 90/09/12 14:40:31 jon Exp $";
+a33 3
+
+#pragma -s1		/* disable stack checking */
+#pragma -g0		/* and do not put the names into the code */
+@
+
+
+1.3
+log
+@sources update after visit to Parsytec 22.10.90-31.10.90
+@
+text
+@d131 1
+a131 1
+        case    'c' : *dest++ = va_arg(args, char); break;
+@
+
+
+1.2
+log
+@now compiles with arm compiler (sizeof(char) problems in va_arg)
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/newuser.c,v 1.1 90/09/12 14:40:31 jon Exp Locker: bart $";
+d131 1
+a131 1
+        case    'c' : *dest++ = (char) va_arg(args, int); break;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header$";
+d131 1
+a131 1
+        case    'c' : *dest++ = va_arg(args, char); break;
+@

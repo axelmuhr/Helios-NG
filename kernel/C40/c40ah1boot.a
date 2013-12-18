@@ -1,0 +1,592 @@
+-- File:	c40aboot.a
+-- Subsystem:	'C40 Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	Sept '92
+--
+-- Description: 'C40 Sonitech Spirit40 board specific initial boot code.
+--
+--		This code is downloaded using the Ariel Hydra driver into the
+--		'C40's internal RAM. It uses shared memory for all
+--		communications with the I/O Server. The sequence of comms is:
+--		Get the HW_Config word and Pseudo IDROM. The C40 is then
+--		initialised along with the Helios root structures. The nucleus
+--		is downloaded and specific to this version, the configuration
+--		vector is also downloaded by the bootstrap rather than the
+--		kernel. Finally a C PCS conformant world is set up and we
+--		jump into the kernel with a bootlink argument of NULL to
+--		indicate that we have been loaded by a alien comms. mechanism.
+--
+--
+-- RcsId: $Id: c40ah1boot.a,v 1.2 1994/06/29 15:03:13 tony Exp $
+--
+-- (C) Copyright 1993 Perihelion Software Ltd.
+-- 
+-- RcsLog: $Log: c40ah1boot.a,v $
+-- Revision 1.2  1994/06/29  15:03:13  tony
+-- New field Protocol added to channel buffer.  This was added
+-- to support the Ariel Hydra II board
+--
+-- Revision 1.2  1994/05/03  14:04:39  tony
+-- Added Protocol element to Channel structure - in line with hydra II
+-- bootstrap.
+--
+-- Revision 1.1  1994/04/20  16:25:12  tony
+-- Initial revision
+--
+-- Revision 1.9  1993/08/16  08:58:35  richardp
+-- Automatic Memory Sizing
+--
+-- Revision 1.8  1993/04/01  16:57:25  nick
+-- Address of shared memory picked up from 0x8d000000.
+-- Address base set to 0x002ff0000 to cover on-chip RAM and quadrant 2
+-- local RAM.
+--
+-- Revision 1.7  1993/03/03  10:33:08  nick
+-- Tidied and fixed
+--
+-- Revision 1.1  1993/02/02  17:34:01  nick
+-- Initial revision
+--
+-- Revision 1.4  1992/11/20  15:46:23  paul
+-- if the base+size of strobe used as data is within the first quadrant of
+-- memory, then set IR0 address base as zero to keep ONCHIP RAM and periperals
+-- in addressablity
+--
+-- Revision 1.3  1992/11/18  14:33:45  paul
+-- big changes. Added support for HW_Config word to select the nucleus load
+-- address, the C address base IR0 is setup correctly, and full C40Word/CAddress
+-- macros are used. The nucleus load address is now passed as a word pointer,
+-- and also saved in the ExecRoot as a WPTR.
+--
+-- Revision 1.2  1992/09/30  13:43:33  paul
+-- initial working version
+--
+-- Revision 1.1  1992/09/29  15:54:32  paul
+-- Initial revision
+--
+--
+--
+
+include basic.m
+include c40.m
+include tim40.m
+include c40mmap.m
+include ../gexec.m
+include module.m
+include config.m
+include structs.m
+include root.m
+
+
+struct ChannelBuffer [
+	word	DataReady
+	word	Ack
+	word	Size
+	word	Protocol
+	word	Buffer		-- actually 'vec N Buffer'
+]
+
+-- The IO Server places the (calculated) address of the actual shared
+-- memory area at 0x8d000000 in vc40_reset () using c40_write_long ().
+-- (It also places the number of dsp's, the interrupt priority and the 
+-- interrupt vector in locations 0x8d00001 - 8d000003)
+_def 'BAddr	0x8d000000	-- default address of shared memory.
+_def 'BAddrHi	0x8d00		-- default address of shared memory.
+
+_def 'Ctrl	0xbf7fc008
+
+
+	-----------------------------------------------------------------------
+	-- The linker will prefix this code with 3 words magic/flags and size.
+	-- The booting program should ignore these three words and only download
+	-- 'size' bytes, jumping to the first of these.
+
+	-- This boot code is downloaded into the second bank of on-chip RAM.
+startboot:
+
+	AllIntsOff			-- disable any shared memory interrupts
+
+	ldi	0, ar7
+	ldhi	BAddrHi, ar7		-- shared mem addr.
+	or	(BAddr & 0xFFFF), ar7
+	ldi	*+ar7(0), ar7		-- get actual address of shared mem
+
+	-- read Hardware Config word from boot
+HW_ConfigWait:
+
+	ldi	*+ar7(ChannelBuffer.DataReady), r0
+	bz	HW_ConfigWait		-- loop until data valid
+
+	ldi	*+ar7(ChannelBuffer.Buffer), r9		-- get HW_Config
+	stik	FALSE, *+ar7(ChannelBuffer.DataReady)	-- clear transfer
+	stik	TRUE, *+ar7(ChannelBuffer.Ack)		-- ack transfer
+
+	-- The cache is sometimes disabled to get around C40 bugs.
+	-- On revision 1 (GFL) using two strobes of differing speeds on the
+	-- same address bus can cause problems with the cache enabled.
+	tstb	HW_CacheOff, r9
+	bnz	DontEnableCache
+	or	ST_CE, st		-- enable cache for fast boot
+DontEnableCache:
+
+
+	-----------------------------------------------------------------------
+	-- Read pseudo/replacement IDROM
+	-- Ariel boards have no notion of IDROM's, or config lines. We should
+	-- always therefore expect to receive a pseudo IDROM.
+PseudoIDROMWait:
+	ldi	*+ar7(ChannelBuffer.DataReady), r0
+	bz	PseudoIDROMWait		-- loop until data valid
+
+	-- read inclusive size of Pseudo IDROM
+	ldi	*+ar7(ChannelBuffer.Buffer), r1
+
+	-- get address of IDROM data into ar3
+	addi	ChannelBuffer.Buffer + 1, ar7, ar3
+
+	subi	2, r1, r0		-- init for // rpts
+
+	OnChipRAM ar4			-- Write to IDROM's std location
+
+	-- Copy pseudo IDROM from shared memory into on-chip RAM bank 0.
+	-- Expects entire IDROM can fit into shared memory window.
+	-- initial size read into r1 is saved immediately
+	rpts	r0			-- loops r0 + 1
+		ldi	*ar3++, r1 || sti	r1, *ar4++
+	sti	r1, *ar4++		-- store final value
+
+	stik	FALSE, *+ar7(ChannelBuffer.DataReady)	-- clear transfer
+	stik	TRUE, *+ar7(ChannelBuffer.Ack)		-- ack transfer
+
+
+	-----------------------------------------------------------------------
+	-- Init processor from contents of ID ROM,
+	-- load base addr of internal periperal map,
+InitC40:
+	ldperimap ar0
+
+	OnChipRAM ar5		-- Std IDROM's always load first block here
+
+	-- global mem reg
+	ldi	*+ar5(IDROM.GBCR), r0
+	sti	r0, *+ar0(gmem_control)
+
+	-- local mem regB
+	ldi	*+ar5(IDROM.LBCR), r0
+	sti	r0, *+ar0(lmem_control)
+
+	-- setup timer 0 for a 1mS period, but do not start it
+	ldi	*+ar5(IDROM.TIMER0_PERIOD), r0
+	sti	r0, *+ar0(timer0_period)
+
+	-- setup timer 1 as this may be needed for DRAM refresh
+	ldi	*+ar5(IDROM.TIMER1_PERIOD), r0
+	sti	r0, *+ar0(timer1_period)
+
+	ldi	*+ar5(IDROM.TIMER1_CTRL.w_offset), r0
+	-- Timer1 actually in upper 16 bits of word
+	lsh	-IDROM.TIMER1_CTRL.shift, r0
+	-- set the timer to run on when a JTAG halt is in effect
+	-- this ensures that DRAM refresh continues.
+	ldhi	((tcr_dbgcont1 | tcr_dbgcont2) >> 16) & 0xffff, r1
+	or	r1, r0
+	sti	r0, *+ar0(timer1_control)
+
+
+	ldi    *++ar5(IDROM.GBASE0),R0
+	ldi    4,R7                 --  4 memory chunks to investigate
+nextstrobe:
+	LDI    *ar5,AR1             --  Move Address into address register
+	LDI    *+ar5(1),R10         --  Set the artificial limit
+	CMPI   1,R7                 --  usually next entry,  but last one
+	BNE    notlast              --  is the first entry
+	LDI    *-ar5(3),R10         --  so get that instead
+notlast:
+	LDI    *+ar5(4),R0          --  Get size as specified in IDROM
+	Bne    dunstrobe            --  Check if size is zero
+	LDI    -1,r0                --  Check if address is ffffffff
+	CMPI   r0,AR1               --  by comparing to -1
+	Beq    dunstrobe            --  and do nothing on strobe if it is
+    --   Else we are going to size the memory ourselves
+    --   Main problem is to set a limit to where we look
+	LDI    0x1000,R1            --  set stride - 16384 bytes
+	LDI    0xc40,R2             --  set an arbitrary constant to R2
+	STI    R2,*AR1              --  and put that in the first word
+	STI    R1,*+AR1(1)
+	LDA    AR1,AR2              --  set pointer to current check area
+	CMPI   R2,*AR1
+        Bne    gotall
+lookmore:
+	ADDI   R1,AR2               --  point to one stride further up
+	LDI    AR2,R3               --  get the address to compute
+	ADDI   R2,R3                --  another arbitrary value from it
+	STI    R3,*AR2              --  and put that into new location
+	CMPI   R2,*AR1              --  check to see if first word still OK
+	Bne    gotall               --  and if not,  that is the lot!
+	CMPI   AR1,R10              --  have we got to limit value
+	Beq    gotall               --  yes - that's the lot
+	LDI    *AR2,R6              --  now re-get the current check value
+	CMPI   R3,R6                --  and check that is what we stored
+	Beq    lookmore             --  if equal,  look for more memory
+gotall:
+	SUBI3  AR1,AR2,R0           --  subtract original from failed
+	sti    R0,*+ar5(4)          --  put size into position
+dunstrobe:
+	LDI    *++ar5(1),R0         --  increment strobe pointer
+	SUBI   1,R7                 --  subtract 1 from the number to do
+	Bne    nextstrobe           --  repeat for next strobe if need be
+
+	OnChipRAM ar5		-- Std IDROM's always load first block here
+
+	-- On Ariel Hydra, we may wish to reset the other processors
+	-- at this point.
+
+
+-------------------------------------------------------------------------------
+-- Setup basic memory map.
+--
+--
+-- Global Bus:
+--
+--	Hi loaded Nucleus
+--	------------------
+
+-- Local Bus:
+--	     Hi addr.
+--
+--	------------------
+--	Trace Vector
+--	------------------
+--
+--	Poss. strobe 1 mem
+--
+--	------------------
+--	Poss. dummy block	Used to stitch together noncontigous strobe 0/1
+--	------------------
+--
+--	Main Memory Pool
+--
+--	------------------
+--	Config vector
+--	------------------
+--	Kernel Root
+--	------------------
+--
+--	Low loaded Nucleus
+--
+--	------------------
+--	Interrupt vectors       256 bytes (must be 2kb boundary aligned)
+--	------------------
+--	System Stack		1kb
+--	------------------
+--	ExecRoot		1kb
+--	------------------	< Base of local bus strobe 0/1
+--
+--	     Lo addr.
+
+	-- Find correct address for start of local bus.
+	-- Local bus is currently always used to hold the ExecRoot
+	-- system stack, interrupt vector table, kernel root, config
+	-- structure and C addressable user RAM. The nucleus may be
+	-- loaded on the global bus, or the local bus.
+
+	-- Force use of local bus strobe 1 instead of strobe 0?
+	tstb	HW_NucleusLocalS1, r9
+	bnz	UseLStrobe1
+
+	-- Default to using local bus strobe 0, but check its validity.
+	-- Use local bus strobe 1 if strobe 0 is invalid.
+	ldi	*+ar5(IDROM.LBASE0), ar1
+	addi	*+ar5(IDROM.LSIZE0), ar1, ar6
+	cmpi	-1, ar1
+	bne	ValidLStrobe
+UseLStrobe1:
+	ldi	*+ar5(IDROM.LBASE1), ar1
+	addi	*+ar5(IDROM.LSIZE1), ar1, ar6
+
+ValidLStrobe:
+	-- Setup address of ExecRoot.
+	-- This is held in the tvtp expansion register.
+	-- tvtp and ivtp must lie on a 512 word (2k) boundary.
+
+	-- Use the base memory address as the execroot pointer.
+	ldpe	ar1, tvtp	-- set trap vector table (execroot) position
+				-- GetExecRoot will load this address from tvtp
+
+	-- @@@ For the Ariel Hydra board we probably want to fix the address
+	-- base at the base of on-chip RAM to allow this to be addressable
+	-- from C. This would still give us 12Mb - 8k of addressability on
+	-- the strobe that starts on the second quadrant of memory's boundary.
+
+	-- R_BASE (IR0) defines the base of RAM addressable by C (via byte
+	-- pointers). Normally this is set to the base of the strobe we
+	-- are using for C data, but if the strobe base + its size is in
+	-- the first quadrant of memory, then the address base is set to 0. 
+	-- This allows us to address the on-chip RAM and peripherals
+	-- directly from C.
+
+--	ldi	ar1, R_BASE	-- default to base of strobe.
+--	ldhi	0x4000, ar4
+--	cmpi	ar4, ar6	-- compare with top of first quadrant
+--	ldile	0, R_BASE	-- set to zero if in first quadrant
+
+	ldhi	0x002f,ar4	-- VC40: set base to address of on-chip
+	or	0xf000,ar4	-- RAM
+	ldi	ar4,R_BASE
+
+	-- Save standard address base in nucleus.
+	sti	R_BASE,	*+ar1(ExecRoot.CAddressBase)
+
+	-- Save HW_Config sent to bootstrap in the ExecRoot.
+	-- This is used as the default when booting other processors.
+	sti	r9, *+ar1(ExecRoot.HWConfig)
+
+	-- Position system stack pointer directly after execroot.
+	-- Execroot and SSP are nominally 1kb in size each.
+	-- (system stack builds upwards)
+	-- .sizeof defined in terms of bytes.
+	ldi	ar1, R_SSP
+	addi	ExecRoot.sizeof / 4, R_SSP
+
+	-- Align interrupt vectors to 0x200 word boundary after execroot
+	-- and system stack.
+	ldi	R_SSP, ar2
+	addi	0x200-1, ar2
+	andn	0x200-1, ar2
+	ldpe	ar2, ivtp	-- set interrupt vector position
+
+	addi	0x40, ar2	-- add size of interrupt vector table
+				-- to give nucleus load position
+
+	-- Depending on HW_Config word, choose nucleus load location and
+	-- record it in ExecRoot.
+TestGlobalS0:
+	tstb	HW_NucleusGlobalS0, r9
+	bz	TestGlobalS1
+	ldi	*+ar5(IDROM.GBASE0), ar4
+	b	UseHighNuc
+
+TestGlobalS1:
+	tstb	HW_NucleusGlobalS1, r9
+	bz	LocalBusNucleus
+	ldi	*+ar5(IDROM.GBASE1), ar4
+UseHighNuc:
+	-- Load nucleus at base of global strobe 0/1.
+	-- ar2 = end of IVTP
+	-- ar4 = base address of chosen strobe.
+	-- ar1 = ExecRoot
+	-- Kernel root struct is therefore located directly after the
+	-- interrupt vector table.
+	ldi	ar2, r0
+	C40CAddress r0				-- Convert to BPTR.
+	sti	r0, *+ar1(ExecRoot.KernelRoot)	-- Save in execroot.
+
+	ldi	ar4, ar2			-- set nuc pos to base of strobe
+
+	b	SetNucAddress
+
+LocalBusNucleus:
+	-- ar2 = end of IVTP (base of low loaded nucleus).
+	-- ar1 = ExecRoot
+
+	-- Note that kernel root address still has to be set.
+	-- It will be located directly after the downloaded nucleus.
+	stik	0,  *+ar1(ExecRoot.KernelRoot)
+
+SetNucAddress:
+	-- Save computed address of nucleus into execroot.
+	-- Nucleus location is held as a word pointer on C40
+	-- ar2 = Nucleus load position
+	sti	ar2, *+ar1(ExecRoot.Nucleus)
+
+
+	-----------------------------------------------------------------------
+	-- Download Nucleus.
+	--
+	-- Expects simple boot protocol of SIZE in words,
+	-- followed by SIZE words of data.
+	-- @@@ extend protocol to add peek / poke / exec / boot / worm on cmd?
+
+	-- Download nucleus to RAM address pointed at by ar2
+
+	-- Registers used thus:
+	-- r2 == nucleus size left to download (bytes)
+	-- r1 == size of this chunk to copy (bytes, then words)
+	-- r0 == tmp
+
+	-- ar4 == position to download to
+	ldi	ar2, ar4		-- point to nucleus load area
+NucDownloadWait:
+	ldi	*+ar7(ChannelBuffer.DataReady), r0
+	bz	NucDownloadWait		-- loop until data valid
+
+	-- read inclusive size of nucleus (# bytes of image to download)
+	ldi	*+ar7(ChannelBuffer.Buffer), r1
+
+	ldi	r1, r2			-- r2 = copy of total transfer size
+	b	ReadChunk
+
+ChunkLoop:
+	ldi	*+ar7(ChannelBuffer.DataReady), r0
+	bz	ChunkLoop		-- loop until data valid
+
+ReadChunk:
+	-- get address of shared memory buffer into ar3
+	addi	ChannelBuffer.Buffer, ar7, ar3
+
+	ldi	*+ar7(ChannelBuffer.Size), r1
+	subi	r1, r2			-- r2 = total bytes left to download
+
+	lsh	-2, r1			-- convert to words
+	subi	2, r1			-- initialise for rpts
+					-- -2 rpts and || correction
+	-- Download image
+	ldi	*ar3++, r0
+	rpts	r1			-- loops r0 + 1
+		ldi	*ar3++, r0 || sti	r0, *ar4++
+	sti	r0, *ar4++		-- store final value
+
+	stik	FALSE, *+ar7(ChannelBuffer.DataReady)	-- clear transfer
+	stik	TRUE, *+ar7(ChannelBuffer.Ack)		-- ack transfer
+
+	cmpi	0, r2			-- completely copied nuc?
+	bgt	ChunkLoop
+
+
+	-----------------------------------------------------------------------
+	-- Copy IDROM into ExecRoot structure
+	-- ar5 points to base of IDROM in internal ram
+	-- ar1 points to ExecRoot base.
+
+	addi	ExecRoot.ID_ROM, ar1, ar4
+	ldi	*ar5, r0
+IDROM_save:
+	ldi	*ar5++, r1
+	sti	r1, *ar4++
+	subi	1, r0
+	bnz	IDROM_save
+
+
+	-----------------------------------------------------------------------
+	-- If ExecRoot->KernelRoot has not been set, then locate it directly
+	-- after the nucleus.
+
+	ldi	*+ar1(ExecRoot.KernelRoot), r0
+	cmpi	0, r0
+	bnz	DownloadConfig
+
+	-- In the case of a Low loaded nucleus, the kernel root address will not
+	-- yet have been set. The nucleus includes its own size at start, so
+	-- add this to its start address to get the next free address.
+	-- Place the kernel root there.
+	ldi	ar2, r0
+	C40CAddress r0
+	addi	*ar2, r0			-- calculate kernel root struct
+	sti	r0, *+ar1(ExecRoot.KernelRoot)	-- (BPTR) address and save in
+						-- execroot.
+
+
+	-----------------------------------------------------------------------
+	-- Download the config structure here, rather than in the kernels
+	-- startup. Need to do this here as kernel doesn't know there is a
+	-- seventh (special) link available until it can read the
+	-- config structure.
+DownloadConfig:
+ConfigSizeWait:
+	ldi	*+ar7(ChannelBuffer.DataReady), r0
+	bz	ConfigSizeWait			-- loop until data valid
+
+	-- save config size in a convenient place
+	ldi	*+ar7(ChannelBuffer.Buffer), r1
+	sti	r1, *+ar1(ExecRoot.StartupStack)
+
+	-- read exclusive size of Config and convert to word count
+	lsh	-2, *+ar7(ChannelBuffer.Buffer), r1
+	addi	1, r1				-- don't loose tail byte data
+
+	stik	FALSE, *+ar7(ChannelBuffer.DataReady)	-- clear transfer
+	stik	TRUE, *+ar7(ChannelBuffer.Ack)		-- ack transfer
+
+ConfigWait:
+	ldi	*+ar7(ChannelBuffer.DataReady), r0
+	bz	ConfigWait			-- loop until data valid
+
+	-- get address of Config data into ar3
+	addi	ChannelBuffer.Buffer, ar7, ar3
+	-- Write Config to its std location (directly after root struct).
+	-- note that Root struct must always a word multiple.
+	ldi	*+ar1(ExecRoot.KernelRoot), ar4
+	C40WordAddress ar4
+	addi	Root.sizeof >> 2, ar4
+
+	subi	2, r1, r0		-- init for // rpts
+
+	-- Expects entire Config vector can fit into shared memory window.
+	ldi	*ar3++, r1		-- read initial value
+	rpts	r0			-- loops r0 + 1
+		ldi	*ar3++, r1 || sti	r1, *ar4++
+	sti	r1, *ar4++		-- store final value
+
+	stik	FALSE, *+ar7(ChannelBuffer.DataReady)	-- clear transfer
+	stik	TRUE, *+ar7(ChannelBuffer.Ack)		-- ack transfer
+
+	-- For the last block, wait until the server has cleared the ack
+	-- before entering the kernel.
+AckWait:
+	ldi	*+ar7(ChannelBuffer.Ack), r0
+	bnz	AckWait				-- loop until Ack == 0
+
+	-----------------------------------------------------------------------
+	-- Initialise C PCS conformant world
+	--
+	-- kernal called thus:
+	-- 	void Kstart(Channel bootlink, word *nucbase)
+	--
+	-- On Entry:
+	--	AR0 = peri map
+	--	AR1 = execroot
+	--	AR2 = nucleus address (WPTR)
+	--	AR3 = trash (usually CPCR address of boot link)
+
+CallKStart:
+	-- Setup initial C stack, this is a FALLING stack from top of
+	-- internal RAM.
+	ldhi	0x30, R_USP	-- 0x002f ffff
+	subi	1, R_USP
+
+	-- All registers set the flags.
+	or	ST_SET_COND, R_ST
+
+	-- Module table pointer not required by kernel.
+	
+	-- Setup arguments and root structure pointer
+
+	-- Bootlink usually transfered as WPTR to bootlinks control reg.
+	-- For shared memory systems this is NULL. This also signifies that
+	-- the Config stucture has already been downloaded by the bootstrap.
+	ldi	0, R_A1		-- R_A1 = bootlink (0 = already downloaded)
+
+	ldi	ar2, R_A2	-- R_A2 = load address of nucleus (WPTR)
+
+	-- Jump to initial kernel module (kmodule)
+	-- jmp addr = *(GetNucBase() + 1) + (GetNucBase() + 1) + sizeof(Module)
+
+	-- Point at kernel slot.
+	addi	1, ar2
+
+	-- Convert kernel rptr to address of kernel.
+	ldi	*ar2, ar1	-- get kernel rptr - offset to kernel
+
+	lsh	-2, ar1		-- convert to number of words
+	addi	ar2, ar1	-- add in address of rptr
+
+	-- Step over module header (.sizeof in terms of bytes).
+	addi	Module.sizeof / 4, ar1
+
+	ldi	0 , iif		-- clear pending interrupts
+
+	-- Jump to startup code.
+	b	ar1
+
+
+-- End of c40aboot.a

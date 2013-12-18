@@ -1,0 +1,597 @@
+head	1.2;
+access;
+symbols;
+locks; strict;
+
+
+1.2
+date	91.12.11.15.47.20;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.26.17.28.10;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@added support for .ref
+@
+text
+@--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L  (ARM version)	--
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1989, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- munge.m								--
+--									--
+-- Defines the macros used to convert arm unix assembler a.out into 	--
+-- Helios object format (after a.out is passed thru munger).		--
+--                                                                      --
+--      Author: Paul Beskeen 5/4/89					--
+--	Updates: PAB 16/8/90 Split Module Table directives		--
+--                                                                      --
+--	SCCS Id: %W% %G%						--
+--------------------------------------------------------------------------
+--
+-- The ampp macro/munger combination works by ampp macros inserting
+-- 'pseudo' directives into the assembly code, and the munger transforming
+-- these directives into proper Helios object directives and stripping off
+-- the unix header, symbol and relocation info.
+-- 
+-- Labels are used to pass info to the munger where the code size must not
+-- be altered, where the code size must be increased to keep pc relative
+-- addressing correct, .byte, .short & .word are used.
+--
+-- These horrendous macros have grown like topsy, if I knew how many there
+-- were going to be, I would have done it differently! - But soon to
+-- be replaced by assembler that produces Helios Object code directly!
+--------------------------------------------------------------------------
+
+_report ['include munge.m]
+_def 'munge.m_flag 1
+include arm.m
+
+-- initialise counts used to keep labels unique
+_set '.N_dataN 1
+_set '.N_codetableN 1
+_set '.N_codeN 1
+_set '.N_initN 1
+_set '.N_moduleN 1
+_set '.N_imagesizeN 1
+_set '.N_modnumN 1
+_set '.N_modtaboffN 1
+_set '.N_mod3taboffN 1
+_set '.N_datasymbN 1
+_set '.N_codesymbN 1
+_set '.N_datamoduleN 1
+_set '.N_labelrefN 1
+_set '.N_globalN 1
+_set '.N_librefN 1
+
+-- output 'count' zero initialised bytes
+-- Helios linker would just insert zero bytes like this,
+-- so might as well do it now!
+_defq .bss['count]
+[
+	'.space count		-- use arm assembler directive!
+
+--	_set '.S_bssS count
+--
+--	_defq .N_bssN		-- recursive macro to output 'count'  .byte 0's
+--	[
+--		_if _gt .S_bssS 0
+--		[
+--			_set '.S_bssS _sub .S_bssS 1
+--			.byte 0
+--			.N_bssN
+--		]
+--	]
+--	.N_bssN			-- start recursion
+]
+
+-- patch a word in the output
+-- remember to bracket the parameters (also for patch_armdt/p)
+_defq .patch_word['type]
+[
+	_defq imagesize
+	[
+		.H_patch_word_imagesize_$.N_imagesizeN$:
+		'.word	0x010101010
+		_set '.N_imagesizeN _add .N_imagesizeN 1	-- to stop label name conflicts
+	]
+
+	_defq modnum
+	[
+		.H_patch_word_modnum_$.N_modnumN$:
+		'.word	0x0f0f0f0f0
+		_set '.N_modnumN _add .N_modnumN 1	-- to stop label name conflicts
+	]
+
+	_defq modtaboff
+	[
+		.H_patch_word_modtaboff_$.N_modtaboffN$:
+		'.word	0x0f0f0f0f0
+		_set '.N_modtaboffN _add .N_modtaboffN 1
+	]
+
+	_defq codesymb['nameyyy]
+	[
+		.H_patch_word_codesymb_$.N_codesymbN$_$nameyyy$:
+		'.word	0x0f0f0f0f0
+		_set '.N_codesymbN _add .N_codesymbN 1
+	]
+
+	_defq datasymb[namexxx]
+	[
+		.H_patch_word_datasymb_$.N_datasymbN$_$namexxx$:
+		'.word	0x0f0f0f0f0
+		_set '.N_datasymbN _add .N_datasymbN 1
+	]
+
+	_defq datamodule[namexxx]
+	[
+		.H_patch_word_datamodule$_$.N_datamoduleN$_$namexxx$:
+		'.word	0x0f0f0f0f0
+		_set '.N_datamoduleN _add .N_datamoduleN 1
+	]
+
+	_defq labelref[namexxx]
+	[
+		.H_patch_word_labelref_$.N_labelrefN$_$namexxx$:
+		'.word	0x0f0f0f0f0
+		_set '.N_labelrefN _add .N_labelrefN 1
+	]
+
+	type
+
+	_undef 'imagesize
+	_undef 'modnum
+	_undef 'modtaboff
+	_undef 'datasymb
+	_undef 'codesymb
+	_undef 'datamodule
+	_undef 'labelref
+]
+
+-- ARM patches use the following instruction as the word to patch
+-- e.g.
+--
+-- .patch_armdt [datasymb foo]
+-- ldr ip,[ip,#1]
+--
+-- in this case the #1 is patched with offset of datasymb foo
+-- in the modules static data area
+
+-- Patch ARM data transfer instruction (bits 0-11)
+_defq .patch_armdt['type]
+[
+	_defq imagesize
+	[
+		.H_patch_armdt_imagesize_$.N_imagesizeN$:
+		_set '.N_imagesizeN _add .N_imagesizeN 1
+	]
+
+	_defq modnum
+	[
+		.H_patch_armdt_modnum_$.N_modnumN$:
+		_set '.N_modnumN _add .N_modnumN 1
+	]
+
+	_defq modtaboff
+	[
+		.H_patch_armdt_modtaboff_$.N_modtaboffN$:
+		_set '.N_modtaboffN _add .N_modtaboffN 1
+	]
+
+	_defq mod3taboff
+	[
+		.H_patch_armdt_mod3taboff_$.N_mod3taboffN$:
+		_set '.N_mod3taboffN _add .N_mod3taboffN 1
+	]
+
+	_defq codesymb['namexxx]
+	[
+		.H_patch_armdt_codesymb$_$.N_codesymbN$_$namexxx$:
+		_set '.N_codesymbN _add .N_codesymbN 1
+	]
+
+	_defq datasymb[namexxx]
+	[
+		.H_patch_armdt_datasymb$_$.N_datasymbN$_$namexxx$:
+		_set '.N_datasymbN _add .N_datasymbN 1
+	]
+
+	_defq datamodule[namexxx]
+	[
+		.H_patch_armdt_datamodule$_$.N_datamoduleN$_$namexxx$:
+		_set '.N_datamoduleN _add .N_datamoduleN 1
+	]
+
+	_defq labelref[namexxx]
+	[
+		.H_patch_armdt_labelref$_$.N_labelrefN$_$namexxx$:
+		_set '.N_labelrefN _add .N_labelrefN 1
+	]
+
+	type
+
+	_undef 'imagesize
+	_undef 'modnum
+	_undef 'mod3taboff
+	_undef 'modtaboff
+	_undef 'datasymb
+	_undef 'codesymb
+	_undef 'datamodule
+	_undef 'labelref
+]
+
+
+-- Patch ARM dataprocessing instruction (bits 0-8 with shift + warn)
+_defq .patch_armdp['type]
+[
+	_defq imagesize
+	[
+		.H_patch_armdp_imagesize_$.N_imagesizeN$:
+		_set '.N_imagesizeN _add .N_imagesizeN 1
+	]
+
+	_defq modnum
+	[
+		.H_patch_armdp_modnum_$.N_modnumN$:
+		_set '.N_modnumN _add .N_modnumN 1
+	]
+
+	_defq modtaboff
+	[
+		.H_patch_armdp_modtaboff_$.N_modtaboffN$:
+		_set '.N_modtaboffN _add .N_modtaboffN 1
+	]
+
+	_defq datasymb[namexxx]
+	[
+		.H_patch_armdp_datasymb$_$.N_datasymbN$_$namexxx$:
+		_set '.N_datasymbN _add .N_datasymbN 1
+	]
+
+	_defq datamodule[namexxx]
+	[
+		.H_patch_armdp_datamodule$_$.N_datamoduleN$_$namexxx$:
+		_set '.N_datamoduleN _add .N_datamoduleN 1
+	]
+
+	_defq labelref[namexxx]
+	[
+		.H_patch_armdp_labelref$_$.N_labelrefN$_$namexxx$:
+		_set '.N_labelrefN _add .N_labelrefN 1
+	]
+
+	type
+
+	_undef 'imagesize
+	_undef 'modnum
+	_undef 'modtaboff
+	_undef 'datasymb
+	_undef 'datamodule
+	_undef 'labelref
+]
+
+-- Patch ARM dataprocessing instruction with ls byte of patch value
+_defq .patch_armdplsb['type]
+[
+	_defq imagesize
+	[
+		.H_patch_armlsbdp_imagesize_$.N_imagesizeN$:
+		_set '.N_imagesizeN _add .N_imagesizeN 1
+	]
+
+	_defq modnum
+	[
+		.H_patch_armlsbdp_modnum_$.N_modnumN$:
+		_set '.N_modnumN _add .N_modnumN 1
+	]
+
+	_defq modtaboff
+	[
+		.H_patch_armlsbdp_modtaboff_$.N_modtaboffN$:
+		_set '.N_modtaboffN _add .N_modtaboffN 1
+	]
+
+	_defq datasymb[namexxx]
+	[
+		.H_patch_armlsbdp_datasymb$_$.N_datasymbN$_$namexxx$:
+		_set '.N_datasymbN _add .N_datasymbN 1
+	]
+
+	_defq datamodule[namexxx]
+	[
+		.H_patch_armlsbdp_datamodule$_$.N_datamoduleN$_$namexxx$:
+		_set '.N_datamoduleN _add .N_datamoduleN 1
+	]
+
+	_defq labelref[namexxx]
+	[
+		.H_patch_armlsbdp_labelref$_$.N_labelrefN$_$namexxx$:
+		_set '.N_labelrefN _add .N_labelrefN 1
+	]
+
+	type
+
+	_undef 'imagesize
+	_undef 'modnum
+	_undef 'modtaboff
+	_undef 'datasymb
+	_undef 'datamodule
+	_undef 'labelref
+]
+
+-- Patch ARM dataprocessing instruction with residue from last armdplsb patch
+_defq .patch_armdprest
+[
+		-- format still requires some dummy info
+		-- ncc uses this to document possible large gaps between instr.
+		.H_patch_armrestdp_modnum_$.N_modnumN$: -- dummy!
+		_set '.N_modnumN _add .N_modnumN 1
+]
+
+-- armjp patch - only labels expected and patch size is always a word.
+_defq .patch_armjp[namexxx]
+[
+	.H_patch_armjp_labelref$_$.N_labelrefN$_$namexxx$:
+	_set '.N_labelrefN _add .N_labelrefN 1
+]
+
+-- Remember - No ARM patches defined for byte or short patches
+-- patch a short in the output
+_defq .patch_short['type]
+[
+	_defq imagesize
+	[
+		.H_patch_shrt_imagesize_$.N_imagesizeN$:
+		'.short 0x01010
+		_set '.N_imagesizeN _add .N_imagesizeN 1	-- to stop label name conflicts
+	]
+
+	_defq modnum
+	[
+		.H_patch_shrt_modnum_$.N_modnumN$:
+		'.short 0x0e0e0
+		_set '.N_modnumN _add .N_modnumN 1	-- to stop label name conflicts
+	]
+
+	_defq modtaboff
+	[
+		.H_patch_shrt_modtaboff_$.N_modtaboffN$:
+		'.short 0x0e0e0
+		_set '.N_modtaboffN _add .N_modtaboffN 1
+	]
+
+	_defq datasymb['name]
+	[
+		.H_patch_shrt_datasymb_$.N_datasymbN$_$name$:
+		'.short 0x0e0e0
+		_set '.N_datasymbN _add .N_datasymbN 1
+	]
+
+	_defq datamodule['name]
+	[
+		.H_patch_shrt_datamodule$_$.N_datamoduleN$_$name$:
+		'.short 0x0e0e0
+		_set '.N_datamoduleN _add .N_datamoduleN 1
+	]
+
+	_defq labelref['name]
+	[
+		.H_patch_shrt_labelref_$.N_labelrefN$_$name$:
+		'.short 0x0e0e0
+		_set '.N_labelrefN _add .N_labelrefN 1
+	]
+
+	type
+
+	_undef 'imagesize
+	_undef 'modnum
+	_undef 'modtaboff
+	_undef 'datasymb
+	_undef 'datamodule
+	_undef 'labelref
+]
+
+-- patch a byte in the output
+_defq .patch_byte['type]
+[
+	_defq imagesize
+	[
+		.H_patch_byte_imagesize_$.N_imagesizeN$:
+		'.byte 0x010
+		_set '.N_imagesizeN _add .N_imagesizeN 1
+	]
+
+	_defq modnum
+	[
+		.H_patch_byte_modnum_$.N_modnumN$:
+		'.byte 0x0d0
+		_set '.N_modnumN _add .N_modnumN 1
+	]
+
+	_defq modtaboff
+	[
+		.H_patch_byte_modtaboff_$.N_modtaboffN$:
+		'.byte 0x0d0
+		_set '.N_modtaboffN _add .N_modtaboffN 1
+	]
+
+	_defq datasymb['name]
+	[
+		.H_patch_byte_datasymb_$.N_datasymbN$_$name$:
+		'.byte 0x0d0
+		_set '.N_datasymbN _add .N_datasymbN 1
+	]
+
+	_defq datamodule['name]
+	[
+		.H_patch_byte_datamodule$_$.N_datamoduleN$_$name$:
+		'.byte 0x0d0
+		_set '.N_datamoduleN _add .N_datamoduleN 1
+	]
+
+	_defq labelref['name]
+	[
+		.H_patch_byte_labelref_$.N_labelrefN$_$name$:
+		'.byte 0x0d0
+		_set '.N_labelrefN _add .N_labelrefN 1
+	]
+
+	type
+
+	_undef 'imagesize
+	_undef 'modnum
+	_undef 'modtaboff
+	_undef 'datasymb
+	_undef 'datamodule
+	_undef 'labelref
+]
+
+-- add location into initialisation chain
+_defq .init
+[
+	.H_init$.N_initN$:
+	_set '.N_initN _add .N_initN 1		-- to stop label name conflicts
+	'.word 0x0c0c0c0c0	-- will be patched with rel pointer to next init
+]
+_defq init
+[
+	.H_init$.N_initN$:
+	_set '.N_initN _add .N_initN 1		-- to stop label name conflicts
+	'.word 0x0c0c0c0c0	-- will be patched with rel pointer to next init
+]
+
+-- define start of helios object module
+-- YOU MUST USE 'undef' rather than -1 for an undefined module
+-- else illegal labels will be generated.
+_defq .module[modnumber]
+[
+	.H_module_$.N_moduleN$_$modnumber$:
+	_set '.N_moduleN _add .N_moduleN 1	-- to stop label name conflicts
+]
+_defq module[modnumber]
+[
+	.H_module_$.N_moduleN$_$modnumber$:
+	_set '.N_moduleN _add .N_moduleN 1	-- to stop label name conflicts
+]
+
+-- labelrefs are added to all labels not starting with .H_ in symbol table
+
+-- add 'name' element of 'size' to Helios data segment
+_defq .data['name 'size]
+[
+	.H_data_$.N_dataN$_$size$_$name$:
+	_set '.N_dataN _add .N_dataN 1	-- to keep data dirs in correct order
+]
+
+_defq data[namexxx 'size]
+[
+	.H_data_$.N_dataN$_$size$_$namexxx$:
+	_set '.N_dataN _add .N_dataN 1	-- to keep data dirs in correct order
+]
+
+_defq codetable[namexxx]
+[
+	.H_codetable_$.N_codetableN$_$namexxx$:
+	_set '.N_codetableN _add .N_codetableN 1	-- to keep codetable dirs in correct order
+]
+
+-- define common data area in Helios data segment
+_defq .comm['name 'size]
+[
+	.H_common_$size$_$name$:
+]
+_defq comm[namexxx 'size]
+[
+	.H_common_$size$_$namexxx$:
+]
+
+-- a synonym for .comm
+_defq .common['name 'size]
+[
+	.H_common_$size$_$name$:
+]
+
+-- define global - name must also be either a label or Helios data element
+_defq .global['name]
+[
+	.H_global_$.N_globalN$_$name$:
+	_set '.N_globalN _add .N_globalN 1
+]
+_defq global[namexxx]
+[
+	.H_global_$.N_globalN$_$namexxx$:
+	_set '.N_globalN _add .N_globalN 1
+]
+
+-- a synonym for .global
+-- _defq .globl['name]
+-- [
+-- 	.H_global_$.N_globalN$_$name$:
+-- 	_set '.N_globalN _add .N_globalN 1
+-- ]
+
+-- reference and external label to force library to be bound
+-- really shouldn't have to create any code - but what the heck
+_defq .ref['name]
+[
+--old	.patch_armdt [datamodule name]
+--old	ldrnv r0,(r0,#0)
+	.H_libref_$.N_librefN$_$name$:
+	_set '.N_librefN _add .N_librefN 1
+]
+_defq ref[namexxx]
+[
+--old	_report['*** 'Make 'sure 'you 'include '.def 'file 'for namexxx 'when linking 'this 'module]
+---	.patch_armdt [datamodule namexxx]
+---	ldrnv r0,(r0,#0)
+	.H_libref_$.N_librefN$_$namexxx$:
+	_set '.N_librefN _add .N_librefN 1
+]
+
+
+-- convert between nickGs transputer assembler directives and standard
+-- unix arm directives
+_defq 'word ['.word]
+_defq 'byte ['.byte]
+_defq 'align ['.align 0]
+
+
+-- try to trap any standard unix arm assembler 
+-- that might cause problems
+_defq .text
+[
+	_report ['MungeMacro 'Error: 'Attempt 'to 'define 'text 'segment - 'not 'required 'by 'Helios]
+]
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d53 1
+d526 4
+a529 2
+	.patch_armdt [datamodule name]
+	ldrnv r0,(r0,#0)
+d533 1
+a533 1
+	_report['*** 'Make 'sure 'you 'include '.def 'file 'for namexxx 'when linking 'this 'module]
+d536 2
+@

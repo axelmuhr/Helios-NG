@@ -1,0 +1,2411 @@
+head	1.28;
+access;
+symbols
+	Helios_1_3_1:1.27
+	Helios_C40_1_3_Official_Release:1.25
+	Alenia_release:1.25
+	Helios1_3:1.22
+	C40_Field_Test_2:1.21
+	C40_Field_Test_R1:1.18
+	Helios13_beta:1.18
+	Helios1_2_2:1.12
+	Helios1_2_2Beta:1.6
+	Helios1_2_1:1.6
+	Helios1_2:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.28
+date	93.11.24.14.14.38;	author nickc;	state Exp;
+branches;
+next	1.27;
+
+1.27
+date	93.07.19.13.50.10;	author nickc;	state Exp;
+branches;
+next	1.26;
+
+1.26
+date	93.07.12.11.40.21;	author nickc;	state Exp;
+branches;
+next	1.25;
+
+1.25
+date	92.12.04.17.35.47;	author paul;	state Exp;
+branches;
+next	1.24;
+
+1.24
+date	92.12.02.17.39.04;	author nickc;	state Exp;
+branches;
+next	1.23;
+
+1.23
+date	92.11.20.16.46.53;	author nick;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	92.10.19.16.31.42;	author martyn;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	92.09.29.15.06.08;	author bart;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	92.07.17.11.24.28;	author paul;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	92.07.13.16.48.59;	author nickc;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	92.06.15.11.59.26;	author paul;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.06.03.18.59.06;	author paul;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.04.27.14.37.40;	author nickc;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.04.27.13.17.39;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.04.27.13.16.15;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.03.11.12.06.06;	author paul;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	91.11.06.11.46.06;	author martyn;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	91.11.01.17.45.24;	author martyn;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	91.10.31.15.04.36;	author martyn;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.10.29.18.45.21;	author martyn;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.10.17.09.26.19;	author martyn;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.09.17.13.07.30;	author martyn;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.03.14.21.49.40;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.03.11.11.28.21;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.19.21.45.16;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.26.19.10.19;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.20.06;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.30.45;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@utility to display the current memory usage
+@
+
+
+1.28
+log
+@added command line arguments to specify starting mode
+@
+text
+@static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.27 1993/07/19 13:50:10 nickc Exp nickc $";
+
+#define in_kernel 1	/* trick root.h into letting us define PTE	*/
+#include <stdio.h>
+#include <nonansi.h>
+#include <attrib.h>
+#include <memory.h>
+#include <ctype.h>
+#include <root.h>
+#include <posix.h>
+#include <stdlib.h>
+#include <task.h>
+#include <stddef.h>
+#include <servlib.h>
+#include <module.h>
+#include <link.h>
+#include <string.h>
+#include <syslib.h>
+#include <process.h>	/* for System() */
+
+
+typedef struct PTE {
+	byte		Type;
+	byte		Link;
+	byte		Cycle;
+	byte		Age;
+	word		Owner;
+	word		TxId;
+	word		RxId;
+} PTE;
+
+#if defined __C40 || defined __ARM
+/* dont use internal kernel GetRoot() just because we have defined in_kernel */
+# define GetRoot() ((RootStruct *)GetRootBase())
+#endif
+
+#define	namesize	12
+#define	mapmargin	2
+#define loadx		7
+#if defined __ARM && defined IDLEMON
+#define loadmax		100000
+#else
+#define loadmax		2000
+#endif
+
+#if defined(__ARM) && defined (__MI)
+# define FirstPoolBlock(pool) ((Memory *)((word)(pool + 1) + ((sizeof(Pool) + sizeof(MIInfo) + 15) & ~15)))
+#else
+# define FirstPoolBlock(pool) ((Memory *)(pool + 1))
+#endif
+
+int screenx, screeny;
+int mapx, mapy;
+int mapsize;
+int physx, physy;
+int poolx;
+int flash = 0;
+int mode;
+
+char spin[5] = "-\\|/";
+
+int mainbase;
+int maintop;
+
+char machine[100];
+
+Attributes ostate, nstate;
+
+RootStruct *root;
+Pool *pool;
+int memmax;
+int grain;
+int allocsize;
+int freesize;
+int oldallocsize;
+int oldfreesize;
+
+int loadaverage = 0;
+int loadsize;
+int maxload;
+#if defined(__ARM) && defined(IDLEMON)
+int maxidle;
+int idleaverage = 0;
+#endif
+int gettime = (int)OneSec/4;
+
+char *memmap[2];
+int mapno;
+
+typedef struct PoolInfo {
+	bool	valid;
+	Pool	*pool;
+	MPtr	prog;
+	bool	referenced;
+	bool	displayed;
+} PoolInfo;
+
+PoolInfo *poolmap;
+Pool *syspool;
+Pool *fastpool;
+Pool *loaderpool;
+Pool *freepool;
+Pool *rrdpool;
+
+void ansiopen()
+{
+	GetAttributes(Heliosno(stdin),&ostate);
+	nstate = ostate;
+	AddAttribute(&nstate,ConsoleRawInput);
+	AddAttribute(&nstate, ConsoleRawOutput);
+	RemoveAttribute(&nstate, ConsolePause);
+	RemoveAttribute(&nstate, ConsoleIgnoreBreak);
+	RemoveAttribute(&nstate, ConsoleBreakInterrupt);
+	RemoveAttribute(&nstate, ConsoleEcho);
+	SetAttributes(Heliosno(stdin),&nstate);
+}
+
+void ansiclose()
+{
+	SetAttributes(Heliosno(stdin),&ostate);
+}
+
+void putch(int c) 
+{
+  putchar( c ); 
+
+  if ( isprint( c ) )
+    physx++;
+
+  return;  
+}
+
+void ansiparm(int    n)
+{
+        register int q,r;
+
+        q = n/10;
+        if (q != 0) {
+		r = q/10;
+		if (r != 0) {
+			putch((r%10)+'0');
+		}
+		putch((q%10) + '0');
+        }
+        putch((n%10) + '0');
+}
+
+void poscurs(int x, int y)
+{
+	if( physx == x && physy == y ) return;
+	fflush(stdout);
+	putch(0x1b);
+	putch('[');
+	ansiparm(y+1);
+	putch(';');
+	ansiparm(x+1);
+	putch('H');
+	fflush(stdout);
+	physx = x; 
+	physy = y;
+}
+
+int getch(int timeout)
+{
+	char c = 0;
+	Read(fdstream(0),&c,1,timeout);
+	return c;
+}
+
+
+void clrscrn()
+{
+	putch(12);	
+	physx = physy = 0;
+}
+
+void getxy()
+{
+	Attributes state;
+	GetAttributes(Heliosno(stdin),&state);
+	screenx = state.Time;
+#if defined  __ARM && defined IDLEMON
+	screeny = state.Min - 1;
+#else
+	screeny = state.Min;
+#endif
+}
+
+void initpoolmap()
+{
+	int i;
+	
+
+	for( i = 0; i < mapy ; i++ )
+	{
+		poolmap[i].valid = FALSE;
+		poolmap[i].pool = NULL;
+		poolmap[i].prog = NULL;
+		poolmap[i].referenced = FALSE;
+		poolmap[i].displayed = FALSE;
+	}
+
+	freepool = root->FreePool;	
+	syspool = &root->SysPool;
+	fastpool = &root->FastPool;
+	loaderpool = root->LoaderPool;
+#ifdef __RRD
+	rrdpool = root->RRDPool;
+#endif
+	poolx = mapmargin + mapx+1;
+}
+
+char mappool(Memory *m)
+{
+	Pool *pool = m->Pool;
+	int i;
+
+	if( pool == freepool ) return '.';
+	if( pool == syspool ) return '#';
+	if( pool == fastpool ) return '$';
+#ifdef __RRD
+	if( pool == rrdpool ) return '+';
+#endif	
+	for( i = 0 ; i < mapy ; i++ )
+	{
+		unless( poolmap[i].valid ) continue;
+		if( poolmap[i].pool == pool ) 
+		{ poolmap[i].referenced = TRUE; return 'A' + i; }
+		if( poolmap[i].prog == CtoM_(m+1) ) 
+		{ return 'a' + i; }
+	}
+
+	if( pool == loaderpool ) 
+	{
+		if( m->Size & Memory_Size_Carrier )
+		{
+			return '@@';
+		}
+		else
+		{
+			Module *mod = (Module *)(m+1);
+			if( mod->Type == T_Module && mod->Id < 10 )
+					return (char)('0'+mod->Id);
+			return '@@';
+		}
+	}
+
+	if( m->Size & Memory_Size_Carrier )
+	{
+		return '-';
+	}
+
+	/* unknown pool */
+	for( i = 0 ; i < mapy ; i++ )
+	{
+		unless( poolmap[i].valid )
+		{
+			poolmap[i].valid = TRUE;
+			poolmap[i].pool = pool;
+			poolmap[i].prog = NULL;
+			poolmap[i].referenced = TRUE;
+			poolmap[i].displayed = FALSE;
+			return 'A' + i;
+		}
+	}
+
+	return '?';
+		
+}
+
+void showpools()
+{
+	int i;
+	for( i = 0 ; i < mapy ; i++ )
+	{
+		if( poolmap[i].valid && !poolmap[i].referenced )
+			poolmap[i].valid = FALSE;
+
+		poolmap[i].referenced = FALSE;
+			
+		unless( poolmap[i].valid )
+		{
+			if( poolmap[i].displayed )
+			{
+				int j;
+				poscurs(poolx, mapmargin + i);
+				for( j = 1; j < namesize + 3 ; j++ ) putch(' ');
+				poolmap[i].prog = NULL;
+				poolmap[i].displayed = FALSE;
+			}
+			continue;
+		}
+		
+		if( poolmap[i].valid && !poolmap[i].displayed )
+		{
+			Task *task = (Task*)((int)(poolmap[i].pool) - offsetof(Task,MemPool));
+			ObjNode *entry = (ObjNode *)task->TaskEntry;
+			
+			poolmap[i].prog = task->Program;
+			
+			poscurs(poolx, mapmargin + i);
+#if 0
+			printf("%c %12s",'A'+i,entry->Name);
+#else
+			printf("%c ",'A'+i);
+			{
+				int xx;
+				char *cp = (char *)&entry->Name;
+
+	/* MJT - On startup, map gets a little confused if other tasks */
+	/* are appearing and disappearing beneath it.                  */
+	/* So, have a quick check to see if address of Name is valid.  */
+	/* If not, print <unknown>. Even if the address is valid, the  */
+	/* data pointed to by it may not be, but such is life          */
+
+				if(cp < (char *)root->FreePool ||
+				   cp > (char *)root->FreePool->Memory.Head)
+						cp = "<unknown>";
+
+				for (xx=0;xx<12;xx++)
+				{
+					if (*cp == '\0')
+						break;
+					putchar(*cp < ' '? ' ' : *cp);
+					cp++;
+				}
+			}
+#endif
+			poolmap[i].displayed = TRUE;
+		}
+	}
+}
+
+int showload(int av, int oldav, int *max, int lx, int ly, int lsize, int lmax)
+{
+	int diff;
+	int i;
+		
+	av = av * lsize / lmax;
+
+	for( i = 2 ; av > (lsize - lsize/i) && (lsize/i > 0) ; i = i*2 )
+	{
+		int ls = lsize - lsize/i;
+		av = ls + (av - ls)/i;
+	}
+	
+	if( av >= lsize ) av = lsize-1;
+		
+	diff = av - oldav;
+	
+	if( diff < 0 )
+	{
+		poscurs(lx+av,ly);
+		for( i = av; i < oldav; i++ ) putch(' ');
+	}
+	elif( diff > 0 )
+	{
+		poscurs(lx+oldav,ly);
+		for( i = oldav; i < av; i++ ) putch('=');
+	}
+	if( max != NULL && av > *max ) 
+	{
+		poscurs(lx+av,ly);
+		putch('|');
+		*max = av;
+	}
+
+	return av;
+}
+
+void initmap(void)
+{
+	char *map0 = memmap[0];
+	char *map1 = memmap[1];
+	int i;
+	
+	mapno = 0;
+	
+	for( i = 0; i < mapsize; i++ ) map0[i] = ' ', map1[i] = 'z';
+}
+
+void getmem(void)
+{
+	Memory *m = (Memory *)(pool+1);
+	char *newmap = memmap[(mapno+1)&1];
+	
+	allocsize = 0;
+	freesize = 0;
+	
+	until( m == (Memory *)pool->Memory.Head )
+	{
+		int size  = (int)(m->Size & 0xfffffff0);
+		int alloc = (int)(m->Size & Memory_Size_FwdBit);
+		int start = (int)m - (int)(pool+1);
+		int end   = start + size;
+		int i;
+		char c = mappool(m);
+		
+		if( alloc ) allocsize += size;
+		else freesize += size;
+						
+		/* adjust start and end to grain boundaries */
+		start = start - (start % grain);
+		end = end + grain - 1;
+		end = end - (end % grain);
+	
+		start /= grain;
+		end /= grain;
+
+		for( i = start; i <= end; i++ ) newmap[i] = c;
+			
+		m = (Memory *)((int)m + size);
+	}
+}
+
+#if defined(__TRAN)
+
+#include <asm.h>
+
+typedef word SaveState;
+
+#define P_NullState	((SaveState *)MinInt)
+#define NullStateP(p)	((p) == (SaveState *)MinInt)
+
+#define P_InstPtr(p)	((VoidFnPtr)  ((p)[-1]))
+#define P_RunqNext(p)	((SaveState *)((p)[-2]))
+#define P_BufAddr(p)	((byte *)     ((p)[-3]))
+#define P_TimerNext(p)	((SaveState *)((p)[-4]))
+#define P_EndTime(p)	((word)       ((p)[-5]))
+
+#define RunqPtrs(x)	savel_(x);
+
+#define MaxAct	64
+
+struct
+{
+	int	pc;
+	int	w;
+} active[MaxAct];
+
+Semaphore actlock;
+int actpos;
+
+void monitor(void)
+{
+	for(;;)
+	{
+		struct { SaveState *head, *tail; } runq;
+		SaveState *p;
+
+		Wait(&actlock);		
+	
+		RunqPtrs(&runq);
+	
+		p = runq.head;
+
+		if( !NullStateP(p) )
+		{
+			SaveState *pp;
+			
+			/* The following loop must NOT contain an unconditional	*/
+			/* jump to prevent it being timesliced.			*/
+		again:
+			if( ((int)p < mainbase || (int)p > maintop) &&
+			    actpos < MaxAct )
+			{
+				active[actpos].pc = (int)P_InstPtr(p);
+				active[actpos].w = (int)p;
+				actpos++;
+			}
+			pp = p;
+			p = P_RunqNext(p);
+			if( pp != runq.tail ) goto again;
+			
+		}
+
+		Signal(&actlock);
+		
+		Delay(gettime/50);
+	}
+}
+
+void showactive(void)
+{
+	char *newmap = memmap[(mapno+1)&1];
+	int i;
+	
+	Wait(&actlock);
+	
+	for( i = 0; i < actpos; i++ )
+	{
+		int pc = active[i].pc;
+		int w = active[i].w;		
+		if( pc > (int)pool ) newmap[(pc - (int)pool)/grain] = '!';
+		if( w > (int)pool )  newmap[(w  - (int)pool)/grain] = '*';
+	}
+
+	actpos = 0;
+
+	Signal(&actlock);
+}
+
+#endif
+
+void updatemap(void)
+{
+	char *oldmap = memmap[mapno];
+	char *newmap = memmap[(mapno+1)&1];
+	int i;
+	
+	if( allocsize != oldallocsize ) 
+	{ 
+		poscurs(10,0); 
+		printf("%9d",allocsize); 
+		oldallocsize = allocsize;
+	}
+	if( freesize != oldfreesize ) 
+	{ 
+		poscurs(25,0); 
+		printf("%9d",freesize); 
+		oldfreesize = freesize;
+	}
+	
+	for( i = 0; i < mapsize ; i++ )
+	{
+		if( newmap[i] != oldmap[i] ) 
+		{
+			poscurs( mapmargin + i % mapx, mapmargin + i / mapx );
+			putch(newmap[i]);
+		}
+	}
+	
+	mapno = (mapno+1)&1;
+}	
+
+
+int displaymem()	
+{
+	int c;
+	
+	getxy();
+
+	clrscrn();
+
+	pool = root->FreePool;
+	
+	memmax = (int)(pool->Memory.Head) - (int)pool; 
+
+	mapx = screenx - 2*mapmargin - 2 - namesize;
+	mapy = screeny - 2*mapmargin;
+
+	mapsize = mapx * mapy;		/* size of map			*/
+
+	grain = memmax/mapsize + 1;	/* bytes per map pos		*/
+
+	loadsize = screenx - loadx;
+	loadaverage = 0;
+#if defined(__ARM) && defined(IDLEMON)
+	idleaverage = 0;
+	maxidle = 0;
+#endif
+	maxload = 0;
+			
+	oldfreesize = 0;
+	oldallocsize = 0;
+	
+	memmap[0] = (char *)malloc(mapsize+10);
+	memmap[1] = (char *)malloc(mapsize+10);
+
+	poolmap = (PoolInfo *) malloc(mapy*sizeof(PoolInfo));
+
+	initmap();
+	initpoolmap();
+
+	poscurs(0,0); 		printf("Allocated");
+	poscurs(20,0); 		printf("Free");
+	poscurs(35,0); 		printf("Grain %d",grain);
+	poscurs((4+mapx-strlen(machine))/2,1);
+		 		printf("%s",machine);
+#if defined(__ARM) && defined(IDLEMON)
+	poscurs(0,screeny-1); 	printf(" Idle: ");
+#endif
+	poscurs(0,screeny); 	printf(" Load: ");
+
+	forever
+	{
+#if 0 /*def __C40 -- may take too long for this */
+		/* safely read memory block layout */
+		System( (WordFnPtr)getmem);
+#else
+		getmem();		/* read memory block layout	*/
+#endif
+		
+#if defined(__TRAN)
+		showactive();		/* add active stack/PCs		*/
+#endif
+		updatemap();		/* redraw map			*/
+
+		showpools();		/* display ownership info	*/
+
+#if defined(__ARM) && defined(IDLEMON)
+/* idle monitor                             NULL = none  start           max bar    */
+/* newoldav              target     oldav     peak bar  x     y            length   =100% */
+idleaverage = showload(root->Idle,idleaverage, &maxidle,loadx,screeny-1,loadsize,100);
+#endif
+/* load average */
+loadaverage = showload((int)(root->LoadAverage),loadaverage,&maxload,loadx,screeny,loadsize,loadmax);
+		
+		poscurs(0,screeny);
+		flash++;
+		putch( spin[flash&0x3] );
+		poscurs(0,screeny);	
+
+		fflush(stdout);
+
+		c = getch(gettime);
+		
+		  if( c == '-' ) gettime *= 2;
+		elif( c == '+' ) gettime /= 2;
+		elif( c != 0 ) break;
+
+	} 
+	
+	free(memmap[0]);
+	free(memmap[1]);
+	free(poolmap);
+
+	return c;
+}
+
+#if defined __HELIOSTRAN
+
+#define MAX_NUM_LINKS	4
+#define ly( i )		(i * 4 + 3)
+#define IN_X		0
+#define IN_Y		1
+#define OUT_X		0
+#define OUT_Y		2
+#define MAX_WIDTH	screenx
+
+#elif defined __C40
+
+#define MAX_NUM_LINKS	7
+#define ly( i )		(i * link_spacing + 3)
+#define IN_X		0
+#define IN_Y		1
+#define OUT_X		(screenx/2)
+#define OUT_Y		1
+#define MAX_WIDTH	(screenx/2)
+
+#elif defined __ARM
+
+#define MAX_NUM_LINKS	4
+#define ly( i )		(i * 4 + 3)
+#define IN_X		0
+#define IN_Y		1
+#define OUT_X		0
+#define OUT_Y		2
+#define MAX_WIDTH	screenx
+
+#else
+
+#error Unknown Number of Links
+
+#endif
+
+int
+displaylinks( void )
+{
+  LinkInfo **	lv = root->Links;
+  int		ln;
+  int		localloadmax;
+  int		localload;
+  int		oldlocalload;
+  int		i;
+  int		c;
+  int		inload[     MAX_NUM_LINKS ];
+  int		outload[    MAX_NUM_LINKS ];
+  int		oldinload[  MAX_NUM_LINKS ];
+  int		oldoutload[ MAX_NUM_LINKS ];
+  int		inmax[      MAX_NUM_LINKS ];
+  int		outmax[     MAX_NUM_LINKS ];
+  int		mode[       MAX_NUM_LINKS ];
+  int		state[      MAX_NUM_LINKS ];
+  int		id[         MAX_NUM_LINKS ];
+  int		link_spacing = 3;  
+  int		numlinks;
+  
+  getxy();
+  
+  clrscrn();
+  
+  poscurs( (screenx - strlen( machine )) / 2, 1 );
+  
+  printf( "%s", machine );
+
+	/* Work out the actual number of links, which may be less than	*/
+	/* the maximum.							*/
+  for (i = 0; lv[ i ] != NULL; i++)
+   { 
+      if (i >= MAX_NUM_LINKS)
+       { fprintf(stderr, "\r\n\nMap: too many links.\r\n");
+	 return 'q';
+       }
+   }
+  numlinks = i;
+	/* Adjust the spacing between links if necessary.		*/
+  if (numlinks > 6) link_spacing = 2;
+
+  for( i = 0; lv[ i ] != NULL; i++) 
+    {
+      oldinload[  i ] = (int)(lv[ i ]->MsgsIn);
+      oldoutload[ i ] = (int)(lv[ i ]->MsgsOut);
+      inload[     i ] = outload[  i ] = 0;
+      inmax[      i ] = outmax[   i ] = 0;
+      id[         i ] = -1;
+      mode[       i ] = state[ i ] = -1;
+      
+      poscurs( IN_X,  ly( i ) + IN_Y  );	printf("In : ");
+      poscurs( OUT_X, ly( i ) + OUT_Y );	printf("Out: ");
+    }
+  
+  localload    = 0;
+  oldlocalload = (int)(root->LocalMsgs);
+  localloadmax = 0;
+  
+  poscurs( 0, ly( numlinks ) );       printf("Local Message Traffic");
+  
+  loadsize    = screenx - loadx;
+  loadaverage = 0;
+  
+#if defined(__ARM) && defined(IDLEMON)
+  idleaverage = 0;
+  maxidle     = 0;
+#endif
+  
+  maxload     = 0;
+  
+#if defined(__ARM) && defined(IDLEMON)
+  poscurs( 0, screeny - 1 ); 	printf( " Idle: " );
+#endif
+  
+  poscurs( 0, screeny ); 	printf( " Load: " );
+  
+  forever
+    {	
+      for(ln = 0; lv[ ln ] != NULL; ln++ )
+	{
+	  LinkInfo *	link = lv[ ln ];
+	  
+	  
+	  if ( link->Id != id[ ln ] )
+	    {
+	      id[ ln ] = link->Id;
+	      
+	      poscurs( 0, ly( ln ) ); printf( "Link: %2d ", id[ ln ] );
+	    }
+	  
+	  if ( link->Mode != mode[ ln ] )
+	    {
+	      char *	s;
+
+	      
+	      mode[ ln ] = link->Mode;
+	      
+	      switch ( mode[ ln ] )
+		{
+		case Link_Mode_Dumb:	    s = "   Dumb    "; break;
+		case Link_Mode_Intelligent: s = "Intelligent"; break;
+		case 0:			    s = "   Null    "; break;
+		default:		    s = "   ????    "; break;
+		}
+	      
+	      poscurs( 9, ly( ln ) ); printf( "Mode: %s ", s );
+	    }
+	  
+	  if ( link->State != state[ ln ] )
+	    {
+	      char *	s;
+
+	      
+	      state[ ln ] = link->State;
+	      
+	      switch( state[ ln ] )
+		{
+		case Link_State_Booting:  s = "Booting";  break;
+		case Link_State_Dumb:	  s = "Dumb";     break;
+		case Link_State_Running:  s = "Running";  break;
+		case Link_State_Timedout: s = "Timedout"; break;
+		case Link_State_Crashed:  s = "Crashed";  break;
+		case Link_State_Dead:	  s = "Dead";     break;
+		default:                  s = "????";     break;
+		}
+	      
+	      poscurs( 27, ly( ln ) ); printf( "State: %s", s );
+	    }
+	  
+	  inload[ ln ] = showload( (int)(link->MsgsIn) - oldinload[ ln ],
+				  inload[ ln ],
+				  &inmax[ ln ],
+				  IN_X + 5,
+				  ly( ln ) + IN_Y,
+				  MAX_WIDTH - 5,
+				  10000 );
+	  
+	  oldinload[ln] = (int)(link->MsgsIn);			
+	  
+	  outload[ln] = showload( (int)(link->MsgsOut) - oldoutload[ ln ],
+				 outload[ ln ],
+				 &outmax[ ln ],
+				 OUT_X + 5,
+				 ly( ln ) + OUT_Y,
+				 MAX_WIDTH - 5,
+				 10000 );
+	  
+	  oldoutload[ln] = (int)(link->MsgsOut);
+	}
+      
+      localload = showload( (int)(root->LocalMsgs) - oldlocalload,
+			   localload,
+			   &localloadmax,
+			   0,
+			   ly( numlinks ) + 1,
+			   screenx,
+			   10000 );
+      
+      oldlocalload = (int)(root->LocalMsgs);
+      
+#if defined(__ARM) && defined(IDLEMON)
+      /* idle monitor */
+      /* newoldav              target     oldav     peak bar  x     y      length   =100% */
+      idleaverage = showload(root->Idle,idleaverage, &maxidle,    loadx,screeny-1,loadsize,100);
+#endif
+      
+      loadaverage = showload( (int)(root->LoadAverage),
+			     loadaverage,
+			     &maxload,
+			     loadx,
+			     screeny,
+			     loadsize,
+			     loadmax );		
+      
+      poscurs( 0, screeny );
+      
+      flash++;
+      
+      putch( spin[ flash & 0x3 ] );
+      
+      poscurs( 0, screeny );	
+      
+      fflush( stdout );
+      
+      c = getch( gettime );
+      
+        if ( c == '+' ) gettime *= 2;
+      elif ( c == '-' ) gettime /= 2;
+      elif ( c != 0   ) break;
+    }
+  
+  return c;
+}
+
+void getports(char *map)
+{
+	int x,y;
+
+	allocsize = 0;
+	freesize = 0;
+		
+	for( y = 0; root->PortTable[y] != (PTE *)MinInt; y++ )
+	{
+		PTE *tab = root->PortTable[y];
+		
+		if(tab == NULL) break;			/* end of table */
+
+		for( x = 0; x < 64; x++ )
+		{
+			char type = '.';
+			if( mode == 1 )
+			{
+				switch( tab[x].Type )
+				{
+				case T_Free:      type = '.'; break;
+				case T_Local:	  type = 'L'; break;
+				case T_Surrogate: type = 'S'; break;
+				case T_Trail:     type = 'T'; break;
+				case T_Permanent: type = 'P'; break;
+				default:          type = '?'; break;
+				}		
+				if( type == '.' ) freesize++;
+				else allocsize++;
+			}
+			elif( mode == 2 )
+			{
+				if( tab[x].Type != T_Free )
+				{
+					if( tab[x].Type == T_Local && 
+					    tab[x].TxId != NULL ) type = 'T';
+					elif( tab[x].RxId != NULL ) type = 'R';
+					else type = '.';
+					allocsize++;
+				}
+				else freesize++;
+			}
+			elif( mode == 3 )
+			{
+				if( tab[x].Type == T_Free ) freesize++,type = '.';
+				else 
+				{
+					allocsize++;
+					if( tab[x].Age > 9 ) type = 'O';
+					else type = tab[x].Age+'0';
+				}
+			}
+			
+			map[y*mapx+x] = type;
+		}
+	}
+}
+
+void showports(char **pmap)
+{
+	char *oldmap = pmap[mapno];
+	char *newmap = pmap[(mapno+1)&1];
+	int i;
+	
+	if( allocsize != oldallocsize ) 
+	{ 
+		poscurs(10,0); 
+		printf("%9d",allocsize); 
+		oldallocsize = allocsize;
+	}
+	if( freesize != oldfreesize ) 
+	{ 
+		poscurs(25,0); 
+		printf("%9d",freesize); 
+		oldfreesize = freesize;
+	}
+	
+	for( i = 0; i < mapsize ; i++ )
+	{
+		if( newmap[i] != oldmap[i] ) 
+		{
+			poscurs( mapmargin + i % mapx, mapmargin + i / mapx );
+			putch(newmap[i]);
+		}
+	}
+	
+}	
+
+int displayports()
+{
+	char *pmap[2];
+	int i, c;
+		
+	getxy();
+	
+	clrscrn();
+	
+	mapx = 64;
+	mapy = (int)(root->PTSize/4);
+	
+	mapsize = mapx*mapy;
+	
+	loadsize = screenx - loadx;
+	loadaverage = 0;
+#if defined(__ARM) && defined(IDLEMON)
+	idleaverage = 0;
+	maxidle = 0;
+#endif
+	maxload = 0;
+			
+	oldfreesize = 0;
+	oldallocsize = 0;
+	
+	pmap[0] = (char *)malloc(mapsize+10);
+	pmap[1] = (char *)malloc(mapsize+10);
+
+	for( i = 0; i < mapsize; i++ ) pmap[0][i] = ' ', pmap[1][i] = ' ';
+	
+	mapno = 1;
+
+	poscurs(0,0); 		printf("Allocated");
+	poscurs(20,0); 		printf("Free");
+	poscurs((4+mapx-strlen(machine))/2,1);
+		 		printf("%s",machine);
+#if defined(__ARM) && defined(IDLEMON)
+	poscurs(0,screeny-1); 	printf(" Idle: ");
+#endif
+	poscurs(0,screeny); 	printf(" Load: ");
+		
+	mode = 1;
+	
+	forever
+	{
+		getports(pmap[(mapno+1)&1]);
+		
+		showports(pmap);
+		
+#if defined(__ARM) && defined(IDLEMON)
+		/* idle monitor */
+		/* newoldav              target     oldav     peak bar  x     y      length   =100% */
+		idleaverage = showload(root->Idle,idleaverage, &maxidle,loadx,screeny-1,loadsize,100);
+#endif
+		loadaverage = showload( (int)(root->LoadAverage), loadaverage,&maxload,loadx,screeny,loadsize,loadmax);	
+
+		poscurs(0,screeny);
+		flash++;
+		putch( spin[flash&0x3] );
+		poscurs(0,screeny);
+
+		fflush(stdout);
+		
+		c = getch(gettime);
+
+		  if( c == '+' ) gettime *= 2;
+		elif( c == '-' ) gettime /= 2;
+		elif( c == 'w' ) mode = 2;
+		elif( c == 't' ) mode = 1;
+		elif( c == 'a' ) mode = 3;
+		elif( c != 0 ) break;
+
+		mapno = (mapno+1)&1;
+	}
+
+	free(pmap[0]);
+	free(pmap[1]);		
+	
+	return c;
+}
+	
+char *mainhelp[] = 
+{
+	"             Map V1.2",
+	"             ========",
+	"",
+	"    Command          Action",
+	"",
+	"    m                Display memory",
+	"    l                Display links",
+	"    p                Display ports",
+	"",
+	"    q,Q,ESC          Quit",
+	"    h,H,?            Help",
+	"    -                Halve sample rate",
+	"    +                Double sample rate",
+	"    Any other key    Resize/Redraw",
+	0
+};
+
+char *memhelp[] =
+{
+	"               Memory Display",
+	"               ==============",
+	"",
+	"Top Row	Total bytes allocated and free",
+	"                     Grain = bytes/char in map",
+	"",
+	"Next Row	Shows processor name",
+	"",
+	"Main Map	Shows allocation of system heap",
+	"                     Upper case letters show data areas",
+	"                     Lower case letters show code",
+	"                     Digits show shared libraries,",
+	"                     .   = Free",
+	"                     #   = System",
+#ifdef __RRD
+	"                     +   = Ram Disk",
+#endif
+	"                     @@,? = Unidentified",
+	"                     !,* = Active PCs and stacks",
+	"",
+	"Screen Right   Shows Tasks currently running",
+	"                     letters match with main map",
+	"",
+	"Bottom Line    Shows current processor load/maximum",
+	0
+};
+
+char *linkhelp[] =
+{
+	"             Link Display",
+	"             ============",
+	"",
+	"First Line     Shows processor name",
+	"",
+	"For each Link:",
+	"",
+	"First line     Shows link number, mode and state",
+	"Second line    Shows link input traffic/maximum",
+	"Third line     Shows link output traffic/maximum",
+	0
+};
+
+char *porthelp[] = 
+{
+	"             Port Display",
+	"             ============",
+	"",
+	"Top Line       Shows ports allocated and free",
+	"",
+	"Next Line      Shows processor name",
+	"",
+	"Main Map       Shows state of each port in table:",
+	"               .     Free",
+	"               L     Local",
+	"               S     Surrogate",
+	"               T     Trail",
+	"               P     Permanent",
+	"               ?     Unknown",
+	"",
+	"Bottom Line    Shows current processor load/maximum",
+	0
+};
+
+int
+puthelp( char ** help )
+{
+  int i;
+  int helpsize;
+  int maxlen = 0;
+  int len;
+  int y;
+  int x;
+  int c;
+  
+  
+  for (helpsize = 0; help[ helpsize ] != NULL ; helpsize++ )
+    if ((len = strlen(help[ helpsize ])) > maxlen ) maxlen = len;
+  
+  y = (screeny - helpsize) / 2;
+  x = (screenx - maxlen)   / 2;
+  
+  if ( y < 0 ) y = 0;
+  if ( x < 0 ) x = 0;
+  
+  clrscrn();
+  
+  for ( i = 0; i < helpsize ; i++ ) 
+    {
+      poscurs( x, y + i );
+      
+      printf( help[ i ] );
+    }
+  
+  poscurs( 0, screeny );
+  
+  fflush( stdout );
+  
+  while ( (c = getch((int)(OneSec * 10))) == 0 )
+    ;
+  
+  return c;
+
+} /* puthelp */
+
+int
+main(
+     int	argc,
+     char **	argv )
+{
+  int 		c    = 'h';
+  int 		oldc = c;
+  char **	help = mainhelp;
+  int		vsp[ 3 ];
+  
+
+  if (argc >= 2)
+    {
+      if (argc == 2 && argv[ 1 ][ 0 ] == '-')
+	{
+	  oldc = c = argv[ 1 ][ 1 ];
+	}
+      else
+	{
+	  fprintf( stderr, "usage: map [-m|-l|-p]\n" );
+      
+	  return EXIT_FAILURE;
+	}
+    }
+  
+  mainbase = (int)&vsp;
+  maintop  = (int)&oldc;
+  
+  root = GetRoot();
+  
+  MachineName( machine );
+  
+  ansiopen();
+  
+  getxy();
+  
+#ifdef __TRAN
+  InitSemaphore( &actlock, 1 );
+  
+  actpos = 0;
+  
+  Fork( 2000, monitor, 0 );
+#endif
+  
+  forever
+    {
+      switch( c )
+	{
+	case 'm':
+	  oldc = c;
+	  help = memhelp;			
+	  c    = displaymem();
+	  break;
+
+	case 'l':
+	  oldc = c;
+	  help = linkhelp;
+	  c    = displaylinks();
+	  break;
+	  
+	case 'p':
+	  oldc = c;
+	  help = porthelp;
+	  c    = displayports();
+	  break;
+	  
+	case 'Q':
+	case 'q':
+	case 0x1B: 
+	case 0x3:
+	  goto done;
+	  
+	case '?':
+	case 'h':
+	case 'H':
+	  c = puthelp(help);
+
+	  if ( c == '\r' )
+	    c = oldc;
+	  else
+	    oldc = c;
+	  
+	  help = mainhelp;
+	  break;
+	  
+	default:
+	  c    = oldc;
+	  oldc = 'h';
+	  break;
+	}
+    }
+  
+ done:
+  poscurs( 0, screeny );
+
+  ansiclose();
+
+  putchar( '\n' );
+
+  exit( EXIT_SUCCESS );
+
+  return 0;
+
+  rcsid = rcsid;	
+
+} /* main */
+@
+
+
+1.27
+log
+@fixed ARM bugs
+@
+text
+@d1 1
+a1 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.26 1993/07/12 11:40:21 nickc Exp nickc $";
+d1158 3
+a1160 1
+main( void )
+d1162 2
+a1163 2
+  int 		c;
+  int 		oldc = '?';
+d1167 14
+a1199 2
+  
+  oldc = c = 'h';
+@
+
+
+1.26
+log
+@fixed compile time warnings
+@
+text
+@d1 1
+a2 2
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.25 1992/12/04 17:35:47 paul Exp nickc $";
+
+d32 1
+a32 1
+#ifdef __C40
+d40 1
+a40 1
+#ifdef __ARM
+d182 1
+a182 1
+#ifdef  __ARM
+d651 10
+a1248 1
+
+@
+
+
+1.25
+log
+@fixed long term run problem with map
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.24 1992/12/02 17:39:04 nickc Exp $";
+d568 2
+a569 2
+	memmap[0] = malloc(mapsize+10);
+	memmap[1] = malloc(mapsize+10);
+d571 1
+a571 1
+	poolmap = malloc(mapy*sizeof(PoolInfo));
+d967 2
+a968 2
+	pmap[0] = malloc(mapsize+10);
+	pmap[1] = malloc(mapsize+10);
+@
+
+
+1.24
+log
+@fixed sense of '+' and '-' commands
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.23 1992/11/20 16:46:53 nick Exp nickc $";
+d134 1
+a134 2
+void ansiparm(n)
+int    n;
+d588 3
+a590 2
+#ifdef __C40
+		System( (WordFnPtr)getmem);		/* read memory block layout (safely) */
+@
+
+
+1.23
+log
+@Fixed to work with code in unaddressable RAM. Identifies special pool
+carriers with a '-'.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: map.c,v 1.22 92/10/19 16:31:42 martyn Exp $";
+d619 2
+a620 2
+		  if( c == '+' ) gettime *= 2;
+		elif( c == '-' ) gettime /= 2;
+@
+
+
+1.22
+log
+@check for valid memory address for task's Name
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.21 1992/09/29 15:06:08 bart Exp martyn $";
+d94 1
+a94 1
+	Program *prog;
+d231 1
+a231 1
+		if( poolmap[i].prog == (Program *)(m+1) ) 
+d237 16
+a252 3
+		Module *mod = (Module *)(m+1);
+		if( mod->Type == T_Module && mod->Id < 10 ) return (char)('0'+mod->Id);
+		return '@@';
+@
+
+
+1.21
+log
+@Should now cope with limited discontinuities in the memory map,
+for example the Hema DSP1 board with a gap between SRAM and DRAM on the
+local bus. Also, should now cope with seven links.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /m/giga/HeliosRoot/Helios/cmds/com/RCS/map.c,v 1.20 1992/07/17 11:24:28 paul Exp $";
+d298 11
+@
+
+
+1.20
+log
+@fixed long term running screen corruption problem - ANSI escape sequnces
+could get divided into two writes and therefore cause garbage to appear on
+the screen.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.19 1992/07/13 16:48:59 nickc Exp $";
+d525 1
+a525 2
+/*	memmax = (int)(pool->Memory.Head) - (int)pool; */
+	memmax = (int)(pool->Max);
+d620 2
+a621 2
+#define MAX_NUM_LINKS	6
+#define ly( i )		(i * 3 + 3)
+a633 1
+
+d653 2
+a655 1
+  
+d663 14
+a676 1
+  
+a678 9
+      if (i >= MAX_NUM_LINKS)
+	{
+	  /* Oh dear! */
+	  
+	  IOdebug( "map: Too Many Links!" );
+	  
+	  return 'q';
+	}
+      
+d694 1
+a694 1
+  poscurs( 0, ly( MAX_NUM_LINKS ) );       printf("Local Message Traffic");
+d790 1
+a790 1
+			   ly( MAX_NUM_LINKS ) + 1,
+@
+
+
+1.19
+log
+@improved help text parsing
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.18 1992/06/15 11:59:26 paul Exp $";
+d153 1
+@
+
+
+1.18
+log
+@fixed for std __proc names
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /m/giga/HeliosRoot/Helios/cmds/com/RCS/map.c,v 1.17 1992/06/03 18:59:06 paul Exp paul $";
+d20 1
+d22 1
+d126 6
+a131 2
+	putchar(c); 
+	if( isprint(c) ) physx++;
+d566 1
+a566 1
+		System(getmem);		/* read memory block layout (safely) */
+d1079 2
+a1080 1
+int puthelp(char **help)
+d1082 37
+a1118 16
+	int i;
+	int helpsize;
+	int maxlen = 0;
+	int len;
+	int y;
+	int x;
+	int c;
+	
+	for( helpsize = 0; help[helpsize] ; helpsize++);
+	
+	y = (screeny-helpsize)/2;
+	
+	for( i = 0; help[i] ; i++ ) 
+		if((len = strlen(help[i])) > maxlen ) maxlen = len;
+		
+	x = (screenx - maxlen)/2;
+d1120 33
+a1152 6
+	if( y < 0 ) y = 0;
+	if( x < 0 ) x = 0;
+	
+	clrscrn();
+	
+	for( i = 0; help[i] ; i++ ) 
+d1154 41
+a1194 2
+		poscurs(x,y+i);
+		printf("%s",help[i]);
+d1196 6
+a1201 8
+		
+	poscurs(0,screeny);
+	fflush(stdout);
+	
+	while( (c = getch((int)(OneSec*10))) == 0 );
+	
+	return c;
+}
+d1203 1
+a1203 9
+int main()
+{
+	int c;
+	int oldc = '?';
+	char **help = mainhelp;
+	int vsp[3];
+	
+	mainbase = (int)&vsp;
+	maintop = (int)&oldc;
+d1205 1
+a1205 3
+	root = GetRoot();
+	
+        MachineName(machine);
+d1207 1
+a1207 1
+	ansiopen();
+d1209 1
+a1209 1
+	getxy();
+d1211 1
+a1211 53
+#ifdef __TRAN
+	InitSemaphore(&actlock,1);
+	actpos = 0;
+	Fork(2000,monitor,0);
+#endif
+	
+	oldc = c = 'h';
+		
+	forever
+	{
+		switch( c )
+		{
+		case 'm':
+			oldc = c;
+			help = memhelp;			
+			c = displaymem();
+			break;
+		case 'l':
+			oldc = c;
+			help = linkhelp;
+			c = displaylinks();
+			break;
+		case 'p':
+			oldc = c;
+			help = porthelp;
+			c = displayports();
+			break;
+		case 'Q':
+		case 'q':
+		case 0x1B: 
+		case 0x3:
+			goto done;
+		case '?':
+		case 'h':
+		case 'H':
+			c = puthelp(help);
+			if( c == '\r' ) c = oldc;
+			else oldc = c;
+			help = mainhelp;
+			break;
+		default:
+			c = oldc;
+			oldc = 'h';
+			break;
+		}
+	}
+	
+done:
+	poscurs(0,screeny);
+	ansiclose();
+	putchar('\n');
+	exit(0);
+}
+@
+
+
+1.17
+log
+@made memory snooping safe for C40 version
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.16 1992/04/27 14:37:40 nickc Exp $";
+d612 1
+a612 1
+#elif defined __HELIOSC40
+@
+
+
+1.16
+log
+@fixed to work with 6 links
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.15 1992/04/27 13:17:39 nickc Exp nickc $";
+d558 4
+a561 1
+	{	
+d563 1
+@
+
+
+1.15
+log
+@updates previous delta
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.14 1992/04/27 13:16:15 nickc Exp nickc $";
+d598 1
+a598 1
+#define ly(i) (i*4+3)
+a599 1
+#if defined __HELIOSTRAN
+d601 7
+d609 1
+d611 7
+d619 1
+d621 1
+d625 2
+a626 1
+int displaylinks()
+d628 57
+a684 55
+	LinkInfo **lv = root->Links;
+	int ln;
+	int localloadmax;
+	int localload;
+	int oldlocalload;
+	int i;
+	int c;
+	int inload[     MAX_NUM_LINKS ];
+	int outload[    MAX_NUM_LINKS ];
+	int oldinload[  MAX_NUM_LINKS ];
+	int oldoutload[ MAX_NUM_LINKS ];
+	int inmax[      MAX_NUM_LINKS ];
+	int outmax[     MAX_NUM_LINKS ];
+	int mode[       MAX_NUM_LINKS ];
+	int state[      MAX_NUM_LINKS ];
+	int id[         MAX_NUM_LINKS ];
+
+	
+	getxy();
+
+	clrscrn();
+			
+	poscurs((screenx-strlen(machine))/2,1);
+		 		printf("%s",machine);
+
+	for( i = 0; lv[i] != NULL; i++) 
+	  {
+	    if (i >= MAX_NUM_LINKS)
+	      {
+		/* Oh dear! */
+
+		IOdebug( "map: Too Many Links!" );
+		
+		return 'q';
+	      }
+	    
+	    oldinload[  i ] = (int)(lv[ i ]->MsgsIn);
+	    oldoutload[ i ] = (int)(lv[ i ]->MsgsOut);
+	    inload[     i ] = outload[  i ] = 0;
+	    inmax[      i ] = outmax[   i ] = 0;
+	    id[         i ] = -1;
+	    mode[       i ] = state[ i ] = -1;
+		
+	    poscurs(0,ly(i)+1);	printf("In : ");
+	    poscurs(0,ly(i)+2);	printf("Out: ");
+	  }
+
+	localload = 0;
+	oldlocalload = (int)(root->LocalMsgs);
+	localloadmax = 0;
+	
+	poscurs(0,ly(MAX_NUM_LINKS));       printf("Local Message Traffic");
+
+	loadsize = screenx - loadx;
+	loadaverage = 0;
+d686 2
+a687 2
+	idleaverage = 0;
+	maxidle = 0;
+d689 3
+a691 2
+	maxload = 0;
+
+d693 1
+a693 1
+	poscurs(0,screeny-1); 	printf(" Idle: ");
+d695 43
+a737 5
+	poscurs(0,screeny); 	printf(" Load: ");
+
+	forever
+	{	
+		for(ln = 0; lv[ln] != NULL; ln++ )
+d739 7
+a745 53
+			LinkInfo *link = lv[ln];
+			
+			if( link->Id != id[ln] )
+			{
+				id[ln] = link->Id;
+
+				poscurs(0,ly(ln)); printf("Link: %2d ",id[ln]);
+			}
+			
+			if( link->Mode != mode[ln] )
+			{
+				char *s;
+				mode[ln] = link->Mode;
+				switch( mode[ln] )
+				{
+				case Link_Mode_Dumb:	    s = "   Dumb    "; break;
+				case Link_Mode_Intelligent: s = "Intelligent"; break;
+				case 0:			    s = "   Null    "; break;
+				default:		    s = "   ????    "; break;
+				}
+				
+				poscurs(9,ly(ln)); printf("Mode: %s ",s);
+			}
+
+			if( link->State != state[ln] )
+			{
+				char *s;
+				state[ln] = link->State;
+				switch( state[ln] )
+				{
+				case Link_State_Booting:  s = "Booting";  break;
+				case Link_State_Dumb:	  s = "Dumb";     break;
+				case Link_State_Running:  s = "Running";  break;
+				case Link_State_Timedout: s = "Timedout"; break;
+				case Link_State_Crashed:  s = "Crashed";  break;
+				case Link_State_Dead:	  s = "Dead";     break;
+				default:                  s = "????";     break;
+				}
+				
+				poscurs(27,ly(ln)); printf("State: %s",s);
+			}
+
+			inload[ln] = showload((int)(link->MsgsIn) - oldinload[ln],
+					      inload[ln],&inmax[ln],
+					      5,ly(ln)+1,screenx-5,10000);
+			
+			oldinload[ln] = (int)(link->MsgsIn);			
+
+			outload[ln] = showload((int)(link->MsgsOut) - oldoutload[ ln ],
+					       outload[ ln ],&outmax[ ln ],
+					       5,ly(ln)+2,screenx-5,10000);
+			
+			oldoutload[ln] = (int)(link->MsgsOut);
+d747 35
+a781 7
+
+		localload = showload((int)(root->LocalMsgs) - oldlocalload,localload,
+					&localloadmax,0,ly(MAX_NUM_LINKS)+1,
+					screenx,10000);
+		
+		oldlocalload = (int)(root->LocalMsgs);
+
+d783 31
+a813 21
+		/* idle monitor */
+		/* newoldav              target     oldav     peak bar  x     y      length   =100% */
+		idleaverage = showload(root->Idle,idleaverage, &maxidle,    loadx,screeny-1,loadsize,100);
+#endif
+		loadaverage = showload((int)(root->LoadAverage),loadaverage,&maxload,loadx,screeny,loadsize,loadmax);		
+				
+		poscurs(0,screeny);
+		flash++;
+		putch( spin[flash&0x3] );
+		poscurs(0,screeny);	
+
+		fflush(stdout);
+
+		c = getch(gettime);
+
+		  if( c == '+' ) gettime *= 2;
+		elif( c == '-' ) gettime /= 2;
+		elif( c != 0 ) break;
+	}
+
+	return c;
+@
+
+
+1.14
+log
+@fixed bug with assumption of number of links
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.13 1992/03/11 12:06:06 paul Exp nickc $";
+d662 1
+a662 1
+	poscurs(0,ly(4));       printf("Local Message Traffic");
+d737 1
+a737 1
+					&localloadmax,0,ly(4)+1,
+@
+
+
+1.13
+log
+@fixed for C40
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /m/giga/HeliosRoot/Helios/cmds/com/RCS/map.c,v 1.12 1991/11/06 11:46:06 martyn Exp paul $";
+d84 1
+a84 1
+int gettime = OneSec/4;
+d122 1
+a122 1
+int putch(int c) 
+d166 1
+a166 1
+int clrscrn()
+d231 1
+a231 1
+		if( mod->Type == T_Module && mod->Id < 10 ) return '0'+mod->Id;
+d363 2
+a364 2
+		int size = m->Size & 0xfffffff0;
+		int alloc = m->Size & Memory_Size_FwdBit;
+d366 1
+a366 1
+		int end = start + size;
+d519 1
+a519 1
+	memmax = pool->Max;
+d574 1
+a574 1
+loadaverage = showload(root->LoadAverage,loadaverage,&maxload,loadx,screeny,loadsize,loadmax);
+d600 9
+d613 1
+a613 4
+	int inload[4];
+	int outload[4];
+	int oldinload[4];
+	int oldoutload[4];
+a615 6
+	int inmax[4];
+	int outmax[4];
+	int localloadmax;
+	int mode[4];
+	int state[4];
+	int id[4];
+d618 9
+d628 1
+d637 20
+a656 10
+	{
+		oldinload[i] = lv[i]->MsgsIn;
+		oldoutload[i] = lv[i]->MsgsOut;
+		inload[i] = outload[i] = 0;
+		inmax[i] = outmax[i] = 0;
+		id[i] = -1;
+		mode[i] = state[i] = -1;
+		poscurs(0,ly(i)+1);	printf("In : ");
+		poscurs(0,ly(i)+2);	printf("Out: ");
+	}
+d659 1
+a659 1
+	oldlocalload = root->LocalMsgs;
+d661 1
+d686 1
+d701 1
+d719 1
+d723 1
+a723 1
+			inload[ln] = showload(link->MsgsIn-oldinload[ln],
+d726 2
+a727 1
+			oldinload[ln] = link->MsgsIn;			
+d729 2
+a730 2
+			outload[ln] = showload(link->MsgsOut-oldoutload[ln],
+					       outload[ln],&outmax[ln],
+d732 2
+a733 1
+			oldoutload[ln] = link->MsgsOut;			
+d736 1
+a736 1
+		localload = showload(root->LocalMsgs-oldlocalload,localload,
+d739 2
+a740 1
+			oldlocalload = root->LocalMsgs;
+d747 1
+a747 1
+		loadaverage = showload(root->LoadAverage,loadaverage,&maxload,loadx,screeny,loadsize,loadmax);		
+d864 1
+a864 1
+	mapy = root->PTSize/4;
+d908 1
+a908 1
+		loadaverage = showload(root->LoadAverage,loadaverage,&maxload,loadx,screeny,loadsize,loadmax);	
+d1052 1
+a1052 1
+	while( (c = getch(OneSec*10)) == 0 );
+@
+
+
+1.12
+log
+@merged NHG's version with standard version (see previous comment). Map
+should now cope with things like the Port Table moving underneath it, as
+well as now showing active PCs and stacks.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.11 1991/11/01 17:45:24 martyn Exp martyn $";
+d31 5
+d39 1
+a39 1
+#ifdef __HELIOSARM
+d80 1
+a80 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d177 1
+a177 1
+#ifdef  __HELIOSARM
+d530 1
+a530 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d552 1
+a552 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d568 1
+a568 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d645 1
+a645 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d651 1
+a651 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d715 1
+a715 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d843 1
+a843 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d863 1
+a863 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d876 1
+a876 1
+#if defined(__HELIOSARM) && defined(IDLEMON)
+d1048 1
+a1048 1
+#if __TRAN
+@
+
+
+1.11
+log
+@fixed bug in getports() where map was not finding the end of the
+port table.
+
+NB. Nick Garnett has a better version of map which avoids lots of these
+types of problems and has more features (shows executing code, etc).
+These two versions of map should be merged as soon as possible.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.10 1991/10/31 15:04:36 martyn Exp martyn $";
+d23 1
+d25 1
+a25 2
+	byte		Flags;
+	byte		Uses;
+d51 1
+a51 1
+bool flash = FALSE;
+d54 7
+a64 1
+char machine[100];
+d79 1
+a79 1
+int gettime = OneSec;
+d350 1
+a350 1
+	Memory *m = FirstPoolBlock(pool);
+d382 89
+d556 3
+d572 2
+a573 2
+		flash = !flash;
+		putch( flash ? '.' : '#' );
+d718 2
+a719 2
+		flash = !flash;
+		putch( flash ? '.' : '#' );
+a735 1
+	PTE **ptab = root->PortTable;
+d741 1
+a741 1
+	for( y = 0; ptab[y] != (PTE *)MinInt; y++ )
+d743 1
+a743 1
+		PTE *tab = ptab[y];
+d745 2
+a746 2
+		if(tab == NULL)
+			break;			/* end of table */
+d776 10
+d879 2
+a880 2
+		flash = !flash;
+		putch( flash ? '.' : '#' );
+d891 1
+d942 1
+d1030 1
+d1032 3
+d1042 6
+@
+
+
+1.10
+log
+@changed mallocs 'cos map used to get the size wrong
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.9 1991/10/29 18:45:21 martyn Exp martyn $";
+d648 2
+@
+
+
+1.9
+log
+@terminate with correct exit status
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.8 1991/10/17 09:26:19 martyn Exp martyn $";
+d439 2
+a440 2
+	memmap[0] = malloc(mapsize);
+	memmap[1] = malloc(mapsize);
+d738 2
+a739 2
+	pmap[0] = malloc(mapsize);
+	pmap[1] = malloc(mapsize);
+@
+
+
+1.8
+log
+@changed version number
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/map.c,v 1.7 1991/09/17 13:07:30 martyn Exp martyn $";
+d973 1
+@
+
+
+1.7
+log
+@map now displays the processor on which it is running
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/map.c,v 1.6 91/03/14 21:49:40 paul Exp $";
+d795 1
+a795 1
+	"             Map V1.1",
+@
+
+
+1.6
+log
+@fix for new ARM (__MI) organisation of FreePool memory headers
+Pool + RRDPool + MIInfo | Memory....
+(ARM only)
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/map.c,v 1.5 91/03/11 11:28:21 paul Exp Locker: paul $";
+d19 1
+d58 1
+d450 2
+d520 3
+d747 2
+d820 2
+d845 2
+d848 4
+a851 3
+	"First line gives link number, mode and state",
+	"Second line shows link input traffic/maximum",
+	"Third line shows link output traffic/maximum",
+d862 2
+d922 2
+@
+
+
+1.5
+log
+@made to comply with new root.h
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/map.c,v 1.4 90/11/19 21:45:16 paul Exp $";
+d39 6
+d342 1
+a342 1
+	Memory *m = (Memory *)(pool+1);
+d413 1
+a413 1
+	
+@
+
+
+1.4
+log
+@added support for robust ram disk (ARM)
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/map.c,v 1.3 90/09/26 19:10:19 paul Exp $";
+d184 1
+a184 1
+	rrdpool = &root->RRDPool;
+@
+
+
+1.3
+log
+@arm integration with 1.2
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/map.c,v 1.2 90/08/23 10:20:06 james Exp $";
+d83 1
+d183 3
+a185 1
+	/*loaderpool = ((Memory *)(MyTask->Program)-1)->Pool; -- no go for ROM based systems! */
+d197 3
+a199 1
+	
+d811 3
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/map.c,v 1.1 90/08/22 16:30:45 james Exp Locker: james $";
+d61 1
+a61 1
+#ifdef __HELIOSARM
+d260 1
+a260 1
+#if 1
+d417 1
+a417 1
+#ifdef __HELIOSARM
+d437 1
+a437 1
+#ifdef __HELIOSARM
+d450 1
+a450 1
+#ifdef __HELIOSARM
+d524 1
+a524 1
+#ifdef __HELIOSARM
+d530 1
+a530 1
+#ifdef __HELIOSARM
+d594 1
+a594 1
+#ifdef __HELIOSARM
+d711 1
+a711 1
+#ifdef __HELIOSARM
+d729 1
+a729 1
+#ifdef __HELIOSARM
+d742 1
+a742 2
+
+#ifdef __HELIOSARM
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+static char rcsid[] = "$Header$";
+@

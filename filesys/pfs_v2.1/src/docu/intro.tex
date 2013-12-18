@@ -1,0 +1,307 @@
+\chapter{Introduction}
+
+The Parsytec File System (PFS) is a powerful tool to handle mass storage 
+devices in multi-transputer networks. Various applications which need highest 
+data transfer rates can be realized in combination with SCSI devices which can
+be accessed by Parsytec's ``Mass Storage Controller'' (MSC) board. Typical 
+fields for applications which can make use of this product are for example 
+image processing and distributed databases.
+
+\section{Main features}
+
+\begin{itemize}
+
+  \item The Parsytec File System (PFS) is based on the Berkeley Fast File 
+        System (FFS) up from version 4.2BSD. A lot of extensions have been 
+        made to achieve maximal performance and to guarantee an optimal use of 
+        the disc capacities.
+
+  \item It is possible to connect up to seven SCSI devices to one MSC which
+        then can be managed by one PFS. In addition to the standard devices, 
+        new SCSI drives can easily be added by editing the driver's 
+        \SIS\ configuration file.
+
+  \item The PFS offers a concept of multivolume\slash multipartition. It is
+        for example possible to declare two harddiscs to appear as one volume
+        to the user (multipartition\index{multipartition}) or one harddisc may
+        be split into several volumes (multivolume\index{multivolume}). It all
+        depends on the volume and partition description of the user in \DIS.
+        Devices with changeable media and raw devices are not allowed to be
+        multipartitioned and have to be single volumes.
+
+  \item The file system checker for structured volumes checks the consistency 
+        of data and data structures of a file system. A lot of possible errors 
+        are recovered; there are very few situations the checker cannot be 
+        successfull. When the checker succeeds, the file system is guaranted to 
+        be in a consistent state and the file server can work with it. There 
+        are three checking modes: no checks, basic checks and full checks. The 
+        checker is noninteractive and is called when a structured volume is 
+        loaded (mounted).
+
+  \item Several mechanisms have been added to handle fatal error situations. 
+        Bad blocks of structured devices are reassigned automatically. When 
+        buffer cache's checksum is enabled, data are only written on disc if 
+        no inconsistence did occur. On error the data is left unchanged on 
+        disc. Termination or unloading (unmounting) of volumes is done with 
+        respect to active processes working on that volume.
+
+  \item The basic block size is set to 4 KBytes (whereas the maximum file
+        size\index{filesize@file size} is 4 GBytes). In dependancy on the
+        client's request, the server is able to build packets of various sizes
+        in its buffer cache to fit the request in an optimal way. The packet
+        handling is done in a transparent manner to the client tasks.
+
+  \item Directories and files are placed on the disc or partition by using 
+        different strategies to get a good compromise between spreading and 
+        clustering of information (minimal fragmentation). To implement such
+        balancing procedures, the file server divides the disc into a number 
+        of  equal sized ``cylinder groups'' which are controlled separately.
+
+  \item In contrast to the BSD Fast File System the inode handling was 
+        implemented in a more straight-forward way: inodes and entry names 
+        build ``Directory Entries\index{directoryentries@directory entries}''
+        which are kept in special directory blocks. You are able to create as
+        many directories as you want, in one directory up to 448 entries
+        (files or sub-directories) can be combined.
+
+  \item To achieve maximal flexibility for the user, the server as well as the 
+        driver is full parametrizable (via the \DI\ file, see section
+        \ref{sec:di}, and the \SI\ file, see section \ref{sec:si}). With the
+        desired hardware and application environment in mind, it is possible
+        (and necessary) to manipulate the parameters of the devices and the
+        buffer cache in a very wide range.
+
+  \item Various utilities are added to the software package to ease handling 
+        of the server. Especially protection mechanisms based on capabilities 
+        are enabled.
+
+  \item The {\tt ptar} utility helps you to archive lots of MBytes on your
+        streamer tape.
+
+  \item The PFS is delivered with a configurable device driver. This driver
+        performs data transfer directly from and to the user's buffer, thereby
+        eliminating intermediate copy operations. Requests regarding the same
+        disc device are sorted to reduce head movement. By using the 
+        transputer event line, reaction times could be minimised.
+
+\end{itemize}
+
+\section{The PFS data structures on disc}
+
+This section gives you a brief description of important data structures as 
+managed by the Parsytec File System. It will make easier to understand the 
+basic principles of the file system checker (described below) and to follow 
+the different phases of the checking process.
+
+\subsection{Disc layout}
+
+The Parsytec File System divides a disc into independant (logical) parts of 
+equal sizes\footnote{They all contain the same number of blocks.}, called 
+``cylinder groups\index{cylindergroups@cylinder groups}''. This approach has
+several advantages: in combination with algorithms for block allocation and
+creation of new directory entries and files, it can be assured that the
+storage space on disc is used in the most efficient way:  on the one hand,
+fragmentation of disc space is minimized, on the other hand, one gets optimal
+medium access times by spreading data in a regular way over the disc.
+
+All information required to manage a cylinder group is collected within one 
+data block, known as an ``\/info block\index{infoblock@info block}''. Every
+cylinder group has it's own info block and it is placed with a fixed
+``relative rotational offset\index{rotationaloffset@rotational offset}''. The
+most important data structure, building the major part of each info block, is
+a ``bitmap''---an array of bytes used to note all free and allocated blocks
+within the specific cylinder group. Some additional summary information give
+a short description of the actual usage of a cylinder group. They contain e g
+the number of free blocks and the number of sub-directories which are kept in 
+a cyclinder group.
+
+Another ``special purpose'' data block, called
+``summary block\index{summaryblock@summary block}'', collects the summary
+information from all cylinder group info blocks and some additional ones which
+describe the whole file system with all cyclinder groups as one unit. Using
+this summary information makes it especially easy and efficient for the file
+server to decide where to allocate new blocks on disc to expand ane existing
+file or to create a new sub-directory or file.
+
+There should also be a place on disc where some fixed parameters of the
+established file system can be found. These are for example items like the 
+number of cylinder groups, the size of each cylinder group and the 
+``rotational offset'' for a placement of info blocks within the different 
+cylinder groups. The Parsytec File System puts this information and a lot of
+other important data in a structure called ``superblock\index{superblock}''.
+To have enough redundacy, a copy of this superblock is held within each info
+block. Having formatted a disc once, the content of the superblock structure
+should never be changed under normal operating conditions.
+
+See figure \ref{pic:dlayout} for an overview.
+
+\input{dlayout}
+
+\subsection{Directory entries and files}
+
+All relevant information required to describe a sub-directory entry or a file
+is kept in a data structure called ``\/inode\index{inode}''. These are for
+example items like the creation date, the size (measured in bytes), and a type
+flag to determine whether the entry describes a sub-directory, a symbolic
+link, or an ordinary file. Additional information like an access matrix and
+the number of blocks allocated by this entry and others can also be found
+within in the corresponding inode.
+
+To keep an inode as small as possible without loosing too much efficiency, 
+only a restricted number of direct block references to data blocks are made
+(``direct blocks\index{block!direct}''). If a larger file has to be managed,
+a ``single indirect block\index{block!indirect!single}'' is allocated, which
+exclusively contains references to data blocks. But one level of indirection
+is not the limit: very large files of hundreds of Megabytes are described by
+using a second level of indirection. In this case, a 
+``double indirect block\index{block!indirect!double}'' is allocated and noted
+in the inode which keeps references to single indirect blocks, which again
+refer data blocks. This builds the basic mechanism to handle a wide range of
+file sizes (up to 4 GBytes) without wasting too much disc space for allocating
+blocks in advance.
+
+There is one type of data block, called
+``directory block\index{directoryblock@directory block}'' which is noted by an 
+inode of type ``directory'' (a sub-directory entry) and represents a special 
+variant of an ordinary data block: a directory block only contains inode data
+structures and allows the Parsytec File System by this way to build
+hierarchical directory structures.
+
+\section{Checker}\index{checker|(}
+
+The Parsytec File System Checker is a maintenance tool to guarantee 
+consistency of block based file systems. Under various conditions, a file system
+kept on a harddisc may come into an inconsistent state. Events like a power 
+loss, a hardware malfunction or other disastrous errors like a head crash may
+result in damaged data structures on disc. Under certain conditions, it may be 
+even impossible to get initial access to the file system's root directory 
+afterwards.
+
+To recover from such an error and to repair corrupted parts of a file system the
+Parsytec File System Checker was written. It builds an integral part of the 
+Parsytec File System and is executed every time when a volume is loaded. By this
+way, it can be assured in general that a file system is definitely in a 
+consistent state after the checker has made all essential tests and corrections.
+
+\subsection{How to use it \ldots}
+
+The Parsytec File System Checker is started directly after the successful boot 
+of a volume. All checks and corrections---if required---are done automatically
+and there is no need for user interaction. In general, the file system checker 
+works in a ``silent'' mode, only reporting the different phases of the 
+checking processes which are entered. If an error occurs that needs 
+corrections on disc, the checker reports it by writing a message to the server
+window.
+
+After finishing the checking process, the start-up sequence of the volume
+is completed and the file system is accessable by the user in the normal 
+manner\footnote{The checking process usually finishes successfully. Only under 
+fatal error conditions like checking a non-formatted disc or working with a 
+damaged disc controller, the File System Checker may fail. In this case, the 
+file system cannot be booted, neither checked in the usual way, until the 
+hardware malfunction or other reasons for the failure have been removed.}.
+
+The system administrator has the opportunity to select from two different 
+checking modes: at first, it is possible to perform a 
+{\bf BASIC-CHECK}\index{basiccheck@BASIC-CHECK} when a volume is loaded. In this
+case, all data structures on disc which are used to manage block allocation are
+tested. If the File System Checker is called with 
+{\bf FULL-CHECK}\index{fullcheck@FULL-CHECK} mode enabled, the complete 
+directory tree is scanned and each entry is tested, regardless whether it is a 
+file, a symbolic link or a sub-directory entry. This is the default checking 
+mode. If some of the BASIC-CHECKs fail, the FULL-CHECK mode is called 
+automatically to detect other possible inconsistencies and to correct them 
+afterwards.
+
+The Parsytec File System can be booted with various options. The checker 
+relevant ones are
+
+\begin{tabular}{ll}
+  -f: & perform FULL-CHECKs (default) \\
+  -b: & perform only BASIC-CHECKs     \\
+  -n: & bypass the checker completely \\
+\end{tabular}
+
+There may be one fatal error condition which makes it impossible to run the 
+checker and to make corrections properly: a damaged superblock within the 
+info block of the first cylinder group. In this case, differences between the 
+data structures describing a physical disc and data kept within \DI\ may be
+recognized. Run the {\tt mksuper} command to make the file system bootable
+again\footnote{An empty file system is created with {\tt makefs}, that
+destroys all data when executed on a file system that already contains
+files.}. All required information is taken from the actual \DI\ file and a new
+superblock structure is filled up. Afterwards, the file server can be booted
+in the normal manner.
+
+\subsection{The different phases of the checking process}
+
+Consistency checking and correction operations done by the Parsytec File 
+System Checker are split into four main phases:
+
+
+\subsubsection{Phase I}
+contains all tests which are executed running in
+BASIC-CHECK\index{basiccheck@BASIC-CHECK} mode:
+
+At first, the validity of the superblock data structure as found in the 
+info block of the first cylinder group is prooved. Afterwards, this superblock 
+is compared with the copies found in the info blocks of the other cylinder 
+groups. The next step is to compare the content of the different cylinder 
+group bitmaps with the summary information kept in the info blocks and in the
+summary block.
+
+Finally, the root directory inode is inspected to make sure that it is 
+possible to get initial access to the file system's root directory. (The root 
+directory inode is part of the summary block.)
+
+If the Parsytec File System Checker is called in BASIC-CHECK mode and no error 
+was detected, the checking process is finished at this moment. Otherwise, the 
+FULL-CHECK mode is automatically entered and the following three phases are 
+also performed.
+
+\subsubsection{Phase II}
+is used to traverse the complete directory tree and to make all essential 
+checks for single directory entries. These test operations build the main part 
+of the checking process when running in FULL-CHECK mode: beginning with the 
+inode of the root directory, the whole directory tree is worked out and each 
+individual entry is tested under various conditions. If certain error limits are
+exceeded, an entry may be detected as ``non-usable'' and is deleted afterwards.
+
+\subsubsection{Phase III}
+takes the results of the Phases I and II and corrects all block allocation
+errors which were previously detected:
+
+There are two serious error conditions which are handled during phase III. At 
+first, there may be a block which is referred by more than one entry. The file
+system checker has to decide which entry may be the legal owner (most recent
+modifier) of such a block and has to do the required corrections. Secondly, 
+there may be a block which is noted in a bit-map as allocated but not referred 
+by any of the entries touched during phase II. Such a ``lost'' block may become 
+an entry in the 
+{\tt /lost+found}\index{lostandfound@{\tt /lost+found}}-directory if it contains
+directory information (inodes). By this way, it is possible to re-integrate
+sub-directory structures which were cut-off due to an error condition.
+
+\subsubsection{Phase IV}
+performs some general tidyup-operations and adjusts the file system's summary 
+information which are kept in the summary block.\index{checker|)}
+
+\section{Related manuals}
+The following manuals may be useful as references:
+
+\begin{itemize}
+
+  \item MSC Mass Storage Controller  Technical Documentation
+
+  \item Perihelion Technical Report No. 20  Device Configuration
+
+  \item The Helios Parallel Operating System
+
+  \item ANSI X2.131-1986 Small Computer System Interface
+
+  \item Manuals to your SCSI devices
+
+\end{itemize}
+
+In addition to that, the file {\tt readme.pfs} contains most actual changes not
+considered in this handbook.

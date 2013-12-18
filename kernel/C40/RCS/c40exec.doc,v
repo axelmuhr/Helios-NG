@@ -1,0 +1,727 @@
+head	1.7;
+access;
+symbols
+	Helios_1_3_1:1.7
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.5
+	C40_Field_Test_2:1.5
+	C40_Field_Test_R1:1.4;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	93.01.26.19.10.46;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.01.21.09.55.43;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.08.18.09.53.32;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.06.19.18.21.24;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.05.14.10.48.14;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.04.21.09.54.56;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.12.03.12.08.59;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@c40 executive notes
+@
+
+
+1.7
+log
+@updated
+@
+text
+@TMS320C40 Executive Notes
+-------------------------
+
+
+Introduction
+
+The Helios executives function is to create an processor independent interface
+between the Helios kernel and the CPU architecture. It is simply a thin
+veneer over the raw machine that provides basic scheduling, interprocessor
+communications and thread creation facilities.
+
+The C40 port of Helios implements an executive that goes one stage further,
+and separates out its processor dependent and independent parts of an
+executives implemention. It implements the majority of the executive in C.
+This allows quicker implementation of Helios on new architectures as only the
+bare minimum of processor specific code has to be written. All C files
+starting with a 'g' are generic parts of the exec. Otherwise the
+files (usually assembler source) are prefixed with processor acronyms such
+as 'c40' for the TMS320C40 processor.
+Small processor specific changes to the generic source are bracketed by
+#ifdef __PROC ... #endif. This approach also allows a stage by stage
+optimisation approach, where parts of the C code can be conditionaly
+compiled out and replaced by assembler.
+
+The scheduler implemented is a realtime scheduler with eight priority
+levels ranging from 0 (highest priority) to 7. The number of levels is a
+compile time variable. The highest level simply runs threads until they
+completed or are blocked. No time-slicing occurs during their execution. This
+Allows a simple way of implementing monitors, without having to resort to
+semaphores or disabling interrupts. The remaining priorities are round
+robin timesliced within that level. The (currently) compile time timeslice
+is 100 milliseconds (1/10 sec). If any higher priority threads are available
+they are always run.
+
+Each thread saves its state in a permanent area pointed to by
+SaveState->stdsavearea and while the thread is running
+ExecRoot->CurrentSaveArea. This area is allocated when the thread is created
+by stealing sizeof(SaveState) from the top of the stack passed to
+CreateProcess(). @@@@@@ Calls to CreateProcess could automatically add
+sizeof(SaveState) to their stack memory allocation. The current highest
+available priority with a thread to run is held in ExecRoot->HighestPri. This
+minimises the time spent by the scheduler walking down the run Q's
+
+On the 'C40, the C/User stack (AR6) has built-in stack extension. Production
+versions of the kernel will have this turned off, beta versions will have the
+stack check function print error messages if the available stack space
+is exausted. Normally all stacks will have at least 512 bytes available when
+calls to the kernel take place. The Helios/C40 PCS implements this with a
+stack guard of 64 words (PCS_STACKGUARD) always available after the stack end
+pointed to by the stack end pointer (IR1).
+
+Note that many executive and kernel functions disable and enable interrupts
+globally. As calls to IntsOn() and IntsOff() are not stacked, user
+programs that use these functions and call the kernel may have interrupts
+re-enabled at in-opertune moments!
+
+
+
+Memory map for Helios/C40:
+
+		Hi
+---------------------------------	0xffff ffff
+|				|	GLOBAL BUS (used by Helios for code)
+|				|
+|				|
+|				|
+~				~
+---------------------------------
+|				|
+|	Nucleus #2		|	Nucleus loaded here if global bus
+|				|	memory is available.
+---------------------------------	0x8000 0000
+
+
+---------------------------------	0x7fff ffff
+|				|
+|				|
+|				|
+|				|
+|				|
+~				~
+---------------------------------
+|				|	Nucleus loaded here if global bus
+|	Nucleus #1		|	memory is unavailable.
+|				|
+---------------------------------	0x0030 0440
+|must lie on 0x200 word boundary|
+|   size = 0x40 words (256kb)	|
+|				|
+|     Interrupt Vector Table	|
+---------------------------------	0x0030 0400
+|must lie on 0x200 word boundary|
+| size = 0x200 words (2kb)	|	Could possibly place this on global bus
+|				|
+|				|
+| 	Trap Vector Table	|
+---------------------------------	0x0030 0200
+| size = 0x180 words (1.5kb)	|
+|				|	Could increase size slightly by reducing
+|				|	size of ExecRoot.
+|    System (interrupt) stack	|
+---------------------------------	0x0030 0080
+| size = 0x80 words (512bytes)	|
+|				|	ExecRoot points to Nucleus load address.
+|				|	ExecRoot address can be loaded with LDHI
+|	ExecRoot		|
+---------------------------------	0x0030 0000
+|    size = 0x400 words (4kb)	|
+|				|
+|				|
+|	on chip RAM #1		|
+---------------------------------	0x002f fbc0
+|    size = 0x400 words (4kb)	|
+|				|
+|				|
+|	on chip RAM #0		|
+---------------------------------	0x002f f800
+|				|
+|	C40 Reserved 		|
+---------------------------------	0x0020 0000
+|				|
+|	C40 Reserved 		|
+---------------------------------
+|				|
+|				|
+|	On chip Peripherals	|
+---------------------------------	0x0010 0000
+|				|
+|	C40 Reserved 		|
+---------------------------------	0x0000 0fff
+|    size = 0x1000 (16kb)	|
+|				|
+|	On chip ROM		|	LOCAL BUS (Used by Helios to store Data)
+---------------------------------	0x0000 0000
+		Lo
+
+
+
+
+TODO:
+-----
+
+When optimising code, make sure all major functions are aligned to 32 word
+address boundaries - this will give the best performance from the cache.
+(see page 3-28).
+
+Check and see where we can specifically reduce time spent in timeslice code
+and generally reduce the maximum latency. See where we can just turn
+SliceIntsOff(), rather going the whole hog and increasing our interrupt
+latency with use of IntsOff().
+
+Add StoreSize() FastStoreSize() and InitErrorCodes to executive porting guide.
+
+Ir0 should be moved in the SaveState to just after the ST. This would allow
+a few ~10-20 cycles to be saved in the timeslice context switch. Also
+changes in the Save/RestoreCPU/SlicedState() functions.
+
+Use of ExecRoot in ar0, rather than ar3 in EndOfDMAInterrupt Tx/Rx/TxAndRx
+would allow more optimal interface to extern_slice_now (could jump to point
+where we push ar4, missing out pop and push of ar3).
+
+The path through the timer interrupt handler should be optimised for the
+worst case, not the most often case as it is at the moment. This would reduce
+the interrupt latency, as would the SaveState re-organisation noted above.
+
+Use IDROM for processor timeslice calc.
+
+Auto Memsizeing if IDROM says 0 mem.
+
+Check if next slicon after TMX will have interrupt bugs fixed - then look
+at ways of reducing the interrupt latency still further - then no need to
+disable interrupts during context switch (except PUSHF/POPF)? Use semaphore
+when evicting runQ's, etc during taskkill (use root for sem, and check through
+known thread Q? (+ semaphores?)).
+
+Check through timeslice code for pipeline conflicts
+Check code generated by C for pipeline conflicts.
+
+Check that longjump takes auto stack extension into account.
+
+Check that interrupt driven linkIO actually works (completely untested so far).
+
+Suss out how we wish to implement Allocatable DMA for users.
+	- give them the engine they request (if associated with dumb /
+	 unconnected / user allocated link).
+	- give them any unused links associated DMA engine
+	- keep track of usage of links and give them least used DMA eng
+	- implement interrupt driven link handler - use for each link that
+	- has lost its DMA engine.
+	- Allow user to specify overall DMA priorities (need access to DMA
+	engine 0 to do this).
+	- fns that return bitmap/number of free DMA engines
+
+
+Optimisations of LinkTx/Rx:
+	Remove link protocol byte(word).
+	Re-write entire linkmsg/guardian code and make use of automatic
+	DMA linkage + only alloc/free DMA engines when their are no
+	requests pending.
+	Direct link to link DMA (thru routing).
+	To free-up more DMA engines, we should hang dumb links (+intelligent
+	servers waiting for a protocol word) off a link read ready interrupt,
+	on getting interrupt, we then grab a DMA engine.
+
+NOTE that msghdr's should always be word aligned. - either place check for this
+in code, or force alignment by copy into static word buffer. IF THIS IS NOT
+FIXED IT MUST BE DOCUMENTED.
+
+Check all @@@@@@ comments.
+
+@
+
+
+1.6
+log
+@minor tidies
+@
+text
+@d143 23
+d167 1
+a169 4
+Allow IOServer to overload memsize (doesn't currently work).
+
+Remove test code from timer interrupt handler.
+
+a178 3
+SaveCpuState() should be replaced in most instances by SaveCState (remembering
+that in some cases V1 is used to hold info to be restored on exit).
+
+a193 44
+Check that Resume actually calls Dispatch() if its a higher pri than current?
+Make interrupt routines force a Dispatch() as soon as possible. - Check if
+Timer functions and LinkIO pre-empt current thread if they have a higher
+pri one to go. - Implement Std IntrDispatch() function that assumes a
+minimal configuration of registers saved on the interrupt stack which it will
+restore before saving the current thread and running the next.
+
+'C40 will need a better Bootstrap program. The bootstrap will load into the
+internal RAM, and execute an TIM-40 ID LOAD sequence. This will give the
+values to place into the memory control registers, the size of RAM on each bus
+and the speed of the processor. From the speed we will need to work out the
+number of nanosecs to place into the timer period register to give a clock
+tick of 1 millisecond. This code should be made dependent on #ifdef __TIM40.
+The bootstrap should then download the nucleus and update
+ExecRoot->Nucleus with its load point before jumping to the kernel
+initialisation point. The following ID-ROM info should be recorded in ExecRoot:
+
+	ExecRoot->ClockCycleTime = number of nanoseconds for H1 (one intruction)
+	ExecRoot->ClockTick	= 1,000,000 / (H1 * 2)
+				number ClockCycles*2 in 1 millisecond. This is
+				used for the clock interrupt period.
+	ExecRoot->StoreSize
+	ExecRoot->StoreStart
+		ExecRoot->LocalStoreSize
+	->	ExecRoot->GlobalStoreSize
+		ExecRoot->LocalStoreStart
+		ExecRoot->GlobalStoreStart
+
+Note that the bootstrap code should take pains to avoid silicon bug #2 -
+concurrent access between different memory ports.
+Boot code should be extended to cope with simple peek/poke/boot/exec protocol.
+@@@@@@ check that sysbuild will always create a word sized nucleus
+
+Look into `foreign' IPC links being added dynamically to the kernel -
+re: LSI shared memory <-> PC and hema unidirectional use of the links.
+User installable link drivers - reallocate root->Links and copy. + update
+Config->Nlinks.
+
+Update ampp macros for 'C40 - check procs.m
+
+Multiprocessor Boostrap code in link1.c needs updating with 'C40 bootstrap?
+bootlink stuff in kernel should only be compiled for the TRAN.
+The alive tests, etc need to be cleaned out and only used for the tranny as
+well. - The network netagent does all the booting.
+a208 29
+
+CHECK:
+------
+
+Check that all access to SSP is properly guarded, so that silicon bug #1
+does not effect us. Check if we ever need to guard against #2 - or at least
+stay aware of it.
+
+Check that the interface between C and assembler converts pointers
+correctly.
+
+Check that global interrupt enable/disable are always paired up correctly
+- especially check if Resume always defines that it will return with
+interrupts enabled - could remove many IntsOn() such as in the Sleep()
+function if this is true. See where we might use SliceIntsOff() instead,
+bearing in mind that if we let ourselves be descheduled, the IIE reg is not
+saved on a slice, and therefore we would disable all slices until we were
+somehow rescheduled again!
+
+Check that sleep and Yield + poss Dispatch can be called at low pri's
++ check on IntsOff requirements.
+
+Work out when we may have to clear the cache? - I cant think of anything
+apart from self modifying code and we don't use this.
+
+Check that a one millesecond interrupt frequency is valid - use lower freq.
+interrupt? - one centisecond? - access timer0 register directly to get
+accurate microsecond time?
+
+a209 61
+
+When optimising code, make sure all major functions are aligned to 32 word
+address boundaries - this will give the best performance from the cache.
+(see page 3-28).
+
+Check and see where we can specifically reduce time spent in timeslice code
+and generally reduce the maximum latency. See where we can just turn
+SliceIntsOff(), rather going the whole hog and increasing our interrupt
+latency with use of IntsOff().
+
+Add StoreSize() FastStoreSize() and InitErrorCodes to executive porting guide.
+
+Add support in ampp for source choice for ampp meta chars '--', ''', '[', ']',
+and '\'
+
+
+
+
+Possible Additional extensions
+------------------------------
+
+Individual thread control should be added. Parent threads should be able to
+perform the following operations on their children:
+	kill
+	suspend
+	alter their priority
+	get current status
+When the child is created, a pointer to the SaveState->stdsavearea should
+be returned to the parent. This will be used as a handle for all further
+operations on the child. Do we want to go the whole hog and add named threads?
+Each Task in /proc/tasks/taskname would be a sub-directory containing its
+own threads.
+
+New memory allocator that can cope with two memory banks and is significantly
+faster than the original. + cope with allocating from different memory pools
+Static/onchip/Dram that people may wish to specify.
+
+User installable trap handlers
+
+Different size of timeslice for different priorities?
+
+Implement a trickle scheduler, rather than the absolute priority one we have at
+present. This places a dummy thread on each run Q. When this token comes to
+the head of the Q it is immediately added back at the end and the scheduler then
+runs one lower priority process. This itself could be a dummy thread, causing
+the scheduler to go to the next...
+
+
+C40 specific link library / ampp macros:
+	Software initiated interrupts by writing to the IIF register to
+	simulate interrupts.
+	Initialisation of IIOF(3-0) for general purpose I/O and interrupts.
+	Selection of edge or level triggered interrupts
+	Interrupt polling (when intr. are disabled but their values can
+	still be read in IIF).
+	Installing interrupt vectors, moving interrupt and trap tables.
+	Saving and restoring context for interrupts.
+	Clock1 setup functions.
+	Priorities for DMA/CPU/LINKS
+	Turn off timeslicer.
+	Turn off clock interrupts.
+@
+
+
+1.5
+log
+@update
+@
+text
+@d162 1
+a162 1
+longjump needs to take auto stack extension into account
+a209 22
+Config sent by IOServer should be able to overload IDROM contents.
+
+kstart() will need fixing up so that it doesn't do GetRoot(), etc
+before the ExecInit()? The general interrupts IIOF(3-0) should be set to
+general purpose outputs to discorage spurious interrupts. *TOBEDONE*
+
+Sort out how to handle different memory arrangements - Sundance TRAM board
+for example - 
+	local 2Mb static
+	global	8Mb dyn. - 32Mb with 16Mb RAM
+
+	Need movable trap/interrupt vectors, root, nucleus, config
+	possibly even ExecRoot! - use ldpe/ldep with TRAP register used
+	to store execroot position.
+
+- IDROM format should now have this information in it.
+IDROM load into onchip RAM - make sure this doesn't conflict with the
+startup stack. Add IDROM structure to execroot and initialise it.
+
+Shared memory support: spin locks, lockread(wptr addr), unlockwrite(wptr addr).
+	page 6-13
+
+a275 6
+IntsOff() should be recoded as macros:
+	#define IntsOff() _word(0x03752000)	- export problems for these two
+	#define IntsOn()  _word(0x10752000)
+	#define ClockIntsOff() _word(0x03770001)
+	#define ClockIntsOn()  _word(0x10770001)
+
+a280 4
+We need to add code to keep track of execution time spent on each thread
+in SaveState->CPUTime. This should also be printed out by the 'ps' program.
+
+Add procname() function in procman - may not be possible.
+a281 2
+Implement extra code for C40 to copy between code and data space to implement
+Accelerate().
+a282 12
+Posix signal.c could do with signal stack by way of implementing the Accelerate
+function. - signal.c may also have to be updated for C40 specific signals that
+cannot be caught.
+
+__divtest, __ddivide, __fdivide all use hex integer constants to describe fp
+immediate values - these may not be supported by a new assembler with fp
+constant support. These functions should really exist in the kernel and not
+the C library and probably should be moved.
+
+production versions of the nucleus could make use of the -ff compiler
+pragma that removes function names from the code. This should not be used if
+we use any backtrace form of debugging.
+a283 1
+
+d305 1
+a305 10
+Add function to change the available system stack - may wish to set it to
+on-chip RAM.
+	void NewSystemStack(word *newstack) {
+		Free ExecRoot()->SysStack;
+		ExecRoot()->SysStack = newstack;
+		ExecRoot()->SysStackSize = memsizeof(newstack);
+		SSP = newstack;
+	}
+
+Different size of timeslice for different priorities.
+a326 12
+
+
+Exec interrupt handler
+	- handles all interrupts,
+		saves the processor state
+		enables interrupts again for higher priority interrupts
+			(to give a fast interrupt response)
+		creates PCS compilent world?
+		calls user provided handler passing static data pointer
+		pops context and RTI's
+
+	- allows several handlers to be chained off one interrupt?
+@
+
+
+1.4
+log
+@update
+@
+text
+@d222 2
+a223 1
+	possibly even ExecRoot!
+@
+
+
+1.3
+log
+@more
+@
+text
+@d143 5
+a155 3
+Alter Rx/TxFIFOSpace (c40linkio.a) code to return 32 for all empty/full, not 28
++ alter code in glinkio.c to reflect this.
+
+a165 4
+Must implement non word aligned data Rx - MsgHdr.Flags = number of bytes out
+of align for incomming message. Message destination may also be non word
+aligned.
+
+a183 3
+Add Nicks stack_overflow(_1) code to kernel/C40/c40nccsupp.a + any other
+ncc support fns required - find out exactly what these are.
+
+d228 3
+a251 2
+	Abandon the DMA allocation scheme and pre-allocate DMA channels to
+	links.
+d253 3
+a255 2
+Implement C40 specific extensions to the loader that will enable it to
+load code into the global bus if it exists.
+a256 4
+Interrupt handlers should be checked to see if they make use of comparisons/
+flag setting with reg ar0-7, if so they should set the ST_SET_COND flag in the
+ST as not all code interrupted has to be PCS complient - find a pipeline
+conflict slot to fit it in.
+a257 1
+
+a287 27
+
+After ALPHA release
+-------------------
+
+After Alpha implement #ifdef HIGHESTAVAILPRI. This should allow a lower
+max interrupt latency as the dispatcher will know which run Q to start to
+look for threads in. It will also allow the TimeSlicer to preempt the current
+threads timeslice if a higher priority process becomes available. In the
+current implementation this means that higher pri processes will have to
+wait 1 millisecond (CLOCK_TICK) before they are scheduled instead of 25
+millisconds (CLOCK_TICK * 25). Perhaps we should look at ways to make this
+preemption for higher pri-processes even faster (poss by interrupts that
+shedule new processes to slice the current thread (if not HIGHPRI) and
+call the dispatcher in much the same way as the time slice code. look into
+this when we implement the generalised interrupt handler.
+The current implementation needs checking to see if xroot->HighestAvailPri
+is set and reset correctly by all the scheduling functions. Note that I think
+we can set this higher OK, but resetting it lower via returns from System() /
+SetPhysPri() and Dispatch() need to be looked at.
+
+After Alpha implement #ifdef TIMEDSUSPEND. This will enable us to implement
+the TimedSuspend() function that in turn enables TimedWait() to be implemented
+in the kernel. The current implementation needs checking to see that
+the s->status = THREAD_TIMEDWAIT is consistent and is not effected
+(overwritten) by the timeslicer. Also must add the code for removal from the
+timerQ in Resume().
+
+a304 1
+Add ProcName macros (module.m?) and use in all assembler executive functions.
+d324 4
+@
+
+
+1.2
+log
+@alpha version
+@
+text
+@d18 2
+a19 1
+files (usually assembler source) are prefixed with the processor acronym 'c40'.
+d21 13
+a33 1
+#ifdef __C40 ... #endif.
+d39 4
+a42 2
+CreateProcess(). @@@@@@ Calls to CreateProcess should add sizeof(SaveState) to
+their stack memory allocation.
+d44 1
+a44 1
+The C/User stack (AR6) has built-in stack extension. Production
+a142 4
+remove checkntq from kmodule.a/kernel.d/etc
+
+Check in all sources
+
+d151 3
+d157 3
+d162 2
+d173 1
+a173 1
+	- implment interrupt driven link handler - use for each link that
+d180 5
+a184 3
+Make interrupt routines force a Dispatch() as soon as possible.
+
+check where ExecRoot->DispatchStack is used and if it is still required.
+a185 2
+Implement ResetLink - didn't I?
+
+d234 3
+a236 1
+re: LSI shared memory <-> PC.
+d240 4
+a243 1
+Multiprocessor Boostrap code in link1.c needs updating with C40 bootstrap.
+a259 4
+bootlink stuff in kernel should only be compiled for the TRAN.
+The alive tests, etc need to be cleaned out and only used for the tranny as
+well. - The network netagent does all the booting.
+
+d332 7
+a338 1
+Add StoreSize(), FastStoreSize() and InitErrorCodes to executive porting guide.
+a343 4
+Either RootStruct has ExecRoot pointer added, or add GetExecRoot() macro/fn
+Need 'ps' type program to print out the state of the run Q's and the
+status of the threads held on it.
+
+d378 2
+a379 4
+faster than the original.
+
+User installable link drivers - reallocate root->Links and copy. + update
+Config->Nlinks.
+a381 3
+
+Allow users to add DMA requests to DMA Q's
+User allocatable DMA engines
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d96 1
+a96 1
+|	on chip RAM #2		|
+d101 1
+a101 1
+|	on chip RAM #1		|
+d128 31
+a158 2
+Add memory function by way of the norcroft string.c functions and
+norcroft compiler support functions.
+d160 2
+a161 4
+Update the kernels prototype for suspend, adding a second 'reason code'
+argument to all versions. Export the definitions in something other than
+cpustate.h? Also check that all desheduling points give reason
+(savestate->status) for the suspension.
+d163 8
+a170 1
+'C40 will need a Bootstrap program. The bootstrap will load into the
+d193 2
+d196 1
+a196 12
+The code in kmodule.a should initialise the CPU and fix up a 'C' world
+before executing kstart() and hence ExecInit(). kstart() will need fixing
+up so that it doesn't do GetRoot(), etc before the ExecInit(). Possibly
+use the system stack as the C stack at this point.
+Remember SP needs fixing up straight away as reset doesn't set any particular
+value in it. Interrupts should be disabled, but the general interrupts
+IIOF(3-0) should be set to general purpose outputs to discorage
+spurious interrupts.
+
+Implement InitCommsLinks() - readies the on-chip communications links.
+Generic linkio should check TxFunction in link structure, if set, should
+exec that function, instead of using the on-chip ports.
+d198 46
+a243 1
+Add new macros for GetRootBase() and GetSysBase() for 'C40 in root.h.
+d270 4
+a275 1
+move asm.a (transputer version) to TRAN directory
+a279 2
+Full generic linkio with DMA engines
+
+d305 1
+a305 1
+(see page 3-28)
+d315 2
+d318 1
+d325 1
+d327 13
+d358 2
+a359 1
+User installable link drivers
+d389 1
+a389 1
+	Interrupt polling (when intr. are disabledm but their values can
+d394 4
+@

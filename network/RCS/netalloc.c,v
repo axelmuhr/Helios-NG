@@ -1,0 +1,2837 @@
+head	1.20;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.19
+	Alenia_release:1.19
+	Helios1_3:1.19
+	C40_Field_Test_2:1.17
+	C40_Field_Test_R1:1.15
+	Helios13_beta:1.15
+	Helios1_2_2_Fault:1.9
+	Helios1_2_2_Native:1.8
+	Helios1_2_2_native_beta:1.8
+	Helios1_2_2:1.7
+	Helios1_2_2Beta:1.7
+	Helios1_2_1:1.5
+	Helios1_2:1.5;
+locks; strict;
+comment	@ * @;
+
+
+1.20
+date	93.08.11.10.32.20;	author bart;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	92.10.26.17.43.20;	author bart;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	92.10.26.11.00.38;	author bart;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.07.21.11.01.08;	author bart;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.07.10.16.46.21;	author bart;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.06.24.10.39.00;	author bart;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.06.10.14.52.58;	author bart;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.06.07.16.27.35;	author bart;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.05.08.16.36.25;	author bart;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.04.24.15.35.02;	author bart;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.03.25.18.27.44;	author bart;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.01.15.11.04.39;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches
+	1.8.1.1;
+next	1.7;
+
+1.7
+date	91.06.03.13.29.49;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.05.18.12.05.56;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.12.01.15.31.46;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.25.19.59.48;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.11.01.14.50.21;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.24.18.49.04;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.14.35.31;	author jon;	state Exp;
+branches;
+next	;
+
+1.8.1.1
+date	92.02.04.13.00.22;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.20
+log
+@Native networks now supported only on specific processors
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- netalloc.c								--
+--                                                                      --
+--	The processor allocation module of the Network Server		--
+--                                                                      --
+--	Author:  BLV 4/9/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/*$Header: /hsrc/network/RCS/netalloc.c,v 1.19 1992/10/26 17:43:20 bart Exp $*/
+
+/*{{{  headers and compile-time options */
+#define	__Netalloc_Module
+#define __NetworkServer
+
+#include <stdio.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <sem.h>
+#include <codes.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <posix.h>
+#include <ctype.h>
+#include <nonansi.h>
+#include <stddef.h>
+#include "exports.h"
+#include "private.h"
+#include "netutils.h"
+#include "rmlib.h"
+#include "netaux.h"
+/*}}}*/
+/*{{{  forward declarations and statics */
+static	void	SendToCleaners(RmProcessor);
+static	Semaphore	SingleAlloc;
+
+void	InitAlloc(void)
+{ InitSemaphore(&SingleAlloc, 1);
+}
+/*}}}*/
+/*{{{  match_processor() utility */
+/**
+*** Match a processor with a template. This can get quite complicated.
+*** 1) there are restrictions on the processors that can be allocated for
+***    native use
+*** 2) if the template has any attributes then the processor must
+***    have the same attributes, but not vice versa
+*** 3) various combinations of processor types may or may not match
+*** 4) the real processor must have at least the amount of memory requested
+**/
+
+static	bool	match_processor(RmProcessor template, RmProcessor real)
+{ int	attribute_count = RmCountProcessorAttributes(template);
+  int	template_ptype;
+  int	real_ptype;
+
+  if (RmGetProcessorPurpose(template) eq RmP_Native)
+   { int		number_links, i, destlink, control;
+     RmProcessor	neighbour;
+     control = RmGetProcessorControl(real);
+     unless(control & RmC_Native) return(FALSE);
+     number_links = RmCountLinks(real);
+     for (i = 0; i < number_links; i++)
+      { neighbour = RmFollowLink(real, i, &destlink);
+        if (neighbour eq RmM_NoProcessor) continue;
+        if (neighbour eq RmM_ExternalProcessor) return(FALSE);
+        if ((RmGetProcessorPurpose(neighbour) & RmP_Mask) eq RmP_IO)
+         return(FALSE);
+      }
+   }
+   
+  if (attribute_count > 0)
+   { char	*attribs[10];
+     char	**real_attribs;
+     int	i;
+
+	/* very simple test, to start with */
+     if (attribute_count > RmCountProcessorAttributes(real)) return(FALSE);
+
+     if (attribute_count > 10)
+      { real_attribs = (char **) Malloc(attribute_count * sizeof(char *));
+        if (real_attribs eq Null(char *)) return(FALSE);
+      }
+     else
+      real_attribs = attribs;
+     if (RmListProcessorAttributes(template, real_attribs) ne RmE_Success)
+      { if (attribute_count > 10) Free(real_attribs);
+        return(FALSE);
+      }
+     for (i = 0; i < attribute_count; i++)
+      unless(RmTestProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+       { if (attribute_count > 10) Free(real_attribs);
+         return(FALSE);
+       }
+    if (attribute_count > 10) Free(real_attribs); 
+   }
+
+  if (RmGetProcessorMemory(real) < RmGetProcessorMemory(template))
+   return(FALSE);
+
+  template_ptype	= RmGetProcessorType(template);
+  real_ptype		= RmGetProcessorType(real);
+  if ((template_ptype ne RmT_Default) && (template_ptype ne real_ptype))
+   return(FALSE);
+
+  	/* I have no way of working out the true requirement */
+   return(TRUE);
+}
+/*}}}*/
+
+/*{{{  HandleGetNetwork() */
+/**----------------------------------------------------------------------------
+*** HandleGetNetwork(). This is used to obtain full details of the current
+*** network. It is also used to get network hardware details and network
+*** hierarchies, i.e. the name of the root network and all subnets but
+*** no details of any processors.
+**/
+static int  GetNetwork_NetworkFilter(RmNetwork, RmNetwork);
+static int  GetNetwork_ProcessorFilter(RmProcessor, RmProcessor);
+static int  GetHierarchy_NetworkFilter(RmNetwork, RmNetwork);
+static int  GetHierarchy_ProcessorFilter(RmProcessor, RmProcessor);
+
+void HandleGetNetwork(NsConn connection, int job_id,
+		RmRequest *request, RmReply *reply)
+{ RmFilterStruct	filter;
+
+  if (request->FnRc eq RmC_GetNetworkHardware)
+   filter.SendHardware = TRUE;
+  else
+   filter.SendHardware = FALSE;
+  if (request->FnRc eq RmC_GetHierarchy)
+   { filter.Network	= &GetHierarchy_NetworkFilter;
+     filter.Processor	= &GetHierarchy_ProcessorFilter;
+   }
+  else
+   { filter.Network	= &GetNetwork_NetworkFilter;
+     filter.Processor	= &GetNetwork_ProcessorFilter;
+   }
+  filter.Taskforce	= NULL;
+  filter.Task		= NULL;
+
+  reply->FnRc		= RmE_Success;
+  reply->Network	= Net;
+  reply->Filter		= &filter;
+  ReplyRmLib(connection, job_id, reply);
+}
+
+static int GetNetwork_NetworkFilter(RmNetwork real, RmNetwork copy)
+{
+  copy->DirNode.Key	= 0;
+  copy->StructType	= RmL_Existing;
+  if (real eq RmRootNetwork((RmProcessor) real))
+   strcpy(copy->DirNode.Name, NetworkName);
+  return(RmE_Success);
+}
+
+static int GetNetwork_ProcessorFilter(RmProcessor real, RmProcessor copy)
+{
+  copy->ObjNode.Key	= 0;
+  copy->StructType	= RmL_Existing;
+  memset(&(copy->NsCap), 0, sizeof(Capability));
+  if (copy->ObjNode.Flags & NsFlags_DenyReadOnly)
+   memset(&(copy->RealCap), 0, sizeof(Capability));
+  else
+   { ProcessorEntry	*proc_entry;
+     proc_entry = GetProcEntry(real);
+     memcpy(&(copy->RealCap), &(proc_entry->General), sizeof(Capability));
+   }
+  copy->Private = 0;
+  
+  return(RmE_Success);
+}
+
+static int GetHierarchy_NetworkFilter(RmNetwork real, RmNetwork copy)
+{ 
+  copy->DirNode.Nentries	= copy->NoSubnets;
+  copy->DirNode.Key		= 0;
+  copy->StructType		= RmL_Obtained;
+  if (real eq RmRootNetwork((RmProcessor) real))
+   strcpy(copy->DirNode.Name, NetworkName);
+  return(RmE_Success);
+}
+
+static int GetHierarchy_ProcessorFilter(RmProcessor real, RmProcessor copy)
+{
+  real = real; copy = copy;
+  return(RmE_Skip);
+}
+/*}}}*/
+/*{{{  HandleLastChange() */
+/**----------------------------------------------------------------------------
+*** Handle last change. A very simple routine to send back a single integer
+**/
+void HandleLastChange(NsConn connection, int job_id,
+		RmRequest *request, RmReply *reply)
+{ 
+  reply->FnRc	= RmE_Success;
+  reply->Reply1	= LastChange;
+  ReplyRmLib(connection, job_id, reply);
+  request = request;
+}
+/*}}}*/
+/*{{{  HandleIsProcessorFree() */
+/**----------------------------------------------------------------------------
+*** IsProcessorFree(), a simple routine for the Network Server
+**/
+void HandleIsProcessorFree(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ RmProcessor		processor;
+  int			rc;
+  int			state;
+    
+  processor = RmFindProcessor(Net, request->Uid);
+  if (processor eq (RmProcessor) NULL)
+   { rc = RmE_BadProcessor; goto done; }
+  if (processor->ObjNode.Account ne RmO_FreePool)
+   { rc = RmE_InUse; goto done; }
+  state = RmGetProcessorState(processor);
+  if ((state & RmS_Running) eq 0)
+   { rc = RmE_InUse; goto done; }
+  rc = RmE_Success;
+  
+done:
+  reply->FnRc	= rc;
+  ReplyRmLib(connection, job_id, reply);
+}
+/*}}}*/
+/*{{{  HandleObtainProcessor() */
+/**-----------------------------------------------------------------------------
+*** Obtaining a processor, this involves the following stages.
+***
+*** 1) check the access allowed. At present only the Session Manager
+***    and Taskforce Managers are allowed to obtain processors.
+***    The Session Manager receives a capability from startns, and
+***    passes it on to Taskforce Managers.
+*** 2) allocate buffer space.
+*** 3) there is a special case. In a single user environment where
+***    the root processor may be shared between the user and the system,
+***    the root processor should always be allocated to the Session Manager.
+*** 4) if a particular PUID is specified for the processor, only that
+***    processor should be allocated.
+*** 5) otherwise it is necessary to search the network for a suitable
+***    processor. A starting place is required. If the NEAR attribute
+***    has been specified then that defines the starting place, with
+***    a bit of environment (NEAR might be /Cluster/IO/window/console)
+***    Otherwise the root processor is used for the starting place.
+**/
+/*{{{  ObtainProcessor_Filter() */
+static	int	ObtainProcessor_Filter(RmProcessor real, RmProcessor copy)
+{ ProcessorEntry	*proc_entry;
+
+  proc_entry = GetProcEntry(real);
+  copy->ObjNode.Key	= 0;
+  copy->ObjNode.Parent	= Null(DirNode);
+  copy->Root		= (RmNetwork) NULL;
+  copy->StructType	= RmL_Obtained;
+  NewCap(&(copy->NsCap), &(real->ObjNode), AccMask_R + AccMask_W + AccMask_D);
+  memcpy(&(copy->RealCap), &(proc_entry->Owner), sizeof(Capability));
+  copy->Private		= 0;
+  return(RmE_Success);
+}
+/*}}}*/
+
+void	HandleObtainProcessor(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ RmProcessor		template	= (RmProcessor) NULL;
+  RmProcessor		result		= (RmProcessor) NULL;
+  RmFilterStruct	filter;
+  int			rc;
+  RmProcessor		*search_table	= Null(RmProcessor);
+  int			current_index	= 0;
+  int			max_index	= 0;
+  int			purpose;
+  int			flags;
+
+  Wait(&SingleAlloc);
+
+  Debug(dbg_Allocate, ("obtain processor request"));
+  template = request->Processor;  
+
+  search_table		= (RmProcessor *) 
+  		Malloc(NumberProcessors * sizeof(RmProcessor));
+  if (search_table eq Null(RmProcessor))
+   { rc = RmE_ServerMemory; goto done; }
+
+  if (connection->Program eq Rm_Session)
+   if ( (get_config("single_user", nsrc_environ) ne Null(char)) &&
+          (get_config("share_root_processor", nsrc_environ) ne Null(char)) &&
+          (RootProcessor->ObjNode.Account eq RmO_FreePool) &&
+          (RmGetProcessorPurpose(RootProcessor) eq RmP_Helios) )
+    { result = RootProcessor;
+      goto found;
+    }
+
+  if (template->StructType eq RmL_Existing)
+   { Debug(dbg_Allocate, ("request is for existing processor"));
+     result = RmFindProcessor(Net, template->Uid);
+     if (result eq (RmProcessor) NULL)
+      { rc = RmE_NotFound; goto done; }
+     if (result->ObjNode.Account ne RmO_FreePool)
+      { result = (RmProcessor) NULL; rc = RmE_InUse; goto done; }
+     purpose = RmGetProcessorPurpose(result);
+     if (purpose & RmP_System)
+      { result = (RmProcessor) NULL; rc = RmE_NoAccess; goto done; }
+     rc = RmE_Success;
+     goto found;
+   }
+
+  { char *puid = RmGetObjectAttribute((RmObject) template, "puid", FALSE);
+    
+    if (puid ne Null(char))
+     { if (*puid eq '#')
+	{ int uid = atoi(++puid);
+	  Debug(dbg_Allocate, ("request is for existing processor"));
+	  result = RmFindProcessor(Net, uid);
+	}
+       else
+        { Debug(dbg_Allocate, ("request is for processor %s", puid));
+          result = RmLookupProcessor(Net, puid);
+	}
+       if (result eq (RmProcessor)NULL)
+        { rc = RmE_NotFound; goto done; }
+       if (result->ObjNode.Account ne RmO_FreePool)
+        { result = (RmProcessor) NULL; rc = RmE_InUse; goto done; }
+       purpose = RmGetProcessorPurpose(result);
+       if (purpose & RmP_System)
+        { result = (RmProcessor) NULL; rc = RmE_NoAccess; goto done; }
+       rc = RmE_Success;
+       goto found;
+     }
+  }
+
+  { char *near = (char *) RmGetProcessorAttribute(template, "NEAR");
+    if (near eq Null(char))
+     { if (RmGetProcessorPurpose(template) eq RmP_Native)
+        search_table[max_index++] = LastBooted;
+       else
+        search_table[max_index++] = RootProcessor;
+     }
+    else
+     { char	*temp = near + strlen(near);
+       Debug(dbg_Allocate, ("request is for processor near %s", near));
+       near++;
+       forever
+        { RmProcessor proc = RmLookupProcessor(Net, near);
+          if (proc ne (RmProcessor) NULL)
+           { search_table[max_index++] = proc;
+	     (void) RmRemoveProcessorAttribute(template, &(near[-6]));
+             break;
+           }
+           	/* strip off a bit of the name, and try to match again */
+          for ( ; (temp > near) && (*temp ne '/'); temp--);
+          if (*temp eq '/')
+           { *temp = '\0'; continue; }
+          else
+           { rc = RmE_NotFound; goto done; }
+        }
+     }
+  }
+
+  Debug(dbg_Allocate, ("starting search for processor at %P",search_table[0]));
+  		 
+  for ( ; current_index < max_index; current_index++)
+   { RmProcessor current = search_table[current_index];
+     int		number_links;
+     int		state;
+     int		i, j;
+     RmProcessor	neighbour;
+     int		destlink;     
+     int		purpose;
+     
+     purpose = RmGetProcessorPurpose(current);
+     if ((purpose & RmP_Mask) eq RmP_Native) 
+      goto check_links;
+     if ((purpose & RmP_System) ||	/* cannot be allocated */
+ 	 (purpose eq RmP_IO) ||
+ 	 (purpose eq RmP_Router))
+      goto check_links;
+      
+	/* if the processor is already owned it cannot be allocated */     
+     if (current->ObjNode.Account ne RmO_FreePool) goto check_links;
+
+	/* A suspicous processor is not allocated, but not ignored. */
+	/* A crashed, dead or booting processor is ignored. */
+     state = RmGetProcessorState(current);
+     if (state & RmS_Suspicious) goto check_links;
+     unless ((state & RmS_Running) && !(state & RmS_Booting)) continue;
+
+     if (match_processor(template, current))     
+      { result = current; goto found; }
+      
+check_links:
+     number_links = RmCountLinks(current);
+     for (i = 0; i < number_links; i++)
+      { flags = RmGetLinkFlags(current, i);
+        if ((flags & RmF_Suspicious) ne 0) continue;
+
+        neighbour = RmFollowLink(current, i, &destlink);
+        if ((neighbour eq RmM_NoProcessor) ||
+            (neighbour eq RmM_ExternalProcessor))
+         continue;
+
+        for (j = 0; j < max_index; j++)
+         if (neighbour eq search_table[j])
+          break;
+
+        if (j >= max_index)
+         search_table[max_index++] = neighbour;
+      }
+   }
+  
+  result = (RmProcessor) NULL;
+  rc	 = RmE_NotFound;
+  Debug(dbg_Allocate, ("failed to find a suitable processor"));
+  goto done;
+      
+found:
+  Debug(dbg_Allocate, ("found processor %P", result));
+  
+  result->ObjNode.Account	= template->ObjNode.Account;
+  result->SessionId		= connection->Id;
+
+  { ProcessorEntry	*proc_entry;
+    proc_entry = GetProcEntry(result);
+    AddTail(&(connection->Processors), &(proc_entry->Connection));
+    proc_entry->CommandDate = GetDate() - 1;
+  }
+  LastChange = result->ObjNode.Dates.Access	= GetDate();
+  rc = RmE_Success;
+  
+done:  
+  Signal(&SingleAlloc);
+
+  reply->FnRc	= rc;
+  if (rc eq RmE_Success)
+   { filter.Processor	= &ObtainProcessor_Filter;
+     reply->Filter	= &filter;
+     reply->Processor	= result;
+   }
+
+  ReplyRmLib(connection, job_id, reply);
+
+  if (search_table ne Null(RmProcessor)) Free(search_table);
+}
+/*}}}*/
+/*{{{  HandleReleaseProcessor() */
+/**
+*** Releasing a processor. The other side will send a Uid and a capability,
+*** which is enough to verify the data given. The processor is sent to
+*** the cleaners.
+**/
+
+void	HandleReleaseProcessor(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ RmProcessor		processor;
+  int			rc;
+
+  Debug(dbg_Release, ("got request to release a processor"));
+
+  processor = RmFindProcessor(Net, request->Uid);
+  if (processor eq (RmProcessor) NULL)
+   { rc = RmE_NotFound; goto done; }
+
+  if (processor->SessionId ne connection->Id)
+   { rc = RmE_NoAccess; goto done; }
+
+  unless(GetAccess(&(request->Cap), processor->ObjNode.Key) &&
+  	 (request->Cap.Access & AccMask_D))
+   { rc = RmE_NoAccess; goto done; }
+
+  Debug(dbg_Release, ("releasing processor %P", processor));
+
+  { ProcessorEntry	*proc_entry;
+    proc_entry = GetProcEntry(processor);
+    (void) Remove(&(proc_entry->Connection));
+    processor->SessionId	= -1;
+  }
+  SendToCleaners(processor);     
+  processor->ObjNode.Key	= NewKey() + _cputime() + 
+  	(int) processor + ((int) (&request) & 0x0F0F0FF0);
+  LastChange = processor->ObjNode.Dates.Access = GetDate();
+  
+  rc = RmE_Success;
+
+done:
+  reply->FnRc	= rc;
+  ReplyRmLib(connection, job_id, reply);
+}
+/*}}}*/
+/*{{{  HandleObtainNetwork() */
+/**----------------------------------------------------------------------------
+*** Obtaining a whole network.
+***
+*** 1) do some housekeeping. Basically this involves reading in the
+***    starting position from the search (which is ignored) and the template
+***    network, and building a network hierarchy structure for the results
+***    as they are produced.
+*** 2) as a first step, walk down the template and look for existing processors
+***    or processors with puid attributes. If these can be matched
+***    move them from the template to the allocation unit.
+*** 3) second step, try to match processors in the template. Again
+***    following a match move the processor from the template to the result.
+***    This involves a search through the network from the starting position,
+***    as per ObtainProcessor.
+*** 4) the results are processed.
+BLV
+BLV - this needs work, c.f. stable marriage etc.
+**/
+
+/*{{{  BuildHierarchy() */
+/**
+*** Make a copy of the network hierarchy. To avoid running out of memory at
+*** an awkward moment, enough Uid tables are also allocated.
+**/
+static	int	BuildHierarchyAux(RmProcessor, ...);
+
+static	RmNetwork	BuildHierarchy(void)
+{ RmNetwork	result = RmNewNetwork();
+  int		rc = RmE_Success;
+  int		i, j;
+  
+  if (result eq (RmNetwork) NULL) return(result);
+  strcpy(result->DirNode.Name, NetworkName);
+  result->StructType = RmL_Obtained;
+  
+  { RmUidTableEntry	**tab;
+    tab = (RmUidTableEntry **) Malloc(Net->NoTables * sizeof(RmUidTableEntry *));
+    if (tab eq Null(RmUidTableEntry *))
+     { RmFreeNetwork(result); return((RmNetwork) NULL); }
+    for (i = 0; i < Net->NoTables; i++)
+     { tab[i] = (RmUidTableEntry *) Malloc(RmL_SlotsPerTable * sizeof(RmUidTableEntry));
+       if (tab[i] eq Null(RmUidTableEntry))
+        { for (j = 0; j < i; j++) Free(tab[i]);
+          Free(tab);
+          RmFreeNetwork(result);
+          return((RmNetwork) NULL);
+        }
+       for (j = 0; j < RmL_SlotsPerTable; j++)
+        { (tab[i])[j].Cycle	= 0;
+          (tab[i])[j].Free	= TRUE;
+          (tab[i])[j].Target	= (void *) RmL_NoObject;
+        }
+     }
+    result->NoTables	= Net->NoTables;
+    result->Tables	= tab;
+  }
+  
+  if (Net->NoSubnets > 0)
+   rc = RmSearchNetwork(Net, &BuildHierarchyAux, result);
+  if (rc ne RmE_Success)
+   { RmFreeNetwork(result); return((RmNetwork)NULL); }
+  else
+   return(result);
+}
+
+static int BuildHierarchyAux(RmProcessor processor, ...)
+{ va_list	args;
+  RmNetwork	parent;
+  RmNetwork	new;
+  RmNetwork	actual;
+    
+  unless(RmIsNetwork(processor)) return(RmE_Success);
+  va_start(args, processor);
+  parent = va_arg(args, RmNetwork);
+  va_end(args);
+
+  actual	= (RmNetwork) processor;
+  new		= RmNewNetwork();
+  if (new eq (RmNetwork)NULL) return(RmE_ServerMemory);
+  strcpy(new->DirNode.Name, Procname(processor));
+  new->StructType = RmL_Obtained;
+  if (RmAddtailProcessor(parent, (RmProcessor) new) eq (RmProcessor) NULL)
+   { RmFreeNetwork(new); return(RmE_Corruption); }
+
+  if (actual->NoSubnets > 0)
+   return(RmSearchNetwork(actual, &BuildHierarchyAux, new));
+  else
+   return(RmE_Success);
+}
+/*}}}*/
+/*{{{  MoveProcessor() */
+/**
+*** A suitable processor has been found. It must be moved to the
+*** appropriate position in the result network, complete with attribute
+*** information, link information, etc.
+**/
+static bool MoveProcessor(RmProcessor template, RmProcessor real, 
+				RmNetwork result, NsConn connection)
+{ RmProcessor		new_proc;
+  ProcessorEntry	*proc_entry;
+
+  new_proc = RmNewProcessor();  
+  if (new_proc eq (RmProcessor) NULL) return(FALSE);
+
+  proc_entry			= GetProcEntry(real);
+  real->ObjNode.Account		= template->ObjNode.Account;
+  real->SessionId		= connection->Id;
+  memcpy(new_proc, real, sizeof(RmProcessorStruct));
+  new_proc->ObjNode.Key		= 0;
+  new_proc->StructType		= RmL_Obtained;
+  new_proc->ObjNode.Parent	= Null(DirNode);
+  new_proc->Root		= (RmNetwork) NULL;
+  new_proc->MappedTo		= template->Uid;
+  memcpy(&(new_proc->RealCap), &(proc_entry->Owner), sizeof(Capability));
+  NewCap(&(new_proc->NsCap), &(real->ObjNode), AccMask_R + AccMask_W + AccMask_D);
+
+  RmInsertProcessor(result, new_proc);
+
+  RmRemoveProcessor(template);
+  RmFreeProcessor(template);
+
+  AddTail(&(connection->Processors), &(proc_entry->Connection));
+  proc_entry->CommandDate = GetDate() - 1;
+  Debug(dbg_Allocate, ("allocated processor %P", real));
+  return(TRUE);   
+}
+/*}}}*/
+/*{{{  Search1() */
+/**
+*** The first phase in the mapping algorithm. For every processor in the
+*** template that already exists or that has a puid:
+*** 1) if the processor is already is available, allocate it.
+*** 2) If it is not available remove it from the template and get rid of it.
+**/
+
+static int	 ObtainNetwork_Search1(RmProcessor template, ...)
+{ va_list	args;
+  NsConn	connection;
+  RmNetwork	result;
+  
+  va_start(args, template);
+  connection = va_arg(args, NsConn);
+  result     = va_arg(args, RmNetwork);
+  va_end(args);
+  
+  if (template->StructType eq RmL_Existing)
+   { RmProcessor match = RmFindProcessor(Net, template->Uid);
+
+     Debug(dbg_Allocate, ("request is for existing processor %P", template));
+     RmSetProcessorPrivate(template, 1);
+     
+     if (match eq (RmProcessor) NULL) return(0);
+     if (match->ObjNode.Account eq RmO_FreePool)
+      if (MoveProcessor(template, match, result, connection))
+       return(1); 
+     RmFreeProcessor(RmRemoveProcessor(template));
+     return(1);
+   }
+
+  { char *puid = RmGetObjectAttribute((RmObject) template, "puid", FALSE);
+    if (puid ne Null(char))
+     { RmProcessor	match;
+
+       if (*puid eq '#')
+        { int uid = atoi(++puid);
+	  Debug(dbg_Allocate, ("specific existing processor has been specified"));
+          match = RmFindProcessor(Net, uid);
+	}
+       else
+	{ Debug(dbg_Allocate, ("puid has been specified"));
+          match = RmLookupProcessor(Net, puid);
+	}
+
+       RmSetProcessorPrivate(template, 1);
+       if (match eq (RmProcessor) NULL) return(0);
+
+       if (match->ObjNode.Account eq RmO_FreePool)       
+        if (MoveProcessor(template, match, result, connection))
+         return(1);
+       RmFreeProcessor(RmRemoveProcessor(template));
+       return(1);
+     }
+  }
+
+  return(0);     
+}
+/*}}}*/
+/*{{{  Search2() */
+/**
+*** Second phase of the search. For every available processor in the network 
+*** this routine will be applied to every processor in the template, aborting
+*** as soon as the request has been satisfied. This routine should match
+*** the real processor with the template processor, and if successful
+*** allocate the processor.
+**/
+static int	ObtainNetwork_Search2(RmProcessor template, ...)
+{ va_list	args;
+  RmProcessor	real;
+  NsConn	connection;
+  RmNetwork	result;
+  
+  va_start(args, template);
+  real		= va_arg(args, RmProcessor);
+  connection	= va_arg(args, NsConn);
+  result	= va_arg(args, RmNetwork);
+  va_end(args);
+  
+  if (match_processor(template, real))
+   if (MoveProcessor(template, real, result, connection))
+    return(1);
+  return(0);
+}
+/*}}}*/
+/*{{{  SearchNative() */
+static int ObtainNetwork_SearchNative(RmProcessor processor, ...)
+{ if (RmGetProcessorPurpose(processor) eq RmP_Native)
+   return(1);
+  else
+   return(0);
+}
+/*}}}*/
+/*{{{  AbortObtain() */
+/**
+*** Abort the network in question. Every processor in the specified network
+*** has been allocated to this connection. This must be undone.
+**/
+static int	AbortObtainAux(RmProcessor, ...);
+
+static void	AbortObtainNetwork(RmNetwork network, NsConn connection)
+{ 
+  (void) RmApplyProcessors(network, &AbortObtainAux, connection);
+}
+
+static int	AbortObtainAux(RmProcessor processor, ...)
+{ va_list		args;
+  NsConn		connection;
+  RmProcessor		real;
+  ProcessorEntry	*proc_entry;
+      
+  va_start(args, processor);
+  connection = va_arg(args, NsConn);
+  va_end(args);
+  
+  real = RmFindProcessor(Net, processor->Uid);
+  real->ObjNode.Account	= RmO_FreePool;
+  real->SessionId	= -1;
+  proc_entry = GetProcEntry(real);
+  Remove(&(proc_entry->Connection));
+  return(0);
+}
+/*}}}*/
+/*{{{  CleanoutResult() */
+/**
+*** Cleaning out the result. The above code has cheated by duplicating
+*** various fields rather than making a new copy. To avoid horrible
+*** problems this must now be undone before the network is freed.
+**/
+static int	CleanOutAux1(RmProcessor, ...);
+
+static void CleanOutResult(RmNetwork network)
+{ (void) RmApplyProcessors(network, &CleanOutAux1);
+   RmFreeNetwork(network);
+}
+
+static int CleanOutAux1(RmProcessor processor, ...)
+{ 
+  processor->Connections	= 0;
+  processor->OtherLinks		= Null(RmLink);
+  processor->AttribSize		= 0;
+  processor->AttribFree		= 0;
+  processor->AttribData		= Null(char);
+  processor->PAttribSize	= 0;
+  processor->PAttribFree	= 0;
+  processor->PAttribData	= Null(char);
+  InitList(&(processor->MappedTasks));
+  return(0);
+}
+/*}}}*/
+
+void HandleObtainNetwork(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ int		number_to_match, number_to_get;
+  int		start_from;
+  int		rc;
+  RmNetwork	template	= (RmNetwork) NULL;
+  RmNetwork	result		= (RmNetwork) NULL;
+  RmProcessor	*search_table	= Null(RmProcessor);
+  RmProcessor	current;
+  int		current_index	= 0;
+  int		max_index	= 0;
+  int		flags;
+  bool		found_one	= FALSE;  
+
+  Wait(&SingleAlloc);
+  
+  Debug(dbg_Allocate, ("got an allocation request for a network"));
+
+  start_from	= request->Arg1;
+  template	= request->Network;
+
+  result = BuildHierarchy();
+  if (result eq (RmNetwork) NULL)
+   { rc = RmE_ServerMemory; goto done; }
+
+  search_table = (RmProcessor *) Malloc(NumberProcessors * sizeof(RmProcessor));
+  if (search_table eq Null(RmProcessor))
+   { rc = RmE_ServerMemory; goto done; }
+   
+  number_to_get = number_to_match = RmCountProcessors(template);
+  if (number_to_match eq 0)
+   { rc = RmE_Success; goto done; }
+
+  Debug(dbg_Allocate, ("request is for %d processors", number_to_match));
+  Debug(dbg_Allocate, ("attempting to match with existing processors"));
+     
+  number_to_match -= RmApplyProcessors(template, &ObtainNetwork_Search1, connection, result);
+  if (number_to_match eq 0) goto finished;
+
+  if (start_from ne 0)
+   { current = RmFindProcessor(Net, start_from);
+     if (current eq (RmProcessor)NULL)
+      current = RootProcessor;
+   }
+  else
+   current = RootProcessor;
+
+  if (RmSearchProcessors(template, &ObtainNetwork_SearchNative) ne 0)
+   current = LastBooted;
+   
+  search_table[max_index++] = current;
+
+
+  Debug(dbg_Allocate, ("searching the network, starting at %P", current));
+    
+  for ( ; current_index < max_index; current_index++)
+   { int      		number_links;
+     int		state;
+     int		i, j;
+     RmProcessor	neighbour;
+     int		destlink;
+     int		purpose;
+     int		this_time;
+          
+     current = search_table[current_index];
+
+     purpose = RmGetProcessorPurpose(current);
+     if ((purpose & RmP_Mask) eq RmP_Native)
+      goto check_links;
+     if ((purpose & RmP_System) ||
+         (purpose eq RmP_IO) ||
+         (purpose eq RmP_Router))
+      goto check_links;
+
+     	/* if the processor is already owned it cannot be allocated */     
+     if (current->ObjNode.Account ne RmO_FreePool) goto check_links;
+      
+	/* A suspicous processor is not allocated, but not ignored. */
+	/* A crashed, dead or booting processor is ignored. */
+     state = RmGetProcessorState(current);
+     if (state & RmS_Suspicious) goto check_links;
+     unless ((state & RmS_Running) && !(state & RmS_Booting)) continue;
+
+     this_time = RmSearchProcessors(template, &ObtainNetwork_Search2,
+     		current, connection, result);
+     number_to_match -= this_time;
+     if (number_to_match eq 0) goto finished;
+
+	/* This piece of code restarts the breadth-first search when	*/
+	/* the first suitable processor has been found. This should	*/
+	/* reduce the amount of network fragmentation going on, at the	*/
+	/* cost of at most doubling the time taken.			*/
+     if ((!found_one) && (this_time > 0))
+      { search_table[0] = current;
+        current_index = 0;
+        max_index = 1;
+        found_one = TRUE;
+      }
+      
+check_links:
+     number_links = RmCountLinks(current);
+     for (i = 0; i < number_links; i++)
+      { flags = RmGetLinkFlags(current, i);
+        if ((flags & RmF_Suspicious) ne 0) continue;
+
+        neighbour = RmFollowLink(current, i, &destlink);
+        if ((neighbour eq RmM_NoProcessor) ||
+            (neighbour eq RmM_ExternalProcessor))
+         continue;
+        for (j = 0; j < max_index; j++)
+         if (neighbour eq search_table[j])
+          break;
+        if (j >= max_index)
+         search_table[max_index++] = neighbour;
+      }
+   }
+
+finished:
+
+  number_to_match = RmCountProcessors(result);
+  if (number_to_match eq 0)
+   { rc = RmE_NotFound; goto done; }
+   
+  number_to_get -= number_to_match;
+  if (number_to_get eq 0)
+   rc = RmE_Success;
+  elif (request->FnRc ne RmC_ObtainExactNetwork)
+   rc = RmE_PartialSuccess;
+  else
+   rc = RmE_NotFound;
+   
+done:
+  reply->FnRc	= rc;
+  if ((rc eq RmE_Success) || (rc eq RmE_PartialSuccess))
+   reply->Network	= result;
+  elif (result ne (RmNetwork) NULL)
+    AbortObtainNetwork(result, connection);
+
+  Signal(&SingleAlloc);
+
+  ReplyRmLib(connection, job_id, reply);
+
+  if (result ne (RmNetwork) NULL) CleanOutResult(result);
+  if (search_table ne Null(RmProcessor)) Free(search_table);
+}
+/*}}}*/
+/*{{{  HandleReleaseNetwork() */
+/**-----------------------------------------------------------------------------
+*** Releasing a network is just a case of looping and doing the same
+*** sort of thing as release processor
+**/
+void HandleReleaseNetwork(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ int			rc = RmE_Success;
+  ProcessorDetails	*details;
+  RmProcessor		processor;
+  ProcessorEntry	*proc_entry;
+  int			i;
+
+  details = (ProcessorDetails *) request->VariableData;
+
+  for(i = 0; i < request->Arg1; i++)
+   { 
+     processor = RmFindProcessor(Net, details[i].Uid);
+     if (processor eq (RmProcessor) NULL)
+      { rc = RmE_NotFound; continue; }
+
+     if (processor->SessionId ne connection->Id)
+      { rc = RmE_NoAccess; continue; }
+
+     unless(GetAccess(&(details[i].Cap), processor->ObjNode.Key) &&
+            (details[i].Cap.Access & AccMask_D))
+      { rc = RmE_NoAccess; continue; }
+      
+     proc_entry = GetProcEntry(processor);
+     (void) Remove(&(proc_entry->Connection));
+     processor->SessionId = -1;
+     SendToCleaners(processor);
+     processor->ObjNode.Key	= NewKey() + _cputime() + (int) processor +
+     		((int) (&request) & 0x0F0F0FF0);
+     LastChange = processor->ObjNode.Dates.Access = GetDate();
+   }
+
+  reply->FnRc	= rc;
+  ReplyRmLib(connection, job_id, reply);
+}
+/*}}}*/
+
+/*{{{  AutomaticRelease() */
+/**
+*** When a client shuts down a connection every processor obtained by
+*** that client must be freed. This routine is called in a WalkList
+**/
+word AutomaticRelease(Node *node)
+{ ProcessorEntry	*proc_entry;
+  RmProcessor		processor;
+
+  { BYTE *temp	= (BYTE *) node;
+    temp	= temp - offsetof(ProcessorEntry, Connection);
+    proc_entry	= (ProcessorEntry *) temp;
+    processor	= proc_entry->Processor;
+  }
+
+  Debug((dbg_Release | dbg_Problem), ("automatic release for processor %P",processor));
+
+  if (processor->ObjNode.Type ne Type_Processor)
+   { 
+     Debug((dbg_Release | dbg_Problem), ("processor is no longer in the network"));
+     return(0);
+   }
+
+  Remove(&(proc_entry->Connection));
+  processor->SessionId	= -1;
+  
+  if (RmGetProcessorState(processor) eq RmS_Crashed)
+   { Debug((dbg_Release | dbg_Problem), ("processor has crashed"));
+     return(0);
+   }
+
+  SendToCleaners(processor);     
+  processor->ObjNode.Key	= GetDate() + _cputime() + 
+  	(int) processor + ((int) (&proc_entry) & 0x0F0F0FF0);
+  return(0);
+}
+/*}}}*/
+/*{{{  the cleaners */
+static void	CleaningProcess(int uid);
+
+static void SendToCleaners(RmProcessor processor)
+{ 
+  processor->ObjNode.Account	= RmO_Cleaners;
+  processor->SessionId		= -1;
+
+  while (!Fork(Cleaning_Stack, &CleaningProcess, 4, processor->Uid))
+   Delay(OneSec / 2);
+}
+
+static void CleaningProcess(int uid)
+{ bool			started_agent	= FALSE;
+  int  			rc		= Err_Null;
+  NA_Message		message;
+  int			purpose;
+  RmProcessor		processor;
+  ProcessorEntry	*proc_entry;
+  int			 native_retries = 0;
+
+back:
+
+  MRSW_GetRead();
+
+	/* Check that the processor has not disappeared while claiming	*/
+	/* the lock.							*/
+  processor = RmFindProcessor(Net, uid);
+  if ((processor eq RmM_NoProcessor) || (processor eq RmM_ExternalProcessor))
+   { MRSW_FreeRead(); return; }
+  proc_entry = GetProcEntry(processor);
+
+  purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+
+	/* Under certain conditions it is necessary/desirable to reboot	*/
+	/* this processor or do some tidying up.			*/
+  if (purpose eq RmP_IO)
+   goto done;
+#if Native_Supported
+  elif (purpose eq RmP_Native)
+   CleanNative(processor);
+  elif ((RmGetProcessorState(processor) & (RmS_Crashed | RmS_Dead)) ne 0)
+   CleanNative(processor);
+  else
+   { int	number_links, i;
+     RmLink	*current, *proper;
+     number_links = RmCountLinks(processor);
+     for (i = 0; i < number_links; i++)
+      { current = RmFindLink(processor, i);
+        proper = &(proc_entry->StandardLinks[i]);
+        if (((current->Destination ne proper->Destination) ||
+             (current->Target ne proper->Target)) &&
+	     (proper->Target ne RmL_ExtUid))
+         { CleanNative(processor); break; }
+      }
+   } 
+#endif
+
+	/* Processors which are native by default cannot be cleaned */
+  if ((RmGetProcessorPurpose(processor) & RmP_Mask) eq RmP_Native)
+   goto done;
+
+  unless(RmGetProcessorState(processor) & RmS_Running)
+   { if (++native_retries < 6)
+      { Debug(dbg_Release, ("processor %P temporarily unavailable", processor));
+        MRSW_FreeRead();
+        Delay(10 * OneSec);
+	goto back;
+      }
+     Debug(dbg_Release, ("processor %P has been lost", processor));
+     RmSetProcessorState(processor, RmS_Crashed);
+     processor->ObjNode.Account = RmO_Graveyard;
+     MRSW_FreeRead();
+     return;
+   }
+   
+  unless (StartNetworkAgent(processor)) goto done;
+  started_agent	= TRUE;
+
+  message.FnRc	= NA_Clean;
+  message.Arg1	= proc_entry->CommandDate;
+  message.Size	= 0;
+  rc = XchNetworkAgent(processor, &message, TRUE, 0, NULL);
+
+done:
+  if (rc ne Err_Null)
+   report("warning, failed to clean out processor %P, fault %x",
+   	processor, rc);
+
+  if (started_agent)
+   { StopNetworkAgent(processor); started_agent = FALSE; }
+  if (rc eq Err_Null)
+   processor->ObjNode.Account = RmO_FreePool;
+  else
+   processor->ObjNode.Account = RmO_Graveyard;
+
+  MRSW_FreeRead();
+}
+/*}}}*/
+
+
+
+
+
+@
+
+
+1.19
+log
+@Improved the releasing of native processors. If a processor cannot be
+rebooted immediately the network server will now loop a number of times
+at 10 second intervals.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.18 1992/10/26 11:00:38 bart Exp $*/
+a1003 1
+#define CleaningStack	1024
+d1010 1
+a1010 1
+  while (!Fork(CleaningStack, &CleaningProcess, 4, processor->Uid))
+d1040 1
+d1058 1
+@
+
+
+1.18
+log
+@When a processor connected to an external network was freed it could
+be passed to the native cleaners by mistake, because the link had changed.
+@
+text
+@d16 1
+a16 1
+/*$Header: /hsrc/network/RCS/netalloc.c,v 1.17 1992/07/21 11:01:08 bart Exp $*/
+d1022 1
+d1024 2
+d1031 2
+a1032 1
+  if (processor eq NULL) return;
+d1064 7
+a1070 1
+   { Debug(dbg_Release, ("processor %P is not currently available", processor));
+d1073 1
+@
+
+
+1.17
+log
+@1) tidied up the diagnostics.
+2) switched from NetLookupProcessor to RmLookupProcessor
+3) preloaded netagent code is now protected so that it cannot be deleted
+   during cleaning.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.16 1992/07/10 16:46:21 bart Exp $*/
+d1048 3
+a1050 2
+        if ((current->Destination ne proper->Destination) ||
+            (current->Target ne proper->Target))
+@
+
+
+1.16
+log
+@Fixed bug in network allocation code resulting in null pointer problem,
+updated version number
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.15 1992/06/24 10:39:00 bart Exp $*/
+d294 2
+a295 2
+   if ( (get_config("single_user", environ) ne Null(char)) &&
+          (get_config("share_root_processor", environ) ne Null(char)) &&
+d326 1
+a326 1
+          result = LookupProcessor(Net, ++puid);
+d352 1
+a352 1
+        { RmProcessor proc = LookupProcessor(Net, near);
+d368 1
+a368 2
+  Debug(dbg_Allocate, ("starting search for processor at %s", \
+  		 Procname(search_table[0])));
+d425 1
+a425 1
+  Debug(dbg_Allocate, ("found processor %s", Procname(result)));
+d478 1
+a478 1
+  Debug(dbg_Release, ("releasing processor %s", Procname(processor)));
+d621 1
+a621 1
+  Debug(dbg_Allocate, ("allocated processor %s", Procname(real)));
+d646 1
+a646 1
+     Debug(dbg_Allocate, ("request is for existing processor %s", Procname(template)));
+d668 1
+a668 1
+          match = LookupProcessor(Net, ++puid);
+d830 1
+a830 1
+  Debug(dbg_Allocate, ("searching the network, starting at %s", Procname(current)));
+d980 1
+a980 2
+  Debug((dbg_Release | dbg_Problem), ("automatic release for processor %s", \
+		Procname(processor)));
+d1059 1
+a1059 1
+   { Debug(dbg_Release, ("processor %s is not currently available", Procname(processor)));
+d1075 2
+a1076 2
+   report("warning, failed to clean out processor %s, fault %x",
+   	Procname(processor), rc);
+@
+
+
+1.15
+log
+@Cleaners were slightly too eager to reboot a processor. A reboot
+occurred if there was any outstanding problem rather than a full
+crash.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.14 1992/06/10 14:52:58 bart Exp $*/
+d773 1
+@
+
+
+1.14
+log
+@Simplified the cleaners. There is no longer a separate thread
+responsible for starting cleaning threads at suitable intervals,
+because there is no longer any need for intervals with the new netagent
+communication code.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.13 1992/06/07 16:27:35 bart Exp $*/
+d1040 1
+a1040 1
+  elif ((RmGetProcessorState(processor) & RmS_Running) eq 0)
+@
+
+
+1.13
+log
+@Bug introduced when adding C40 support, it was no longer possible to
+specify particular processor types.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.12 1992/05/08 16:36:25 bart Exp $*/
+a41 1
+static	void	InitCleaners(void);
+a45 1
+  InitCleaners();
+d1004 2
+a1005 10
+/*{{{  statics and initialisation */
+/**
+*** A little process to clean out processors
+**/
+static	Semaphore	CleanerQueueCount;
+static	Semaphore	CleanerStructLock;
+static	List		CleanerList;
+static	void		CleaningMonitor(void);
+static	void		CleaningProcess(RmProcessor, ProcessorEntry *);
+#define			CleaningStack	1024
+d1007 2
+a1008 12
+static	void	InitCleaners(void)
+{ InitSemaphore(&(CleanerQueueCount), 0);
+  InitSemaphore(&(CleanerStructLock), 1);
+  InitList(&(CleanerList));
+  unless(Fork(CleaningStack, &CleaningMonitor, 0))
+   fatal("not enough memory to initialise the cleaners");
+}
+/*}}}*/
+/*{{{  SendToCleaners() */
+static	void	SendToCleaners(RmProcessor processor)
+{ ProcessorEntry	*proc_entry;
+
+d1012 2
+a1013 5
+  proc_entry = GetProcEntry(processor);
+  Wait(&(CleanerStructLock));
+  AddTail(&(CleanerList), &(proc_entry->Cleaners));
+  Signal(&(CleanerStructLock));
+  Signal(&(CleanerQueueCount));
+a1014 11
+/*}}}*/
+/*{{{  RemCleaners() - for processor crashes */
+/**
+*** If a processor disappears from the network, e.g. because an
+*** external subnet has disconnected, and this processor is owned by the
+*** cleaners then some abort action will be required. In particular the
+*** processor may have to be removed from the list of processors to be
+*** cleaned, if it is on that list...
+*** This routine will be called with a write lock. There is still some
+*** nasty synchronisation to be done with the CleaningMonitor.
+**/
+d1016 7
+a1022 3
+static	word	find_node(Node *node, ...)
+{ va_list	args;
+  Node		*real_node;
+d1024 1
+a1024 3
+  va_start(args, node);
+  real_node = va_arg(args, Node *);
+  va_end(args);
+d1026 4
+a1029 9
+  if (node eq real_node)
+   return(1);
+  else
+   return(0);
+}
+
+void	RemCleaners(RmProcessor processor)
+{ ProcessorEntry	*proc_entry;
+
+a1030 2
+  Debug(dbg_Problem, ("checking whether %s is being cleaned", Procname(processor)));
+  Wait(&CleanerStructLock);
+d1032 1
+a1032 27
+  if (SearchList(&CleanerList, (WordFnPtr) &find_node, &(proc_entry->Cleaners)))
+   { Remove(&(proc_entry->Cleaners));
+     Wait(&CleanerQueueCount);
+   }
+  Signal(&CleanerStructLock);
+}
+/*}}}*/
+/*{{{  CleaningMonitor() thread, runs continuously */
+/**
+*** This thread continously runs figuring out which processors currently
+*** need cleaning, and Forking off another thread to do this cleaning
+*** to allow parallel cleaning, essential for reasonable performance on
+*** big machines. Each separate thread is spawned off with a read thread,
+*** to ensure that the processor does not disappear between removing it
+*** from the list and the thread doing the cleaning.
+**/
+static	void	CleaningMonitor(void)
+{ RmProcessor		processor;
+  ProcessorEntry	*proc_entry;
+  Node			*node;
+  
+  forever
+   {
+	/* Suspend if there is nothing to be done		*/
+     Wait(&(CleanerQueueCount));
+	/* Careful here to avoid deadlock with RemNetagent()	*/
+     Signal(&(CleanerQueueCount));
+a1033 28
+     MRSW_GetRead();
+
+	/* RemCleaners() may have got in and removed the one */
+     if (TestSemaphore(&CleanerQueueCount) <= 0)
+      { MRSW_FreeRead(); continue; }
+     Wait(&CleanerQueueCount);
+
+     Wait(&(CleanerStructLock));
+     node = RemHead(&(CleanerList));
+     Signal(&(CleanerStructLock));
+     
+     proc_entry = (ProcessorEntry *) 
+       (((BYTE *) node) - offsetof(ProcessorEntry, Cleaners));
+     processor	= proc_entry->Processor;
+
+     while (!Fork(CleaningStack, &CleaningProcess, 8, processor, proc_entry))
+      Delay(OneSec * 2);
+     Delay(OneSec / 40);	/* to avoid completely swamping the system */
+   }
+}
+/*}}}*/
+/*{{{  CleaningProcess() - clean a single processor */
+static void CleaningProcess(RmProcessor processor, ProcessorEntry *proc_entry)
+{ bool			started_agent	= FALSE;
+  int  			rc		= Err_Null;
+  NA_Message		message;
+  int			purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+
+a1087 1
+/*}}}*/
+@
+
+
+1.12
+log
+@1) changed the communication between netserv and netagent from pipes to
+   client-server message passing
+2) folded the network server sources
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.11 1992/04/24 15:35:02 bart Exp $*/
+d112 3
+a114 5
+  if (template_ptype ne RmT_Default)
+   { if (template_ptype ne real_ptype)
+     return(FALSE);
+   }
+  else
+@
+
+
+1.11
+log
+@Fixed a problem related to cleaning I/O processors - should have been
+a no-op but was not
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.10 1992/03/25 18:27:44 bart Exp $*/
+d18 1
+d39 2
+a40 2
+
+static	bool	match_processor(RmProcessor template, RmProcessor real);
+d49 11
+d61 62
+d200 2
+a201 1
+
+d213 2
+a214 1
+
+d238 2
+a239 1
+
+d259 3
+a261 1
+static	int	ObtainProcessor_Filter(RmProcessor, RmProcessor);
+d263 12
+d457 2
+a458 15
+
+static	int	ObtainProcessor_Filter(RmProcessor real, RmProcessor copy)
+{ ProcessorEntry	*proc_entry;
+
+  proc_entry = GetProcEntry(real);
+  copy->ObjNode.Key	= 0;
+  copy->ObjNode.Parent	= Null(DirNode);
+  copy->Root		= (RmNetwork) NULL;
+  copy->StructType	= RmL_Obtained;
+  NewCap(&(copy->NsCap), &(real->ObjNode), AccMask_R + AccMask_W + AccMask_D);
+  memcpy(&(copy->RealCap), &(proc_entry->Owner), sizeof(Capability));
+  copy->Private		= 0;
+  return(RmE_Success);
+}
+
+a459 70
+*** Match a processor with a template. This can get quite complicated.
+*** 1) there are restrictions on the processors that can be allocated for
+***    native use
+*** 2) if the template has any attributes then the processor must
+***    have the same attributes, but not vice versa
+*** 3) various combinations of processor types may or may not match
+*** 4) the real processor must have at least the amount of memory requested
+**/
+
+static	bool	match_processor(RmProcessor template, RmProcessor real)
+{ int	attribute_count = RmCountProcessorAttributes(template);
+  int	template_ptype;
+  int	real_ptype;
+
+  if (RmGetProcessorPurpose(template) eq RmP_Native)
+   { int		number_links, i, destlink, control;
+     RmProcessor	neighbour;
+     control = RmGetProcessorControl(real);
+     unless(control & RmC_Native) return(FALSE);
+     number_links = RmCountLinks(real);
+     for (i = 0; i < number_links; i++)
+      { neighbour = RmFollowLink(real, i, &destlink);
+        if (neighbour eq RmM_NoProcessor) continue;
+        if (neighbour eq RmM_ExternalProcessor) return(FALSE);
+        if ((RmGetProcessorPurpose(neighbour) & RmP_Mask) eq RmP_IO)
+         return(FALSE);
+      }
+   }
+   
+  if (attribute_count > 0)
+   { char	*attribs[10];
+     char	**real_attribs;
+     int	i;
+
+	/* very simple test, to start with */
+     if (attribute_count > RmCountProcessorAttributes(real)) return(FALSE);
+
+     if (attribute_count > 10)
+      { real_attribs = (char **) Malloc(attribute_count * sizeof(char *));
+        if (real_attribs eq Null(char *)) return(FALSE);
+      }
+     else
+      real_attribs = attribs;
+     if (RmListProcessorAttributes(template, real_attribs) ne RmE_Success)
+      { if (attribute_count > 10) Free(real_attribs);
+        return(FALSE);
+      }
+     for (i = 0; i < attribute_count; i++)
+      unless(RmTestProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+       { if (attribute_count > 10) Free(real_attribs);
+         return(FALSE);
+       }
+    if (attribute_count > 10) Free(real_attribs); 
+   }
+
+  if (RmGetProcessorMemory(real) < RmGetProcessorMemory(template))
+   return(FALSE);
+
+  template_ptype	= RmGetProcessorType(template);
+  real_ptype		= RmGetProcessorType(real);
+  if (template_ptype ne RmT_Default)
+   { if (template_ptype ne real_ptype)
+     return(FALSE);
+   }
+  else
+  	/* I have no way of working out the true requirement */
+   return(TRUE);
+}
+
+/**
+d501 2
+a502 1
+
+d519 1
+a519 4
+BLV the current algorithm only works for simple cases. What should happen
+BLV is an initial search of the template, putting the processors into a
+BLV linked list in order of how restrictive the template is. The processors
+BLV should then be processed in that list order.
+a520 7
+static RmNetwork BuildHierarchy(void);
+static int	 ObtainNetwork_Search1(RmProcessor, ...);
+static int	 ObtainNetwork_Search2(RmProcessor, ...);
+static void	 AbortObtainNetwork(RmNetwork, NsConn);
+static bool	 MoveProcessor(RmProcessor, RmProcessor, RmNetwork, NsConn);
+static void	 CleanOutResult(RmNetwork);
+static int	 ObtainNetwork_SearchNative(RmProcessor, ...);
+d522 1
+a522 153
+void HandleObtainNetwork(NsConn connection, int job_id, 
+		RmRequest *request, RmReply *reply)
+{ int		number_to_match, number_to_get;
+  int		start_from;
+  int		rc;
+  RmNetwork	template	= (RmNetwork) NULL;
+  RmNetwork	result		= (RmNetwork) NULL;
+  RmProcessor	*search_table	= Null(RmProcessor);
+  RmProcessor	current;
+  int		current_index	= 0;
+  int		max_index	= 0;
+  int		flags;
+  bool		found_one	= FALSE;  
+
+  Wait(&SingleAlloc);
+  
+  Debug(dbg_Allocate, ("got an allocation request for a network"));
+
+  start_from	= request->Arg1;
+  template	= request->Network;
+
+  result = BuildHierarchy();
+  if (result eq (RmNetwork) NULL)
+   { rc = RmE_ServerMemory; goto done; }
+
+  search_table = (RmProcessor *) Malloc(NumberProcessors * sizeof(RmProcessor));
+  if (search_table eq Null(RmProcessor))
+   { rc = RmE_ServerMemory; goto done; }
+   
+  number_to_get = number_to_match = RmCountProcessors(template);
+  if (number_to_match eq 0)
+   { rc = RmE_Success; goto done; }
+
+  Debug(dbg_Allocate, ("request is for %d processors", number_to_match));
+  Debug(dbg_Allocate, ("attempting to match with existing processors"));
+     
+  number_to_match -= RmApplyProcessors(template, &ObtainNetwork_Search1, connection, result);
+  if (number_to_match eq 0) goto finished;
+
+  if (start_from ne 0)
+   { current = RmFindProcessor(Net, start_from);
+     if (current eq (RmProcessor)NULL)
+      current = RootProcessor;
+   }
+  else
+   current = RootProcessor;
+
+  if (RmSearchProcessors(template, &ObtainNetwork_SearchNative) ne 0)
+   current = LastBooted;
+   
+  search_table[max_index++] = current;
+
+
+  Debug(dbg_Allocate, ("searching the network, starting at %s", Procname(current)));
+    
+  for ( ; current_index < max_index; current_index++)
+   { int      		number_links;
+     int		state;
+     int		i, j;
+     RmProcessor	neighbour;
+     int		destlink;
+     int		purpose;
+     int		this_time;
+          
+     current = search_table[current_index];
+
+     purpose = RmGetProcessorPurpose(current);
+     if ((purpose & RmP_Mask) eq RmP_Native)
+      goto check_links;
+     if ((purpose & RmP_System) ||
+         (purpose eq RmP_IO) ||
+         (purpose eq RmP_Router))
+      goto check_links;
+
+     	/* if the processor is already owned it cannot be allocated */     
+     if (current->ObjNode.Account ne RmO_FreePool) goto check_links;
+      
+	/* A suspicous processor is not allocated, but not ignored. */
+	/* A crashed, dead or booting processor is ignored. */
+     state = RmGetProcessorState(current);
+     if (state & RmS_Suspicious) goto check_links;
+     unless ((state & RmS_Running) && !(state & RmS_Booting)) continue;
+
+     this_time = RmSearchProcessors(template, &ObtainNetwork_Search2,
+     		current, connection, result);
+     number_to_match -= this_time;
+     if (number_to_match eq 0) goto finished;
+
+	/* This piece of code restarts the breadth-first search when	*/
+	/* the first suitable processor has been found. This should	*/
+	/* reduce the amount of network fragmentation going on, at the	*/
+	/* cost of at most doubling the time taken.			*/
+     if ((!found_one) && (this_time > 0))
+      { search_table[0] = current;
+        current_index = 0;
+        max_index = 1;
+        found_one = TRUE;
+      }
+      
+check_links:
+     number_links = RmCountLinks(current);
+     for (i = 0; i < number_links; i++)
+      { flags = RmGetLinkFlags(current, i);
+        if ((flags & RmF_Suspicious) ne 0) continue;
+
+        neighbour = RmFollowLink(current, i, &destlink);
+        if ((neighbour eq RmM_NoProcessor) ||
+            (neighbour eq RmM_ExternalProcessor))
+         continue;
+        for (j = 0; j < max_index; j++)
+         if (neighbour eq search_table[j])
+          break;
+        if (j >= max_index)
+         search_table[max_index++] = neighbour;
+      }
+   }
+
+finished:
+
+  number_to_match = RmCountProcessors(result);
+  if (number_to_match eq 0)
+   { rc = RmE_NotFound; goto done; }
+   
+  number_to_get -= number_to_match;
+  if (number_to_get eq 0)
+   rc = RmE_Success;
+  elif (request->FnRc ne RmC_ObtainExactNetwork)
+   rc = RmE_PartialSuccess;
+  else
+   rc = RmE_NotFound;
+   
+done:
+  reply->FnRc	= rc;
+  if ((rc eq RmE_Success) || (rc eq RmE_PartialSuccess))
+   reply->Network	= result;
+  elif (result ne (RmNetwork) NULL)
+    AbortObtainNetwork(result, connection);
+
+  Signal(&SingleAlloc);
+
+  ReplyRmLib(connection, job_id, reply);
+
+  if (result ne (RmNetwork) NULL) CleanOutResult(result);
+  if (search_table ne Null(RmProcessor)) Free(search_table);
+}
+
+static int ObtainNetwork_SearchNative(RmProcessor processor, ...)
+{ if (RmGetProcessorPurpose(processor) eq RmP_Native)
+   return(1);
+  else
+   return(0);
+}
+
+d592 11
+d604 27
+d689 2
+a690 1
+
+d715 10
+a724 1
+
+d753 2
+a754 2
+  
+
+a755 36
+*** A suitable processor has been found. It must be moved to the
+*** appropriate position in the result network, complete with attribute
+*** information, link information, etc.
+**/
+static bool MoveProcessor(RmProcessor template, RmProcessor real, 
+				RmNetwork result, NsConn connection)
+{ RmProcessor		new_proc;
+  ProcessorEntry	*proc_entry;
+
+  new_proc = RmNewProcessor();  
+  if (new_proc eq (RmProcessor) NULL) return(FALSE);
+
+  proc_entry			= GetProcEntry(real);
+  real->ObjNode.Account		= template->ObjNode.Account;
+  real->SessionId		= connection->Id;
+  memcpy(new_proc, real, sizeof(RmProcessorStruct));
+  new_proc->ObjNode.Key		= 0;
+  new_proc->StructType		= RmL_Obtained;
+  new_proc->ObjNode.Parent	= Null(DirNode);
+  new_proc->Root		= (RmNetwork) NULL;
+  new_proc->MappedTo		= template->Uid;
+  memcpy(&(new_proc->RealCap), &(proc_entry->Owner), sizeof(Capability));
+  NewCap(&(new_proc->NsCap), &(real->ObjNode), AccMask_R + AccMask_W + AccMask_D);
+
+  RmInsertProcessor(result, new_proc);
+
+  RmRemoveProcessor(template);
+  RmFreeProcessor(template);
+
+  AddTail(&(connection->Processors), &(proc_entry->Connection));
+  proc_entry->CommandDate = GetDate() - 1;
+  Debug(dbg_Allocate, ("allocated processor %s", Procname(real)));
+  return(TRUE);   
+}
+
+/**
+d779 1
+d781 147
+d967 1
+d969 1
+d1006 3
+a1008 1
+
+d1026 2
+a1027 1
+
+d1040 2
+a1041 1
+
+d1079 2
+a1080 1
+
+d1121 2
+a1122 1
+
+d1166 2
+a1168 2
+  rc = XchNetworkAgent(processor, &message, 0, NULL, TRUE, 0, NULL);
+
+d1183 7
+@
+
+
+1.10
+log
+@Various changes including
+1) first attempt at C40 support
+2) RmLib execute support (mostly untested)
+3) faster bootstrap, taskforce load, and better mapping
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.9 1992/01/15 11:04:39 bart Exp $*/
+a200 2
+  unless(connection->FullAccess) { rc	= RmE_NoAccess; goto done; }
+   
+d1112 1
+d1116 3
+a1118 1
+  if ((RmGetProcessorPurpose(processor) & RmP_Mask) eq RmP_Native)
+@
+
+
+1.9
+log
+@Major update of networking sources, to incorporate the fault-tolerance
+work as demonstrated at the IED meeting 10.1.92
+@
+text
+@d16 1
+a16 1
+/*$Header: /usr/perihelion/Helios/network/RCS/netalloc.c,v 1.5 90/12/01 15:31:46 bart Exp $*/
+d234 9
+a242 2
+     { Debug(dbg_Allocate, ("request is for processor %s", puid));
+       result = LookupProcessor(Net, ++puid);
+d297 1
+a297 1
+      continue;
+d448 3
+a450 6
+  elif ((real_ptype ne RmT_Default) && (real_ptype ne RmT_T800) &&
+        (real_ptype ne RmT_T414) && (real_ptype ne RmT_T425) &&
+        (real_ptype ne RmT_T400))
+   return(FALSE);
+
+  return(TRUE);  
+d592 2
+a593 1
+     if ((purpose & RmP_Mask) eq RmP_Native) continue;
+d781 1
+a781 1
+     { RmProcessor match = LookupProcessor(Net, ++puid);
+d783 10
+a792 1
+       Debug(dbg_Allocate, ("puid has been specified"));
+d1062 1
+a1062 1
+  if (SearchList(&CleanerList, &find_node, &(proc_entry->Cleaners)))
+@
+
+
+1.8
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d16 1
+a17 2
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/netalloc.c,v 1.4 1991/08/21 15:53:01 bart Exp $";
+
+d42 12
+a53 3
+/**
+*** A little utility routine to cope with the fact that pipe reads do
+*** not necessarily return the amount of data requested.
+d55 4
+a58 3
+word FullRead(Stream *pipe, BYTE *buffer, word amount, word timeout)
+{ word	read = 0;
+  word	temp;
+d60 23
+a82 8
+  forever  
+  { temp = Read(pipe, &(buffer[read]), amount - read, timeout);
+    if (temp < 0)
+     return((read eq 0) ? temp : read);
+    read += temp;
+    if (read >= amount) return(read);
+    if (timeout ne -1) return(read);
+  }
+d85 1
+a85 1
+void	InitAlloc(void)
+d87 5
+a91 1
+  InitCleaners();
+d94 70
+a163 1
+/**
+d184 1
+a184 1
+void	HandleObtainProcessor(NsConn Connection, int JobId, 
+d196 2
+d201 1
+a201 1
+  unless(Connection->FullAccess) { rc	= RmE_NoAccess; goto done; }
+d204 1
+a204 1
+  		Malloc((NumberProcessors + 10) * sizeof(RmProcessor));
+d208 1
+a208 1
+  if (Connection->Program eq Rm_Session)
+d277 1
+a277 1
+  		 (search_table[0])->ObjNode.Name));
+d334 1
+a334 1
+  Debug(dbg_Allocate, ("found processor %s", result->ObjNode.Name));
+d337 1
+a337 1
+  result->SessionId		= Connection->Id;
+d340 2
+a341 2
+    proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(result);
+    AddTail(&(Connection->Processors), &(proc_entry->Connection));
+d348 2
+d357 1
+a357 1
+  ReplyRmLib(Connection, JobId, reply);
+d365 1
+a365 1
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(real);
+d455 1
+a455 1
+void	HandleReleaseProcessor(NsConn Connection, int JobId, 
+d466 3
+d473 1
+a473 1
+  Debug(dbg_Release, ("releasing processor %s", processor->ObjNode.Name));
+d476 1
+a476 1
+    proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(processor);
+d478 1
+d489 1
+a489 1
+  ReplyRmLib(Connection, JobId, reply);
+d521 1
+a521 1
+void HandleObtainNetwork(NsConn Connection, int JobId, 
+d534 2
+d546 1
+a546 1
+  search_table = (RmProcessor *) Malloc((NumberProcessors + 10) * sizeof(RmProcessor));
+d557 1
+a557 1
+  number_to_match -= RmApplyProcessors(template, &ObtainNetwork_Search1, Connection, result);
+d574 1
+a574 1
+  Debug(dbg_Allocate, ("searching the network, starting at %s", current->ObjNode.Name));
+d604 1
+a604 1
+     		current, Connection, result);
+d656 1
+a656 1
+    AbortObtainNetwork(result, Connection);
+d658 1
+a658 1
+  ReplyRmLib(Connection, JobId, reply);
+d660 2
+d718 1
+a718 1
+static int BuildHierarchyAux(RmProcessor Processor, ...)
+d724 2
+a725 2
+  unless(RmIsNetwork(Processor)) return(RmE_Success);
+  va_start(args, Processor);
+d729 1
+a729 1
+  actual	= (RmNetwork) Processor;
+d732 1
+a732 1
+  strcpy(new->DirNode.Name, Processor->ObjNode.Name);
+d752 1
+a752 1
+  NsConn	Connection;
+d756 1
+a756 1
+  Connection = va_arg(args, NsConn);
+d763 1
+a763 1
+     Debug(dbg_Allocate, ("request is for existing processor %s", template->ObjNode.Name));
+d768 1
+a768 1
+      if (MoveProcessor(template, match, result, Connection))
+d783 1
+a783 1
+        if (MoveProcessor(template, match, result, Connection))
+d803 1
+a803 1
+  NsConn	Connection;
+d808 1
+a808 1
+  Connection	= va_arg(args, NsConn);
+d813 1
+a813 1
+   if (MoveProcessor(template, real, result, Connection))
+d822 1
+a822 1
+static int	AbortObtainAux(RmProcessor Processor, ...);
+d824 1
+a824 1
+static void	AbortObtainNetwork(RmNetwork Network, NsConn Connection)
+d826 1
+a826 1
+  (void) RmApplyProcessors(Network, &AbortObtainAux, Connection);
+d829 1
+a829 1
+static int	AbortObtainAux(RmProcessor Processor, ...)
+d831 1
+a831 1
+  NsConn		Connection;
+d835 2
+a836 2
+  va_start(args, Processor);
+  Connection = va_arg(args, NsConn);
+d839 1
+a839 1
+  real = RmFindProcessor(Net, Processor->Uid);
+d842 1
+a842 1
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(real);
+d854 1
+a854 1
+				RmNetwork result, NsConn Connection)
+d861 1
+a861 1
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(real);
+d863 1
+a863 1
+  real->SessionId		= Connection->Id;
+d878 1
+a878 1
+  AddTail(&(Connection->Processors), &(proc_entry->Connection));
+d880 1
+a880 1
+  Debug(dbg_Allocate, ("allocated processor %s", real->ObjNode.Name));
+d891 3
+a893 3
+static void CleanOutResult(RmNetwork Network)
+{ (void) RmApplyProcessors(Network, &CleanOutAux1);
+   RmFreeNetwork(Network);
+d896 1
+a896 1
+static int CleanOutAux1(RmProcessor Processor, ...)
+d898 8
+a905 8
+  Processor->Connections	= 0;
+  Processor->OtherLinks		= Null(RmLink);
+  Processor->AttribSize		= 0;
+  Processor->AttribFree		= 0;
+  Processor->AttribData		= Null(char);
+  Processor->PAttribSize	= 0;
+  Processor->PAttribFree	= 0;
+  Processor->PAttribData	= Null(char);
+d913 1
+a913 1
+void HandleReleaseNetwork(NsConn Connection, int JobId, 
+d917 1
+a917 1
+  RmProcessor		Processor;
+d925 2
+a926 2
+     Processor = RmFindProcessor(Net, details[i].Uid);
+     if (Processor eq (RmProcessor) NULL)
+d929 4
+a932 1
+     unless(GetAccess(&(details[i].Cap), Processor->ObjNode.Key) &&
+d936 1
+a936 1
+     proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+d938 3
+a940 2
+     SendToCleaners(Processor);
+     Processor->ObjNode.Key	= NewKey() + _cputime() + (int) Processor +
+d942 1
+a942 1
+     LastChange = Processor->ObjNode.Dates.Access = GetDate();
+d946 1
+a946 1
+  ReplyRmLib(Connection, JobId, reply);
+d955 2
+a956 2
+  RmProcessor		Processor;
+  
+d960 1
+a960 1
+    Processor	= proc_entry->Processor;
+d963 2
+a964 2
+  Debug(dbg_Release, ("automatic release for processor %s", \
+		Processor->ObjNode.Name));
+d966 1
+a966 1
+  if (Processor->ObjNode.Type ne Type_Processor)
+d968 1
+a968 1
+     Debug(dbg_Release, ("processor is no longer in the network"));
+d971 12
+a982 4
+   
+  SendToCleaners(Processor);     
+  Processor->ObjNode.Key	= GetDate() + _cputime() + 
+  	(int) Processor + ((int) (&proc_entry) & 0x0F0F0FF0);
+d988 1
+a988 1
+ **/
+d1004 1
+a1004 1
+static	void	SendToCleaners(RmProcessor Processor)
+d1007 2
+a1008 2
+  Processor->ObjNode.Account	= RmO_Cleaners;
+  Processor->SessionId		= -1;
+d1010 1
+a1010 1
+  proc_entry = (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+d1017 9
+d1027 36
+d1064 1
+a1064 1
+{ RmProcessor		Processor;
+d1070 1
+d1072 2
+d1075 7
+d1088 1
+a1088 1
+     Processor	= proc_entry->Processor;
+d1090 1
+a1090 1
+     while (!Fork(CleaningStack, &CleaningProcess, 8, Processor, proc_entry))
+d1096 1
+a1096 1
+static void CleaningProcess(RmProcessor Processor, ProcessorEntry *proc_entry)
+d1103 4
+a1106 4
+  if ((RmGetProcessorPurpose(Processor) & RmP_Mask) eq RmP_Native)
+   CleanNative(Processor);
+  elif ((RmGetProcessorState(Processor) & RmS_Running) eq 0)
+   CleanNative(Processor);
+d1110 1
+a1110 1
+     number_links = RmCountLinks(Processor);
+d1112 1
+a1112 1
+      { current = RmFindLink(Processor, i);
+d1116 1
+a1116 1
+         { CleanNative(Processor); break; }
+d1121 1
+a1121 1
+  if ((RmGetProcessorPurpose(Processor) & RmP_Mask) eq RmP_Native)
+d1124 4
+a1127 4
+  unless(RmGetProcessorState(Processor) & RmS_Running)
+   { Debug(dbg_Release, ("processor %s is not currently available", Processor->ObjNode.Name));
+     RmSetProcessorState(Processor, RmS_Crashed);
+     Processor->ObjNode.Account = RmO_FreePool;
+d1131 1
+a1131 1
+  unless (StartNetworkAgent(Processor)) goto done;
+d1137 1
+a1137 1
+  rc = XchNetworkAgent(Processor, FALSE, &message, 0, NULL, TRUE, 0, NULL);
+d1142 2
+a1143 1
+   	Processor->ObjNode.Name, rc);
+d1145 1
+a1145 1
+   { StopNetworkAgent(Processor); started_agent = FALSE; }
+d1147 5
+a1151 1
+   Processor->ObjNode.Account = RmO_FreePool;
+@
+
+
+1.8.1.1
+log
+@If a requested network contained native processors and a native
+sub-network had already been allocated then the search would fail
+immediately.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/netbak/RCS/netalloc.c,v 1.4 1991/08/21 15:53:01 bart Exp $";
+d481 1
+a481 3
+     if ((purpose & RmP_Mask) eq RmP_Native)
+      goto check_links;
+     
+d949 23
+a971 1
+   { Debug(dbg_Release, ("processor %s is not currently available", Proces
+@
+
+
+1.7
+log
+@Reduced the delay between starting up cleaners on different processors.
+Cleaning was taking too long on very large networks, 128+ processors.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/netalloc.c,v 1.6 1991/05/18 12:05:56 bart Exp bart $";
+d69 1
+a69 2
+*** 1) read a processor template from the connection
+*** 2) check the access allowed. At present only the Session Manager
+d73 2
+a74 2
+*** 3) allocate buffer space.
+*** 4) there is a special case. In a single user environment where
+d77 1
+a77 1
+*** 5) if a particular PUID is specified for the processor, only that
+d79 1
+a79 1
+*** 6) otherwise it is necessary to search the network for a suitable
+a83 1
+BLV currently only Helios processors are considered
+d87 2
+a88 1
+void	HandleObtainProcessor(NsConn Connection, int JobId, int request)
+a97 1
+  request = request;
+d100 1
+a100 3
+  
+  rc = RmReadProcessor(Connection->Pipe, &template, FALSE);
+  if (rc ne RmE_Success) goto done;
+d102 1
+a102 2
+  unless(Connection->FullAccess)
+   { rc	= RmE_NoAccess; goto done; }
+d105 1
+a105 1
+  		Malloc(NumberProcessors * sizeof(RmProcessor));
+d107 1
+a107 1
+   { rc = RmE_NoMemory; goto done; }
+d112 1
+a112 1
+          (RootProcessor->ObjNode.Account eq 0) &&
+d120 1
+a120 1
+     result = (RmProcessor) RmFindUid((RmSet) Net, template->Uid);
+d123 1
+a123 1
+     if (result->ObjNode.Account ne RmO_SystemPool)
+d126 1
+a126 1
+     if (purpose eq RmP_System)
+d139 1
+a139 1
+       if (result->ObjNode.Account ne RmO_SystemPool)
+d142 1
+a142 1
+       if (purpose eq RmP_System)
+d149 1
+a149 1
+  { char *near = RmGetObjectAttribute((RmObject) template, "NEAR", FALSE);
+d151 5
+a155 1
+     search_table[max_index++] = RootProcessor;
+d187 1
+d189 8
+d198 1
+a198 1
+     if (current->ObjNode.Account ne RmO_SystemPool) goto check_links;
+a199 6
+     switch(RmGetProcessorPurpose(current))
+      { case RmP_IO	: 
+        case RmP_System : goto check_links;
+        case RmP_Native : continue;	/* do not check links */
+      }
+      
+d238 2
+d246 1
+d249 1
+a249 7
+  if (template ne (RmProcessor) NULL) RmFreeProcessor(template);
+  if (rc eq RmE_CommsBreakdown)
+   return;
+
+  Wait(&(Connection->WriteLock));
+  (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);   
+  (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+d252 2
+a253 1
+     (void) RmWriteProcessor(Connection->Pipe, result, &filter);
+a254 1
+  Signal(&(Connection->WriteLock));
+d256 2
+d271 1
+a271 1
+  copy->RmLib		= 0;
+d277 3
+a279 1
+*** 1) if the template has any attributes then the processor must
+d281 2
+a282 2
+*** 2) various combinations of processor types may or may not match
+*** 3) the real processor must have at least the amount requested
+d290 15
+d324 1
+a324 1
+      unless(RmIsAProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+d354 2
+a355 1
+void	HandleReleaseProcessor(NsConn Connection, int JobId, int request)
+a356 1
+  ProcessorDetails	details;
+d361 1
+a361 5
+  if (FullRead(Connection->Pipe, (BYTE *) &details, sizeof(ProcessorDetails), -1)
+  	 ne sizeof(ProcessorDetails))
+   { rc = RmE_CommsBreakdown; goto done; }
+       
+  processor = (RmProcessor) RmFindUid((RmSet) Net, details.Uid);
+d365 2
+a366 2
+  unless(GetAccess(&(details.Cap), processor->ObjNode.Key) &&
+  	 (details.Cap.Access & AccMask_D))
+d383 2
+a384 6
+  if (rc ne RmE_CommsBreakdown)
+   { Wait(&(Connection->WriteLock));
+     (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+     (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+     Signal(&(Connection->WriteLock));
+   }  
+d414 1
+d416 2
+a417 1
+void HandleObtainNetwork(NsConn Connection, int JobId, int request)
+d428 1
+d431 4
+a434 8
+  
+  if (Read(Connection->Pipe, (BYTE *) &start_from, sizeof(int), -1) ne
+  	sizeof(int))
+   { rc = RmE_CommsBreakdown; goto done; }
+   
+  rc = RmReadStream(Connection->Pipe, &template, Null(RmTaskforce));
+  if (rc ne RmE_Success) goto done;
+   
+d437 1
+a437 1
+   { rc = RmE_NoMemory; goto done; }
+d439 1
+a439 1
+  search_table = (RmProcessor *) Malloc(NumberProcessors * sizeof(RmProcessor));
+d441 1
+a441 1
+   { rc = RmE_NoMemory; goto done; }
+d450 1
+a450 1
+  number_to_match -= RmApplyNetwork(template, &ObtainNetwork_Search1, Connection, result);
+d454 1
+a454 1
+   { current = (RmProcessor) RmFindUid((RmSet) Net, start_from);
+d461 3
+d466 1
+d475 3
+a477 1
+     
+d480 7
+d488 1
+a488 7
+     if (current->ObjNode.Account ne RmO_SystemPool) goto check_links;
+
+     switch(RmGetProcessorPurpose(current))
+      { case RmP_IO	: 
+        case RmP_System : goto check_links;
+        case RmP_Native : continue;	/* do not check links */
+      }
+d496 1
+a496 1
+     number_to_match -= RmSearchNetwork(template, &ObtainNetwork_Search2,
+d498 1
+d500 11
+d539 1
+a539 1
+  elif (request ne RmC_ObtainExactNetwork)
+d545 1
+a545 4
+
+  Wait(&(Connection->WriteLock));
+  (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+  (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+d547 1
+a547 1
+   (void) RmWriteNetwork(Connection->Pipe, result, (RmFilter) NULL);
+d550 3
+a552 3
+  Signal(&(Connection->WriteLock));
+  if (template ne (RmNetwork) NULL)
+   RmFreeNetwork(template);
+d557 7
+d622 1
+a622 1
+  if (new eq (RmNetwork)NULL) return(RmE_NoMemory);
+d625 1
+a625 1
+  if (RmAddTailProcessor(parent, (RmProcessor) new) eq (RmProcessor) NULL)
+a650 4
+  if (RmIsNetwork(template))
+   return(RmApplyNetwork((RmNetwork) template, &ObtainNetwork_Search1,
+   		Connection, result));
+
+d652 1
+a652 1
+   { RmProcessor match = (RmProcessor)RmFindUid((RmSet) Net, template->Uid);
+d658 1
+a658 1
+     if (match->ObjNode.Account eq RmO_SystemPool)
+d673 1
+a673 1
+       if (match->ObjNode.Account eq RmO_SystemPool)       
+a702 4
+  if (RmIsNetwork(template))
+   return(RmSearchNetwork((RmNetwork) template, &ObtainNetwork_Search2,
+   		real, Connection, result));
+
+d717 1
+a717 1
+  (void) RmApplyNetwork(Network, &AbortObtainAux, Connection);
+d730 3
+a732 5
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &AbortObtainAux, Connection));
+
+  real = (RmProcessor) RmFindUid((RmSet) Net, Processor->Uid);
+  real->ObjNode.Account = RmO_SystemPool;
+d753 2
+a754 2
+  real->ObjNode.Account = template->ObjNode.Account;
+
+d783 1
+a783 1
+{ (void) RmApplyNetwork(Network, &CleanOutAux1);
+a788 3
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &CleanOutAux1));
+
+d804 2
+a805 1
+void HandleReleaseNetwork(NsConn Connection, int JobId, int request)
+d807 1
+a807 1
+  ProcessorDetails	details;
+d810 1
+a810 6
+      
+  forever 
+   { if (FullRead(Connection->Pipe, (BYTE *) &details, sizeof(ProcessorDetails),
+   		-1) ne sizeof(ProcessorDetails))
+      { rc = RmE_CommsBreakdown; goto done; }
+     if (details.Uid eq -1) break;
+d812 5
+a816 1
+     Processor = (RmProcessor) RmFindUid((RmSet) Net, details.Uid);
+d819 4
+a822 3
+     unless(GetAccess(&(details.Cap), Processor->ObjNode.Key) &&
+            (details.Cap.Access & AccMask_D))
+      { rc = RmE_NoAccess; goto done; }
+d832 2
+a833 7
+done:
+  if (rc ne RmE_CommsBreakdown)
+   { Wait(&(Connection->WriteLock));
+     (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+     (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+     Signal(&(Connection->WriteLock));
+   }      
+d887 1
+d921 3
+a923 4
+{ bool		started_agent	= FALSE;
+  bool		agent_locked	= FALSE;
+  int  		rc		= Err_Null;
+  NA_Message	message;
+d925 30
+d957 1
+a959 8
+  Wait(&(proc_entry->NetagentLock));
+  agent_locked	= TRUE;          
+  if (Write(proc_entry->NetagentPipe, (BYTE *) &message, sizeof(NA_Message),
+  	5 * OneSec) ne sizeof(NA_Message))
+   { MarkProcessor(Processor); goto done; }
+  if (Read(proc_entry->NetagentPipe, (BYTE *) &rc, sizeof(WORD),
+  		30 * OneSec) ne sizeof(WORD))
+   { MarkProcessor(Processor); goto done; }
+d961 2
+a966 2
+  if (agent_locked)
+   { Signal(&(proc_entry->NetagentLock)); agent_locked = FALSE; }
+d970 1
+a970 1
+   Processor->ObjNode.Account = RmO_SystemPool;
+@
+
+
+1.6
+log
+@Changed the PUID handling for ObtainProcessor requests.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/netalloc.c,v 1.5 90/12/01 15:31:46 bart Exp $";
+d900 1
+a900 1
+     Delay(OneSec / 10);	/* to avoid completely swamping the system */
+@
+
+
+1.5
+log
+@when a processor is allocated to a user the ProcessorEntry structure
+is date stamped, so that the cleaners are not over eager
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/netalloc.c,v 1.1 90/09/12 14:35:31 jon Exp $";
+a93 1
+  char			*puid_buf	= Null(char);
+a108 3
+  puid_buf		= (char *) Malloc(IOCDataMax);
+  if (puid_buf eq Null(char))
+   { rc = RmE_NoMemory; goto done; }
+a234 1
+  (void) BuildName(puid_buf, result);
+a253 3
+     rc = strlen(puid_buf);
+     (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+     (void) Write(Connection->Pipe, (BYTE *) puid_buf, rc, -1);
+a256 1
+  if (puid_buf ne Null(char)) Free(puid_buf);
+a724 1
+  char			*puid_buf;
+a728 3
+  puid_buf	= (char *) Malloc(IOCDataMax);
+  if (puid_buf eq Null(char))
+   { RmFreeProcessor(new_proc); return(FALSE); }
+a741 3
+  strcpy(puid_buf, "PUID=");
+  (void) BuildName(&(puid_buf[5]), real);
+  RmAddObjectAttribute((RmObject) new_proc, puid_buf, TRUE);
+a742 2
+  RmRemoveObjectAttribute((RmObject) new_proc, puid_buf, TRUE);
+  Free(puid_buf); puid_buf = Null(char);
+@
+
+
+1.4
+log
+@the search routines for allocating processors no longer follow suspicious
+links, e.g. links to processors outside the main box
+@
+text
+@d215 2
+a216 1
+        if (flags & RmF_Suspicious) continue;
+d221 1
+d225 1
+d244 1
+d497 2
+a498 1
+        if (flags & RmF_Suspicious) continue;
+d766 1
+d856 6
+d865 1
+@
+
+
+1.3
+log
+@sources update after visit to Parsytec 22.10.90-31.10.90
+@
+text
+@d99 1
+d214 3
+a216 1
+      { neighbour = RmFollowLink(current, i, &destlink);
+d420 2
+a421 1
+
+d492 3
+a494 1
+      { neighbour = RmFollowLink(current, i, &destlink);
+d918 1
+@
+
+
+1.2
+log
+@Plugged various memory leaks
+@
+text
+@a39 4
+#define	CleaningMonitorStack	1024
+
+static	Semaphore	CleanCount;
+
+a40 1
+static	void	CleaningMonitor(void);
+d42 1
+a42 1
+
+d63 1
+a63 3
+  InitSemaphore(&CleanCount, 0);
+  if (!Fork(CleaningMonitorStack, &CleaningMonitor, 0))
+   fatal("not enough memory to clean out processors");
+d182 1
+a182 1
+  		 RmGetProcessorID(search_table[0])));
+d231 1
+a231 1
+  Debug(dbg_Allocate, ("found processor %s", RmGetProcessorID(result)));
+d357 1
+a357 1
+  Debug(dbg_Release, ("releasing processor %s", RmGetProcessorID(processor)));
+d842 1
+a842 1
+		RmGetProcessorID(Processor)));
+d851 15
+a865 1
+**/
+d868 9
+a876 2
+{ Processor->ObjNode.Account	= RmO_Cleaners;
+  Signal(&(CleanCount));
+a878 1
+static	int	FindDirtyProcessor(RmProcessor Processor, ...);
+d883 1
+a883 4
+  NA_Message		message;
+  bool			started_agent	= FALSE;
+  bool			agent_locked	= FALSE;  
+  int			rc;
+d886 2
+a887 2
+   { Wait(&(CleanCount));
+     rc		= 1;
+d889 31
+a919 15
+     Processor = (RmProcessor) RmSearchNetwork(Net, &FindDirtyProcessor);
+     if (Processor eq (RmProcessor) NULL) continue;
+
+     proc_entry		= (ProcessorEntry *) RmGetProcessorPrivate(Processor);
+     unless (StartNetworkAgent(Processor)) goto done;
+     started_agent	= TRUE;
+     message.FnRc	= NA_Clean;
+     Wait(&(proc_entry->NetagentLock));
+     agent_locked	= TRUE;          
+     if (Write(proc_entry->NetagentPipe, (BYTE *) &message, sizeof(NA_Message),
+     	5 * OneSec) ne sizeof(NA_Message))
+      { MarkProcessor(Processor); goto done; }
+     if (Read(proc_entry->NetagentPipe, (BYTE *) &rc, sizeof(WORD),
+     		30 * OneSec) ne sizeof(WORD))
+      { MarkProcessor(Processor); goto done; }
+a920 3
+     if (rc ne Err_Null)
+      report("warning, failed to clean out processor %s, fault %x",
+      	RmGetProcessorID(Processor), rc);
+d922 9
+a930 16
+     if (agent_locked)
+      { Signal(&(proc_entry->NetagentLock)); agent_locked = FALSE; }
+     if (started_agent)
+      { StopNetworkAgent(Processor); started_agent = FALSE; }
+     if (rc eq Err_Null)
+      Processor->ObjNode.Account = RmO_SystemPool;
+   }
+}
+
+static	int	FindDirtyProcessor(RmProcessor Processor, ...)
+{ if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &FindDirtyProcessor));
+  elif (Processor->ObjNode.Account eq RmO_Cleaners)
+   return((int) Processor);
+  else
+   return(0);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header$";
+d531 2
+a532 1
+  if (template ne (RmNetwork) NULL) RmFreeNetwork(template);
+d545 1
+a545 1
+  int		rc;
+d775 1
+a775 1
+  RmFreeNetwork(Network);
+@

@@ -1,0 +1,690 @@
+#!/bin/awk -f
+#
+# walk -- LISP in awk
+#
+# An interpreter for LISP, written in awk(1).
+# Copyright (c) 1988, 1990 Roger Rohrbach
+
+BEGIN {
+
+    # interpreter constants:
+
+    stdin = "-";
+    true = 1;
+    false = 0;
+    constant = "#";		    # flags literal atoms
+    alist = -10000;		    # head of bound variable list
+
+    # global variables:
+
+    atom = -1;			    # atoms are allocated down from -1
+    cell = 1;			    # list cells are allocated up from 1
+
+    environment = alist;	    # pointer to current evaluation context;
+				    # saved in context[] before evaluating body
+				    # of lambda expression, restored afterwards
+
+    # LISP constants:
+
+    nil = intern["nil"] = atom--;   # intern[x] is the LISP atom named by x
+    name[nil] = "()";		    # name[s] is the print name of atom s
+
+    value[nil] = constant;	    # if x < alist, value[x] is the local
+				    # binding of the atom `symbol[x]'; otherwise
+				    # it is the top-level binding of the atom x.
+
+    t = intern["t"] = atom--;
+    name[t] = "t";
+    value[t] = constant;
+
+    lambda = intern["lambda"] = atom--;
+    name[lambda] = "lambda";
+    value[lambda] = constant;
+
+    # install the intrinsic functions:
+
+    split("cons cdr car eq atom set eval error quote cond and or list", \
+	 intrinsics);
+
+    for (i in intrinsics)
+    {
+	id = intrinsics[i];
+	intern[id] = atom--;
+	name[intern[id]] = id;
+	value[intern[id]] = sprintf("@%d", i);
+	name[value[intern[id]]] = sprintf("<intrinsic #%d>", i);
+    }
+
+    # these constants speed things up a bit
+
+    CONS = value[intern["cons"]];
+    CDR = value[intern["cdr"]];
+    CAR = value[intern["car"]];
+    EQ = value[intern["eq"]];
+    ATOM = value[intern["atom"]];
+    SET = value[intern["set"]];
+    EVAL = value[intern["eval"]];
+    ERROR = value[intern["error"]];
+    QUOTE = value[intern["quote"]];
+    COND = value[intern["cond"]];
+    AND = value[intern["and"]];
+    OR = value[intern["or"]];
+    LIST = value[intern["list"]];
+
+    # messages:
+
+    TYPE_ERROR = "invalid argument to %s: %s\n";
+    REDEF_ERROR = "can't redefine intrinsic function %s\n";
+    UNDEF_ERROR = "undefined function: %s\n";
+
+    HELLO = "walk (LISP in awk)\tCopyright (c) 1988, 1990 Roger Rohrbach\n";
+    GOODBYE = "%d atoms, %d list cells.\n";
+
+
+    # interpreter is ready
+
+    if (FILENAME == stdin)
+    {
+	print HELLO;
+	printf("-> ");
+    }
+}
+
+# interpreter loop:
+
+{
+    pos = 0;		# current input character position
+    eol = length + 1;	# read past last char for endquote, below
+
+    while (++pos <= eol)
+    {
+	#########
+	# read  #
+	#########
+
+	if (endquote)
+	{
+	    # close a quoted expr by inserting a right parenthesis
+	    endquote = false;
+	    c = ")";  
+	    --pos;    # if at eol, c is null; push back on input
+	}
+	else
+	    c = substr($0, pos, 1);
+
+	if (c == " " || c == "\t")
+	    continue;
+	else if (c == "" || c == ";")
+	{
+	    # eol or comment
+	    break;
+	}
+	else if (c == "'")
+	{
+	    # expand 's to (quote s)
+	    if (level > 0 && level != rp)
+		read[++rp] = CONS;
+	    read[++rp] = CONS;
+	    quotes[++qp] = ++level;
+	    read[++rp] = intern["quote"];
+	}
+	else if (c == "\"")
+	{
+	    string = true;
+	}
+	else if (c == "(")
+	{
+	    # begin a list
+	    read[++rp] = CONS;
+	    ++level;
+	}
+	else if (c == ")")
+	{
+	    if (level == 0)
+	    {
+		printf("ignored extra right parenthesis\n");
+		continue;
+	    }
+	    else if (rp == level && read[rp] == CONS)
+		--rp;	 # empty list read in
+
+	    # have just read a list
+	    read[++rp] = nil;
+	    --level;
+
+	    if (qp > 0 && quotes[qp] == level)
+	    {
+		# finish quoting this list
+		--qp;
+		endquote = true;
+	    }
+
+	    # actually construct the list
+	    while (read[rp - 2] == CONS && read[rp - 1] != CONS)
+	    {
+		cdr[cell] = read[rp];
+		car[cell] = read[--rp];
+		read[--rp] = cell++;
+	    }
+	}
+	else if (c ~ /[0-9]/)
+	{
+	    # read a number (integer)
+	    n = c;
+	    while ((c = substr($0, ++pos, 1)) ~ /[0-9]/)
+		n = n c;
+	    --pos; 
+	    if (level > 0 && level != rp)
+		read[++rp] = CONS;
+	    if (!intern[n])
+	    {
+		intern[n] = atom--;
+		name[intern[n]] = n;
+		value[intern[n]] = constant;
+	    }
+	    read[++rp] = intern[n];
+	    if (qp > 0 && quotes[qp] == level)
+	    {
+		--qp;
+		endquote = true;
+	    }
+	}
+	else if (c ~ /[_A-Za-z]/ || string)
+	{
+	    # read an identifier
+	    id = c;
+	    if (string)
+	    {
+		while ((c = substr($0, ++pos, 1)) != "\"")
+		    id = id c;
+		string = false;
+	    }
+	    else
+	    {
+		while ((c = substr($0, ++pos, 1)) ~ /[-A-Za-z_0-9]/)
+		    id = id c;
+		--pos;
+	    }
+	    if (level > 0 && level != rp)
+		read[++rp] = CONS;
+	    if (!intern[id])
+	    {
+		intern[id] = atom--;
+		name[intern[id]] = id;
+		value[intern[id]] = nil;
+	    }
+	    read[++rp] = intern[id];
+	    if (qp > 0 && quotes[qp] == level)
+	    {
+		--qp;
+		endquote = true;
+	    }
+
+	}
+	else if (c == "%")
+	{
+	    # refer to objects by `address'
+	    lispval = "";
+	    while ((c = substr($0, ++pos, 1)) ~ /[-0-9]/)
+		lispval = lispval c;
+	    if (!length(lispval))
+		lispval = nil;
+	    --pos;
+	    if (level > 0 && level != rp)
+		read[++rp] = CONS;
+	    read[++rp] = lispval;
+	    if (qp > 0 && quotes[qp] == level)
+	    {
+		--qp;
+		endquote = true;
+	    }
+	}
+	else
+	    printf("illegal character: %s\n", c);
+
+
+	if (rp && level == 0)	# have read an s-expression
+	{
+	    #########
+	    # eval  #
+	    #########
+
+	    eval[++ep] = read[rp--];
+
+	    while (ep > 0)
+	    {
+		s = eval[ep];
+
+		if (s < 0)
+		{
+		    # atomic s-expression
+
+		    if (s == lambda && fp)
+		    {
+			environment = context[fp--];	# restore environment
+		    }
+		    else if (value[s] == constant)
+			arg[++ap] = s;
+		    else
+		    {
+			# look up value of s in environment:
+			bound = false;
+			for (i = environment; i < alist; ++i)
+			{
+			    if (symbol[i] == s)
+			    {
+				bound = true;
+				break;
+			    }
+			}
+			if (bound)
+			    arg[++ap] = value[i];
+			else	# use value cell
+			    arg[++ap] = value[s];
+		    }
+		    --ep;
+		}
+		else if (index(s, "@"))
+		{
+		    # intrinsic function application:
+
+		    if (s == CONS)
+		    {
+			car[cell] = arg[ap];
+			cdr[cell] = arg[--ap];
+			if (cdr[cell] < 0 && cdr[cell] != nil)
+			{
+			    printf(TYPE_ERROR, "cons", name[cdr[cell]]);
+			    arg[ap = ep = 1] = nil; # stop evaluation
+			}
+			else
+			    arg[ap] = cell++;
+		    }
+		    else if (s == CDR)
+		    {
+			if (arg[ap] < 0)
+			{
+			    printf(TYPE_ERROR, "cdr", name[arg[ap]]);
+			    arg[ap = ep = 1] = nil;
+			}
+			else
+			    arg[ap] = cdr[arg[ap]];
+		    }
+		    else if (s == CAR)
+		    {
+			if (arg[ap] < 0)
+			{
+			    printf(TYPE_ERROR, "car", name[arg[ap]]);
+			    arg[ap = ep = 1] = nil;
+			}
+			else
+			    arg[ap] = car[arg[ap]];
+		    }
+		    else if (s == EQ)
+		    {
+			arg1 = arg[ap];
+			if (arg[--ap] == arg1)
+			    arg[ap] = t;
+			else
+			    arg[ap] = nil;
+		    }
+		    else if (s == ATOM)
+		    {
+			if (arg[ap] < 0)
+			    arg[ap] = t;
+			else
+			    arg[ap] = nil;
+		    }
+		    else if (s == SET)
+		    {
+			if ((arg1 = arg[ap]) > 0)
+			{
+			    printf(TYPE_ERROR, "set", "must be atomic");
+			    arg[ap = ep = 1] = nil;
+			}
+			else if (value[arg1] == constant)
+			{
+			    printf(TYPE_ERROR, "set", name[arg1]);
+			    arg[ap = ep = 1] = nil;
+			}
+			else if (index(value[arg1], "@"))
+			{
+			    printf(REDEF_ERROR, name[arg1]);
+			    arg[ap = ep = 1] = nil;
+			}
+			else
+			{
+			    bound = false;
+			    for (i = environment; i < alist; ++i)
+			    {
+				if (symbol[i] == arg1)
+				{
+				    bound = true;
+				    break;
+				}
+			    }
+			    arg2 = arg[--ap];
+
+			    if (bound)	# replace binding
+				arg[ap] = value[i] = arg2;
+			    else	# set value
+				arg[ap] = value[arg1] = arg2;
+			}
+		    }
+		    else if (s == EVAL)
+		    {
+			eval[ep++] = arg[ap--];
+		    }
+		    else if (s == ERROR)
+		    {
+			if (arg[ap] > 0)
+			    printf(TYPE_ERROR, "error", "must be atomic");
+			else
+			    printf("%s\n", name[arg[ap]]);
+			arg[ap = ep = 1] = nil;
+		    }
+		    --ep;
+		}
+		else if (car[s] == lambda)
+		{
+		    # lambda function application:
+
+		    formals = car[cdr[s]];
+		    context[++fp] = environment;    # save environment
+		    while (formals != nil)
+		    {
+			# bind lambda variables
+			symbol[--environment] = car[formals];
+			value[environment] = arg[ap--];
+			formals = cdr[formals];
+		    }
+		    eval[ep] = lambda;		    # closure
+		    eval[++ep] = car[cdr[cdr[s]]];  # push body of expr.
+		}
+		else if (car[s] < 0)
+		{
+		    # s is a form (f args)
+
+		    evlis[cdr[s]] = true;   # don't treat cdr as a form
+
+		    # special forms:
+
+		    f = value[car[s]];
+
+		    if (index(f, "@"))
+		    {
+			if (f == QUOTE)
+			{
+			    arg[++ap] = car[cdr[s]];
+			    --ep;
+			}
+			else if (f == COND)
+			{
+			    if (cdr[s] == nil)
+			    {
+				arg[++ap] = nil;
+				--ep;
+			    }
+			    else
+			    {
+				# save clauses, push first antecedent
+				clauses[++cp] = cdr[s];
+				eval[ep] = f;
+				eval[++ep] = car[car[clauses[cp]]];
+			    }
+			}
+			else if (f == AND)
+			{
+			    if (cdr[s] == nil)
+			    {
+				arg[++ap] = t;
+				--ep;
+			    }
+			    else
+			    {
+				# save predicates, push first
+				preds[++dp] = cdr[s];
+				eval[ep] = f;
+				eval[++ep] = car[preds[dp]];
+			    }
+			}
+			else if (f == OR)
+			{
+			    if (cdr[s] == nil)
+			    {
+				arg[++ap] = nil;
+				--ep;
+			    }
+			    else
+			    {
+				preds[++dp] = cdr[s];
+				eval[ep] = f;
+				eval[++ep] = car[preds[dp]];
+			    }
+			}
+			else if (f == LIST)
+			{
+			    # translate to (cons e1 e2 .. eN)
+			    for (e = cdr[s]; e != nil; e = cdr[e])
+			    {
+				eval[ep++] = CONS;
+				eval[ep++] = car[e];
+			    }
+			    eval[ep] = nil;
+			}
+			else
+			{
+			    # f takes evaluated arguments- push (f args)
+			    eval[ep] = f;
+			    eval[++ep] = cdr[s];
+			}
+		    }
+		    else if (car[f] == lambda)
+		    {
+			# push lambda function, arglist
+			eval[ep] = f;
+			if (cdr[s] != nil)
+			    eval[++ep] = cdr[s];
+		    }
+		    else if (evlis[s])
+		    {
+			eval[ep] = car[s];
+			if (cdr[s] != nil)
+			{
+			    eval[++ep] = cdr[s];
+			    evlis[cdr[s]] = true;
+			}
+		    }
+		    else
+		    {
+			# f is not a function
+			printf(UNDEF_ERROR, name[car[s]]);
+			arg[ap = 1] = nil;
+			ep = 0;
+		    }
+		}
+		else
+		{
+		    # evaluate car[s], cdr[s]
+
+		    eval[ep] = car[s];
+		    if (cdr[s] != nil)
+		    {
+			eval[++ep] = cdr[s];
+			if (evlis[s])
+			    evlis[cdr[s]] = true;
+		    }
+		}
+
+		# get next unevaluated argument (cond, and, or):
+
+		while (true)
+		{
+		    s = eval[ep];
+
+		    if (s == COND)
+		    {
+			if (arg[ap] == nil)
+			{
+			    # last antecedent was nil
+			    # push antecedent of next clause
+			    if ((clauses[cp] = cdr[clauses[cp]]) != nil)
+			    {
+				eval[++ep] = car[car[clauses[cp]]];
+				--ap;
+			    }
+			    else
+			    {
+				# no more clauses, return nil
+				--ep;
+				--cp;
+			    }
+			}
+			else
+			{
+			    # last antecedent was non-nil
+			    # push consequent
+			    if (cdr[car[clauses[cp]]] != nil)
+			    {
+				eval[ep] = car[cdr[car[clauses[cp]]]];
+				--ap;
+				--cp;
+			    }
+			    else
+			    {
+				# no consequent, return antecedent
+				--ep;
+				--cp;
+			    }
+			}
+		    }
+		    else if (s == AND)
+		    {
+			if (arg[ap] != nil)
+			{
+			    # last predicate non-nil
+			    # push next predicate if there is one
+			    if ((preds[dp] = cdr[preds[dp]]) != nil)
+			    {
+				eval[++ep] = car[preds[dp]];
+				--ap;
+			    }
+			    else
+			    {
+				# return value of last predicate
+				--ep;
+				--dp;
+			    }
+			}
+			else
+			{
+			    # return nil
+			    --ep;
+			    --dp;
+			}
+		    }
+		    else if (s == OR)
+		    {
+			if (arg[ap] == nil)
+			{
+			    # last predicate was nil
+			    # push next predicate if there is one
+			    if ((preds[dp] = cdr[preds[dp]]) != nil)
+			    {
+				eval[++ep] = car[preds[dp]];
+				--ap;
+			    }
+			    else
+			    {
+				# return nil
+				--ep;
+				--dp;
+			    }
+			}
+			else
+			{
+			    # return value of last predicate
+			    --ep;
+			    --dp;
+			}
+		    }
+		    else
+			break;
+		}
+	    }
+
+	    # throw away unused contexts (happens on errors):
+	    fp = 0;
+	    environment = alist;
+
+
+	    #########
+	    # print #
+	    #########
+
+	    space = false;
+	    s = arg[ap--];
+
+	    if (s < 0 || index(s, "@"))
+	    {
+		# print atom
+		printf("%s", name[s]);
+	    }
+	    else
+	    {
+		# print list
+
+		printf("(");
+		Print[++pp] = s;    # push s onto stack of exprs to print
+
+		while (pp > 0)
+		{
+		    s = Print[pp];
+
+		    if (s == nil)
+		    {
+			printf(")");
+			--pp;
+		    }
+		    else
+		    {
+			if (space)
+			    printf(" ");
+
+			Print[pp] = cdr[s]; # push cdr[s]
+
+			if (car[s] < 0)
+			{
+			    printf("%s", name[car[s]]);
+			    space = true;
+			}
+			else
+			{
+			    printf("(");
+			    space = false;
+			    Print[++pp] = car[s];   # recursively expand
+			}
+		    }
+		}
+	    }
+
+	    printf("\n");
+	}
+    }
+
+    if (FILENAME == stdin || FILENAME == "p")
+    {
+	if ((n = level - qp) > 0)
+	    printf("%d> ", n);
+	else
+	    printf("-> ");
+    }
+}
+
+END {
+
+    if (FILENAME == stdin)
+	printf(GOODBYE, -atom - 1, cell - 1);
+
+    exit(0);
+}

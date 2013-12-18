@@ -1,0 +1,181 @@
+# Network_Services 1.00 452
+# $Id: netw.ins,v 1.2 1992/11/05 16:55:18 craig Exp $
+set exitcode=0
+
+set version_no	= 1.00
+set lib		= /helios/lib
+set bin		= /helios/bin
+set etc		= /helios/etc
+
+set nfs_files	= (NFS $lib/nfs)
+set nfs_files	= ($nfs_files $bin/hmount)
+
+set lpr_files	= (LPR $lib/lpd $lib/lpd_aux)
+set lpr_files	= ($lpr_files $bin/lpr $bin/lpc $bin/lprm $bin/lpq $bin/lptest)
+set lpr_files	= ($lpr_files $etc/printcap)
+
+set mail_files	= (MAIL $lib/sendmail $lib/smtp)
+set mail_files	= ($mail_files $bin/mail)
+set mail_files	= ($mail_files $etc/sendmail.hf)
+
+set route_file	= $bin/route
+
+set file_list	= ($nfs_files $lpr_files $mail_files)
+
+set local_dir	= /helios/local
+set spool_dir	= $local_dir/spool
+set adm_dir	= $local_dir/adm
+set sys_dirs	= ($spool_dir $spool_dir/lp $spool_dir/mail)
+set sys_dirs	= ($sys_dirs $spool_dir/mqueue $adm_dir)
+
+set tcpip_dir	= $local_dir/tcpip
+set laserp_dir	= $tcpip_dir/laserp
+set biff_dir	= $tcpip_dir/tinybiff
+set example_dirs= ($laserp_dir $biff_dir)
+
+if ($argv[1] != 0) then
+
+# installation script
+# argv[1] = 0 for uninstalling software, otherwise the software is installed
+# argv[2] = dirname of the installation disk or tape drive
+# argv[3] = installation medium "tape" or "disk"
+  switch ($argv[3])
+    case disk:
+
+# assumes lib, bin and etc directories already present
+
+      echo "Installing Network Services (Ethernet II) V$version_no"
+      foreach target_file ($file_list)
+      switch ($target_file)
+        case NFS:
+          echo "Installing NFS" ; breaksw
+        case LPR:
+          echo "Installing Line Printing System" ; breaksw
+        case MAIL:
+          echo "Installing Mail System" ; breaksw
+        default:
+          echo "    Installing: $target_file"
+          test -f $target_file
+          # careful - want option to keep printcap if it exists ...
+          if (($status == 0) && ($target_file == $etc/printcap)) then
+            echo "    Overwrite existing file: $target_file (y/n) ?"
+            set tempflag=$<
+            if ($tempflag == y || $tempflag == Y) then
+              cp $argv[2]$target_file $target_file
+            else
+              echo "    $target_file: Not copied"
+            endif
+          else
+            cp $argv[2]$target_file $target_file
+          endif
+          if ($status != 0) set exitcode=1
+          breaksw
+        endsw
+      end
+
+# route program - optional
+      echo 
+      set target_file = $route_file
+      echo "Install $target_file (manipulate network routing tables) (y/n) ?"
+      set tempflag=$<
+      if ($tempflag == y || $tempflag == Y) then
+        echo "    Installing: $target_file"
+        cp $argv[2]$target_file $target_file
+      else
+        echo "    $target_file: Not copied"
+      endif
+
+# create local directories
+      echo
+      echo Creating local directories ...
+      foreach target_dir ($sys_dirs)
+        test -d $target_dir
+        if ($status == 1) then
+          echo "    Creating directory: $target_dir"
+          mkdir $target_dir
+        else
+          echo "    Directory         : $target_dir already exists"
+        endif
+      end
+
+# optional ...
+      echo
+      echo Example programs ...
+      foreach exam_dir ($example_dirs)
+        if ($exam_dir == $laserp_dir) then
+          echo "    Install example filter program: $exam_dir (y/n) ?"
+        else
+          echo "    Install example biff daemon: $exam_dir (y/n) ?"
+        endif
+        set tempflag=$<
+        if ($tempflag == y || $tempflag == Y) then
+          foreach target_dir ($tcpip_dir $exam_dir)
+            test -d $target_dir
+            if ($status == 1) then
+              mkdir $target_dir
+            endif
+          end
+          echo "    Installing directory: $exam_dir"
+          cp -r $argv[2]$exam_dir/* $exam_dir
+        else
+          echo "    Not installed"
+        endif
+      end
+
+      rehash
+      echo 
+      echo Installation complete
+      echo 
+      echo Please refer to the Ethernet II Guide for further installation details
+
+      breaksw
+    case tape:
+       echo No tape support for loadpac yet
+       breaksw
+    endsw
+else
+# remove instructions
+
+    foreach target_file ($file_list OTHER $route_file $etc/sendmail.pid $spool_dir/lpd.loc)
+      switch ($target_file)
+        case NFS:
+          echo "Removing NFS" ; breaksw
+        case LPR:
+          echo "Removing Line Printing System" ; breaksw
+        case MAIL:
+          echo "Removing Mail System" ; breaksw
+        case OTHER:
+          echo ; breaksw
+        default:
+          test -f $target_file
+          if ($status == 0) then
+            echo "    Removing file: $target_file"
+            rm -f $target_file
+          else
+            echo "    File         : $target_file does not exist"
+          endif
+          breaksw
+      endsw
+    end
+  
+# remove local directories
+    echo
+    echo "Removing local directories (optional)"
+    foreach target_dir ($sys_dirs $tcpip_dir $example_dirs)
+      test -d $target_dir
+      if ($status == 0) then
+        echo "    Remove directory  : $target_dir (y/n) ?"
+        set tempflag=$<
+        if ($tempflag == y || $tempflag == Y) then
+          echo "    Removing directory: $target_dir"
+          rm -rf $target_dir
+        else
+          echo "    Directory         : $target_dir NOT removed"
+        endif
+      endif
+    end
+
+    rehash
+    echo Package removed
+endif
+exit $exitcode

@@ -1,0 +1,1229 @@
+head	1.3;
+access;
+symbols
+	Helios_1_3_1:1.2
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.3
+date	94.06.07.12.51.01;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.06.11.09.57.07;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.02.12.18.57.06;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@minor formatting changes'
+@
+text
+@/*
+ * Copyright (c) 1980 Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms are permitted
+ * provided that the above copyright notice and this paragraph are
+ * duplicated in all such forms and that any documentation,
+ * advertising materials, and other materials related to such
+ * distribution and use acknowledge that the software was developed
+ * by the University of California, Berkeley.  The name of the
+ * University may not be used to endorse or promote products derived
+ * from this software without specific prior written permission.
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+ * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ */
+
+#ifdef lint
+static char sccsid[] = "@@(#)glob.c	5.7 (Berkeley) 12/14/88";
+#endif /* not lint */
+
+/*
+ * C-shell glob for random programs.
+ */
+
+#include <sys/param.h>
+#include <sys/stat.h>
+#ifdef __HELIOS
+#include <dirent.h>
+#define direct dirent
+#else
+#include <sys/dir.h>
+#endif
+
+#include <stdio.h>
+#include <errno.h>
+#include <pwd.h>
+
+#define	QUOTE 0200
+#define	TRIM 0177
+#define	eq(a,b)		(strcmp(a, b)==0)
+#define	GAVSIZ		(NCARGS/6)
+#define	isdir(d)	((d.st_mode & S_IFMT) == S_IFDIR)
+
+static	char **gargv;		/* Pointer to the (stack) arglist */
+static	int gargc;		/* Number args in gargv */
+static	int gnleft;
+static	short gflag;
+static	char tglob( char );
+static int execbrc();
+static int match();
+char	**glob();
+char	*globerr;
+char	*home;
+struct	passwd *getpwnam();
+extern	int errno;
+static	char *strspl(), *strend();
+char	*malloc(), *strcpy(), *strcat();
+char	**copyblk();
+
+static	int globcnt;
+
+char	*globchars = "`{[*?";
+
+static	char *gpath, *gpathp, *lastgpathp;
+static	int globbed;
+static	char *entp;
+static	char **sortbas;
+
+
+static void
+ginit(agargv)
+	char **agargv;
+{
+
+	agargv[0] = 0; gargv = agargv; sortbas = agargv; gargc = 0;
+	gnleft = NCARGS - 4;
+}
+
+/*
+static char
+trim(c)
+	char c;
+{
+
+	return (c & TRIM);
+} */
+
+int
+letter(c)
+	register char c;
+{
+
+	return (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_');
+}
+
+int
+digit(c)
+	register char c;
+{
+
+	return (c >= '0' && c <= '9');
+}
+
+int
+any(c, s)
+	register int c;
+	register char *s;
+{
+
+	while (*s)
+		if (*s++ == c)
+			return(1);
+	return(0);
+}
+
+static char
+tglob( register char c )
+{
+
+	if (any(c, globchars))
+		gflag |= c == '{' ? 2 : 1;
+	return (c);
+}
+
+int
+blklen(av)
+	register char **av;
+{
+	register int i = 0;
+
+	while (*av++)
+		i++;
+	return (i);
+}
+
+char **
+blkcpy(oav, bv)
+	char **oav;
+	register char **bv;
+{
+	register char **av = oav;
+	while ((*av++ = *bv++) != '\0')
+		continue;
+	return (oav);
+}
+
+void
+blkfree(av0)
+	char **av0;
+{
+	register char **av = av0;
+
+	while (*av)
+	{
+		extern char argbuf[200];
+		char *p = *av++;
+		if( (p < argbuf) || (p > (argbuf+200)) )
+			free(p);
+	}
+}
+
+static
+char *
+strspl(cp, dp)
+	register char *cp, *dp;
+{
+	register char *ep = malloc((unsigned)(strlen(cp) + strlen(dp) + 1));
+
+	if (ep == (char *)0)
+		fatal("Out of memory");
+	(void) strcpy(ep, cp);
+	(void) strcat(ep, dp);
+	return (ep);
+}
+
+char **
+copyblk(v)
+	register char **v;
+{
+	register char **nv = (char **)malloc((unsigned)((blklen(v) + 1) *
+						sizeof(char **)));
+	if (nv == (char **)0)
+		fatal("Out of memory");
+
+	return (blkcpy(nv, v));
+}
+
+static
+char *
+strend(cp)
+	register char *cp;
+{
+
+	while (*cp)
+		cp++;
+	return (cp);
+}
+/*
+ * Extract a home directory from the password file
+ * The argument points to a buffer where the name of the
+ * user whose home directory is sought is currently.
+ * We write the home directory of the user back there.
+ */
+int
+gethdir(home)
+	char *home;
+{
+	register struct passwd *pp = getpwnam(home);
+
+	if (!pp || home + strlen(pp->pw_dir) >= lastgpathp)
+		return (1);
+	(void) strcpy(home, pp->pw_dir);
+	return (0);
+}
+
+static void
+Gcat(
+     register char * s1,
+     register char * s2 )
+{
+	register int len = strlen(s1) + strlen(s2) + 1;
+
+	if (len >= gnleft || gargc >= GAVSIZ - 1)
+		globerr = "Arguments too long";
+	else {
+		gargc++;
+		gnleft -= len;
+		gargv[gargc] = 0;
+		gargv[gargc - 1] = strspl(s1, s2);
+	}
+}
+
+static void
+addpath(char c)
+{
+
+	if (gpathp >= lastgpathp)
+		globerr = "Pathname too long";
+	else {
+		*gpathp++ = c;
+		*gpathp = 0;
+	}
+}
+
+static void
+matchdir(char *pattern)
+{
+	struct stat stb;
+	register struct direct *dp;
+	DIR *dirp;
+
+	dirp = opendir(gpath);
+	if (dirp == NULL) {
+		if (globbed)
+			return;
+		goto patherr2;
+	}
+	if (fstat(dirp->dd_fd, &stb) < 0)
+		goto patherr1;
+	if (!isdir(stb)) {
+		errno = ENOTDIR;
+		goto patherr1;
+	}
+	while ((dp = readdir(dirp)) != NULL) {
+#ifndef __HELIOS
+		if (dp->d_ino == 0)
+			continue;
+#endif
+		if (match(dp->d_name, pattern)) {
+			Gcat(gpath, dp->d_name);
+			globcnt++;
+		}
+	}
+	closedir(dirp);
+	return;
+
+patherr1:
+	closedir(dirp);
+patherr2:
+	globerr = "Bad directory components";
+}
+
+static void
+expand(char *as) 
+{
+	register char *cs;
+	register char *sgpathp, *oldcs;
+	struct stat stb;
+
+	sgpathp = gpathp;
+	cs = as;
+	if (*cs == '~' && gpathp == gpath) {
+		addpath('~');
+		for (cs++; letter(*cs) || digit(*cs) || *cs == '-';)
+			addpath(*cs++);
+		if (!*cs || *cs == '/') {
+			if (gpathp != gpath + 1) {
+				*gpathp = 0;
+				if (gethdir(gpath + 1))
+					globerr = "Unknown user name after ~";
+				(void) strcpy(gpath, gpath + 1);
+			} else
+				(void) strcpy(gpath, home);
+			gpathp = strend(gpath);
+		}
+	}
+	while (!any(*cs, globchars)) {
+		if (*cs == 0) {
+			if (!globbed)
+				Gcat(gpath, "");
+			else if (stat(gpath, &stb) >= 0) {
+				Gcat(gpath, "");
+				globcnt++;
+			}
+			goto endit;
+		}
+		addpath(*cs++);
+	}
+	oldcs = cs;
+	while (cs > as && *cs != '/')
+		cs--, gpathp--;
+	if (*cs == '/')
+		cs++, gpathp++;
+	*gpathp = 0;
+	if (*oldcs == '{') {
+		(void) execbrc(cs, ((char *)0));
+		return;
+	}
+	matchdir(cs);
+endit:
+	gpathp = sgpathp;
+	*gpathp = 0;
+}
+
+static int
+amatch(
+       register char * s,
+       register char * p )
+{
+	register int scc;
+	int ok, lc;
+	char *sgpathp;
+	struct stat stb;
+	int c, cc;
+
+	globbed = 1;
+	for (;;) {
+		scc = *s++ & TRIM;
+		switch (c = *p++) {
+
+		case '{':
+			return (execbrc(p - 1, s - 1));
+
+		case '[':
+			ok = 0;
+			lc = 077777;
+			while ((cc = *p++)!='\0') {
+				if (cc == ']') {
+					if (ok)
+						break;
+					return (0);
+				}
+				if (cc == '-') {
+					if (lc <= scc && scc <= *p++)
+						ok++;
+				} else
+					if (scc == (lc = cc))
+						ok++;
+			}
+			if (cc == 0)
+			  {
+			    if (ok)
+			      p--;
+			    else
+			      return 0;
+			  }			
+			continue;
+
+		case '*':
+			if (!*p)
+				return (1);
+			if (*p == '/') {
+				p++;
+				goto slash;
+			}
+			s--;
+			do {
+				if (amatch(s, p))
+					return (1);
+			} while (*s++);
+			return (0);
+
+		case 0:
+			return (scc == 0);
+
+		default:
+			if (c != scc)
+				return (0);
+			continue;
+
+		case '?':
+			if (scc == 0)
+				return (0);
+			continue;
+
+		case '/':
+			if (scc)
+				return (0);
+slash:
+			s = entp;
+			sgpathp = gpathp;
+			while (*s)
+				addpath(*s++);
+			addpath('/');
+			if (stat(gpath, &stb) == 0 && isdir(stb))
+			  {
+				if (*p == 0) {
+					Gcat(gpath, "");
+					globcnt++;
+				} else
+					expand(p);
+			      }			
+			gpathp = sgpathp;
+			*gpathp = 0;
+			return (0);
+		}
+	}
+}
+
+static void
+sort()
+{
+	register char **p1, **p2, *c;
+	char **Gvp = &gargv[gargc];
+
+	p1 = sortbas;
+	while (p1 < Gvp-1) {
+		p2 = p1;
+		while (++p2 < Gvp)
+			if (strcmp(*p1, *p2) > 0)
+				c = *p1, *p1 = *p2, *p2 = c;
+		p1++;
+	}
+	sortbas = Gvp;
+}
+
+static int
+execbrc(
+	char *p,
+	char *s )
+{
+	char restbuf[BUFSIZ + 2];
+	register char *pe, *pm, *pl;
+	int brclev = 0;
+	char *lm, savec, *sgpathp;
+
+	for (lm = restbuf; *p != '{'; *lm++ = *p++)
+		continue;
+	for (pe = ++p; *pe; pe++)
+	switch (*pe) {
+
+	case '{':
+		brclev++;
+		continue;
+
+	case '}':
+		if (brclev == 0)
+			goto pend;
+		brclev--;
+		continue;
+
+	case '[':
+		for (pe++; *pe && *pe != ']'; pe++)
+			continue;
+		continue;
+	}
+pend:
+	brclev = 0;
+	for (pl = pm = p; pm <= pe; pm++)
+	switch (*pm & (QUOTE|TRIM)) {
+
+	case '{':
+		brclev++;
+		continue;
+
+	case '}':
+		if (brclev) {
+			brclev--;
+			continue;
+		}
+		goto doit;
+
+	case ','|QUOTE:
+	case ',':
+		if (brclev)
+			continue;
+doit:
+		savec = *pm;
+		*pm = 0;
+		(void) strcpy(lm, pl);
+		(void) strcat(restbuf, pe + 1);
+		*pm = savec;
+		if (s == 0) {
+			sgpathp = gpathp;
+			expand(restbuf);
+			gpathp = sgpathp;
+			*gpathp = 0;
+		} else if (amatch(s, restbuf))
+			return (1);
+		sort();
+		pl = pm + 1;
+		if (brclev)
+			return (0);
+		continue;
+
+	case '[':
+		for (pm++; *pm && *pm != ']'; pm++)
+			continue;
+		if (!*pm)
+			pm--;
+		continue;
+	}
+	if (brclev)
+		goto doit;
+	return (0);
+}
+
+
+static int
+match(
+      char * s,
+      char * p )
+{
+	register int c;
+	register char *sentp;
+	char sglobbed = globbed;
+
+	if (*s == '.' && *p != '.')
+		return (0);
+	sentp = entp;
+	entp = s;
+	c = amatch(s, p);
+	entp = sentp;
+	globbed = sglobbed;
+	return (c);
+}
+
+
+static void
+acollect(register char * as)
+{
+	register int ogargc = gargc;
+
+	gpathp = gpath; *gpathp = 0; globbed = 0;
+	expand(as);
+	if (gargc != ogargc)
+		sort();
+}
+
+static void
+collect(register char *as)
+{
+	if (eq(as, "{") || eq(as, "{}")) {
+		Gcat(as, "");
+		sort();
+	} else
+		acollect(as);
+}
+
+static int
+Gmatch(
+       register char * s,
+       register char * p )
+{
+	register int scc;
+	int ok, lc;
+	int c, cc;
+
+	for (;;) {
+		scc = *s++ & TRIM;
+		switch (c = *p++) {
+
+		case '[':
+			ok = 0;
+			lc = 077777;
+			while ((cc = *p++)!='\0') {
+				if (cc == ']') {
+					if (ok)
+						break;
+					return (0);
+				}
+				if (cc == '-') {
+					if (lc <= scc && scc <= *p++)
+						ok++;
+				} else
+					if (scc == (lc = cc))
+						ok++;
+			}
+			if (cc == 0)
+			  {
+				if (ok)
+					p--;
+				else
+					return 0;
+			      }			
+			continue;
+
+		case '*':
+			if (!*p)
+				return (1);
+			for (s--; *s; s++)
+				if (Gmatch(s, p))
+					return (1);
+			return (0);
+
+		case 0:
+			return (scc == 0);
+
+		default:
+			if ((c & TRIM) != scc)
+				return (0);
+			continue;
+
+		case '?':
+			if (scc == 0)
+				return (0);
+			continue;
+
+		}
+	}
+}
+
+static void
+rscan(
+	register char **t,
+	char (*f)( char ) )
+{
+  register char *p, c;
+
+  while ((p = *t++)!='\0')
+    {
+      if (f == tglob)
+	{
+	  if (*p == '~')
+	    gflag |= 2;
+	  else if (eq(p, "{") || eq(p, "{}"))
+	    continue;
+	}
+      
+      while ((c = *p++)!='\0')
+	(*f)(c);
+    }
+}
+/*
+static void
+scan(t, f)
+	register char **t;
+	int (*f)();
+{
+	register char *p, c;
+
+	while (p = *t++)
+		while (c = *p)
+			*p++ = (*f)(c);
+} */
+
+
+char **
+glob(register char *v)
+{
+	char agpath[BUFSIZ];
+	char *agargv[GAVSIZ];
+	char *vv[2];
+	vv[0] = v;
+	vv[1] = 0;
+	gflag = 0;
+	rscan(vv, tglob);
+	if (gflag == 0)
+		return (copyblk(vv));
+
+	globerr = 0;
+	gpath = agpath; gpathp = gpath; *gpathp = 0;
+	lastgpathp = &gpath[sizeof agpath - 2];
+	ginit(agargv); globcnt = 0;
+	collect(v);
+	if (globcnt == 0 && (gflag&1)) {
+		blkfree(gargv), gargv = 0;
+		return (0);
+	} else
+		return (gargv = copyblk(gargv));
+}
+@
+
+
+1.2
+log
+@fixed compiler detected errors
+@
+text
+@d218 3
+a220 2
+Gcat(s1, s2)
+	register char *s1, *s2;
+d235 1
+a235 2
+addpath(c)
+	char c;
+d247 1
+a247 2
+matchdir(pattern)
+	char *pattern;
+d285 1
+a285 2
+expand(as)
+	char *as;
+d337 3
+a339 2
+amatch(s, p)
+	register char *s, *p;
+d449 3
+a451 2
+execbrc(p, s)
+	char *p, *s;
+d531 3
+a533 2
+match(s, p)
+	char *s, *p;
+d551 1
+a551 2
+acollect(as)
+	register char *as;
+d562 1
+a562 2
+collect(as)
+	register char *as;
+a570 2
+
+
+d572 3
+a574 2
+Gmatch(s, p)
+	register char *s, *p;
+a633 1
+
+d635 3
+a637 3
+rscan(t, f)
+	register char **t;
+	char (*f)( char );
+d670 1
+a670 2
+glob(v)
+	register char *v;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 1
+a18 1
+#ifndef lint
+d49 3
+a51 1
+static	int tglob();
+d70 67
+d138 13
+a150 2
+glob(v)
+	register char *v;
+d152 1
+a152 9
+	char agpath[BUFSIZ];
+	char *agargv[GAVSIZ];
+	char *vv[2];
+	vv[0] = v;
+	vv[1] = 0;
+	gflag = 0;
+	rscan(vv, tglob);
+	if (gflag == 0)
+		return (copyblk(vv));
+d154 7
+a160 10
+	globerr = 0;
+	gpath = agpath; gpathp = gpath; *gpathp = 0;
+	lastgpathp = &gpath[sizeof agpath - 2];
+	ginit(agargv); globcnt = 0;
+	collect(v);
+	if (globcnt == 0 && (gflag&1)) {
+		blkfree(gargv), gargv = 0;
+		return (0);
+	} else
+		return (gargv = copyblk(gargv));
+d164 16
+a179 2
+ginit(agargv)
+	char **agargv;
+d181 4
+d186 1
+a186 2
+	agargv[0] = 0; gargv = agargv; sortbas = agargv; gargc = 0;
+	gnleft = NCARGS - 4;
+d190 30
+a219 2
+collect(as)
+	register char *as;
+d221 10
+a230 5
+	if (eq(as, "{") || eq(as, "{}")) {
+		Gcat(as, "");
+		sort();
+	} else
+		acollect(as);
+d233 3
+a235 3
+static
+acollect(as)
+	register char *as;
+a236 1
+	register int ogargc = gargc;
+d238 6
+a243 4
+	gpathp = gpath; *gpathp = 0; globbed = 0;
+	expand(as);
+	if (gargc != ogargc)
+		sort();
+d246 3
+a248 2
+static
+sort()
+d250 3
+a252 2
+	register char **p1, **p2, *c;
+	char **Gvp = &gargv[gargc];
+d254 21
+a274 7
+	p1 = sortbas;
+	while (p1 < Gvp-1) {
+		p2 = p1;
+		while (++p2 < Gvp)
+			if (strcmp(*p1, *p2) > 0)
+				c = *p1, *p1 = *p2, *p2 = c;
+		p1++;
+d276 7
+a282 1
+	sortbas = Gvp;
+d285 1
+a285 1
+static
+d338 3
+a340 3
+static
+matchdir(pattern)
+	char *pattern;
+d342 3
+d346 56
+a401 2
+	register struct direct *dp;
+	DIR *dirp;
+d403 3
+a405 15
+	dirp = opendir(gpath);
+	if (dirp == NULL) {
+		if (globbed)
+			return;
+		goto patherr2;
+	}
+	if (fstat(dirp->dd_fd, &stb) < 0)
+		goto patherr1;
+	if (!isdir(stb)) {
+		errno = ENOTDIR;
+		goto patherr1;
+	}
+	while ((dp = readdir(dirp)) != NULL) {
+#ifndef __HELIOS
+		if (dp->d_ino == 0)
+d407 21
+a427 4
+#endif
+		if (match(dp->d_name, pattern)) {
+			Gcat(gpath, dp->d_name);
+			globcnt++;
+d430 7
+a436 2
+	closedir(dirp);
+	return;
+d438 9
+a446 4
+patherr1:
+	closedir(dirp);
+patherr2:
+	globerr = "Bad directory components";
+d449 1
+a449 1
+static
+d529 2
+a530 1
+static
+d548 4
+a551 3
+static
+amatch(s, p)
+	register char *s, *p;
+d553 1
+a553 5
+	register int scc;
+	int ok, lc;
+	char *sgpathp;
+	struct stat stb;
+	int c, cc;
+d555 5
+a559 4
+	globbed = 1;
+	for (;;) {
+		scc = *s++ & TRIM;
+		switch (c = *p++) {
+d561 10
+a570 47
+		case '{':
+			return (execbrc(p - 1, s - 1));
+
+		case '[':
+			ok = 0;
+			lc = 077777;
+			while (cc = *p++) {
+				if (cc == ']') {
+					if (ok)
+						break;
+					return (0);
+				}
+				if (cc == '-') {
+					if (lc <= scc && scc <= *p++)
+						ok++;
+				} else
+					if (scc == (lc = cc))
+						ok++;
+			}
+			if (cc == 0)
+				if (ok)
+					p--;
+				else
+					return 0;
+			continue;
+
+		case '*':
+			if (!*p)
+				return (1);
+			if (*p == '/') {
+				p++;
+				goto slash;
+			}
+			s--;
+			do {
+				if (amatch(s, p))
+					return (1);
+			} while (*s++);
+			return (0);
+
+		case 0:
+			return (scc == 0);
+
+		default:
+			if (c != scc)
+				return (0);
+			continue;
+a571 4
+		case '?':
+			if (scc == 0)
+				return (0);
+			continue;
+a572 21
+		case '/':
+			if (scc)
+				return (0);
+slash:
+			s = entp;
+			sgpathp = gpathp;
+			while (*s)
+				addpath(*s++);
+			addpath('/');
+			if (stat(gpath, &stb) == 0 && isdir(stb))
+				if (*p == 0) {
+					Gcat(gpath, "");
+					globcnt++;
+				} else
+					expand(p);
+			gpathp = sgpathp;
+			*gpathp = 0;
+			return (0);
+		}
+	}
+}
+d574 1
+a574 1
+static
+d589 1
+a589 1
+			while (cc = *p++) {
+d603 1
+d608 1
+a635 28
+static
+Gcat(s1, s2)
+	register char *s1, *s2;
+{
+	register int len = strlen(s1) + strlen(s2) + 1;
+
+	if (len >= gnleft || gargc >= GAVSIZ - 1)
+		globerr = "Arguments too long";
+	else {
+		gargc++;
+		gnleft -= len;
+		gargv[gargc] = 0;
+		gargv[gargc - 1] = strspl(s1, s2);
+	}
+}
+
+static
+addpath(c)
+	char c;
+{
+
+	if (gpathp >= lastgpathp)
+		globerr = "Pathname too long";
+	else {
+		*gpathp++ = c;
+		*gpathp = 0;
+	}
+}
+d637 1
+a637 1
+static
+d640 1
+a640 1
+	int (*f)();
+d642 1
+a642 1
+	register char *p, c;
+d644 13
+a656 9
+	while (p = *t++) {
+		if (f == tglob)
+			if (*p == '~')
+				gflag |= 2;
+			else if (eq(p, "{") || eq(p, "{}"))
+				continue;
+		while (c = *p++)
+			(*f)(c);
+	}
+d659 1
+a659 1
+static
+a670 52
+static
+tglob(c)
+	register char c;
+{
+
+	if (any(c, globchars))
+		gflag |= c == '{' ? 2 : 1;
+	return (c);
+}
+/*
+static
+trim(c)
+	char c;
+{
+
+	return (c & TRIM);
+} */
+
+
+letter(c)
+	register char c;
+{
+
+	return (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_');
+}
+
+digit(c)
+	register char c;
+{
+
+	return (c >= '0' && c <= '9');
+}
+
+any(c, s)
+	register int c;
+	register char *s;
+{
+
+	while (*s)
+		if (*s++ == c)
+			return(1);
+	return(0);
+}
+blklen(av)
+	register char **av;
+{
+	register int i = 0;
+
+	while (*av++)
+		i++;
+	return (i);
+}
+d673 2
+a674 3
+blkcpy(oav, bv)
+	char **oav;
+	register char **bv;
+d676 9
+a684 5
+	register char **av = oav;
+	while (*av++ = *bv++)
+		continue;
+	return (oav);
+}
+d686 10
+a695 65
+blkfree(av0)
+	char **av0;
+{
+	register char **av = av0;
+
+	while (*av)
+	{
+		extern char argbuf[200];
+		char *p = *av++;
+		if( (p < argbuf) || (p > (argbuf+200)) )
+			free(p);
+	}
+}
+
+static
+char *
+strspl(cp, dp)
+	register char *cp, *dp;
+{
+	register char *ep = malloc((unsigned)(strlen(cp) + strlen(dp) + 1));
+
+	if (ep == (char *)0)
+		fatal("Out of memory");
+	(void) strcpy(ep, cp);
+	(void) strcat(ep, dp);
+	return (ep);
+}
+
+char **
+copyblk(v)
+	register char **v;
+{
+	register char **nv = (char **)malloc((unsigned)((blklen(v) + 1) *
+						sizeof(char **)));
+	if (nv == (char **)0)
+		fatal("Out of memory");
+
+	return (blkcpy(nv, v));
+}
+
+static
+char *
+strend(cp)
+	register char *cp;
+{
+
+	while (*cp)
+		cp++;
+	return (cp);
+}
+/*
+ * Extract a home directory from the password file
+ * The argument points to a buffer where the name of the
+ * user whose home directory is sought is currently.
+ * We write the home directory of the user back there.
+ */
+gethdir(home)
+	char *home;
+{
+	register struct passwd *pp = getpwnam(home);
+
+	if (!pp || home + strlen(pp->pw_dir) >= lastgpathp)
+		return (1);
+	(void) strcpy(home, pp->pw_dir);
+	return (0);
+@

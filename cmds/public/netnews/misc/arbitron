@@ -1,0 +1,267 @@
+From reid@decwrl.DEC.COM Wed Jun  4 13:23:12 1986
+Received: by seismo.CSS.GOV; Wed, 4 Jun 86 12:52:01 EDT
+Received: from saturn.DEC.COM by sonora.DEC.COM (4.22.05/4.7.34)
+	id AA09759; Wed, 4 Jun 86 09:51:39 pdt
+Received: by saturn.DEC.COM (4.22.05/4.7.34)
+	id AA15981; Wed, 4 Jun 86 09:52:49 pdt
+From: reid@decwrl.DEC.COM (Brian Reid)
+Message-Id: <8606041652.AA15981@saturn.DEC.COM>
+Date:  4 Jun 1986 0952-PDT (Wednesday)
+To: rick
+Subject: arbitron packaged with news
+Status: R
+
+Could you please delete the "arbitron" script that is packaged with
+news, and replace it with the one below? Thanks. It has a lot of bug
+fixes.
+
+#! /bin/sh
+# @(#)arbitron	2.2	05/30/86
+# arbitron -- this program produces rating sweeps for USENET.
+#
+# Usage: arbitron
+#
+# To use this program, edit the "configuration" section below so that the
+# information is correct for your site, and then run it. It will produce a
+# readership survey for your machine and mail that survey to decwrl, with
+# a cc to you.
+#
+# To participate in the international monthly ratings sweeps, 
+# run "arbitron" every month. I will run the statistics program on the last
+# day of each month; it will include any report that has reached it by that
+# time. To make sure your site's data is included, run the survey program no
+# later than the 20th day of each month.
+#
+# Brian Reid, DEC Western Research Lab, reid@decwrl
+# Updated and bugfixed by 
+#	Spencer Thomas, U.of Utah
+#	Geoff Kuenning, SAH Consulting
+# Updated to work with 2.10.1 and older news systems by
+#	Lindsay Cleveland, AT&T Technologies/Bell Labs
+#
+# Note that the results of this program are dependent on the rate at which
+# you expire news.  If you are a small site that expires news rapidly, the
+# results may indicate fewer active readers than you actually have.
+#
+# copied to a certain extent from the "subscribers"
+# script posted by Blonder, McCreery, and Herron.
+###########################################################################
+# Configuration information. Edit this section to reflect your site data. #
+TMPDIR=/tmp
+NEWS=/usr/lib/news
+SPOOL=/usr/spool/news
+
+# Make a crude stab at determining the system type
+if [ -d /usr/ucb ]
+then
+    STYPE="bsd"
+else
+    STYPE="usg"
+fi
+
+# Range of /etc/passwd UID's that represent actual people (rather than
+# maintenance accounts or daemons or whatever)
+lowUID=5
+highUID=9999
+
+# If you aren't running a distributed news system (nntpd & rrn, usually),
+# leave NEWSHOST blank. Else set it to the name of the host from which you
+# can rcp a copy of the active file.
+NEWSHOST=
+
+# uucp path: {ihnp4, decvax, ucbvax}!decwrl!netsurvey
+# summarypath="netsurvey@decwrl.dec.com $USER"
+summarypath="ihnp4!decwrl!netsurvey"
+
+# We need to find the uucp name of your host. If this code doesn't work,
+# then just put it in literally like this:
+#	hostname="ihnp4"
+
+case $STYPE in
+	bsd) hostname=`(hostname || uuname -l) 2>&-`;;
+        sysv)hostname=`(uname -n || uuname -l ||  hostname) 2>&-`;;
+	*)   hostname=`(uuname -l) 2>&-`;;
+esac;
+
+PATH=$NEWS:/usr/local/bin:/usr/ucb:/usr/bin:/bin
+############################################################################
+export PATH
+# ---------------------------------------------------------------------------
+trap "rm -f $TMPDIR/arb.*.$$; exit" 0 1 2 3 15
+set `date`
+dat="$2$6"
+destination="${MAILER-mail} $summarypath"
+
+################################
+# Here are several expressions, each of which figures out approximately how
+# many people use this machine. Comment out all but 1 of them; pick the one
+# you like best. Initially the most universal but least reliable of them is
+# uncommented.
+# # ###### Scheme #1: fast but usually returns too big a number
+nusers=`awk -F: "BEGIN {N=0}\\$3>=$lowUID && \\$3<=$highUID{N=N+1}END{print N}" </etc/passwd`
+
+# # ###### Scheme #2 (works with BSD systems)
+#nusers=`last | sort -u +0 -1 | wc -l`
+
+# # ###### Scheme #3 (works with USG systems)
+#nusers=`who /etc/wtmp | sort -u +0 -1 | wc -l`
+
+# # ###### Scheme #4 (provided by Lindsay Cleveland)
+# # ###### (Same idea as #1, but excludes various junk accounts)
+#awk -F: "\$3 >= $lowUID && \$3 <= $highUID{printf \"if test -d %s ; then echo %s;egrep : %s/.newsrc; fi\n\",\$6,\$1,\$6}" \
+#	</etc/passwd | sh 2>/dev/null | awk  -f $tmpdir/arb.sel.$$ >$tmpdir/arb.tmp.$$
+#nusers=`awk "BEGIN {N=0} NF == 1{N=N+1}END{print N}" <$tmpdir/arb.tmp.$$`
+################################
+#
+# Set up awk scripts;  these are too large to pass as arguments on most
+# systems. It also eliminates lines that have
+# colons but no article numbers on them (usually due to new groups that
+# haven't been posted to yet). As a side effect, this script removes the
+# first colon from each line, which makes life easier for later awk scripts.
+#
+cat > $TMPDIR/arb.sel.$$ << 'CAT'
+/^[a-z]*\..*: *[0-9].*$/	{ split($0,n,":"); print n[1], n[2] }
+NF == 1	&& $1 ~ /^[a-z]*$/{ print $1 }
+CAT
+#
+# This second awk script generates the actual output report.
+# We use 'sed' to substitute in the shell variables to save ourselves
+# endless hassle trying to find quoting/backslashing problems.
+#
+# The input to this script consists of three types of lines:
+#
+#	(1) Active-file lines.  These have four fields:  newsgroup name,
+#	    first existing article, last article number, 'y' or 'n'
+#	    to allow/disallow posting.
+#			mod.mac 00001 00001 y
+#	    These all come first, which is important.
+#	(2) User names.  These have one field.
+#			usenet
+#	(3) .newsrc lines.  These have two fields:  the newsgroup name,
+#	    and the articles-read information.  The latter can be
+#	    arbitrarily complex.  It can also be arbitrarily long;
+#	    this can potentially break either awk or sed, in which
+#	    case the script will not work.
+#			mod.map  1-199
+#			mod.sources  1-337
+#
+#	The script uses the type 1 lines to build a table of newsgroups
+#	and their active article ranges.  The .newsrc (type 3) lines are
+#	then used to deduce which groups are being read by a user (a group
+#	is being read if the last article seen is in that group's active
+#	article range).  The user names are used to keep track of who reads
+#	each group, which isn't all that useful but is interesting.  When
+#	all input has been read, a report is printed summarizing the results.
+#
+sed  -e "s/NUSERS/$nusers/g" -e "s/HOSTNAME/$hostname/g" \
+     -e "s/DATE/$dat/g" \
+  > $TMPDIR/arb.fmt.$$ << 'DOG'
+# makereport -- utility for "arbitron". Shamelessly copied from the
+# similar script distributed with "subscribers.sh" by Blonder, McCreery, and
+# Herron.
+# 
+BEGIN	{ rdrcount = 0 ; reader = "" ; grpcount = 0 ; realusers = 0}
+
+# Active file line:  count newsgroups, record and cross-index group, and
+# record first and last article numbers.  Set group's reader count and list
+# to none.
+NF == 4	{
+	  grpcount++
+	  grpname[grpcount] = $1
+	  grpnumber[$1] = grpcount
+	  grplast[grpcount] = $2
+	  grpfirst[grpcount] = $3
+	  grpcounts[grpcount] = 0
+	  grpreaders[grpcount] = ""
+	}
+# User name.  Count readers, record and cross-index reader.
+			# 1 field means it's a user name
+NF == 1 { rdrcount++; rdrname[rdrcount] = $1; rdrnumber[$1] = rdrcount
+	  reader = $1}
+
+# .newsrc line.  Break out the final number, which is the last article that
+# has actually been read.  This is a pretty good indicator of the person's
+# true interest in the group.  If 'lastread' for the group is a current
+# (unexpired) article, record a reader for that group.  Finally, record
+# the user as a "real" user of the news system.
+			# 2 fields means it's a .newsrc line
+NF == 2 { gnum = grpnumber[$1] 
+	  n1 = split($2, n2, "-")
+	  n3 = split(n2[n1], n4, ",")
+	  lastread = n4[n3]
+	  if (lastread >= grpfirst[gnum]) {
+# To exclude groups with no traffic, use the next line instead of previous
+# 	  if ((grpfirst[gnum] != grplast[gnum]) && (lastread >= grpfirst[gnum]) && (lastread <= grplast[gnum])) {
+		  grpcounts[gnum]++
+		  if (realuser[rdrcount] == 0) {
+		      realuser[rdrcount]=1
+		      realusers++
+		  }
+	  }
+	} 
+
+#	End of file.  Print the report in 2 columns.
+END	{printf("9999 Host\t\t%s\n","HOSTNAME")
+	 printf("9998 Users\t\t%d\n",NUSERS)
+	 printf("9997 NetReaders\t%d\n",realusers)
+	 printf("9996 ReportDate\t%s\n","DATE")
+
+	 for (i = 1;  i <= grpcount;  i++) {
+	    if (grpcounts[i] > 0) {
+		printf("%d %s\n",grpcounts[i], grpname[i])
+	    }
+	}
+    }
+DOG
+
+cat >$TMPDIR/arb.pwd.$$ <<'MOUSE'
+BEGIN {seen["/"]=1; seen[""] = 1;}
+{if (seen[$6]!=1) {
+		printf("if [ -r %s/.newsrc ] ; then ", $6)
+		printf("echo %s; egrep : < %s/.newsrc ; fi\n", $1, $6)
+		seen[$6]=1;
+                  }
+}
+MOUSE
+# First get the list of .newsrc files with duplicates and unreadable files
+# removed.
+awk -F: -f $TMPDIR/arb.pwd.$$ \
+	</etc/passwd | \
+	 sh | \
+	 awk -f $TMPDIR/arb.sel.$$ >$TMPDIR/arb.tmp.$$
+# Check to make sure that we found some
+
+# but first, make sure we have an active file
+if test X$NEWSHOST = X
+then
+ACTIVE=$NEWS/active
+else
+ACTIVE=/tmp/arb.active.$$
+rcp $NEWSHOST:$NEWS/active $ACTIVE
+fi
+
+if test -s $TMPDIR/arb.tmp.$$
+then
+    # See if "active" file has 4 fields or only two (pre-2.10.2)
+    set `grep '^net.announce' $ACTIVE | sed 1q`
+    if test $# -eq 2 ; \
+      then	egrep  '^[a-z]*\.' $ACTIVE | \
+	    while read group last ; \
+	    do	dir=`echo "$group" | sed 's;\.;/;g'`; \
+		    first=`ls $SPOOL/$dir | grep '^[0-9]*' | sort -n | sed 1q`; \
+		    case $STYPE in
+		        usg) echo "$group $last ${first:-$last} X";; \
+		 	*) echo "$group $last ${first-$last} X" ;;\
+		    esac; \
+	    done ; \
+      else	egrep '^[a-z]*\.' $ACTIVE ; \
+    fi | sort | \
+	sort | \
+	awk -f $TMPDIR/arb.fmt.$$ - $TMPDIR/arb.tmp.$$ | sort -nr | \
+	grep -v '^$' | \
+	sed -e 's/^999[0-9] //' | $destination
+else
+    echo Unable to find any readable .newsrc files 2>&1
+    exit 1
+fi
+

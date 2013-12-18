@@ -1,0 +1,207 @@
+head	1.2;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2_Fault:1.2
+	Helios1_2_2_Native:1.2
+	Helios1_2_2_native_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	91.03.01.17.21.33;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.14.58.37;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@accidentally left checked out somehow.
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- runtf.c								--
+--                                                                      --
+--	Private command to run a Taskforce.				--
+--                                                                      --
+--	Author:  BLV 27/7/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/runtf.c,v 1.1 90/09/12 14:58:37 jon Exp Locker: bart $";
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <syslib.h>
+#include <gsp.h>
+#include <codes.h>
+#include <nonansi.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <posix.h>
+#include "session.h"
+#include "private.h"
+#include "exports.h"
+
+static int	remote(char **argv);
+static void	remotesignal(int sig);
+static Object	*program;
+static Environ	*my_environ;
+
+int main(int argc, char **argv)
+{	
+  if( argc < 2 ) 
+   { fprintf(stderr, "runtf : usage, runtf cmd args...\n");
+     return(EXIT_FAILURE);
+   }
+
+  my_environ = getenviron();
+  if (my_environ eq Null(Environ))
+   { fprintf(stderr, "runtf : failed to get own environment.\n");
+     return(EXIT_FAILURE);
+   }
+
+  return(remote(&(argv[1])));
+}
+
+extern void find_file(char *, char *);
+
+static int remote(char **argv)
+{ Object	*code = Null(Object);
+  Object	*tfm  = Null(Object);
+  Stream	*s = Null(Stream);
+  word		rc = EXIT_FAILURE;
+  Environ	new_environment;
+  Object	*Objv[OV_End + 1];
+  char		program_name[IOCDataMax];
+
+  tfm = RmGetTfm();
+  if (tfm eq Null(Object))
+   { fprintf(stderr, "runtf: failed to access taskforce manager.\n");
+     goto done;
+   }
+   
+  find_file(program_name, argv[0]);
+  code = Locate(CurrentDir, program_name);
+  if (code eq Null(Object))
+   { fprintf(stderr, "runtf: cannot locate %s, fault 0x%0x\n", argv[0],
+   		Result2(CurrentDir));
+     goto done;
+   }
+   
+  program = Execute(tfm, code);
+  if (program eq Null(Object))
+   { fprintf(stderr, "runtf : failed to execute %s in %s, fault 0x%08x\n",
+   		code->Name, tfm->Name, Result2(tfm));
+     goto done;
+   }
+
+  s = Open(program, Null(char), O_Execute);
+  if (s eq Null(Stream))
+   { fprintf(stderr, "runtf : failed to open %s, fault 0x%08x\n",
+   		program->Name, Result2(program));
+     goto done;
+   }
+
+  new_environment.Envv = my_environ->Envv;
+  new_environment.Strv = my_environ->Strv;
+  new_environment.Argv = argv;
+  { Object **old_objv 	= my_environ->Objv;
+    Objv[OV_Cdir] 	= old_objv[OV_Cdir];
+    Objv[OV_Task]	= (Object *) MinInt;
+    Objv[OV_Code]	= (Object *) MinInt;
+    Objv[OV_Source]	= code;
+    Objv[OV_Parent]	= old_objv[OV_Task];
+    Objv[OV_Home]	= old_objv[OV_Home];
+    Objv[OV_Console]	= old_objv[OV_Console];
+    Objv[OV_CServer]	= old_objv[OV_CServer];
+    Objv[OV_Session]	= old_objv[OV_Session];
+    Objv[OV_TFM]	= old_objv[OV_TFM];
+	/* BLV - should be <program>, but needs PseudoObject in GetEnv */
+    Objv[OV_TForce]	= (Object *) MinInt;
+    Objv[OV_End]	= Null(Object);
+  }
+  new_environment.Objv	= Objv;
+  if ((rc = SendEnv(s->Server,&new_environment)) < Err_Null)
+   { fprintf(stderr, "runtf : failed to send environment, fault 0x%08x\n",
+   		rc);
+     goto done;
+   }
+
+   { struct sigaction	temp;
+     if (sigaction(SIGINT, Null(struct sigaction), &temp) ne 0)
+      { fprintf(stderr, "runtf : warning, failed to access signal handling facilities.\n");
+        goto skip_signal;
+      }
+     temp.sa_handler	= &remotesignal;
+     temp.sa_flags	|= SA_ASYNC;
+     if (sigaction(SIGINT, &temp, Null(struct sigaction)) ne 0)
+      fprintf(stderr, "runtf : warning, failed to modify signal handling facilities.\n");
+   }
+skip_signal:   
+      
+   { 
+     InitProgramInfo(s,PS_Terminate);
+     rc = GetProgramInfo(s, Null(WORD), -1);
+   }
+
+  rc = EXIT_SUCCESS;
+
+done:
+  if (code ne Null(Object)) Close(code);
+  if (tfm ne Null(Object))  Close(tfm);
+  if (s ne Null(Stream))
+   { if (rc ne EXIT_SUCCESS)
+      SendSignal(s, SIGKILL);
+     Close(s);
+   } 
+  if (program ne Null(Object)) Close(program);
+  return(rc);
+}
+
+static void remotesignal(int sig)
+{ Stream *s;
+  s = PseudoStream(program, O_Execute);
+  if( s ne Null(Stream))
+   { SendSignal(s,sig);	Close(s); }
+}
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header$";
+@

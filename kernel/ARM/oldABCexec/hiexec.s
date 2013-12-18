@@ -1,0 +1,1408 @@
+        TTL  ARM Helios Executive (System independent routines) > hiexec/s
+        SUBT Copyright (c) 1989, Active Book Company, Cambridge, United Kingdom
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ARM HELIOS Executive (hi-level Nucleus support routines)
+        ;
+        ; Author:       James G Smith
+        ;
+        ; Notes:
+        ; ------
+        ; All defined routines available externally will be provided as PCS
+        ; function call definitions. A suitable C header file will define the
+        ; function prototypes ("mcdep.h" in the Helios kernel source).
+        ;
+        ; When conforming to the Acorn PCS "a1", "a2", "a3" and "a4" are not
+        ; preserved over a procedure call. This should be noted when
+        ; constructing assembler that must interface directly with compiled
+        ; PCS procedures. Currently certain routines WILL preserve these
+        ; registers. This was done to aid debugging during development.
+        ;
+        ; **** NOTE ****
+        ; Some routines expect to be called in USR mode. IRQ/FIQ state is
+        ; undefined and depends on the current process. OS mode should be
+        ; active for all routines called since they may directly access
+        ; Executive workspace (Most routines will preserve r14 over SWI
+        ; calls in-case they are executing in SVC mode).
+        ;
+        ; All access to the lo-level Executive (system dependent) functions
+        ; will be via a defined SWI interface.
+        ;
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Printing options
+
+	GET	listopts.s		; listing options
+
+        ; ---------------------------------------------------------------------
+
+                GBLL    badaddress
+badaddress      SETL    {TRUE}          ; complain if invalid fn ptr
+
+                GBLL    stackcheck
+stackcheck      SETL    {FALSE}         ; include stack limit checking in
+                                        ; critical functions.
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+        !       0,"Processing hiexec.s (Helios Executive interface)"
+
+        !       0,"Code included to preserved ALL registers in PCS"
+        ; The PCS wrapper should be removed around routines that call
+        ; no other PCS functions. It is possible to call SWIs (since these
+        ; are system routines and do NOT conform to the PCS standard). If the
+        ; PCS wrapper is removed, the function name need not be stored, since
+        ; this is only ever referenced by the state stored on a PCS entry.
+        ; This would save a small amount of code space.
+        ; The above comment (about preserving a1-a4) is TRUE, but for the
+        ; moment is is probably safer to preserve all possible state.
+
+        GET     fixes.s
+        GET     basic.s
+        GET     arm.s
+        GET     exmacros.s
+        GET     structs.s
+	GET	module.s
+        GET     exstruct.s
+        GET     SWIinfo.s
+        GET     ROMitems.s
+        ;GET     hardABFP.s	; why is this being included?
+        GET     manifest.s
+        GET     config.s
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+a1              RN      r0              ; PCS register based argument
+a2              RN      r1              ; PCS register based argument
+a3              RN      r2              ; PCS register based argument
+a4              RN      r3              ; PCS register based argument
+
+v1              RN      r4              ; C "register" variable
+v2              RN      r5              ; C "register" variable
+v3              RN      r6              ; C "register" variable
+v4              RN      r7              ; C "register" variable
+v5              RN      r8              ; C "register" variable
+
+v6              RN      r9              ; use of "v6" is deprecated by "dp"
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; "__stack_overflow" (called "x$stackoverflow" in the Acorn ANSI
+        ; library, and the code generated by the NorCroft ARM C compiler)
+        ; This "function" is entered when there is insufficient stack for the
+        ; procedure entry. PCS functions should claim all the stack they will
+        ; need on procedure entry (to ensure stack overflow does NOT occur
+        ; within a procedure).
+
+        IMPORT  __stack_overflow,EXCEPTION
+	IMPORT	__stack_overflow_1,EXCEPTION
+	LIB
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; lo-level external interface -----------------------------------------
+        ; ---------------------------------------------------------------------
+        ; word ExecRoot(void) ;
+        ; Return the address of the Executive ExecRoot data structure.
+        ;
+ExecRoot	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]		; a1 = address of ExecRoot structure
+	|
+        SWI     exec_FindExecRoot	; a1 = address of ExecRoot structure
+	]	; EOF (speedup)
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; void ExecInit(void) ;
+        ; Initialise the ExecRoot data structure and the server IO device.
+        ; In all current implementations server IO is via a link adaptor.
+        ; This function should ideally be moved to the lo-executive, and
+        ; provided as a SWI.
+
+ExecInit	FnHead
+        STMFD   sp!,{lk}        ; makes function call
+
+	[	(speedup)
+	MOV	a4,#fast_structure_pointer
+	LDR	a4,[a4,#&00]		; a4 = address of ExecRoot structure
+	|
+        SWI     exec_FindExecRoot	; a1 = address of ExecRoot structure
+        MOV     a4,a1                   ; a4 = ExecRoot structure address
+	]	; EOF (speedup)
+
+        MOV     a1,#&00000000           ; NULL
+
+        ; we need to initialise the correct number of ProcessQs
+        MOV     a3,#NumberPris          ; number of priority levels
+        ADD     a2,a4,#ExecRoot_queues  ; base address of queues
+        ; initialise the correct number of process queues
+init_rq_loop    
+        STR     a1,[a2,#ProcessQ_head]  ; initialise the head of the queue
+        STR     a2,[a2,#ProcessQ_tail]  ; the tail points at the head
+        ADD     a2,a2,#ProcessQ_size    ; and step onto the next queue
+        SUBS    a3,a3,#&01
+        BNE     init_rq_loop
+
+        ; Clear (zero) all the other "ExecRoot" fields
+        STR     a1,[a4,#ExecRoot_timerQ]        ; Timer queue has no "tail"
+
+	[	{TRUE}
+	STR	a1,[a4,#ExecRoot_cardevents]	; No "CardEvent" structures
+	]	; EOF {boolean}
+
+        STR     a1,[a4,#ExecRoot_timer]         ; micro-second timer
+        STR     a1,[a4,#ExecRoot_cstimer]       ; centi-second timer
+        STR     a1,[a4,#ExecRoot_timeslice]     ; useconds remaining to process
+        STR     a1,[a4,#ExecRoot_pri]           ; current process priority
+	; The current process priority has already been initialised by the
+	; lo-level Executive startup code, just in-case any interrupts occurred
+	; before this code is executed. The timeslice field is zero, since
+	; hi-priority processes cannot be pre-empted or timesliced.
+
+	[	{FALSE}	; see initialisation code below
+        STR     a1,[a4,#ExecRoot_hipri]         ; highest priority that can run
+	]	; EOF {boolean}
+        STR     a1,[a4,#ExecRoot_flags]         ; process state flags
+        STR     a1,[a4,#ExecRoot_idleLog]       ; number of seconds IDLE
+        STR     a1,[a4,#ExecRoot_fparea]        ; this process has NOT used FP
+        STR     a1,[a4,#ExecRoot_initial_dp]    ; this process has NO dp
+	STR	a1,[a4,#ExecRoot_IRQoffcount]	; count of IRQ disable calls
+
+        ; Reference the nucleus device driver process.
+        ; (At this stage we do NOT know what or where it is, so leave as NULL)
+        STR     a1,[a4,#ExecRoot_devhand]
+	[	(shutdown)
+	; Reference the nucleus device driver shutdown process.
+	; (At this stage we do NOT know what or where it is, so leave as NULL)
+	STR	a1,[a4,#ExecRoot_shutdownhand]
+	]	; EOF (shutdown)
+
+	; Ensure that the first non-IDLE process can run
+	MOV	a3,#(NumberPris - 1)	; lowest user priority
+        STR     a3,[a4,#ExecRoot_hipri]	; highest priority that can run
+
+	[	(shutdown)
+	; -----
+	!	0,"TODO: read the default (EEPROM stored) stage1 timeout value"
+	MOV	a1,#&01
+	; -----
+
+	ADD	a2,a1,#&01		; get EEPROM value into desired range
+	LDR	a3,=(30 * 100)		; seconds multiplier times 100Hz
+	MUL	a1,a2,a3		; timeout = (n + 1) * 30 * 100
+	STR	a1,[a4,#ExecRoot_timeout_stage1]
+	;
+	; ------
+	!	0,"TODO: read the default (EEPROM stored) stage2 timeout value"
+	MOV	a1,#&01
+	; ------
+
+	ADD	a2,a1,#10		; get value into desired range
+	MOV	a3,#100			; 100Hz multiplier
+	MUL	a1,a2,a3		; timeout = ((n + 10) * 100)
+	STR	a1,[a4,#ExecRoot_timeout_stage2]
+	]	; EOF (shutdown)
+
+	[	(memmap)
+	; We should read the current (default) MEMMAP state and initialise
+	; the ExecRoot suitably.
+	MOV	a1,#HWReg_MEMMAP		; MEMMAP_regs soft-copy index
+	MOV	a2,#&00000000			; no bits to clear
+	MOV	a3,#&00000000			; no bits to set
+	SWI	exec_HWRegisters
+	STR	a2,[a4,#ExecRoot_memmap]	; current MEMMAP state defined
+	]	; EOF (memmap)
+
+        SWI     exec_InitBackplane		; init standard hardware
+        ; V clear = initialised OK
+        ; V set   = initialisation failed (no link adaptor?)
+        !       0,"Include error generation when backplane init fails"
+
+        SWI     exec_InitClock			; init and start system timer
+
+	[	(shutdown)
+	; Start the idle timeout value (since we now have a running clock)
+	SWI	exec_ResetIdleTimeout
+	]	; EOF (shutdown)
+
+        LDMFD   sp!,{pc}^
+
+        ; ---------------------------------------------------------------------
+        ; word _cputime(void) ;
+        ; Return the current number of centi-second clock ticks
+        ;
+_cputime	FnHead
+        MOV     ip,lk
+        SWI     exec_CPUTime                    ; a1 = current num clock ticks
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; word _ldtimer(word);
+        ; Return the current number of centi-second or micro-second clock ticks
+        ;
+_ldtimer	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a2,#fast_structure_pointer
+	LDR	a2,[a2,#&00]			; a2 = ExecRoot structure
+	TEQ	a1,#&00000000			; entry flag : 0 = us; !0 = cs
+	LDREQ	a1,[a2,#ExecRoot_timer]		; micro-seconds
+	LDRNE	a1,[a2,#ExecRoot_cstimer]	; centi-seconds
+	|
+        MOV     a2,a1                           ; preserve entry flag
+        SWI     exec_FindExecRoot               ; a1 = ExecRoot structure
+        TEQ     a2,#&00000000                   ; 0 = us; !0 = cs
+        LDREQ   a1,[a1,#ExecRoot_timer]         ; micro-seconds
+        LDRNE   a1,[a1,#ExecRoot_cstimer]       ; centi-seconds
+	]	; EOF (speedup)
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; void ResetCPU(void) ;
+        ; Reset the ARM
+        ;
+ResetCPU	FnHead
+	MOV	ip,lk
+	SWI	exec_ResetCPU
+	; only returns if unable to reset this version
+	MOVS	pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; void ResetLink(void) ;
+        ; Reset the single link adapter
+        ;
+ResetLink	FnHead
+        !       0,"ResetLink code to be written"
+        MOVS    pc,lk
+
+        ; ---------------------------------------------------------------------
+        ; void ExecHalt(void) ;
+        ; Terminate Executive execution.
+        ; This call should NOT be returned from.
+ExecHalt	FnHead
+        MOV     a1,#halt_executive
+        SWI     exec_ExecHalt       
+        ; should NOT return, but if we do... go BANG!
+        ERROR   halt_failed,"** FATAL ** Return from ExecHalt call"
+
+        ; ---------------------------------------------------------------------
+
+	GBLL	mbdebug
+mbdebug	SETL	{FALSE}	; 2nd link debugging
+
+	[	{TRUE}	; JGS 910402
+        ; void MoveBlock(word destination,word source,word length) ;
+        ; Move a (byte addressed) block of data. The best system would be to
+	; perform word transfers (since they take the same amount of time as
+        ; byte transfers, but shift four times the data) but this relies on
+        ; the source and destination having the same byte alignment within the
+        ; address word. We provide optimal code where such an alignment exists,
+        ; providing reasonably optimal code for the cases where the address
+	; arguments are not aligned. Using load and store multiple instructions
+	; (LDM and STM) also increase the performance, since we do not need to
+        ; perform instruction fetching/decoding/executing between every word.
+	;
+MoveBlock	FnHead
+        MOV     ip,sp
+        STMFD   sp!,{v1,v2,v3,v4,v5,dp,fp,ip,lk,pc}
+        SUB     fp,ip,#&04
+	; The stack is not used in this function other than entry and exit.
+	; This function does NOT call any other functions. We therefore are
+	; not required to call the stack overflow handler.
+	;
+	; We have stacked the "dp" register on entry. As long as this code
+	; does not need to access the module table, we can use the register
+	; as temporary workspace, restoring its value on exit.
+	;
+        ; a1 = destination address
+        ; a2 = source address
+        ; a3 = number of bytes to transfer
+
+	; We should perform a study of the sizes of transfers performed using
+	; this function. If the majority are sufficiently small then all the
+	; work we perform in optimising the transfer will probably take more
+	; time than simply moving the bytes in the first place.
+
+	; -- First studies show that the majority of MoveBlocks are called
+	; -- with sizes of &0C, &10, &12, &14, &18 and the odd &08 and &20.
+	; -- Occasionally we are asked to move larger blocks (mostly by the
+	; -- RRD system).
+
+	; ** I have never seen a non-word-aligned (source and destination)
+	; ** transfer. However, we should still be able to cope with them
+	; ** since they may occur in exceptional circumstances.
+
+	[	(mbdebug)
+	STMFD	sp!,{a1}
+	ADR	a1,mbtxt1
+	SWI	exec_Output
+	LDMFD	sp,{a1}
+	SWI	exec_WriteHex8
+	ADR	a1,mbtxt2
+	SWI	exec_Output
+	MOV	a1,a2
+	SWI	exec_WriteHex8
+	ADR	a1,mbtxt3
+	SWI	exec_Output
+	MOV	a1,a3
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	LDMFD	sp!,{a1}
+	B	mbovr1
+mbtxt1	=	"MoveBlock: a1 = &",&00
+mbtxt2	=	" a2 = &",&00
+mbtxt3	=	" a3 = &",&00
+	ALIGN
+mbovr1
+	]	; EOF (mbdebug)
+
+	; Deal with over-lapping blocks
+	SUBS	v1,a1,a2		; delta (v1) = destination - source
+	MVNMI	v1,v1			; get absolute delta
+	CMP	v1,a3			; check against the length
+	BCC	MoveBlock_Overlap	; and special code if blocks overlap
+
+	; This code is optimised for direct word-aligned addresses.
+	TST	a1,#(word - 1)		; check for word-aligned destination
+	TSTEQ	a2,#(word - 1)		; check for word-aligned source
+	BNE	MoveBlock_Align		; code required to align addresses
+
+MoveBlock_Word_Aligned
+	; Source and destination addresses are word-aligned
+	; a1 = word aligned destination address
+	; a2 = word aligned source address
+	; a3 = number of bytes to move
+        BICS    a4,a3,#(word - 1)	; a4 = number of words to move * 4
+        BEQ     MoveBlock_Spare 	; less than one word to go
+	; Move (a4 >> 2) words from source to destination
+        SUB     a3,a3,a4        	; modify byte count for later use
+
+	; Get the "a4" byte count to be a multiple of four (4) words
+	MOVS	v1,a4,LSL #29
+	; bit 3 will now be in the Carry flag
+	; bit 2 will be in bit31 of the result, reflected in the miNus flag
+	; This code will do nothing if neither of these flags are set
+	LDMCSIA	a2!,{v1,v2}		; load two words
+	STMCSIA	a1!,{v1,v2}		; store two words
+	LDMMIIA	a2!,{v1}		; load one word
+	STMMIIA	a1!,{v1}		; store one word
+	; The "a4" byte count is now a multiple of four (4) words
+
+	; get word count to be a multiple of eight words
+	MOVS	v1,a4,LSL #27
+	; bit 4 will be in bit31 of the result, reflected in the miNus flag
+	; This code will do nothing if the flag is not set
+	LDMMIIA	a2!,{v1,v2,v3,v4}	; load four words
+	STMMIIA	a1!,{v1,v2,v3,v4}	; store four words
+
+	; We know that the "a4" byte count is a multiple of eight (8) words.
+	; Clear the relevant lo-order bits here, since we didn't update the
+	; the count when (possibly) copying the above words.
+	BICS	a4,a4,#((8 * word) - 1)
+	BEQ	MoveBlock_Spare		; end of transfer
+
+	; The "a4" byte count is now a multiple of eight (8) words
+MoveBlock_Word_Aligned_loop
+	LDMIA	a2!,{v1,v2,v3,v4,v5,dp,ip,lk}	; load eight words
+	STMIA	a1!,{v1,v2,v3,v4,v5,dp,ip,lk}	; store eight words
+	SUBS	a4,a4,#(word * 8)		; decrement the byte count
+	; We could optimise this approach by flattening out the loop (so that
+	; we don't break the pipe-line with this branch back).
+	BNE	MoveBlock_Word_Aligned_loop
+	; and fall through to...
+MoveBlock_Spare
+	; a1 = destination address
+	; a2 = source address
+	; a3 = number of bytes to move (less than one word)
+	MOVS	v1,a3,LSL #31
+	; bit 1 will now be in the Carry flag
+	; bit 0 will now be bit31 of the result, reflected in the miNus flag
+	LDRCSB	v1,[a2],#byte		; two bytes moved if Carry set
+	STRCSB	v1,[a1],#byte
+	LDRCSB	v1,[a2],#byte
+	STRCSB	v1,[a1],#byte
+	LDRMIB	v1,[a2],#byte		; one byte moved if miNus set
+	STRMIB	v1,[a1],#byte
+        ; copy completed
+        LDMEA   fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+	; ---------------------------------------------------------------------
+
+MoveBlock_Align
+	AND	a4,a1,#(word - 1)	; a4 = destination byte alignment
+	AND	v1,a2,#(word - 1)	; v1 = source byte alignment
+	TEQ	a4,v1			; check alignments for equality
+	BNE	MoveBlock_Align_Bad	; source and destination not aligned
+	; source and destination have same byte alignment
+	TEQ	a3,#&00000000		; check for zero length
+        LDMEQEA fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+MoveBlock_Align_Same_loop
+        LDRB    a4,[a2],#byte		; load byte from the source
+        STRB    a4,[a1],#byte		; store at the destination
+        SUBS    a3,a3,#byte		; and decrement the count
+        ; If we have no more bytes then exit immediately
+        LDMEQEA fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+        TST     a1,#(word - 1)  	; check for word-aligned destination
+        BNE     MoveBlock_Align_Same_loop
+	B	MoveBlock_Word_Aligned
+
+	; ---------------------------------------------------------------------
+
+MoveBlock_Overlap
+	AND	a4,a1,#(word - 1)	; a4 = destination byte alignment
+	AND	v1,a2,#(word - 1)	; v1 = source byte alignment
+	TEQ	a4,v1			; check alignments for equality
+	BNE	MoveBlock_Align_Bad	; source and destination not aligned
+	; source and destination have same byte alignment
+	TEQ	a4,#&00000000		; check for word alignment
+	BNE	MoveBlock_Overlap_byte
+MoveBlock_Overlap_word
+        BICS    a4,a3,#(word - 1)	; a4 = number of words to move * 4
+        BEQ     MoveBlock_Spare 	; less than one word to go
+
+        SUB     a3,a3,a4        	; we will move "a4" bytes of data
+MoveBlock_Overlap_loop
+	LDR	v1,[a2],#word		; load word from the source
+	STR	v1,[a1],#word		; store word at destination
+        SUBS    a4,a4,#word		; decrement word count
+	; We could optimise this approach by flattening out the loop (so that
+	; we don't break the pipe-line with this branch back).
+        BNE     MoveBlock_Overlap_loop	; and around the loop again
+        B       MoveBlock_Spare		; move any spare bytes to complete
+
+MoveBlock_Overlap_byte
+	TEQ	a3,#&00000000		; check for zero length
+        LDMEQEA fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+MoveBlock_Overlap_byte_loop
+        LDRB    v1,[a2],#byte		; load byte from the source
+        STRB    v1,[a1],#byte		; store at the destination
+        SUBS    a3,a3,#byte		; and decrement the count
+        ; If we have no more bytes then exit immediately
+        LDMEQEA fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+        TST     a1,#(word - 1)  	; check for word-aligned destination
+        BNE     MoveBlock_Overlap_byte_loop
+	B	MoveBlock_Overlap_word	; otherwise move words
+
+	; ---------------------------------------------------------------------
+
+MoveBlock_Align_Bad
+	; Source and destination have different byte alignments, so we word
+        ; align with the destination address.
+	TEQ	a3,#&00000000		; check for zero length
+        LDMEQEA fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+MoveBlock_Align_loop
+        LDRB    a4,[a2],#byte		; load byte from the source
+        STRB    a4,[a1],#byte		; store at the destination
+        SUBS    a3,a3,#byte		; and decrement the count
+        ; If we have no more bytes then exit immediately
+        LDMEQEA fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+        TST     a1,#(word - 1)  	; check for word-aligned destination
+        BNE     MoveBlock_Align_loop
+
+        BICS    a4,a3,#(word - 1)	; a4 = number of words to move * 4
+        BEQ     MoveBlock_Spare 	; less than one word to go
+
+        SUB     a3,a3,a4        	; we will move "a4" bytes of data
+
+	; We know that the source is NOT word-aligned from the fact that it
+	; has a different alignment to the destination (from above), which we
+	; have just word-aligned. This code discovers the alignment difference
+	; between the source and destination addresses.
+        MOVS    v1,a2,LSL #31   	; work out the source alignment
+	; bit 1 will now be in the Carry flag
+	; bit 0 will be in bit31 of the result, reflected in the miNus flag
+        BIC     v1,a2,#(word - 1)	; word-aligned base address
+        LDMIA	v1!,{v3}		; v3 = value from word-aligned source
+        ADD     a2,a2,a4        	; and source will move by "a4" bytes
+	; set up the v4 and v5 shifts accordingly
+	MOVMI	v4,#24			; v4 set if alignment of 1 or 3
+	MOVMI	v5,#8			; v5 set if alignment of 1 or 3
+	MOVPL	v4,#16			; v4 set if alignment of 2
+	MOVPL	v5,#16			; v5 set if alignment of 2
+	MOVCC	v4,#8			; v4 set if alignment of 1
+	MOVCC	v5,#24			; v5 set if alignment of 1
+MoveBlock_Aligned
+        MOV     v2,v3			; v2 = previous word
+        LDMIA   v1!,{v3}		; v3 = current word
+        MOV     v2,v2,LSR v4		; v2 = v2 >> v4
+        ORR     v2,v2,v3,LSL v5		; v2 = v2 OR (v3 << v5)
+        STR     v2,[a1],#word		; store v2 at word-aligned destination
+        SUBS    a4,a4,#word		; decrement word count
+	; We could optimise this approach by flattening out the loop (so that
+	; we don't break the pipe-line with this branch back).
+        BNE     MoveBlock_Aligned	; and around the loop again
+        B       MoveBlock_Spare		; move any spare bytes to complete
+
+	; ---------------------------------------------------------------------
+	|	; middle {boolean}
+	; ---------------------------------------------------------------------
+        ; void MoveBlock(word destination,word source,word length) ;
+        ; Move a block of data (byte addressed).
+        ; The best system would be to perform word transfers (at least 4 times
+        ; quicker) but this relies on the source and destination having the
+        ; same byte alignment within the word (We will provide various
+        ; optimised copy routines depending on the alignment of the arguments).
+        ;
+MoveBlock	FnHead
+        MOV     ip,sp
+        STMFD   sp!,{v1,v2,v3,fp,ip,lk,pc}
+        SUB     fp,ip,#&04
+        [       (stackcheck)
+        CMP     sp,sl
+	BLLT	__stack_overflow
+        ]
+
+        ; a1 = destination address
+        ; a2 = source address
+        ; a3 = number of bytes to transfer
+
+	[	{FALSE}
+	MOV	v1,r0
+	ADR	r0,mbdtxt1
+	SWI	exec_Output
+	MOV	r0,a2
+	SWI	exec_WriteHex8
+	ADR	r0,mbdtxt2
+	SWI	exec_Output
+	MOV	r0,v1
+	SWI	exec_WriteHex8
+	ADR	r0,mbdtxt3
+	SWI	exec_Output
+	MOV	r0,a3
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	MOV	r0,v1
+	B	mbdovr
+mbdtxt1	=	"MoveBlock: source &",&00
+mbdtxt2	=	" destination &",&00
+mbdtxt3 =	" amount &",&00
+	ALIGN
+mbdovr
+	]
+
+        ; Note: We must ensure that we do NOT generate aborts when the
+        ;       source data block is flush with the end of page. This code
+        ;       should be OK as long as pages are word-aligned, and not
+        ;       byte-aligned.
+
+        CMP     a3,#&00         ; exit immediately if no bytes to move
+        LDMEQEA fp,{v1,v2,v3,fp,sp,pc}^
+
+        !       0,"TODO: provide better MoveBlock alignment code"
+
+        ; Initially we word-align with the destination
+MoveBlock_Align
+        LDRB    a4,[a2],#&01    ; load byte from the source
+        STRB    a4,[a1],#&01    ; store at the destination
+        SUBS    a3,a3,#&01      ; and decrement the count
+        ; If we have no more bytes the exit immediately
+        LDMEQEA fp,{v1,v2,v3,fp,sp,pc}^
+
+        TST     a1,#&03         ; check for word-aligned destination
+        BNE     MoveBlock_Align ; NOT word-aligned, then transfer another byte
+
+        BICS    a4,a3,#&03      ; a4 = number of words to move * 4
+        BEQ     MoveBlock_Spare ; less than one word to go
+
+        ; now move words to the destination
+        SUB     a3,a3,a4        ; we will move "a4" bytes of data
+
+        MOVS    v1,a2,LSL #31   ; work out the source alignment
+        BIC     v1,a2,#&03      ; word-aligned base address
+        ADD     a2,a2,a4        ; and source will move by "a4" bytes
+        BCS     MoveBlock_Aligned_2or3
+
+        LDMMIIA v1!,{v3}
+        BMI     MoveBlock_Aligned_1
+
+MoveBlock_Aligned_0
+        ; Both source and destination are word-aligned
+        LDR     v2,[v1],#&04    ; load word from source
+        STR     v2,[a1],#&04    ; store word at destination
+        SUBS    a4,a4,#&04
+        BNE     MoveBlock_Aligned_0
+        B       MoveBlock_Spare
+
+MoveBlock_Aligned_1
+        ; Source is one byte out
+        MOV     v2,v3
+        LDMIA   v1!,{v3}
+        MOV     v2,v2,LSR #8
+        ORR     v2,v2,v3,LSL #24
+        STR     v2,[a1],#&04
+        SUBS    a4,a4,#&04
+        BNE     MoveBlock_Aligned_1
+        B       MoveBlock_Spare
+
+MoveBlock_Aligned_2or3
+        LDMIA   v1!,{v3}
+        BMI     MoveBlock_Aligned_3
+MoveBlock_Aligned_2
+        ; Source is two bytes out
+        MOV     v2,v3
+        LDMIA   v1!,{v3}
+        MOV     v2,v2,LSR #16
+        ORR     v2,v2,v3,LSL #16
+        STR     v2,[a1],#&04
+        SUBS    a4,a4,#&04
+        BNE     MoveBlock_Aligned_2
+        B       MoveBlock_Spare
+
+MoveBlock_Aligned_3
+        ; Source is three bytes out
+        MOV     v2,v3
+        LDMIA   v1!,{v3}
+        MOV     v2,v2,LSR #24
+        ORR     v2,v2,v3,LSL #8
+        STR     v2,[a1],#&04
+        SUBS    a4,a4,#&04
+        BNE     MoveBlock_Aligned_3
+MoveBlock_Spare
+        ; Copy the spare bytes (less than one word)
+        CMP     a3,#&00
+        LDMEQEA fp,{v1,v2,v3,fp,sp,pc}^
+MoveBlock_Spare_Loop
+        LDRB    a4,[a2],#&01    ; load byte from source
+        STRB    a4,[a1],#&01    ; store at destination
+        SUBS    a3,a3,#&01
+        BNE     MoveBlock_Spare_Loop
+
+        ; copy completed
+        LDMEA   fp,{v1,v2,v3,fp,sp,pc}^
+	]	; EOF {boolean}
+
+	; ---------------------------------------------------------------------
+	; void SetBlock(word address,word value,word length) ;
+	; Set ("length" >> 2) words from "address" (inclusive) to "value".
+	;
+	; The current "ZeroBlock" function is implemented as a MACRO, which
+	; in turn calls this function. It should replicate the word value
+	; up through the defined space. This function replaces the "SetBlock"
+	; MACRO, which dealt with setting word arrays. We can therefore
+	; assume that only word aligned addresses and length multiples will
+        ; be given (the same is probably true of the MoveBlock function above).
+	;
+SetBlock	FnHead
+	; a1 = address (word-aligned)
+	; a2 = word value
+	; a3 = length (word-aligned)
+
+	[	{FALSE}
+	STMFD	sp!,{a1,lk}
+	ADR	a1,sbtxt1
+	SWI	exec_Output
+	LDMFD	sp,{a1}
+	SWI	exec_WriteHex8
+	ADR	a1,sbtxt2
+	SWI	exec_Output
+	MOV	a1,a2
+	SWI	exec_WriteHex8
+	ADR	a1,sbtxt3
+	SWI	exec_Output
+	MOV	a1,a3
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	LDMFD	sp!,{a1,lk}
+	B	sbovr1
+sbtxt1	=	"SetBlock: a1 = &",&00
+sbtxt2	=	" a2 = &",&00
+sbtxt3	=	" a3 = &",&00
+	ALIGN
+sbovr1
+	]	; EOF {boolean}
+
+	[	{FALSE}
+	*** provide optimised set block *** ie. use STM instructions for
+					*** fastest register/memory transfer
+	]	; {boolean}
+
+	TEQ	a3,#&00000000		; check for zero length
+SetBlock_loop
+	MOVEQS	pc,lk			; return to the caller
+	STR	a2,[a1],#word		; store value
+	SUBS	a3,a3,#word		; decrement count (setting Z if zero)
+	B	SetBlock_loop		; and go around again
+
+        ; ---------------------------------------------------------------------
+        ; word ExchangeModTab(word dp) ;
+        ; Swap current and new module table addresses, returning the old
+        ; module table address. This really depends on which register is
+        ; allocated to be the global module table pointer (currently dp (v6)).
+        ; IRQs should NOT need to be disabled, since any IRQ process will have
+        ; its own copy of this register (it forming part of the process
+        ; SaveState).
+        ;
+        ; dp = a1 EOR dp
+        ; a1 = a1 EOR dp
+        ; dp = a1 EOR dp
+        ;
+Exchangemodtab	FnHead
+        ; Uses no stack and calls no other functions, therefore it does NOT
+        ; require the PCS wrapper code as long as we preserve the PCS regs.
+        EOR     dp,a1,dp
+        EOR     a1,a1,dp
+        EOR     dp,a1,dp
+        ; a1 = old dp
+        ; dp = entry a1
+        MOVS    pc,lk
+
+        ; ---------------------------------------------------------------------
+        ; byte *StoreSize(byte *mem_start) ;
+        ; Calculate the amount of available memory.
+        ; This call should be extended so that it will work in a memory managed
+        ; system. The "mem_start" address given on entry and the current
+        ; process information can be used to return the correct value for this
+        ; task.
+        ;
+        ; in:  a1 = base of free RAM
+        ; out: a1 = top of free RAM (last available location + 1)
+        ;
+StoreSize	FnHead
+        MOV     ip,lk
+        SWI     exec_SizeMemory
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+	; word FastStoreSize(byte **base)
+	; in:	a1 = pointer to word where base address will be placed
+	; out:	a1 = size of the FastRAM at the returned base address
+FastStoreSize	FnHead
+	MOV	ip,lk
+	MOV	a3,a1		; address of "base address" variable
+	SWI	exec_SizeFastMemory
+	; a1 = size of fast memory
+	; a2 = address of fast memory
+	STR	a2,[a3,#&00]
+	MOVS	pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; word Timer(void) ;
+        ; in:   no conditions
+        ; out:  a1 = current ExecRoot time (this is a micro-second value)
+        ;
+        ; address the ExecRoot structure (via branch table function)
+        ; load the timer value from the ExecRoot structure
+        ; return timer value to caller
+        ;
+Timer	FnHead
+        MOV     ip,lk                           ; preserve link register
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]			; a1 = ExecRoot structure
+	|
+        SWI     exec_FindExecRoot
+	]	; EOF (speedup)
+        LDR     a1,[a1,#ExecRoot_timer]         ; load timer value
+        MOVS    pc,ip                           ; exit using entry link reg
+
+        ; ---------------------------------------------------------------------
+        ; word CallWithModTab(word arg0,word arg1,VoidFnPtr fn,word *modtab) ;
+        ; Call a procedure with the given module table.
+        ; in:   a1 = arg0 for function
+        ;       a2 = arg1 for function
+        ;       a3 = function address
+        ;       a4 = module table address to replace current value
+        ; out:  no conditions (a1 possibly corrupted)
+        ;
+        ; replace the current module table addressed with the passed value
+        ; execute the function at the passed address
+        ; return to caller (restoring our module table pointer)
+        ;
+        ; Our "current task" module table pointer is held in a register
+        ;
+CallWithModTab	FnHead
+        STMFD   sp!,{dp,lk}
+
+        ; NOTE: this procedure entry stacks the module table pointer
+        MOV     dp,a4                           ; define new dp
+        MOV     lk,pc                           ; define return address
+        MOV     pc,a3                           ; branch to function
+        LDMFD   sp!,{dp,pc}^                    ; restore callers dp
+
+        ; ---------------------------------------------------------------------
+        ; SaveState *TimerQHead(void) ;
+        ; Return the process description at the front of the timer queue.
+        ;
+TimerQHead	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]		; a1 = ExecRoot structure address
+	|
+        SWI     exec_FindExecRoot       ; a1 = ExecRoot structure address
+	]	; EOF (speedup)
+        LDR     a1,[a1,#ExecRoot_timerQ]
+        ; a1 = head of timerQ process chain
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; void RunqPtrs(SaveState **p,word pri) ;
+        ; Return the head and tail process descriptions for the specified
+        ; process queue.
+        ;
+RunqPtrs	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a3,#fast_structure_pointer
+	LDR	a3,[a3,#&00]		; a3 = ExecRoot structure address
+	; a1 = address of buffer where we should place the process pointers
+	; a2 = desired priority level
+	; a3 = address of the ExecRoot structure
+	ADD	a3,a3,#ExecRoot_queues	; a3 = base address of queue structures
+	ADD	a2,a3,a2,LSL #ProcessQ_shift
+	LDMIA	a2,{a3,a4}		; load head and tail pointers
+	STMIA	a1,{a3,a4}		; store head and tail pointers
+	|
+        MOV     a3,a1
+        SWI     exec_FindExecRoot
+        ; a1 = address of the ExecRoot data structure
+        ; a2 = desired priority level
+        ; a3 = address of buffer where we should place the process pointers
+
+        ; copy the pointers to the allocated space
+        ADD     a1,a1,#ExecRoot_queues  ; a1 = base address of queue structures
+        ADD     a2,a1,a2,LSL #ProcessQ_shift
+        LDMIA   a2,{a1,a4}              ; head and tail pointers
+        STMIA   a3,{a1,a4}
+	]	; EOF (speedup)
+        ASSERT  (ProcessQ_head = &00)
+        ASSERT  (ProcessQ_tail = (ProcessQ_head + &04))
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; void InitEventHandler(VoidFnPtr handler) ;
+        ; Register the event handler function with the Executive.
+        ;
+InitEventHandler	FnHead
+        MOV     ip,lk
+        ; Register the function
+        SWI     exec_DefineHandler
+        ; V clear = OK
+        ; V set   = FAILED
+        !       0,"InitEventHandler: error handling to be done"
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; void InitShutdownHandler(VoidFnPtr handler) ;
+        ; Register the shutdown event handler function with the Executive.
+        ;
+InitShutdownHandler	FnHead
+        MOV     ip,lk
+        ; Register the function
+        SWI     exec_DefineShutdownHandler
+        ; V clear = OK
+        ; V set   = FAILED
+        !       0,"InitShutdownHandler: error handling to be done"
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; word SaveCPUState(SaveState *) ;
+        ; Fill the passed SaveState structure with our current process
+        ; description.
+        ; Returns:
+        ;       0       = Saved (return from "SaveCPUState")
+        ;       != 0    = Restored (return from "RestoreCPUState")
+        ;
+SaveCPUState	FnHead
+        ; Copy all the current state into the structure.
+        ; The "next" and "endtime" fields should be NULL.
+        ; The "a1" register should be set to a non-zero value.
+
+        ; NOTE: This could cause terrible problems if the "0" return
+        ;       function de-stacks, since the restored process will
+        ;       NOT have a valid stack-frame.
+	;	**** it is the callers responsibility to ensure that ****
+	;	**** this call is used sensibly			     ****
+
+        STR     a2,[a1,#SaveState_a2]
+        MOV     a2,a1
+        ADD     a1,a2,#SaveState_a3     ; index the rest of the registers
+        STMIA   a1,{a3,a4,v1,v2,v3,v4,v5,dp,sl,fp,ip,sp,lk}
+
+        MOV     ip,lk			; our callers return address
+					; (since the SWI will corrupt lk
+					;  if we are SVC mode)
+
+	TST	ip,#MODEmask		; check mode of caller
+	; Preserve USR mode r13 and r14 if we are saving the state of a
+ 	; non-USR mode thread. We will know to restore these registers
+	; since the pc to restore will contain the current processor mode.
+	ADDNE	a1,a2,#SaveState_usr_r13; address the SaveState locations
+	STMNEIA	a1,{r13,r14}^		; force USR mode transfer
+	NOP				; wait for registers to re-map
+
+        ; we should preserve the process "pri" in the SaveState
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]		; a1 = ExecRoot structure address
+	|
+        SWI     exec_FindExecRoot
+	]	; EOF (speedup)
+        LDR     a3,[a1,#ExecRoot_pri]
+        STR     a3,[a2,#SaveState_pri]
+        ; we should preserve the process "FP" state in the SaveState
+        LDR     a3,[a1,#ExecRoot_fparea]
+        STR     a3,[a2,#SaveState_fparea]
+        ; the initial module table pointer
+        LDR     a3,[a1,#ExecRoot_initial_dp]
+        STR     a3,[a2,#SaveState_initial_dp]
+	[	(memmap)
+	; and the MEMMAP state
+	LDR	a3,[a1,#ExecRoot_memmap]
+	STR	a3,[a2,#SaveState_memmap]
+	]	; EOF (memmap)
+
+        ; Place a non-zero value into the "SaveCPUState" return register
+        MOV     a1,#&FFFFFFFF
+        STR     a1,[a2,#SaveState_a1]   ; return code from restore SaveCPUState
+
+        MOV     a1,#&00000000
+        STR     a1,[a2,#SaveState_next]		; NULL next "SaveState" chain
+        STR     a1,[a2,#SaveState_timeslice]	; process needs re-scheduling
+	[	{TRUE}	; TimedWait support
+	; NULL the "SaveState" process state flags
+	STR	a1,[a2,#SaveState_flags]
+	]	; EOF {boolean}
+	; a1 = 0 --- the return value required to notify the user that we have
+	;	     returned from the SaveCPUState (rather than from the
+	;	     restored SaveState structure).
+	;
+        ; and give a valid PC so we can return cleanly.
+        ; Note: We do not want to return to a state that is de-stacking lot's
+        ;       of information, so return directly to the caller.
+        STR     ip,[a2,#SaveState_pc]
+        MOVS    pc,ip			; and return to the caller
+
+        ; ---------------------------------------------------------------------
+        ; void RestoreCPUState(SaveState *) ;
+        ; Continue execution from the described process SaveState.
+        ; Therefore this function never returns. The restored state is
+        ; that described completely by the passed "SaveState" structure.
+        ; Nothing is changed.
+
+RestoreCPUState	FnHead
+        ; Restore the processor state to that defined in the passed
+        ; "SaveState" structure.
+
+        ; This code assumes that the processor mode (or IRQ state) has
+        ; not changed since the "SaveCPUState"... since if we are a USR
+        ; mode process then we cannot restore the IF and MODE bits in
+        ; the PC. This could be achieved by entering SVC mode to perform
+        ; the register re-load (SWI exec_EnterSVC).
+
+        MOV     a4,a1
+        ; Restore the saved priority
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]		; a1 = ExecRoot structure address
+	|
+        SWI     exec_FindExecRoot
+	]	; EOF (speedup)
+        LDR     a3,[a4,#SaveState_pri]
+        STR     a3,[a1,#ExecRoot_pri]
+        LDR     a3,[a4,#SaveState_fparea]
+        STR     a3,[a1,#ExecRoot_fparea]
+        LDR     a3,[a4,#SaveState_initial_dp]
+        STR     a3,[a1,#ExecRoot_initial_dp]
+	[	(memmap)
+	LDR	a3,[a4,#SaveState_memmap]
+	STR	a3,[a1,#ExecRoot_memmap]
+
+	MOV	a1,#HWReg_MEMMAP	; index of MEMMAP soft-copy register
+	MOV	a2,#&FFFFFFFF		; a2 = bits to clear (ie. new value)
+					; a3 = bits to set
+	SWI	exec_HWRegisters	; and update the MEMMAP state
+	]	; EOF (memmap)
+
+	; Deal with restoring the USR mode r13 and r14 when we are returning
+	; to a non-USR mode thread.
+	LDR	a1,[a4,#SaveState_pc]	; destination processor mode
+	TST	a1,#MODEmask
+	ADDNE	a1,a1,#SaveState_usr_r13; reference the SaveState locations
+	LDMNEIA	a1,{r13,r14}^		; force USR mode transfer
+	; the following instruction must NOT use mapped registers
+
+        ; Reference the saved register set
+        ADD     a1,a4,#SaveState_a1
+        ; Return to the "SaveCPUState" state
+        LDMIA   a1,{a1,a2,a3,a4,v1,v2,v3,v4,v5,dp,sl,fp,ip,sp,lk,pc}^
+
+        ; ---------------------------------------------------------------------
+        ; word GetPhysPri(void) ;
+        ; Return the priority number for the current process.
+GetPhysPri	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]		; a1 = ExecRoot structure address
+	|
+        SWI     exec_FindExecRoot
+	]	; EOF (speedup)
+        LDR     a1,[a1,#ExecRoot_pri]
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; word GetPhysPriRange(void) ;
+        ; Return the number of the lowest available priority. This is the
+        ; number of distinct priority levels (including 0) - 1.
+        ;
+GetPhysPriRange	FnHead
+        MOV     ip,lk
+        SWI     exec_NumPris
+        SUB     a1,a1,#&01      ; make into a range (top limit)
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+
+        ; word *GetRootBase(void) ;
+GetRootBase	FnHead
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]			; a1 = ExecRoot structure addr
+	LDR	a1,[a1,#ExecRoot_helios_root]	; a1 = Helios Root structure
+	MOVS	pc,lk
+	|
+        MOV     ip,lk
+	; This could be speeded up if we had direct access to the Executive
+	; workspace (which is easily obtainable (defined in "execwork.s")).
+	; NOTE: This functions is called a LOT of times (constantly by the
+	; 	Helios system.
+        SWI     exec_RAMBase
+        ; a1 = start of available RAM
+        MOVS    pc,ip
+	]	; EOF (speedup)
+
+        ; ---------------------------------------------------------------------
+
+        ; word *GetNucleusBase(void) ;
+GetNucleusBase	FnHead
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]			; a1 = ExecRoot structure addr
+	LDR	a1,[a1,#ExecRoot_helios_sys]	; a1 = Helios SYSBASE address
+	MOVS	pc,lk
+	|
+        MOV     ip,lk
+        SWI     exec_NucleusBase
+        ; a1 = start address of the nucleus code
+        MOVS    pc,ip
+	]	; EOF (speedup)
+
+        ; ---------------------------------------------------------------------
+
+        ; int DefineExecErrorHandler(VoidFnPtr handler) ;
+        ; This attaches the function pointer passed onto the system error
+        ; vector. This function will be vectored to when either a system
+        ; abort or software failure occurs (FP exception, etc.).
+        ; The handler function prototype should be as follows:
+        ;       void handler(int signum,char *errtext,word *regset,word urcv) ;
+        ;
+        ; in:   a1 = C handler function
+        ; out:  a1 = 0  OK
+        ;       a1 = -1 FAILED
+DefineExecErrorHandler	FnHead
+        MOV     ip,lk
+        MOV     a2,a1                           ; handler routine address
+
+	[	{FALSE}
+	ADR	a1,deferrtxt
+	SWI	exec_Output
+	MOV	a1,a2
+	SWI	exec_WriteHex8
+	SWI	exec_NewLine
+	B	deferrovr
+deferrtxt
+	=	"DefineExecErrorHandler: address = &",&00
+	ALIGN
+deferrovr
+	]
+
+        MOV     a1,#vec_systemError             ; vector number
+        SWI     exec_VectorPatch                ; and patch the vector
+        MOVVC   a1,#&00000000                   ;  0 = OK
+        MOVVS   a1,#&FFFFFFFF                   ; -1 = FAILED
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; int GetROMItem(word location,word *index,ITEMstructure **item) ;
+        ; Returns TRUE and the fields updated if a ROM item is found.
+        ; Returns FALSE if there are no more ROM items to be read.
+        ; in:	a1	= ROM location to search
+	;       a2      = pointer to word containing the current index
+        ;       a3      = pointer to ITEMstructure pointer
+        ; out:  a1 =  0 = no more ROM items
+        ;            -1 = more ROM items
+GetROMItem	FnHead
+        MOV     ip,sp
+        STMFD   sp!,{v1,v2,fp,ip,lk,pc}
+        SUB     fp,ip,#&04
+        [       (stackcheck)
+        CMP     sp,sl
+        BLLT	__stack_overflow
+        ]
+
+        MOV     v1,a2			; v1 = ptr to index word
+        MOV     v2,a3			; v2 = ptr to ITEMstructure ptr word
+
+	; User wishes to enumerate the internal and flash ROM contents
+	MOV	a2,a1			; CARD location
+        LDR     a1,[v1,#&00]    	; desired index
+        SWI     exec_FindNEXTItem
+        BVS     bad_return
+	; a1 = updated index		; next ITEMstructure pointer
+	; a2 = base address		; ITEMstructure pointer
+	; a3 = length			; length of the complete ITEM
+	STR	a1,[v1,#&00]		; index updated for the caller
+	STR	a2,[v2,#&00]		; and present the ITEMstructure pointer
+
+        MOV     a1,#&FFFFFFFF   	; -1 (possibly more ROM items)
+        LDMEA   fp,{v1,v2,fp,sp,pc}^
+
+bad_return
+        MOV     a1,#&00000000   	; no more ROM items
+        MVN     a2,a1           	; -1
+        STR     a2,[v1,#&00]    	; update index word
+        LDMEA   fp,{v1,v2,fp,sp,pc}^
+
+        ; ---------------------------------------------------------------------
+        ; int GetROMConfig(Config *ConfLoc) ;
+        ; Returns 0 if the system is RAM based.
+        ; Otherwise it returns the size of the configuration information.
+        ; in:   a1        = pointer to memory address for configuration data
+        ; out:  a1 =    0 = RAM based system
+        ;            != 0 = size of the configuration information
+
+GetROMConfig	FnHead
+        MOV     ip,sp
+        STMFD   sp!,{v1,v2,fp,ip,lk,pc}
+        SUB     fp,ip,#&04
+        [       (stackcheck)
+        CMP     sp,sl
+        BLLT	__stack_overflow
+        ]
+
+        ; We keep the configuration in a special ROM item "etc/config".
+        ; All we do is reference this item, and copy the data to the address
+        ; passed to us in a1.
+        MOV     v1,a1                   ; remember destination address
+
+        ADRL    a1,default_config_name
+        SWI     exec_FindROMItem
+        MOVVS   a1,#&00                 ; ROM item not found (or RAM system)
+        LDMVSEA fp,{v1,v2,fp,sp,pc}^    ; so exit quickly
+
+	LDR	v2,[a1,#OBJECTOffset]	; offset to config information
+	LDR	a2,[a1,#OBJECTLength]	; and the size of the config data
+
+        ADD     v2,a1,v2                ; a1 = base address of config info
+	; v1 = destination address
+	; v2 = source address
+	; a2 = size of the defined structure
+        MOV     a1,a2                   ; size of information (return value)
+	MOV	a3,v2			; source address (work-copy)
+	MOV	a4,v1			; destination address (work-copy)
+copy_config_loop
+        LDRB    ip,[a3],#&01
+        STRB    ip,[a4],#&01
+        SUBS    a2,a2,#&01
+        BNE     copy_config_loop
+
+        !       0,"TODO: etc/config date initialisation"
+        ; The "Date" field in the copied configuration information should
+        ; be initialised to the CURRENT time (secs since January 1st 1970 GMT)
+	; This information can be read from the uController.
+
+	[	{TRUE}
+	; The "MyName" field should be a relative pointer to a NULL terminated
+	; ASCII string placed at the end of the config structure (updating the
+	; size as necessary). If this value is -1 then we should place the
+	; unique machine serial number as the processor name. NOTE: The Helios
+	; system we are currently using has a 100character limit on the machine
+	; name (fixed value used in multiple places in the source).
+	LDR	a3,[v2,#Config_MyName]	; load RPTR to processor name
+	ADDS	a3,a3,#&01		; &FFFFFFFF (-1) --> &00000000 (0)
+	LDMNEEA	fp,{v1,v2,fp,sp,pc}^	; a1 = size of config info. copied
+
+	; copy the processor identity to "v1" (updating the count)
+	SUB	a3,a1,#Config_MyName	; a3 = offset from MyName entry
+	STR	a3,[v1,#Config_MyName]	; update the RPTR to the name
+	ADRL	a3,default_processor_name	; bodge until uController
+copy_config_name_loop
+	LDRB	a2,[a3],#&01		; read byte and increment address
+	STRB	a2,[a4],#&01		; store byte and increment address
+	TEQ	a2,#&00			; check for termination
+	ADD	a1,a1,#&01		; increment config size value
+	BNE	copy_config_name_loop	; and around again if not NULL
+	]
+
+        LDMEA   fp,{v1,v2,fp,sp,pc}^	; a1 = size of config info. copied
+
+default_config_name
+        =       "helios/etc/config",null
+
+	; In the real active book, this ASCII string will be generated from
+	; the unique serial number held by the uController.
+default_processor_name
+	=	"/syzygy",null
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+	; ------ These functions should NOT be exported from the kernel -------
+        ; ---------------------------------------------------------------------
+        ; void IntsOn(void) ;
+        ; Enable IRQs.
+        ;
+IntsOn	FnHead
+	; It is more sensible, since IRQs are a processor rather than process
+	; resource, that IRQ enabling/disabling is performed globally.
+	; This call will only decrement the "IRQoffcount" and if this falls
+	; to zero it will enable processor IRQs.
+	; NOTE: IRQs will be permanently disabled if a process stops with an
+	;       out-standing "IntsOff". Ideally we should minimise the number
+	;	of users who have access to these IRQ control functions, and
+	;	also provide some special code to keep track of those processes
+	;	that disable IRQs.
+	;
+	MOV	ip,lk
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]			; a1 = ExecRoot structure
+	|
+        SWI     exec_FindExecRoot
+	]	; EOF (speedup)
+	SWI	exec_IntsOff			; ensure IRQs disabled
+	LDR	a2,[a1,#ExecRoot_IRQoffcount]	; load current count
+	TEQ	a2,#&00000000			; check for IRQs enabled
+	SUBNES	a2,a2,#&00000001		; IRQs disabled, so decrement
+	STR	a2,[a1,#ExecRoot_IRQoffcount]	; update count
+	MOVNES	pc,ip				; leave quick if not enabling
+	; we can enable IRQs
+	SWI	exec_IntsOn			; enable IRQs (for USR mode)
+	BIC	ip,ip,#Ibit			; enable IRQs (for SVC mode)
+	MOVS	pc,ip				; return to caller
+
+        ; ---------------------------------------------------------------------
+        ; void IntsOff(void) ;
+        ; Disable IRQs.
+        ;
+IntsOff	FnHead
+	; See comment in the "IntsOn" code.
+	; This will increment the "IRQoffcount" value and disable processor
+	; IRQs.
+	MOV	ip,lk
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]			; a1 = ExecRoot structure
+	|
+	SWI	exec_FindExecRoot
+	]	; EOF (speedup)
+	SWI	exec_IntsOff			; disable IRQs (for USR mode)
+	LDR	a2,[a1,#ExecRoot_IRQoffcount]	; load current count
+	ADD	a2,a2,#&00000001		; increment
+	STR	a2,[a1,#ExecRoot_IRQoffcount]	; update stored count
+	ORR	ip,ip,#Ibit			; disable IRQs (for SVC mode)
+	MOVS	pc,ip				; and return to caller
+
+        ; ---------------------------------------------------------------------
+        ; aptr ReadyQBase(pri) ;
+        ; Return the ExecRoot structure entry address for the referenced
+        ; ready process queue.
+ReadyQBase	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a2,#fast_structure_pointer
+	LDR	a2,[a2,#&00]		; a2 = ExecRoot structure address
+	ADD	a2,a2,#ExecRoot_queues	; a2 = base address of queue structures
+	ADD	a1,a2,a1,LSL #ProcessQ_shift
+	|
+        MOV     a2,a1
+        SWI     exec_FindExecRoot
+        ; a1 = address of the ExecRoot data structure
+        ; a2 = desired priority level
+        ADD     a1,a1,#ExecRoot_queues  ; a1 = base address of queue structures
+        ADD     a1,a1,a2,LSL #ProcessQ_shift
+	]	; EOF (speedup)
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; SaveState **TimerQAddr(void) ;
+        ; Return the address of the timer queue root.
+        ;
+TimerQAddr	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a1,#fast_structure_pointer
+	LDR	a1,[a1,#&00]		; a1 = ExecRoot structure address
+	|
+        SWI     exec_FindExecRoot       ; a1 = ExecRoot structure address
+	]	; EOF (speedup)
+        ADD     a1,a1,#ExecRoot_timerQ
+        ; a1 = address of the timer Q ptr
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; word SetPhysPri(word newpri) ;
+        ; Change the current process priority to the given value, returning
+        ; the old priority value.
+SetPhysPri	FnHead
+        MOV     ip,lk
+	[	(speedup)
+	MOV	a2,#fast_structure_pointer
+	LDR	a2,[a2,#&00]		; a2 = ExecRoot structure address
+	LDR	a3,[a2,#ExecRoot_pri]	; a3 = old priority
+	STR	a1,[a2,#ExecRoot_pri]	; set new priority
+	MOV	a1,a3			; and return the old priority value
+	|
+        MOV     a2,a1                   ; remember entry "a1" parameter
+        SWI     exec_FindExecRoot
+        ; This load/store could be replaced by a SWP instruction
+        LDR     a3,[a1,#ExecRoot_pri]   ; old priority
+        STR     a2,[a1,#ExecRoot_pri]   ; new priority
+        MOV     a1,a3                   ; and return the old
+	]	; EOF (speedup)
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+	; word ResetKeyState(void) ;
+ResetKeyState	FnHead
+	MOV	ip,lk
+	; Return a bitmap of the Active Book keys held down during RESET.
+	; This allows for upto 32 special keys to be processed.
+	!	0,"TODO: ResetKeyState"
+	MOV	a1,#&00000000
+	MOVS	pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; void Output(word string) ;
+        ; Pass the NULL terminated ASCII string to the server. The data sent
+        ; WILL include the terminating NULL.
+        ;
+Output	FnHead
+        MOV     ip,lk
+        SWI     exec_Output
+        MOVS    pc,ip
+
+        ; void WriteHex8(word number) ;
+WriteHex8	FnHead
+        MOV     ip,lk
+        SWI     exec_WriteHex8
+        MOVS    pc,ip
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        LNK     hiproc.s                        ; process manipulation

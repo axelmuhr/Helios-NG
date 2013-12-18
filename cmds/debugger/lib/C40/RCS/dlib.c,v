@@ -1,0 +1,7214 @@
+head	1.14;
+access;
+symbols
+	Helios_1_3_1:1.13
+	Helios_C40_1_3_Official_Release:1.12
+	Alenia_release:1.8
+	Helios13_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.14
+date	94.03.29.15.26.05;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	93.07.12.15.52.19;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	93.04.27.11.42.01;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	93.03.17.17.41.10;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	93.03.10.16.16.34;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	93.01.12.10.24.30;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.12.04.11.06.43;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.11.04.18.03.16;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.11.04.15.01.39;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.10.27.16.32.32;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.10.26.10.55.19;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.09.29.13.59.14;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.08.19.09.47.51;	author craig;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.17.09.30;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.14
+log
+@fixed compile time error
+@
+text
+@/**
+*
+* Title:  Debug Library.
+*
+* Author: Andy England
+*
+* Date:   March 1989
+*
+*         (c) Copyright 1989, Perihelion Software Ltd.
+*
+*         All Rights Reserved.
+*
+* Modified for C40 by N Clifton, October 1992
+*
+*	Copyright (c) 1992, 1993 Perihelion Software Ltd.
+*	All Rights Reserved.
+**/
+
+
+/* NB/ KEEP THIS FILE UP TO DATE WITH THE TRANSPUTER VERSION */
+
+/*
+static char *rcsid = "$Header: /users/nickc/RTNucleus/cmds/debugger/lib/C40/RCS/dlib.c,v 1.13 1993/07/12 15:52:19 nickc Exp nickc $";
+*/
+
+#include <stdlib.h>
+#include <helios.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <c40.h>
+#include <stddef.h>
+#include <stdarg.h>
+#include <process.h>
+#undef Malloc
+#include <codes.h>
+#include <module.h>
+#include <posix.h>
+#include <nonansi.h>
+#include <string.h>
+
+#include "dlib.h"
+#include "dmsg.h"
+
+/* Static data */
+
+#define NUM_SAVED_REGS	33    /* MAXREGNUM in ncc/mbe/target.h is 28, + four extra words for four FP registers, + counting from 0, not 1 */
+
+extern THREAD 		thread;
+extern DEBUG *		debug;
+extern word		saved_regs[ NUM_SAVED_REGS ];
+
+
+extern word (*		patchfork(		word (*)(word, VoidFnPtr, word, ...)))(word, VoidFnPtr, word, ...);
+extern word (*		patchputmsg(		word (*)(MCB * )) )( MCB * );
+extern word (*		patchgetmsg(		word (*)(MCB * )) )( MCB * );
+extern word		DoCall(			VoidFnPtr, word, word * );
+extern void		FreeStop(		void * );
+extern MPtr		get_module_table(	void );
+
+
+#ifdef MEMCHECK
+
+#define MEMVECSIZE 256
+
+PRIVATE void
+memcheck( void )
+{
+  int 			i;
+  unsigned char *	lowmem = 0;
+  unsigned char		savemem[ MEMVECSIZE ];
+
+  
+  for (i = 0; i < MEMVECSIZE; i++)
+    savemem[ i ] = lowmem[ i ];
+
+  forever
+    {
+      Delay( 2000000 );
+    
+      for (i = 0; i < MEMVECSIZE; i++)
+	{
+	  unless (savemem[ i ] == lowmem[ i ])
+	    {
+	      IOdebug( "DLIB: Memory corruption @@ %x", i );
+	      
+	      savemem[ i ] = lowmem[ i ];
+	    }
+	}
+    }
+}
+#endif /* MEMCHECK */
+
+
+PRIVATE word
+MySendEnv(
+	  Port 		port,
+	  Environ *	env )
+{
+  Stream **	strv = env->Strv;
+  Stream *	str;
+  word *	flagv = NULL;
+  word		err;
+  word		i;
+
+  
+  for (i = 0; strv[ i ] != NULL; i++)
+    ;
+
+  unless (i == 0)
+    {
+      if ((flagv = (word *)Malloc( i * sizeof (word))) == NULL)
+	return EC_Error + EG_NoMemory;
+    }
+  
+  for (i = 0; (str = strv[ i ]) != NULL; i++)
+    {
+      unless (str == (Stream *)MinInt)
+	{
+	  flagv[ i ] = str->Flags;
+	  
+	  str->Flags &= ~(Flags_CloseOnSend | Flags_OpenOnGet);
+	}
+    }
+  
+  err = SendEnv( port, env );
+  
+  for (i = 0; (str = strv[ i ]) != NULL; i++)
+    {
+      unless (str == (Stream *)MinInt) str->Flags = flagv[ i ];
+    }
+  
+  unless (flagv == NULL)
+    Free(flagv);
+
+  return err;
+
+} /* MySendEnv */
+
+
+/* Get debug command from the debuggger */
+
+PRIVATE word
+getdebug(
+	 Port 	port,
+	 DBG *	dbg )
+{
+  MCB mcb;
+  word err;
+
+
+  InitMCB( &mcb, 0, port, NullPort, 0 );
+
+#ifdef	MYDEBUG
+  mcb.Timeout         = -1;
+#endif  
+  mcb.MsgHdr.ContSize = sizeof(DBGCMD) / sizeof(word);
+  mcb.MsgHdr.DataSize = (dbg->data == NULL) ? 0 : (int)dbg->cmd.size;
+  mcb.Control         = (word *)&dbg->cmd;
+  mcb.Data            = dbg->data;
+
+  while ((err = RealGetMsg( &mcb )) == EK_Timeout)
+    ;
+  
+  dbg->port = mcb.MsgHdr.Reply;
+  
+#ifdef CRs
+  IOdebug("getdebug %x %x %x %d %d",dbg->cmd.action, dbg->cmd.thread, 
+      dbg->cmd.modnum, dbg->cmd.offset, dbg->cmd.size);
+#endif
+  
+  return err;
+}
+
+
+/* Send debug message to the debugger */
+
+PRIVATE word
+putdebug(
+	 Port 	port,
+	 DBG *	dbg )
+{
+  MCB 	mcb;
+  word	err;
+
+  
+  InitMCB( &mcb, MsgHdr_Flags_preserve, port, NullPort, FC_Private|FG_DebugCmd );
+  
+#ifdef MYDEBUG
+  mcb.Timeout         = -1;
+#endif 
+  mcb.MsgHdr.ContSize = sizeof (DBGCMD) / sizeof (word);
+  mcb.MsgHdr.DataSize = (dbg->data == NULL) ? 0 : (int)dbg->cmd.size;
+  mcb.Control         = (word *)&dbg->cmd;
+  mcb.Data            = dbg->data;
+  
+  while ((err = RealPutMsg( &mcb )) == EK_Timeout)
+    ;
+  
+#ifdef CRs
+  IOdebug("putdebug %x %x %x %d %d",dbg->cmd.action, dbg->cmd.thread, 
+      dbg->cmd.modnum, dbg->cmd.offset, dbg->cmd.size);
+#endif
+  
+  return err;
+}
+
+
+/* Send debug message to the debugger */
+
+PRIVATE word
+senddebug(Port port, Port reply, DBG *dbg)
+{
+  MCB mcb;
+  word err;
+
+  
+  InitMCB(&mcb, MsgHdr_Flags_preserve, port, reply, FC_Private|FG_DebugCmd);
+  
+#ifdef MYDEBUG
+  mcb.Timeout         = -1;
+#endif  
+  mcb.MsgHdr.ContSize = sizeof(DBGCMD) / sizeof(word);
+  mcb.MsgHdr.DataSize = (dbg->data == NULL) ? 0 : (int)dbg->cmd.size;
+  mcb.Control         = (word *)&dbg->cmd;
+  mcb.Data            = dbg->data;
+  
+  while ((err = RealPutMsg(&mcb)) == EK_Timeout)
+    ;
+  
+#ifdef CRs
+  IOdebug("senddebug %x %x %x %d %d",dbg->cmd.action, dbg->cmd.thread, 
+      dbg->cmd.modnum, dbg->cmd.offset, dbg->cmd.size);
+#endif
+
+  return err;
+}
+
+
+/* Record new activation record for current thread */
+
+PRIVATE void
+pushframe(
+	  MPtr		procinfo,
+	  WordPtr	frame_pointer,
+	  WordPtr	stack_pointer )
+{
+  /* ACE: Should be able to take the test out at some stage */
+
+  unless (thread.framestk == NULL)
+    {
+      thread.frameptr--;
+      
+      /* ACE: ! */
+
+      if (thread.frameptr < thread.framestk OR
+	  thread.frameptr > thread.framestk + FrameStackSize)
+	IOdebug("DLIB: push: Frame pointer (%x) out of range (%x %x)",
+		thread.frameptr, thread.framestk, thread.framestk + FrameStackSize);
+      
+      thread.frameptr->procinfo = procinfo;
+      thread.frameptr->frameptr = frame_pointer;
+      thread.frameptr->stackptr = stack_pointer;
+    }
+}
+
+
+/* Record termination of activation record for current thread */
+
+PRIVATE void
+popframe( void )
+{
+  unless (thread.framestk == NULL)
+    {
+      thread.frameptr++;
+      
+      /* ACE: ! */
+      
+      if (thread.frameptr < thread.framestk OR
+	  thread.frameptr > thread.framestk + FrameStackSize)
+	IOdebug("DLIB: pop: Frame pointer (%x) out of range (%x %x)",
+		thread.frameptr, thread.framestk, thread.framestk + FrameStackSize);
+    }
+}
+
+/**
+*
+* Notify functions:
+*
+* Next follows a list of notify functions to suit all occasions.
+*
+**/
+
+/**
+*
+* profile(modnum, line);
+*
+* Profile command.
+*
+**/
+PRIVATE void
+profile(
+	word 	modnum,
+	word	line )
+{
+  modnum = modnum;
+  line   = line;
+
+  IOdebug( "profile ???" );
+
+  return;  
+}
+
+#ifdef V1_1
+/**
+*
+* remtempbreak(breakpoint);
+*
+* Remove breakpoint.
+*
+**/
+PRIVATE void remtempbreak(BREAKPOINT *breakpoint)
+{
+  if (breakpoint->temp == TRUE)
+  {
+    Remove(&breakpoint->node);
+    Free(breakpoint);
+  }
+}
+#endif
+
+/**
+*
+* suspend(thread);
+*
+* Suspend execution of a thread.
+*
+**/
+PRIVATE void suspend(THREAD *thread)
+{
+  Wait(&thread->sync);
+}
+
+/**
+*
+* stop(modnum, line);
+*
+* Stop command.
+*
+**/
+PRIVATE void stop(word modnum, word line)
+{
+  DBG dbg;
+
+
+  dbg.cmd.action = DBG_Stopped;
+  dbg.cmd.thread = (word)&thread;
+  dbg.cmd.modnum = modnum;
+  dbg.cmd.offset = line;
+  dbg.data       = NULL;
+
+  Wait(&debug->lock); /* ACE: This should not be necessary */
+
+#ifdef V1_1
+/* remove all tempory breakpoints set by go until */
+  (void)WalkList(&debug->breakpointlist, (WordFnPtr)remtempbreak, 0);
+#endif
+  
+  putdebug(debug->port, &dbg);
+  
+  Signal(&debug->lock);
+
+  suspend( &thread );
+
+  return;
+}
+
+/**
+*
+* found = cmpbreak(breakpoint, loc);
+*
+* Support routine for findbreak();
+*
+**/
+PRIVATE BOOL
+cmpbreak(BREAKPOINT *breakpoint, LOCATION *loc)
+{
+  return breakpoint->loc.modnum == loc->modnum AND
+         breakpoint->loc.line == loc->line;
+}
+
+/**
+*
+* breakpoint = findbreak(modnum, line);
+*
+* Find a breakpoint.
+*
+**/
+PRIVATE BREAKPOINT *
+findbreak(word modnum, word line)
+{
+  BREAKPOINT *breakpoint;
+  LOCATION loc;
+
+  loc.modnum = modnum;
+  loc.line = line;
+  Wait(&debug->lock);
+  breakpoint = (BREAKPOINT *)SearchList(&debug->breakpointlist, (WordFnPtr)cmpbreak, (word)&loc);
+  Signal(&debug->lock);
+  return breakpoint;
+}
+
+/**
+*
+* breakpoint(modnum, line);
+*
+* Breakpoint command.
+*
+**/
+PRIVATE BOOL
+breakpoint(word modnum, word line)
+{
+  BREAKPOINT *breakpoint;
+
+  if ((breakpoint = findbreak(modnum, line)) == NULL) return FALSE;
+  if (++breakpoint->count < breakpoint->threshold) return FALSE;
+  breakpoint->count = 0;
+  stop(modnum, line);
+  return TRUE;
+}
+
+/**
+*
+* trace(modnum, line);
+*
+* Trace command function.
+*
+**/
+
+PRIVATE void
+trace(
+      word 	modnum,
+      word	line )
+{
+  DBG 		dbg;
+#ifndef BUG
+  Port		port = NewPort();
+  word		err;
+#endif
+
+  
+  dbg.cmd.action = DBG_Traced;
+  dbg.cmd.thread = (word)&thread;
+  dbg.cmd.modnum = modnum;
+  dbg.cmd.offset = line;
+  dbg.data       = NULL;
+  
+  Wait( &debug->lock ); /* ACE: This should not be necessary */
+  
+#ifdef BUG
+  putdebug( debug->port, &dbg );
+#else
+  
+  if ((err = senddebug( debug->port, port, &dbg )) == Err_Null)
+    {
+      getdebug( port, &dbg );
+    }
+  else
+    {
+      IOdebug( "DLIB: senddebug returned an error (%x)", err );
+    }
+  
+  FreePort( port );
+#endif
+  
+  Signal( &debug->lock );
+
+  return;
+  
+} /* trace */
+
+/**
+*
+-- crf : 05/08/91 - explicitly remove watchpoints on exiting from routines
+-- refer system.c : receiver () for the story ...
+*
+* delwatchpoints();
+*
+* delete outstanding watchpoints
+*
+**/
+PRIVATE void
+delwatchpoints ()
+{
+  DBG dbg;
+  word err;
+  Port port = NewPort();
+  
+#ifdef CRs
+  IOdebug ("entered delwatchpoints");  
+#endif
+
+  dbg.port       = port;
+  dbg.cmd.action = DBG_DelWatchIds;
+  dbg.data       = NULL;
+
+  if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+    {
+      getdebug ( port, &dbg);
+    }
+
+  FreePort (port);
+
+  return;
+  
+} /* delwatchpoints */
+
+/**
+*
+* checkwatch(watchpoint);
+*
+* Check a watchpoint to see if it has been activated.
+*
+**/
+PRIVATE void
+checkwatch(
+	   WATCHPOINT * watchpoint,
+	   word	        scope )
+{
+  unless (memcmp( watchpoint->loc.addr, &watchpoint->copy, (int)watchpoint->loc.size ) == 0)
+    {
+      DBG dbg;
+      Port port = NewPort();  
+      word err;
+
+      
+#ifdef CRs
+      IOdebug ("entered checkwatch");  
+#endif
+      dbg.port       = port;
+      dbg.cmd.action = DBG_Changed;
+      dbg.cmd.modnum = (word)watchpoint->loc.addr;
+      dbg.cmd.size   = watchpoint->loc.size;
+      dbg.cmd.offset = scope ;/* CR: should transfer the callers id */
+      dbg.data       = NULL;
+      
+      /* 
+	-- crf : 25/07/91 - Bug 700
+	-- Problem : loss of synchronization between debugger and dlib with regard
+	-- to watchpointing (refer "system.c").
+	-- Solution : explicitly force synchronization. I am using the same fixes
+	-- that were made to "trace()".
+	
+	-- crf : 25/07/91 - The above fix also fixes the following :
+	-- Bug 652 - watchpointing multiple variables (1)
+	-- Bug 701 - watchpointing multiple variables (2)
+	-- Bug 703 - watchpointing multiple variables (3)
+	*/
+      
+      /* -- crf : synchronization fix */
+#ifdef BUG
+      putdebug(debug->port, &dbg);
+#else
+      if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+	{
+	  getdebug( port, &dbg );
+	}
+#endif
+      
+      /*
+	-- crf : 28/07/91
+	-- Take note of Carsten's comment below ("CR: causes timing problems")
+	-- I think I have sorted out the synchronization problems with the use of
+	-- the sub-routine "delwatchpoints()" ... this will require testing.
+	*/
+      
+#ifdef PARSYTEC
+      if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+	{
+	  /* getdebug(port, &dbg); CR: causes timing problems */
+#ifdef CRs
+	  IOdebug ("err = %d in checkwatch",err);  
+#endif
+	}
+#endif
+      else
+	IOdebug( "DLIB: senddebug returned an error (%x)", err);
+      
+      FreePort(port);
+      
+      memcpy(&watchpoint->copy, watchpoint->loc.addr, (int)watchpoint->loc.size);
+      
+#ifdef OLDCODE
+      thread.watchstop = TRUE;
+#endif
+    }
+
+  return;
+  
+} /* checkwatch */
+
+/**
+*
+* checkwatchret(watchpoint);
+*
+* notify debugger of changed frame
+*
+**/
+
+PRIVATE int
+checkwatchret(
+	      WATCHPOINT * watchpoint,
+	      word         scope )
+{
+  DBG  dbg;
+  word err;
+  Port port = NewPort();
+
+  
+#ifdef CRs
+  IOdebug( "entered checkwatchreturn" );  
+#endif
+
+  dbg.port       = port;
+  dbg.cmd.action = DBG_Changed;
+  dbg.cmd.modnum = (word)watchpoint->loc.addr;
+  dbg.cmd.size   = watchpoint->loc.size;
+  dbg.cmd.offset = scope;		/* CR: should transfer the callers id */
+  dbg.data       = NULL;
+
+  if ((err = senddebug( debug->port, port, &dbg )) == Err_Null)
+    {
+      getdebug ( port, &dbg );
+    }
+
+  FreePort( port );
+
+  return TRUE;
+  
+} /* checkwatchret */
+
+
+PRIVATE word
+hashval( MPtr procinfo )
+{
+  return (uword)procinfo % HashMax;
+}
+
+PRIVATE int
+cmpfunc(
+	FUNC *	func,
+	MPtr	procinfo )
+{
+  return func->procinfo == procinfo;
+}
+
+PRIVATE FUNC *
+findfunc( MPtr procinfo )
+{
+  return (FUNC *)SearchList( &debug->functable[ hashval( procinfo ) ], (WordFnPtr)cmpfunc, procinfo );
+}
+
+PRIVATE void
+remfunc( FUNC * func )
+{
+  Remove(&func->node);
+  
+  Free(func);
+}
+
+
+PRIVATE void
+entered( MPtr procinfo )
+{
+  DBG dbg;
+
+  
+  dbg.cmd.action = DBG_Entered;
+  dbg.cmd.thread = (word)&thread;
+  dbg.cmd.modnum = GetProcInfo( procinfo, Modnum );
+  dbg.cmd.offset = GetProcInfo( procinfo, Offset );
+  dbg.data       = NULL;
+
+  Wait( &debug->lock ); /* ACE: This should not be necessary */
+  
+  putdebug( debug->port, &dbg );
+
+  Signal( &debug->lock );
+
+  return;
+  
+} /* entered */
+
+
+PRIVATE void
+returned( MPtr procinfo )
+{
+  DBG dbg;
+
+  
+  dbg.cmd.action = DBG_Returned;
+  dbg.cmd.thread = (word)&thread;
+  dbg.cmd.modnum = GetProcInfo( procinfo, Modnum );
+  dbg.cmd.offset = GetProcInfo( procinfo, Offset );
+  dbg.data       = NULL;
+  
+  Wait( &debug->lock ); /* ACE: This should not be necessary */
+  
+  putdebug( debug->port, &dbg );
+  
+  Signal( &debug->lock );
+
+  return;
+  
+} /* returned */
+
+
+/* Standard notify entry function */
+
+PRIVATE void
+notify_entry(
+	     MPtr	procinfo,
+	     MPtr	frame_ptr,
+	     MPtr	stack_ptr )
+{
+  FUNC *	func;
+  word		flags = thread.flags;
+  WordPtr	fptr;
+  WordPtr	sptr;
+  
+
+  Wait( &debug->lock );
+  
+  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatchret, 1 );
+  
+  Signal( &debug->lock );
+
+#if defined CODE_IN_HIGH_MEMORY && defined NEVER
+  fptr  = frame_ptr;
+  sptr  = stack_ptr;  
+#else
+  fptr  = (WordPtr)C40CAddress( frame_ptr );
+  sptr  = (WordPtr)C40CAddress( stack_ptr );
+#endif
+
+  unless ((func = findfunc( procinfo )) == NULL)
+    flags = func->flags;
+  
+  pushframe( procinfo, fptr, sptr );
+
+  if (flags & TraceEntry)
+    {
+      entered( procinfo );
+    }
+
+  thread.tracing   = (BOOL)(flags & TraceCommand);
+  thread.profiling = (BOOL)(flags & Profile);
+
+  return;
+  
+} /* notify_entry */
+
+
+/* Standard notify return function */
+
+PRIVATE word
+notify_return(
+	      MPtr	procinfo,
+	      word	result )
+{
+  FUNC *	func;
+  word		flags;
+  
+
+  /* ACE: Need a more efficient way of doing this */
+  
+  Wait( &debug->lock );
+  
+  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatchret, -1 );
+  
+  Signal( &debug->lock );
+
+  delwatchpoints () ; /* -- crf */
+
+  unless ((func = findfunc( procinfo )) == NULL)
+    flags = func->flags;
+  else
+    flags = thread.flags;
+  
+  if (flags & TraceReturn)
+    {
+      returned( procinfo );
+    }
+  
+  popframe();
+  
+  flags = thread.flags;
+  
+  unless ((func = findfunc( thread.frameptr->procinfo )) == NULL)
+    flags = func->flags;
+
+  thread.tracing   = (BOOL)(flags & TraceCommand);
+  thread.profiling = (BOOL)(flags & Profile);
+
+  return result;
+
+} /* notify_return */
+
+
+/* Standard notify command function */
+
+PRIVATE void
+notify_command(
+	       word 	line,
+	       MPtr	sourceinfo )
+{
+  word 		modnum;
+  WordPtr	sinfo;
+
+
+#ifdef CODE_IN_HIGH_MEMORY
+  sinfo = sourceinfo;
+#else
+  sinfo = (WordPtr)C40CAddress( sourceinfo );
+#endif
+
+  /* sanity check */
+  
+  if (MP_StructGet( SourceInfo, Type, sinfo ) != T_SourceInfo)
+    {
+      IOdebug( "DLIB: Corrupt object file: could not find SourceInfo structure (line %d)", line );
+
+      return;
+    }
+  
+  modnum = MP_StructGet( SourceInfo, Modnum, sinfo );
+
+  thread.frameptr->line = line;
+
+  if (thread.profiling)
+    {
+      profile( modnum, line );
+    }
+  
+#ifndef OLDCODE
+  Wait( &debug->lock );
+  
+  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatch, 0 );
+  
+  Signal( &debug->lock );
+#endif
+
+  if (thread.stopping)
+    {
+      stop( modnum, line );
+    }  
+  else
+    {
+      unless (breakpoint( modnum, line ))
+	{
+#ifdef OLDCODE
+	  Wait( &debug->lock );
+
+	  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatch, 0 );
+
+	  Signal( &debug->lock );
+#endif
+	  if (thread.tracing)
+	    {
+	      trace( modnum, line );
+	    }	  
+	}
+    }
+  
+  return;
+  
+} /* notify_command */
+
+
+PRIVATE void
+ignore_entry(
+	     MPtr	procinfo,
+	     MPtr	frame_ptr,
+	     MPtr	stack_ptr )
+{
+  return;  
+}
+
+PRIVATE word
+ignore_return(
+	      MPtr	procinfo,
+	      word      result)
+{
+  return result;
+}
+
+PRIVATE void
+ignore_command(
+	       word 	line,
+	       MPtr	sourceinfo )
+{
+  return;  
+}
+
+PRIVATE void
+framestop_command(
+		  word 	line,
+		  MPtr	sourceinfo )
+{
+  word 	modnum;
+#ifdef CODE_IN_HIGH_MEMORY
+
+#define source	sourceinfo
+
+#else
+  WordPtr	source;
+
+
+  source = (WordPtr)C40CAddress( sourceinfo );
+#endif
+
+  modnum = MP_StructGet( SourceInfo, Modnum, source );
+
+  thread.frameptr->line = line;
+  
+  if (thread.profiling)
+    profile( modnum, line );
+  
+  Wait( &debug->lock );
+  
+  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatch, 0 );
+  
+  Signal( &debug->lock );
+  
+  if (thread.frameptr >= thread.stopframe)
+    stop( modnum, line );
+  else if (thread.tracing)
+    {
+      trace( modnum, line );
+    }
+
+  return;
+  
+} /* framestop_command */
+
+
+/* Intialise a thread structure */
+
+PRIVATE void
+initthread( THREAD * thread )
+{
+  Wait( &debug->lock );
+
+  AddHead( &debug->threadlist, &thread->node );
+
+  Signal( &debug->lock );
+
+  InitSemaphore( &thread->sync, 0 );
+  
+  if ((thread->framestk = (FRAME *)Malloc( FrameStackSize * sizeof (FRAME) )) == NULL)
+    {
+      IOdebug("DLIB: Failed to allocate frame stack");
+    }  
+
+  thread->watchstop	 = FALSE;
+  thread->frameptr       = thread->framestk + FrameStackSize;
+  thread->stopframe	 = NULL;  
+  thread->profiling      = FALSE;
+  thread->stopping       = TRUE;
+  thread->tracing        = FALSE;
+#ifdef NEWCODE
+  thread->watching       = FALSE;
+#endif
+  thread->port           = NullPort;
+  thread->flags		 = 0;  
+  
+  thread->notify_entry   = notify_entry;
+  thread->notify_command = notify_command;
+  thread->notify_return  = notify_return;
+
+  return;  
+
+} /* initthread */
+
+
+/* Remove a thread */
+
+PRIVATE void
+remthread( THREAD * thread )
+{
+  Remove( &thread->node );
+  
+  unless (thread->framestk == NULL)
+    Free(thread->framestk);
+
+  return;
+  
+} /* remthread */
+
+/**
+*
+* resume(thread);
+*
+* Resume execution of a suspended thread.
+*
+**/
+PRIVATE void
+resume( THREAD * thread )
+{
+  if (TestSemaphore( &thread->sync ) < 0)
+    Signal( &thread->sync );
+
+  return;
+  
+} /* resume */
+
+/**
+*
+* profilethread(thread, on);
+*
+* Set profile flag.
+*
+**/
+PRIVATE void
+profilethread(
+	      THREAD *	thread,
+	      BOOL	on )
+{
+  if (on)
+    thread->flags |= Profile;
+  else
+    thread->flags &= ~ Profile;
+
+  return;
+  
+} /* profile */
+
+/**
+*
+* stopthread(thread);
+*
+* Set stop flag.
+*
+**/
+PRIVATE void
+stopthread( THREAD * thread )
+{
+  thread->stopping = TRUE;
+
+  return;
+  
+} /* stopthread */
+
+/**
+*
+* unstopthread(thread);
+*
+* Unset stop flag.
+*
+**/
+PRIVATE void
+unstopthread( THREAD * thread )
+{
+  thread->stopping = FALSE;
+}
+
+/**
+*
+* tracethread(thread, flags);
+*
+* Set trace flags.
+*
+**/
+PRIVATE void
+tracethread(
+	    THREAD *	thread,
+	    word	flags )
+{
+  if (flags & TraceOff)
+    thread->flags &= ~flags;
+  else
+    thread->flags |= flags;
+
+  if (thread->flags & TraceCommand)
+    thread->tracing = TRUE;
+  else
+    thread->tracing = FALSE;
+
+  return;
+}
+
+/**
+*
+* gotoframethread(thread, frame);
+*
+* Stop a thread when it is in a particular frame.
+*
+**/
+PRIVATE void
+gotoframethread(
+		THREAD * thread,
+		int      frame )
+{
+  thread->stopframe = thread->frameptr + frame;
+}
+
+/**
+*
+* timeoutthread(thread);
+*
+* Force a timeout to occur if the thread is communicating.
+*
+**/
+PRIVATE void
+timeoutthread( THREAD * thread )
+{
+  unless (thread->port == NullPort)
+    AbortPort( thread->port, EK_Timeout );
+}
+
+
+/* Patch the notify entry routine */
+
+PRIVATE void
+patchentry(
+	   THREAD *	thread,
+	   void (*	func)( MPtr, MPtr, MPtr ) )
+{
+  thread->notify_entry = func;
+}
+
+
+/* Patch the notify command routine */
+
+PRIVATE void
+patchcommand(
+	     THREAD *	thread,
+	     void (*	func)( word, MPtr ) )
+{
+  thread->notify_command = func;
+}
+
+
+/* Patch the notify return routine */
+
+PRIVATE void
+patchreturn(
+	    THREAD *	thread,
+	    word (*	func)( MPtr, word ) )
+{
+  thread->notify_return = func;
+}
+
+
+/* Create a new module table */
+
+PRIVATE word *
+newmodtab( void )
+{
+  MPtr		oldtab;
+  WordPtr	module;  
+  word		maxid      = 0;
+  word		maxdata    = 0;
+  word *	newtab;
+  void *	ptr;
+  
+
+  oldtab = get_module_table();
+  
+  module = (MPtr) MyTask->Program;	/* XXX relies on Module field being first in Program structure */
+  
+  while (MP_StructGet( Module, Type, module ) != 0)
+    {
+      word	id;
+
+      
+      id = MP_StructGet( Module, Id, module );
+      
+      if (id > maxid) maxid = id;
+      
+      if (id == DLib_Slot)
+	{
+	  MPtr	mod;
+
+
+	  if (maxdata != 0)
+	    IOdebug( "DLIB: more than one debugger library present !" );
+	  
+	  mod     = (MPtr)MP_StructGet( ResRef, Module, module );	  
+	  maxdata = MP_StructGet( Module, MaxData,  mod );
+	}
+      
+      module += MP_StructGet( Module, Size, module ) / sizeof (word);
+    }
+  
+  if (maxid < 1)
+    return NULL;
+  else
+    maxid = (maxid + 1) * 2;
+
+  /* allocate a new module table */
+  
+  if ((newtab = (word *)Malloc( maxid * sizeof (word) + 100000 )) == NULL)
+    return NULL;
+
+  /* copy the old module table into the new one */
+  
+  MP_memcpy( newtab, oldtab, 0, maxid );
+
+  /* set up the self-referential vectors */
+
+  newtab[ 0 ] = (word)newtab;
+  newtab[ 1 ] = C40WordAddress( newtab );
+
+  /* copy the debug library's data structures */
+  
+  if ((ptr = Malloc( maxdata * sizeof (word) )) == NULL)
+    {
+      Free( newtab );
+      
+      return NULL;
+    }
+
+  memcpy( ptr, (char *)MP_GetWord( oldtab, DLib_Slot * 2 ), (int)maxdata * sizeof (word) );
+
+  newtab[ DLib_Slot * 2 ] = (word)ptr;
+  
+  /* initialise the thread with this new module table */
+  
+  /* NB/ this relies upon the thread structure being the first structure declared in dlibstar.a */
+  
+  initthread( (THREAD *)ptr );
+
+  return newtab;
+
+} /* newmodtab */ 
+
+
+PRIVATE void
+copy_module_table( void )
+{
+  MPtr		module;
+  MPtr		wptr;  
+  word		kernelfunc = 0;
+  word		utilfunc   = 0;
+  void *	ptr;
+  
+
+  module = (MPtr) MyTask->Program;	/* XXX relies on Module field being first in Program structure */
+  
+  while (MP_StructGet( Module, Type, module ) != 0)
+    {
+      word	id;
+
+      
+      id = MP_StructGet( Module, Id, module );
+      
+#define KERNEL_SLOT	1
+      
+      if (id == KERNEL_SLOT)
+	{
+	  MPtr	mod;
+
+
+	  mod        = (WordPtr)MP_StructGet( ResRef, Module,   module );	  
+	  kernelfunc = MP_StructGet( Module, MaxCodeP, mod );
+	}
+      
+#define UTIL_SLOT	4
+      
+      if (id == UTIL_SLOT)
+	{
+	  MPtr	mod;
+
+	  
+	  mod      = (WordPtr)MP_StructGet( ResRef, Module,   module );	  
+	  utilfunc = MP_StructGet( Module, MaxCodeP, mod );
+	}
+      
+      module += MP_StructGet( Module, Size, module ) / sizeof (word);
+    }
+
+  /* we must copy the kernel's codetable area */
+  
+  if ((ptr = Malloc( kernelfunc * sizeof (word) )) == NULL)
+    {
+      IOdebug( "DLIB: Out of Memory" );
+      
+      return;
+    }
+
+  wptr = (MPtr) MP_GetWord( get_module_table(), KERNEL_SLOT * 2 + 1 );
+
+  MP_memcpy( ptr, wptr, 0, kernelfunc );
+
+  MP_PutWord( get_module_table(), KERNEL_SLOT * 2 + 1, C40WordAddress( ptr ) );
+  
+  /* we must copy Util's codetable area */
+  
+  if ((ptr = Malloc( utilfunc * sizeof (word) )) == NULL)
+    {
+      IOdebug( "DLIB: Out of Memory" );
+      
+      return;
+    }
+
+  wptr = (MPtr) MP_GetWord( get_module_table(), UTIL_SLOT * 2 + 1 );
+
+  MP_memcpy( ptr, wptr, 0, utilfunc );
+
+  MP_PutWord( get_module_table(), UTIL_SLOT * 2 + 1, C40WordAddress( ptr ) );
+  
+  return;
+
+} /* copy_module_table */ 
+
+
+/*
+ * Despite compiler messages to the contrary, this
+ * function IS used.  It is called by _DBGProcExit()
+ * in the dlibasm.a file.
+ */
+
+PRIVATE void
+ProcStop( MPtr modtab ) 
+{
+  word *	mtab;
+
+  
+  /* ACE: Not sure if this always gets called */
+  /* ACE: I am a bit worried that this can get called after I have freed the
+          debug structure. Locking things with the semaphore in the debug
+          structure is not a complete solution because of the fact that it
+          is part of the debug structure. For now I test debug against NULL */
+  
+  unless (debug == NULL)
+    {
+      DBG dbg;
+
+      
+      dbg.cmd.action = DBG_EndThread;
+      dbg.cmd.thread = (word)&thread;
+      dbg.data       = NULL;
+
+      putdebug( debug->port, &dbg );
+    }
+  
+  remthread( &thread );
+
+  mtab = (word *)C40CAddress( modtab );
+  
+  Free( (void *)mtab[ DLib_Slot ] );
+  Free( mtab );
+
+  return;
+  
+} /* ProcStop */
+
+
+/* A private version of _ProcExit() */
+/* Original is in util/misc.c       */
+
+PRIVATE void
+_DBGProcExit( word * stackbase )
+{
+  ProcStop( get_module_table() );
+  FreeStop( stackbase );
+  return;  
+}
+  
+
+/* A private version of NewProcess() */
+/* Original is in util/misc.c        */
+
+PRIVATE word *
+DBGNewProcess(
+	      word 	stacksize,
+	      VoidFnPtr func,
+	      word	argsize )
+{
+  word *	stack;  
+  word *	display;
+
+
+  stack   = (word *)Malloc( stacksize + sizeof (SaveState) );
+  display = stack + ((stacksize + sizeof (SaveState)) / sizeof (word)) -
+#ifdef NEW_SYSTEM
+    3
+#else
+    2
+#endif
+      ;
+  
+  if (stack == NULL)
+    return NULL;
+
+  display[ 0 ] = (word)newmodtab();
+  
+  if (display[ 0 ] == NULL)
+    {
+      Free( stack );
+      
+      return NULL;
+    }
+  
+  display[ 1 ] = (word)stack;
+  
+  if (argsize < 8) argsize = 8;
+
+
+#ifdef NEW_SYSTEM
+  display[ 2 ] = argsize;
+  
+  return InitProcess( stack, func, _DBGProcExit, display );
+#else
+  return InitProcess( display, func, _DBGProcExit, display, argsize );
+#endif
+} /* DBGNewProcess */
+
+
+/* private version of Fork()  */
+/* original is is util/misc.c */
+
+PRIVATE word
+DBGFork(
+	word 		stacksize,
+	VoidFnPtr	func,
+	word		argsize,
+	...		)
+{
+  word *		proc;
+  word *		ptr;
+  va_list		argp;
+  word			i;
+
+
+  va_start( argp, argsize );
+
+  proc = DBGNewProcess( stacksize, func, argsize );
+  
+  if (proc == NULL)
+    return FALSE;
+  
+  ptr = proc;
+  
+  for (i = (argsize / sizeof (word)); i--;)
+    {
+      *ptr++ = va_arg( argp, word );
+    }
+  
+  va_end( argp );
+  
+  StartProcess( proc, StandardPri );
+  
+  return TRUE;
+  
+} /* DBGFork */
+
+
+/* Add a breakpoint */
+
+#ifdef V1_1
+PRIVATE void
+addbreak(
+	 word 	modnum,
+	 word	line,
+	 word	threshold,
+	 BOOL	temp )
+#else
+PRIVATE void addbreak(word modnum, word line, word threshold)
+#endif
+{
+  BREAKPOINT *	breakpoint;
+  
+  
+  if ((breakpoint = New (BREAKPOINT)) == NULL)
+    return;
+  
+  breakpoint->loc.modnum = modnum;
+  breakpoint->loc.line   = line;
+  breakpoint->threshold  = threshold;
+  breakpoint->count      = 0;
+#ifdef V1_1
+  /* set a variable if this has be called by a go until function */
+  breakpoint->temp       = temp;
+#endif
+  
+  Wait( &debug->lock );
+  
+  AddHead( &debug->breakpointlist, &breakpoint->node );
+  
+  Signal( &debug->lock );
+  
+  return;
+  
+} /* addbreak */
+  
+
+PRIVATE void
+rembreak( BREAKPOINT * breakpoint )
+{
+  Remove( &breakpoint->node );
+  
+  Free( breakpoint );
+
+  return;
+  
+} /* rembreak */
+  
+  
+/**
+ *
+ * found = cmpwatch(watch, loc);
+ *
+ * Support routine for findwatch().
+ *
+ **/
+PRIVATE BOOL
+cmpwatch(
+	 WATCHPOINT *	watchpoint,
+	 MEMLOCATION *	loc )
+{	 
+  return (watchpoint->loc.addr == loc->addr AND
+	  watchpoint->loc.size == loc->size);
+  
+} /* cmpwatch */
+  
+/**
+ *
+ * watchpoint = findwatch(addr, size);
+ *
+ * Find a watchpoint.
+ *
+ **/
+PRIVATE WATCHPOINT *
+findwatch(
+	  void *	addr,
+	  word		size )
+{
+  WATCHPOINT *		watchpoint;
+  MEMLOCATION		loc;
+    
+    
+  loc.addr = addr;
+  loc.size = size;
+    
+  watchpoint = (WATCHPOINT *)SearchList( &debug->watchpointlist, (WordFnPtr)cmpwatch, (word)&loc );
+    
+  return watchpoint;
+  
+} /* findwatch */
+  
+/**
+ *
+ * addwatch(addr, size);
+ *
+ * Add a watchpoint.
+ *
+ **/
+PRIVATE void
+addwatch(
+	 void * addr,
+	 word   size )
+{
+  WATCHPOINT *  watchpoint;
+  
+  
+  Wait( &debug->lock );
+
+  if ((watchpoint = findwatch( addr, size )) == NULL)
+    {
+      unless ((watchpoint = (WATCHPOINT *)Malloc( sizeof (WATCHPOINT) + size)) == NULL)
+	{
+	  watchpoint->loc.addr = addr;
+	  watchpoint->loc.size = size;
+	  watchpoint->usage    = 1;
+
+	  memcpy( &watchpoint->copy, addr, (int)size );
+	  
+	  AddHead( &debug->watchpointlist, &watchpoint->node );
+	}
+    }
+  else
+    {
+      watchpoint->usage++;
+    }
+  
+  Signal( &debug->lock );
+  
+  return;
+  
+} /* addwatch */
+  
+/**
+ *
+ * remwatch(watchpoint);
+ *
+ * Remove a watchpoint.
+ *
+ **/
+PRIVATE void
+remwatch( WATCHPOINT * watchpoint )
+{
+#ifdef CRs
+  IOdebug ("remwatch %x", watchpoint);
+#endif
+  
+  if (watchpoint->usage == 1)
+    {
+      Remove( &watchpoint->node );
+      
+      Free( watchpoint );
+    }
+  else
+    watchpoint->usage --;
+
+  return;
+  
+} /* remwatch */
+  
+/**
+ *
+ * same = memcmp(m1, m2, size);
+ *
+ * Compare two blocks of memory.
+ *
+ **/
+int
+memcmp(
+       const void * m1,
+       const void * m2,
+       unsigned int size )
+{
+  byte *b1 = (byte *)m1;
+  byte *b2 = (byte *)m2;
+  
+  while (size--)
+    unless (*b1++ == *b2++) return 1;
+  
+  return 0;
+
+} /* memcmp */
+  
+
+#ifdef OLDCODE
+PRIVATE void activategoto(int modnum, int firstline, int lastline)
+{
+  thread.gotobreak.active = TRUE;
+  thread.gotobreak.modnum = modnum;
+  thread.gotobreak.firstline = firstline;
+  thread.gotobreak.lastline = lastline;
+}
+  
+PRIVATE BOOL isgoto(int modnum, int line)
+{
+  unless (thread.gotobreak.active) return FALSE;
+
+  if (modnum == thread.gotobreak.modnum AND
+      line >= thread.gotobreak.firstline AND line <= thread.gotobreak.lastline)
+    {
+      thread.gotobreak.active = FALSE;
+      return TRUE;
+    }
+  return FALSE;
+}
+#endif
+  
+  
+/* return the address of global data of the indicated module */
+PRIVATE byte *
+dataloc(
+	word 	modnum,
+	word	offset )
+{
+  return (byte *)(MP_GetWord( get_module_table(), modnum * 2 ) + offset );
+}
+  
+/* return the address of a function of the indicated module */
+  
+PRIVATE MPtr
+codeloc(
+	word 	modnum,
+	word	offset )
+{
+  return (MPtr)(MP_GetWord( get_module_table(), modnum * 2 + 1 ) + offset );
+}
+  
+/* returns the address of an item on the thread's stack */
+  
+PRIVATE WordPtr
+stackloc(
+	 THREAD *	thread,
+	 word		frame,
+	 word		offset )
+{
+  return thread->frameptr[ frame ].stackptr - (offset);
+    
+} /* stackloc */
+  
+  
+PRIVATE WordPtr
+frameloc(
+	 THREAD *	thread,
+	 word		frame,
+	 word		offset )
+{
+  return thread->frameptr[ frame ].frameptr + (offset / sizeof (word));
+    
+} /* frameloc */
+  
+  
+PRIVATE void
+peekmem(
+	Port	port,
+	byte *	addr,
+	word	size )
+{
+  DBG dbg;
+    
+
+  dbg.cmd.action = DBG_Dump;
+  dbg.cmd.modnum = (word)addr;
+  dbg.cmd.size   = size;
+  dbg.data       = addr;
+    
+  /* IOdebug( "DLIB: peekmem: addr = %x, size = %d", addr, size ); */
+    
+  putdebug(port, &dbg);
+
+  return;
+  
+} /* peekmem */
+  
+  
+PRIVATE void
+pokemem(
+	byte *	addr,
+	word	size,
+	byte *	data )
+{
+  /* IOdebug( "DLIB: pokemem: addr = %x, data = %x", addr, *((word *)data) ); */
+    
+  memcpy( addr, data, (int)size );
+    
+  return;
+  
+} /* pokemem */
+  
+  
+PRIVATE void
+peekdata(
+	 Port 	port,
+	 word	modnum,
+	 word	offset,
+	 word	size )
+{
+  DBG 		dbg;
+  byte *	addr = dataloc( modnum, offset );
+    
+    
+  /* IOdebug( "DLIB: peekdata: addr = %x, offset = %x, modnum = %x, size = %x", addr, offset, modnum, size ); */
+    
+  dbg.cmd.action = DBG_Dump;
+  dbg.cmd.modnum = (int)addr;
+  dbg.cmd.size   = size;
+  dbg.data       = addr;
+    
+  putdebug( port, &dbg );
+    
+  return;
+  
+} /* peekdata */
+  
+
+PRIVATE void
+pokedata(
+	 word 	modnum,
+	 word	offset,
+	 word	size,
+	 byte *	data )
+{
+  /* IOdebug( "DLIB: pokedata: addr = %x, data = %x", dataloc( modnum, offset ), *((word *)data) ); */
+    
+  memcpy( dataloc( modnum, offset ), data, (int)size );
+  
+  return;  
+    
+} /* pokedata */
+  
+  
+PRIVATE void
+peekstack(
+	  Port 		port,
+	  THREAD *	thread,
+	  word		frame,
+	  word		offset,
+	  word		size )
+{
+  DBG 		dbg;
+  WordPtr	addr = stackloc( thread, frame, offset );
+    
+  
+  dbg.cmd.action = DBG_Dump;
+  dbg.cmd.modnum = (word)addr;
+  dbg.cmd.size   = size;
+  dbg.data       = (byte *)addr;
+  
+  /* IOdebug( "DLIB: peekstack: addr = %x", addr ); */
+  
+  putdebug( port, &dbg );
+  
+  return;
+    
+} /* peekstack */
+  
+  
+PRIVATE void
+pokestack(
+	  THREAD *	thread,
+	  word		frame,
+	  word		offset,
+	  word		size,
+	  byte *	data )
+{
+  /* IOdebug( "DLIB: pokestack: addr = %x, data = %x", stackloc( thread, frame, offset ), *((word *)data) ); */
+    
+  memcpy( (char *)stackloc( thread, frame, offset ), data, (int)size );
+    
+  return;
+    
+} /* pokestack */
+  
+  
+PRIVATE void
+locatedata(
+	   Port 	port,
+	   word		modnum,
+	   word		offset )
+{
+  DBG 			dbg;
+    
+    
+  /* IOdebug( "DLIB: locatedata: offset = %x", offset ); */
+  
+  dbg.cmd.action = DBG_Address;
+  dbg.cmd.modnum = (int)dataloc( modnum, offset );
+  dbg.data       = NULL;
+  
+  putdebug( port, &dbg );
+  
+  return;
+  
+} /* locatedata */
+  
+  
+PRIVATE void
+locatestack(
+	    Port 	port,
+	    THREAD *	thread,
+	    word	frame,
+	    word	offset )
+{
+  DBG 			dbg;
+    
+    
+  /* IOdebug( "DLIB: locatestack: offset = %x", offset ); */
+    
+  dbg.cmd.action = DBG_Address;
+  dbg.cmd.modnum = (word)stackloc( thread, frame, offset );
+  dbg.data       = NULL;
+  
+  putdebug( port, &dbg );
+  
+  return;
+  
+} /* locatestack */
+  
+
+PRIVATE void
+locateframe(
+	      Port 	port,
+	      THREAD *	thread,
+	      word	frame,
+	      word	offset )
+{
+  DBG dbg;
+    
+    
+  /* IOdebug( "DLIB: locateframe: offset = %x", offset ); */
+  
+  dbg.cmd.action = DBG_Address;
+  dbg.cmd.modnum = (word)frameloc( thread, frame, offset );
+  dbg.data       = NULL;
+  
+  putdebug( port, &dbg );
+  
+  return;
+  
+} /* locateframe */
+  
+  
+PRIVATE void
+locateregister(
+	       Port 	port,
+	       THREAD *	thread,
+	       word	reg )
+{
+  DBG dbg;
+    
+  /* IOdebug( "DLIB: locateregister: reg = %d", reg ); */
+    
+  dbg.cmd.action = DBG_Address;
+  dbg.cmd.modnum = (int)(&saved_regs[ reg ]);
+  dbg.data       = NULL;
+    
+  putdebug( port, &dbg );
+    
+  return;
+    
+} /* locateregister */
+  
+
+PRIVATE void
+call(
+     Port 	port,
+     VoidFnPtr	func,
+     word	argsize,
+     word *	args,
+     word	retsize )
+{    
+  DBG 		dbg;
+  word		rets;
+    
+  
+  /*
+   * ACE: Only support functions return single word
+   */
+    
+  rets = DoCall( func, argsize, args );
+  
+  dbg.cmd.action = DBG_Return;
+  dbg.cmd.size   = retsize;
+  dbg.data       = (byte *)&rets;
+  
+  putdebug( port, &dbg );
+  
+  return;
+  
+} /* call */
+  
+  
+PRIVATE void
+where(
+      Port 	port,
+      THREAD *	thread,
+      word	frame )
+{
+  DBG dbg;
+    
+    
+  dbg.cmd.action = DBG_Position;
+  
+  if (thread->frameptr + frame >= thread->framestk + FrameStackSize)
+    {
+      dbg.cmd.modnum = -1;
+    }
+  else
+    {
+      MPtr	procinfo = thread->frameptr[ frame ].procinfo;
+      
+      
+      dbg.cmd.modnum = GetProcInfo( procinfo, Modnum );
+      dbg.cmd.offset = thread->frameptr[ frame ].line;
+      dbg.cmd.size   = GetProcInfo( procinfo, Offset );
+    }
+  
+  dbg.data = NULL;
+  
+  putdebug( port, &dbg );
+  
+  return;
+  
+} /* where */
+  
+  
+/* returns the address of the ProcInfo structure associated with the given procedure */
+  
+PRIVATE MPtr
+findprocinfo(
+	     word 	modnum,
+	     word	offset )
+{
+  MPtr		code;
+  word		i;
+    
+    
+  code = MP_GetWord( codeloc( modnum, offset ), 0 );  
+    
+  i = 0;
+    
+  while (MP_GetWord( code, i ) != T_ProcInfo)	/* XXX - could flow off end of Code space ! */
+    i++;
+    
+  code += i;
+  
+  if (GetProcInfo( code, Offset ) == offset &&
+      GetProcInfo( code, Modnum ) == modnum)
+    {
+      return code;
+    }
+    
+  return NULL;
+    
+} /* findprocinfo */
+  
+  
+PRIVATE FUNC *
+addfunc( MPtr procinfo )
+{
+  FUNC *	func;
+  word		hash = hashval( procinfo );
+  
+  
+  if (procinfo == 0)
+    return NULL;  
+  
+  if ((func = (FUNC *)SearchList( &debug->functable[ hash ], (WordFnPtr)cmpfunc, procinfo )) == NULL)
+    {
+      /* ACE: Test for no memory */
+      
+      func = New(FUNC);
+      
+      func->procinfo = procinfo;
+      func->flags    = 0;
+      func->time     = 0;
+      func->calls    = 0;
+      
+      AddHead( &debug->functable[ hash ], &func->node );
+    }
+  
+  return func;
+  
+} /* addfunc */
+
+
+PRIVATE word
+DBGGetMsg( MCB * mcb )
+{
+  word err;
+
+  
+  thread.port  = mcb->MsgHdr.Dest;
+
+  /*
+   * XXX - NC - 27/4/93
+   *
+   * Do NOT set the timeout to -1.
+   * This used to be done, (because in theory
+   * using the debugger will alter the timing
+   * characteristics of the thread).  Doing
+   * this breaks signle stepping over sleep(),
+   * amoungst other things, and so it has been
+   * abandoned.
+   */
+  
+  err          =  RealGetMsg(mcb);
+  thread.port  = NullPort;
+  
+  return err;
+
+} /* DBGGetMsg */
+
+  
+PRIVATE word
+DBGPutMsg( MCB * mcb )
+{
+  word err;
+    
+
+  thread.port  = mcb->MsgHdr.Dest;
+  
+  /*
+   * XXX - NC - 27/4/93
+   *
+   * Do NOT set the timeout to -1.
+   * This used to be done, (because in theory
+   * using the debugger will alter the timing
+   * characteristics of the thread).  Doing
+   * this breaks signle stepping over sleep(),
+   * amoungst other things, and so it has been
+   * abandoned.
+   */
+  
+  err          =  RealPutMsg(mcb);
+  thread.port  = NullPort;
+
+  return err;
+  
+} /* DBGPutMsg */
+
+
+/**
+ *
+ * remdebug();
+ *
+ * Terminate debugging.
+ *
+ **/
+
+PRIVATE void
+remdebug( void )
+{
+  unless (debug == NULL)
+      {
+	int i;
+	
+	
+	Wait(   &debug->lock );
+	Signal( &debug->lock );
+	
+	(void) patchgetmsg( debug->GetMsg );
+	(void) patchputmsg( debug->PutMsg );
+#if 1
+	(void) patchfork( debug->Fork );
+#endif
+	
+#ifdef OLDCODE
+	/* ACE: This should kill off all threads */
+	/* ACE: Threads will be killed off anyway.
+	   More importantly this frees the thread structure which
+	   has disasterous effects - the patched module table is
+	   thrown away ! */
+	(void)WalkList(&debug->threadlist, (WordFnPtr)remthread, 0);
+#endif
+	
+	(void)WalkList(&debug->breakpointlist, (WordFnPtr)rembreak, 0);
+	
+	/*    (void)WalkList(&debug->watchpointlist, (WordFnPtr)remwatch, 0);*/
+	
+	for (i = 0; i < HashMax; i++)
+	  (void)WalkList( &debug->functable[ i ], (WordFnPtr)remfunc, 0 );
+	
+	Close( debug->stream );
+	
+	Free( debug );
+	
+	debug = NULL;
+      }
+  
+  return;
+  
+} /* remdebug */
+
+  
+/**
+ *
+ * debugworker();
+ *
+ * Accepts and obeys debug commands from debugger.
+ *
+ **/
+PRIVATE void
+debugworker( void )
+{
+  DBG 	dbg;
+  byte	data[ 1024 ]; /* ACE: not perfect */
+  
+  
+  dbg.cmd.size = 1024;
+  dbg.data     = data;
+  
+  while (getdebug(debug->reply, &dbg) >= Err_Null)
+    {
+      switch (dbg.cmd.action)
+	{
+	case DBG_Call:
+	  /* ACE: Implement this by forking a new process to execute the function.
+	     When the process has terminated we must return the result on the
+	     reply port.
+	     dbg.cmd.modnum = address of function
+	     dbg.cmd.size   = size of parameters
+	     dbg.cmd.offset = size of return parameters expected
+	     dbg.data       = parameters
+	     */
+	  
+	  patchentry(   &thread, ignore_entry   );
+	  patchcommand( &thread, ignore_command );
+	  patchreturn(  &thread, ignore_return  );
+	  
+	  call( dbg.port, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size, (word *)dbg.data, dbg.cmd.offset );
+	  
+	  patchentry(   &thread, notify_entry   );
+	  patchcommand( &thread, notify_command );
+	  patchreturn(  &thread, notify_return  );
+	  
+	  continue;
+	  
+	case DBG_Fork:
+	  /*
+	    dbg.cmd.modnum = address of function
+	    dbg.cmd.size   = size of parameters
+	    dbg.cmd.offset = size of return parameters expected
+	    dbg.data       = parameters
+	    */
+	    {
+	      word * proc = DBGNewProcess(10000, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size);
+	      
+	      unless (proc == NULL)
+		{
+		  memcpy(proc, dbg.data, (int)dbg.cmd.size);
+		  StartProcess(proc, 1);
+		}
+	    }
+	  continue;
+	  
+	case DBG_Free:
+	  patchentry(   (THREAD *)dbg.cmd.thread, ignore_entry   );
+	  patchcommand( (THREAD *)dbg.cmd.thread, ignore_command );
+	  patchreturn(  (THREAD *)dbg.cmd.thread, ignore_return  );
+	  
+	  resume((THREAD *)dbg.cmd.thread);
+	  
+	  continue;
+	  
+	case DBG_FreeAll:
+	  (void)patchgetmsg(debug->GetMsg);
+	  (void)patchputmsg(debug->PutMsg);
+#if 1
+	  (void)patchfork(debug->Fork);
+#endif
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchentry,   (word)ignore_entry);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)ignore_command);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchreturn,  (word)ignore_return);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+	  Signal(&debug->lock);
+#ifdef CRs
+	  IOdebug (" remdebug called from debugworker" );
+#endif    
+	  remdebug();
+	  return;
+	  
+	case DBG_Go:
+	  unstopthread((THREAD *)dbg.cmd.thread);
+	  patchcommand((THREAD *)dbg.cmd.thread, notify_command);
+	  resume((THREAD *)dbg.cmd.thread);
+	  continue;
+	  
+	case DBG_GoAll:
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)unstopthread, 0);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)notify_command);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_Goto:
+#ifdef V1_1
+	  addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1, FALSE);
+#else
+	  /* This implementation of goto is crap */
+	  addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1);
+#endif
+	  unstopthread((THREAD *)dbg.cmd.thread);
+	  patchcommand((THREAD *)dbg.cmd.thread, notify_command);
+	  resume((THREAD *)dbg.cmd.thread);
+	  continue;
+	  
+	case DBG_GotoAll:
+#ifdef V1_1
+	  addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1, TRUE);
+#else
+	  addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1);
+#endif
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)unstopthread, 0);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)notify_command);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_GotoFrame:
+	  gotoframethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.modnum);
+	  patchcommand((THREAD *)dbg.cmd.thread, framestop_command);
+	  resume((THREAD *)dbg.cmd.thread);
+	  continue;
+	  
+	case DBG_GotoFrameAll:
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)gotoframethread, dbg.cmd.modnum);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)framestop_command);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchentry,   (word)notify_entry);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchreturn,  (word)notify_return);                  
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_Kill:
+	  Wait(&debug->lock);
+	  remthread((THREAD *)dbg.cmd.thread);
+	  Signal(&debug->lock);
+	  /* ACE: Have to actually stop the thread */
+	  continue;
+	  
+	case DBG_KillAll:
+	  _exit(1);
+	  continue;
+	  
+	case DBG_Profile:
+	  if (dbg.cmd.modnum == -1)
+	    {
+	      profilethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.size);
+	      patchcommand((THREAD *)dbg.cmd.thread, notify_command);
+	    }
+	  else
+	    {
+	      FUNC *func = addfunc(findprocinfo(dbg.cmd.modnum, dbg.cmd.offset));
+	      
+	      if (dbg.cmd.size) func->flags |= Profile;
+	      else func->flags &= ~Profile;
+	    }
+	  continue;
+	  
+	case DBG_ProfileAll:
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)profilethread, dbg.cmd.size);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)notify_command);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_Step:
+	  stopthread((THREAD *)dbg.cmd.thread);
+	  patchcommand((THREAD *)dbg.cmd.thread, notify_command);
+	  resume((THREAD *)dbg.cmd.thread);
+	  continue;
+	  
+	case DBG_StepAll:
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)stopthread, 0);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)notify_command);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_Stop:
+	  stopthread((THREAD *)dbg.cmd.thread);
+	  patchcommand((THREAD *)dbg.cmd.thread, notify_command);
+	  continue;
+	  
+	case DBG_StopAll:
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)stopthread, 0);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)notify_command);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_Timeout:
+	  timeoutthread((THREAD *)dbg.cmd.thread);
+	  continue;
+	  
+	case DBG_TimeoutAll:
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)timeoutthread, 0);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_Trace:
+	  if (dbg.cmd.modnum == -1)
+	    {
+	      tracethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.size);
+	      patchcommand((THREAD *)dbg.cmd.thread, notify_command);
+	    }
+	  else
+	    {
+	      FUNC *	func;
+	      
+	      
+	      func = addfunc( findprocinfo( dbg.cmd.modnum, dbg.cmd.offset ) );
+	      
+	      if (dbg.cmd.size & TraceOff)
+		func->flags &= ~dbg.cmd.size;
+	      else
+		func->flags |= dbg.cmd.size;
+	    }
+	  continue;
+	  
+	case DBG_TraceAll:
+	  Wait(&debug->lock);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)tracethread, 0);
+	  (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)notify_command);
+	  Signal(&debug->lock);
+	  continue;
+	  
+	case DBG_AddBreak:
+#ifdef V1_1
+	  addbreak(dbg.cmd.modnum, dbg.cmd.offset, (int)dbg.cmd.size, FALSE);
+#else
+	  addbreak(dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+#endif
+	  continue;
+	  
+	case DBG_RemBreak:
+	    {
+	      BREAKPOINT *breakpoint;
+	      
+	      unless ((breakpoint = findbreak(dbg.cmd.modnum, dbg.cmd.offset)) == NULL)
+		rembreak(breakpoint);
+	    }
+	  continue;
+	  
+	case DBG_AddWatch:
+	  addwatch((void *)dbg.cmd.modnum, dbg.cmd.size);
+	  continue;
+	  
+	case DBG_RemWatch:
+	    {
+	      WATCHPOINT *watchpoint;
+	      Wait (&debug->lock);      	
+#ifdef CRs
+	      IOdebug ("case RemWatch"); 
+#endif
+	      unless ((watchpoint = findwatch((void *)dbg.cmd.modnum, dbg.cmd.size)) == NULL)
+		{
+#ifdef CRs
+		  IOdebug ("RemWatch calling for %x", watchpoint);
+#endif
+		  remwatch(watchpoint);
+		}
+	      /*        dbg.data = NULL;
+			dbg.cmd.action = DBG_Ready;
+			putdebug(dbg.port, &dbg);  CR: does not work */
+	      Signal (&debug->lock);
+	    }
+	  continue;
+	  
+	case DBG_PeekMem:
+	  peekmem(dbg.port, (char *)dbg.cmd.modnum, dbg.cmd.size);
+	  continue;
+	  
+	case DBG_PokeMem:
+	  pokemem( (char *)dbg.cmd.modnum, dbg.cmd.size, dbg.data);
+	  continue;
+	  
+	case DBG_PeekData:
+	  peekdata(dbg.port, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+	  continue;
+	  
+	case DBG_PokeData:
+	  pokedata(dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size, dbg.data);
+	  continue;
+	  
+	case DBG_PeekStack:
+	  peekstack(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+	  continue;
+	  
+	case DBG_PokeStack:
+	  pokestack((THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size, dbg.data);
+	  continue;
+	  
+	case DBG_LocateData:
+	  locatedata(dbg.port, dbg.cmd.modnum, dbg.cmd.offset);
+	  continue;
+	  
+	case DBG_LocateStack:
+	  locatestack(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset);
+	  continue;
+	  
+	case DBG_LocateFrame:
+	  locateframe( dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset );
+	  continue;
+	  
+	case DBG_LocateRegister:
+	  locateregister( dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.offset );
+	  continue;
+	  
+	case DBG_Where:
+	  where(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum);
+	  continue;
+	  
+	default:
+	  continue;
+	}
+    }
+  
+  return;  
+  
+} /* debugworker */
+  
+  
+/*
+ * Try to locate the debug server. If found register ourselves with it
+ * otherwise execute as normal.
+ */
+
+PRIVATE BOOL
+initdebug( void )
+{
+  Object *	debugger;
+  
+  
+#ifdef MEMCHECK
+  Fork( 10000, memcheck, 0 );  
+#endif
+  
+  /*
+   * Is the debug server loaded ?
+   */
+  
+#ifdef	MYDEBUG
+  unless ((debugger = Locate(NULL, "/mydebug")) == NULL)
+#else
+  unless ((debugger = Locate(NULL, "/debug")) == NULL)
+#endif
+    {
+      char	name[ 10 * sizeof (word) ];
+      Stream *	dbgstream;
+	
+	
+      /*
+       * Open a stream to it and register ourselves.
+       */
+      
+      ModuleName_( name, MyTask->Program );
+      
+      unless ((dbgstream = Open( debugger, name, O_ReadWrite | O_Create )) == NULL)
+	{
+#ifdef OLDCODE
+	  /*
+	   * -- crf : 12/08/91 - do not need these routines
+	   */
+	  
+	  Environ *	env = getenviron();
+	  Object *	newobjv[ 5 ];
+	    
+	    
+	  newobjv[ 0 ] = env->Objv[ 0 ];	  /* ACE: should test for NULL object */
+	  newobjv[ 1 ] = locatecode();
+	  newobjv[ 2 ] = locatetask();
+	  newobjv[ 3 ] = locatewm ( env );
+	  newobjv[ 4 ] = Null ( Object );
+	  
+	  env->Objv = newobjv;
+	  
+	  if (MySendEnv( dbgstream->Server, env ) == Err_Null)
+#endif	  
+	    
+	    /*
+	      -- crf : 12/08/91 - need the following entries
+	      OV_Cdir		0	current directory			
+	      OV_Task		1	ProcMan task entry			
+	      OV_Code		2	Loader code entry			
+	      OV_CServer	7	control console/window server	
+	      
+	      -- don't need these ...
+	      
+	      OV_Source		3	original program source file		
+	      OV_Parent		4	this task's parent			
+	      OV_Home		5	home directory			
+	      OV_Console	6	control console			
+	      OV_Session	8	user's session manager entry		
+	      OV_TFM		9	user's task force manager	
+	      OV_TForce		10	TFM entry for parent task force	
+	      OV_End		11	NULL at end of Objv			
+	      */
+	    
+	    Environ *	env = getenviron();
+	  
+	  if (MySendEnv( dbgstream->Server, env ) == Err_Null)
+	    {
+	      unless ((debug = New( DEBUG )) == NULL)
+		{
+		  int i;
+		  
+		  
+		  debug->stream = dbgstream;
+		  debug->port   = dbgstream->Server;
+		  debug->reply  = dbgstream->Reply;
+		  
+		  InitList( &debug->threadlist );
+		  InitList( &debug->breakpointlist );
+		  InitList( &debug->watchpointlist );
+		  
+		  InitSemaphore( &debug->lock, 1 );
+		  
+		  for (i = 0; i < HashMax; i++)
+		    InitList( &debug->functable[ i ] );
+		  
+		  initthread( &thread );
+		  
+		  Close( debugger );
+#ifdef CRs	  
+		  IOdebug( "remdebug called from initdebug" );
+#endif		  
+		  atexit( remdebug );
+		  
+		  /*
+		   * Since we have a shared module table, we
+		   * cannot just directly modify the function
+		   * addresses for Fork(), etc.  Instead we
+		   * must copy the module table first.
+		   */
+		  
+		  copy_module_table();
+
+#if 1
+		  debug->GetMsg = patchgetmsg( DBGGetMsg );		  
+		  debug->PutMsg = patchputmsg( DBGPutMsg );
+#else
+		  debug->GetMsg = GetMsg;		  
+		  debug->PutMsg = PutMsg;
+#endif		  
+		    {
+		      DBG dbg;
+		      
+		      
+		      dbg.data = NULL;
+		      
+		      (void)getdebug( debug->reply, &dbg );
+		    }
+		  
+		  if (Fork( 10000, debugworker, 0 ))
+		    {
+#if 1		    
+		      debug->Fork = patchfork( DBGFork );
+#else		      
+		      debug->Fork = Fork;
+#endif		      
+		      return TRUE;
+		    }
+		} 
+	    }	  
+	    
+	  Close( dbgstream );
+	}
+	
+      Close( debugger );
+    }
+  else
+    {
+      IOdebug( "DLIB: Failed to locate debug server" );
+    }  
+  
+  patchentry(   &thread, ignore_entry   );
+  patchcommand( &thread, ignore_command );
+  patchreturn(  &thread, ignore_return  );
+  
+  return FALSE;
+
+} /* initdebug */
+ 
+
+
+PUBLIC void
+_notify_entry(
+	      MPtr	procinfo,
+	      MPtr	frame_ptr,
+	      MPtr	stack_ptr )
+{
+  if (debug == NULL AND !initdebug())
+    {
+      return;
+    }  
+
+  thread.notify_entry( procinfo, frame_ptr, stack_ptr );
+
+  return;
+  
+} /* _notify_entry */
+
+
+PUBLIC word
+_notify_return(
+	       MPtr	procinfo,
+	       word	result )
+{
+  if (debug == NULL)
+    {
+      return result;
+    }
+  
+  return thread.notify_return( procinfo, result );
+  
+} /* _notify_return */
+
+
+PUBLIC void
+_notify_command(
+		word 	line,
+		MPtr	sourceinfo )
+{
+  if (debug == NULL)
+    {
+      return;
+    }
+
+  thread.notify_command( line, sourceinfo );
+  
+  return;
+  
+} /* _notify_command */
+@
+
+
+1.13
+log
+@fixed compile time warnings
+@
+text
+@d23 1
+a23 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.12 1993/04/27 11:42:01 nickc Exp nickc $";
+d1385 7
+a1391 1
+  display = stack + ((stacksize + sizeof (SaveState)) / sizeof (word)) - 2;
+d1406 2
+a1408 1
+  if (argsize < 8) argsize = 8;
+d1410 5
+d1416 1
+a1416 1
+
+@
+
+
+1.12
+log
+@fixed debugging of sleep()
+@
+text
+@d23 1
+a23 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.11 1993/03/17 17:41:10 nickc Exp nickc $";
+d111 1
+a111 1
+      if ((flagv = Malloc( i * sizeof (word))) == NULL)
+d1231 1
+a1231 1
+  initthread( ptr );
+d1384 1
+a1384 1
+  stack   = Malloc( stacksize + sizeof (SaveState) );
+d2424 1
+a2424 1
+	  peekmem(dbg.port, (void *)dbg.cmd.modnum, dbg.cmd.size);
+d2428 1
+a2428 1
+	  pokemem((void *)dbg.cmd.modnum, dbg.cmd.size, dbg.data);
+@
+
+
+1.11
+log
+@fixed bugs in newmodtab()
+@
+text
+@d23 1
+a23 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.10 1993/03/10 16:16:34 nickc Exp nickc $";
+d46 1
+a46 1
+#define NUM_SAVED_REGS	32
+d478 2
+a479 1
+}
+d514 2
+a515 1
+}
+d525 3
+a527 1
+checkwatch(WATCHPOINT *watchpoint, word scope)
+d529 7
+a535 6
+  unless (memcmp(watchpoint->loc.addr, &watchpoint->copy, (int)watchpoint->loc.size) == 0)
+  {
+    DBG dbg;
+    Port port = NewPort();  
+    word err;
+    
+d537 1
+a537 1
+    IOdebug ("entered checkwatch");  
+d539 21
+a559 21
+    dbg.port = port;
+    dbg.cmd.action = DBG_Changed;
+    dbg.cmd.modnum = (word)watchpoint->loc.addr;
+    dbg.cmd.size = watchpoint->loc.size;
+    dbg.cmd.offset = scope ;/* CR: should transfer the callers id */
+    dbg.data = NULL;
+
+/* 
+-- crf : 25/07/91 - Bug 700
+-- Problem : loss of synchronization between debugger and dlib with regard
+-- to watchpointing (refer "system.c").
+-- Solution : explicitly force synchronization. I am using the same fixes
+-- that were made to "trace()".
+
+-- crf : 25/07/91 - The above fix also fixes the following :
+-- Bug 652 - watchpointing multiple variables (1)
+-- Bug 701 - watchpointing multiple variables (2)
+-- Bug 703 - watchpointing multiple variables (3)
+*/
+
+/* -- crf : synchronization fix */
+d561 1
+a561 1
+    putdebug(debug->port, &dbg);
+d563 4
+a566 4
+    if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+    {
+      getdebug(port, &dbg);
+    }
+d568 8
+a575 8
+
+/*
+-- crf : 28/07/91
+-- Take note of Carsten's comment below ("CR: causes timing problems")
+-- I think I have sorted out the synchronization problems with the use of
+-- the sub-routine "delwatchpoints()" ... this will require testing.
+*/
+
+d577 3
+a579 3
+    if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+    {
+      /* getdebug(port, &dbg); CR: causes timing problems */
+d581 1
+a581 1
+    IOdebug ("err = %d in checkwatch",err);  
+d583 1
+a583 1
+    }
+d585 7
+a591 4
+
+    else IOdebug( "DLIB: senddebug returned an error (%x)", err);
+    FreePort(port);
+    memcpy(&watchpoint->copy, watchpoint->loc.addr, (int)watchpoint->loc.size);
+d593 1
+a593 1
+    thread.watchstop = TRUE;
+d595 5
+a599 2
+  }
+}
+d608 1
+d610 3
+a612 1
+checkwatchret(WATCHPOINT *watchpoint, word scope)
+d614 1
+a614 1
+  DBG dbg;
+d617 1
+d620 1
+a620 1
+    IOdebug ("entered checkwatchreturn");  
+d622 9
+a630 7
+    dbg.port = port;
+    dbg.cmd.action = DBG_Changed;
+    dbg.cmd.modnum = (word)watchpoint->loc.addr;
+    dbg.cmd.size = watchpoint->loc.size;
+    dbg.cmd.offset = scope ;/* CR: should transfer the callers id */
+    dbg.data = NULL;
+    if((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+d632 1
+a632 1
+    	getdebug ( port, &dbg);
+d634 7
+a640 3
+    FreePort (port);
+    return TRUE;
+}
+d1511 1
+a1511 1
+    watchpoint->loc.size == loc->size);
+d1556 1
+a1556 1
+  
+d1564 1
+a1564 1
+	  
+d1571 3
+a1573 1
+    watchpoint->usage++;
+d2040 13
+a2052 1
+  mcb->Timeout = -1;
+d2068 13
+a2080 1
+  mcb->Timeout = -1;
+d2591 2
+a2592 1
+		  
+d2595 4
+a2598 1
+		  
+d2652 1
+a2652 1
+  
+@
+
+
+1.10
+log
+@fixed decoding of addresses of local (stack based) data
+@
+text
+@d23 1
+a23 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.9 1993/01/12 10:24:30 nickc Exp nickc $";
+d1135 2
+a1136 2
+PRIVATE WordPtr
+newmodtab( WordPtr oldtab )
+d1138 1
+a1141 1
+  word		maxfunc    = 0;
+d1146 3
+a1148 1
+  module = (WordPtr) MyTask->Program;	/* XXX relies on Module field being first in Program structure */
+d1161 1
+a1161 1
+	  WordPtr	mod;
+d1163 3
+d1167 1
+a1167 1
+	  mod     = (WordPtr)MP_StructGet( ResRef, Module,   module );	  
+a1168 1
+	  maxfunc = MP_StructGet( Module, MaxCodeP, mod );
+d1176 2
+d1181 1
+a1181 1
+  if ((newtab = (word *)Malloc( (maxid + 1) * 2 * sizeof (word) )) == NULL)
+d1186 1
+a1186 1
+  MP_memcpy( newtab, oldtab, 0, (maxid + 1) * 2 );
+d1189 1
+a1189 1
+  
+d1192 1
+a1192 1
+  
+d1202 1
+a1202 5
+#ifdef CODE_IN_HIGH_MEMORY
+  MP_memcpy( ptr, MP_GetWord( oldtab, DLib_Slot * 2 ), 0, maxdata );
+#else
+  MP_memcpy( ptr, (word *)(oldtab[ DLib_Slot * 2 ]), 0, maxdata );
+#endif
+d1205 1
+a1205 1
+
+d1208 1
+a1208 1
+  /* NB/ this relies upon the thread structure being the first structure decalred in dlibstar.a */
+d1212 1
+a1212 5
+#ifdef CODE_IN_HIGH_MEMORY
+  return (WordPtr)(newtab[ 1 ]);
+#else
+  return (WordPtr)(newtab[ 0 ]);
+#endif
+d1220 1
+a1220 1
+  WordPtr	module;
+d1227 1
+a1227 1
+  module = (WordPtr) MyTask->Program;	/* XXX relies on Module field being first in Program structure */
+d1240 1
+a1240 1
+	  WordPtr	mod;
+d1242 1
+a1242 1
+	  
+d1251 1
+a1251 1
+	  WordPtr	mod;
+a1271 1
+#ifdef CODE_IN_HIGH_MEMORY
+a1272 3
+#else
+  MP_memcpy( ptr, (char *)C40CAddress( wptr ), 0, kernelfunc );
+#endif
+a1286 1
+#ifdef CODE_IN_HIGH_MEMORY
+a1287 3
+#else
+  MP_memcpy( ptr, (char *)C40CAddress( wptr ), 0, utilfunc );
+#endif
+d1353 1
+a1353 1
+PRIVATE void *
+d1362 1
+a1362 1
+  
+d1364 1
+a1364 1
+  display = stack + (stacksize / sizeof (word)) - 2;
+d1368 2
+a1370 2
+  display[ 0 ] = (word)newmodtab( (WordPtr)C40CAddress( get_module_table() ) );
+  
+d1377 1
+a1377 1
+
+d1381 1
+a1381 1
+  
+a1389 2
+#define FORKMAXARGSIZE 32	/* allows 32 word args max */
+
+d1397 2
+a1398 2
+  word *		proc; 
+  word			args[ FORKMAXARGSIZE ];
+d1400 1
+a1400 1
+  int			i;
+d1403 1
+a1403 2
+  if (argsize > FORKMAXARGSIZE * sizeof (word))
+    return FALSE;
+d1405 1
+a1405 1
+  proc = (word *)DBGNewProcess( stacksize, func, argsize );
+d1410 7
+a1416 5
+  va_start( argp, argsize );
+
+  for (i = 0;  i < (argsize / sizeof (word)) ; i++)
+    args[ i ] = va_arg( argp, word );
+
+a1418 2
+  memcpy( proc, args, (int)argsize );
+  
+d1422 1
+a1422 1
+
+d1440 1
+a1440 1
+
+d1450 1
+a1450 1
+/* set a variable if this has be called by a go until function */
+d1459 1
+a1459 1
+
+d1463 1
+a1464 7
+/**
+*
+* rembreak(breakpoint);
+*
+* Remove breakpoint.
+*
+**/
+a1470 1
+}
+d1472 5
+a1476 1
+
+d1478 6
+a1483 6
+*
+* found = cmpwatch(watch, loc);
+*
+* Support routine for findwatch().
+*
+**/
+d1488 6
+a1493 5
+{
+  return watchpoint->loc.addr == loc->addr AND
+         watchpoint->loc.size == loc->size;
+}
+
+d1495 6
+a1500 6
+*
+* watchpoint = findwatch(addr, size);
+*
+* Find a watchpoint.
+*
+**/
+d1508 2
+a1509 2
+
+  
+d1512 1
+a1512 1
+
+d1514 1
+a1514 1
+
+d1516 3
+a1518 2
+}
+
+d1520 6
+a1525 6
+*
+* addwatch(addr, size);
+*
+* Add a watchpoint.
+*
+**/
+d1532 1
+a1532 1
+
+d1545 1
+a1545 1
+
+d1551 1
+a1551 1
+
+d1553 1
+a1553 1
+
+d1557 1
+a1557 1
+
+d1559 6
+a1564 6
+*
+* remwatch(watchpoint);
+*
+* Remove a watchpoint.
+*
+**/
+d1581 4
+a1584 2
+}
+
+d1586 6
+a1591 6
+*
+* same = memcmp(m1, m2, size);
+*
+* Compare two blocks of memory.
+*
+**/
+d1600 1
+a1600 1
+
+d1603 1
+d1605 3
+a1607 1
+}
+d1617 1
+a1617 1
+
+d1621 1
+d1624 4
+a1627 4
+  {
+    thread.gotobreak.active = FALSE;
+    return TRUE;
+  }
+d1631 2
+a1632 2
+
+
+d1641 1
+a1641 1
+
+d1643 1
+a1643 1
+
+d1651 1
+a1651 1
+
+d1653 1
+a1653 1
+
+d1661 1
+a1661 1
+
+d1663 2
+a1664 2
+
+
+d1672 1
+a1672 1
+
+d1674 2
+a1675 2
+
+
+d1683 1
+d1689 1
+a1689 1
+
+d1691 1
+a1691 1
+  
+a1692 1
+}
+d1694 5
+a1698 1
+
+d1706 7
+a1713 6
+  memcpy( addr, data, (int)size );
+
+  return;  
+}
+
+
+d1723 2
+a1724 2
+
+  
+d1726 1
+a1726 1
+  
+d1731 1
+a1731 1
+  
+d1733 1
+a1733 1
+
+d1735 3
+a1737 1
+}
+d1747 2
+a1749 2
+  memcpy( dataloc( modnum, offset ), data, (int)size );
+
+d1751 1
+a1751 1
+
+d1753 2
+a1754 2
+
+
+d1765 2
+a1766 2
+
+
+d1775 1
+a1775 1
+
+d1777 3
+a1780 3
+} /* peekstack */
+
+
+d1790 1
+a1790 1
+  
+d1792 1
+a1792 1
+
+d1794 3
+a1797 3
+} /* pokestack */
+
+
+d1805 2
+a1806 2
+
+  
+d1814 1
+a1814 1
+
+d1818 2
+a1819 2
+
+
+d1828 2
+a1829 2
+
+  
+d1831 1
+a1831 1
+  
+d1837 1
+a1837 1
+
+d1841 1
+a1841 1
+
+d1845 4
+a1848 4
+	    Port 	port,
+	    THREAD *	thread,
+	    word	frame,
+	    word	offset )
+d1851 2
+a1852 2
+
+  
+d1860 1
+a1860 1
+
+d1864 2
+a1865 2
+
+
+d1873 1
+a1873 1
+
+d1875 1
+a1875 1
+
+d1879 1
+a1879 1
+
+d1881 1
+a1881 1
+
+d1883 2
+a1885 1
+} /* locateregister */
+a1886 1
+
+d1894 1
+a1894 1
+{
+d1897 1
+a1897 1
+
+d1902 1
+a1902 1
+  
+d1910 1
+a1910 1
+
+d1914 2
+a1915 2
+
+
+d1923 2
+a1924 2
+
+
+d1926 1
+a1926 1
+
+d1934 2
+a1935 2
+
+
+d1940 1
+a1940 1
+
+d1942 1
+a1942 1
+
+d1944 1
+a1944 1
+
+d1948 2
+a1949 2
+
+
+d1951 1
+a1951 1
+
+d1959 2
+a1960 2
+  
+
+d1962 1
+a1962 1
+
+d1964 1
+a1964 1
+  
+d1967 1
+a1967 1
+
+d1969 1
+a1969 1
+
+d1975 1
+a1975 1
+  
+d1977 1
+a1977 1
+
+d1979 2
+a1980 2
+
+
+d1986 2
+a1987 2
+
+
+d1990 1
+a1990 1
+
+d1994 1
+a1994 1
+
+d2006 3
+a2008 1
+}
+d2015 1
+d2020 1
+d2022 2
+a2023 1
+}
+d2025 3
+a2027 1
+PRIVATE word DBGPutMsg(MCB *mcb)
+d2030 1
+d2036 1
+d2038 4
+a2041 1
+}
+d2043 6
+a2048 6
+*
+* remdebug();
+*
+* Terminate debugging.
+*
+**/
+d2054 13
+a2066 11
+    {
+      int i;
+      
+      
+      Wait(   &debug->lock );
+      Signal( &debug->lock );
+
+      (void) patchgetmsg( debug->GetMsg );
+      (void) patchputmsg( debug->PutMsg );
+      (void) patchfork( debug->Fork );
+
+d2068 22
+a2089 22
+      /* ACE: This should kill off all threads */
+      /* ACE: Threads will be killed off anyway.
+	 More importantly this frees the thread structure which
+	 has disasterous effects - the patched module table is
+	 thrown away ! */
+      (void)WalkList(&debug->threadlist, (WordFnPtr)remthread, 0);
+#endif
+
+      (void)WalkList(&debug->breakpointlist, (WordFnPtr)rembreak, 0);
+      
+      /*    (void)WalkList(&debug->watchpointlist, (WordFnPtr)remwatch, 0);*/
+      
+      for (i = 0; i < HashMax; i++)
+	(void)WalkList( &debug->functable[ i ], (WordFnPtr)remfunc, 0 );
+      
+      Close( debug->stream );
+      
+      Free( debug );
+      
+      debug = NULL;
+    }
+
+d2094 1
+a2094 1
+
+d2096 6
+a2101 6
+*
+* debugworker();
+*
+* Accepts and obeys debug commands from debugger.
+*
+**/
+d2146 1
+a2146 1
+	      word * proc = (word *)DBGNewProcess(10000, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size);
+d2168 1
+d2170 1
+d2316 1
+a2316 1
+
+d2319 1
+a2319 1
+
+d2428 2
+a2429 2
+
+
+d2434 1
+d2439 2
+a2440 2
+
+
+d2444 1
+a2444 1
+
+d2457 2
+a2458 2
+      
+      
+d2462 1
+a2462 1
+
+d2464 1
+a2464 1
+
+d2474 2
+a2475 2
+	  
+	  
+d2485 1
+a2485 1
+#endif
+d2531 1
+a2531 1
+#ifdef CRs
+d2533 1
+a2533 1
+#endif	  
+d2535 1
+a2535 1
+
+d2544 1
+a2544 1
+
+d2556 1
+a2556 1
+
+d2559 1
+d2561 3
+a2563 1
+
+d2566 3
+a2568 3
+		}
+	    }
+	  
+d2571 1
+a2571 1
+      
+d2576 1
+a2576 1
+      IOdebug( "DLIB: FAILED TO LOCATE DEBUG SERVER" );
+d2584 3
+a2586 1
+}
+d2603 2
+a2604 1
+}
+d2617 3
+a2619 2
+  return thread.notify_return( procinfo, result );  
+}
+d2635 2
+a2636 1
+}
+@
+
+
+1.9
+log
+@minor cosmetic changes
+@
+text
+@d15 1
+a15 1
+*	Copyright (c) 1992 Perihelion Software Ltd.
+d23 1
+a23 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.8 1992/12/04 11:06:43 nickc Exp nickc $";
+d384 2
+a385 1
+PRIVATE BOOL cmpbreak(BREAKPOINT *breakpoint, LOCATION *loc)
+d398 2
+a399 1
+PRIVATE BREAKPOINT *findbreak(word modnum, word line)
+d419 2
+a420 1
+PRIVATE BOOL breakpoint(word modnum, word line)
+d490 2
+a491 1
+PRIVATE void delwatchpoints ()
+d522 2
+a523 1
+PRIVATE void checkwatch(WATCHPOINT *watchpoint, word scope)
+d597 2
+a598 1
+PRIVATE int checkwatchret(WATCHPOINT *watchpoint, word scope)
+d716 1
+a716 1
+#ifdef CODE_IN_HIGH_MEMORY
+d723 1
+a723 1
+  
+d966 2
+a967 1
+PRIVATE void remthread(THREAD *thread)
+d969 8
+a976 3
+  Remove(&thread->node);
+  unless (thread->framestk == NULL) Free(thread->framestk);
+}
+d990 4
+a993 1
+}
+d1011 4
+a1014 1
+}
+d1027 4
+a1030 1
+}
+d1604 5
+a1608 1
+int memcmp(const void *m1, const void *m2, unsigned int size)
+d1660 2
+d1668 4
+a1671 2
+  return thread->frameptr[ frame ].stackptr - (offset / sizeof (word));
+}
+d1680 3
+a1682 1
+}
+d1697 1
+a1697 1
+  /* IOdebug( "DLIB: peekmem: addr = %x", addr ); */
+d1752 3
+a1754 1
+}
+d1775 6
+a1780 2
+  putdebug(port, &dbg);
+}
+d1794 4
+a1797 2
+  return;  
+}
+d1817 3
+a1819 1
+}
+d1839 4
+a1842 2
+  return;  
+}
+d1884 3
+a1886 1
+}
+d1913 3
+a1915 1
+}
+@
+
+
+1.8
+log
+@fixed for code in high RAM (maybe)
+@
+text
+@d19 3
+d23 1
+a23 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.7 1992/11/04 18:03:16 nickc Exp nickc $";
+d62 5
+a66 1
+PRIVATE void memcheck(void)
+d68 3
+a70 3
+  int i;
+  unsigned char *lowmem = 0;
+  unsigned char savemem[256];
+d72 3
+a74 1
+  for (i = 0; i < 256; i++) savemem[i] = lowmem[i];
+a76 3
+  {
+    Delay(2000000);
+    for (i = 0; i < 256; i++)
+d78 11
+a88 5
+      unless (savemem[i] == lowmem[i])
+      {
+      	IOdebug("DLIB: Memory corruption @@ %x", i);
+      	savemem[i] = lowmem[i];
+      }
+a89 1
+  }
+d91 1
+a91 1
+#endif
+d97 1
+a97 1
+	  Environ *	env)
+d99 6
+a104 5
+  Stream **strv = env->Strv;
+  Stream *str;
+  word *flagv = NULL;
+  word err;
+  word i;
+d106 3
+a108 1
+  for (i = 0; strv[i] != NULL; i++);
+d111 2
+a112 1
+      if ((flagv = Malloc(i * sizeof(word))) == NULL) return EC_Error+EG_NoMemory;
+d114 2
+a115 1
+  for (i = 0; (str = strv[i]) != NULL; i++)
+d119 2
+a120 1
+	  flagv[i] = str->Flags;
+d124 4
+a127 2
+  err = SendEnv(port, env);
+  for (i = 0; (str = strv[i]) != NULL; i++)
+d129 1
+a129 1
+      unless (str == (Stream *)MinInt) str->Flags = flagv[i];
+d131 3
+a133 1
+  unless (flagv == NULL) Free(flagv);
+d151 1
+a151 1
+  InitMCB(&mcb, 0, port, NullPort, 0);
+d178 3
+a180 1
+putdebug(Port port, DBG *dbg)
+d182 2
+a183 2
+  MCB mcb;
+  word err;
+d185 3
+a187 1
+  InitMCB(&mcb, MsgHdr_Flags_preserve, port, NullPort, FC_Private|FG_DebugCmd);
+d189 1
+a189 1
+  mcb.Timeout = -1;
+d191 1
+a191 1
+  mcb.MsgHdr.ContSize = sizeof(DBGCMD) / sizeof(word);
+d193 6
+a198 3
+  mcb.Control = (word *)&dbg->cmd;
+  mcb.Data = dbg->data;
+  while ((err = RealPutMsg(&mcb)) == EK_Timeout);
+d202 2
+a203 1
+#endif      
+d803 1
+a803 1
+      IOdebug( "DLIB: Corrupt object file: could not find SourceInfo structure" );
+d973 2
+a974 1
+PRIVATE void resume(THREAD *thread)
+d976 2
+a977 1
+  if (TestSemaphore(&thread->sync) < 0) Signal(&thread->sync);
+d987 4
+a990 1
+PRIVATE void profilethread(THREAD *thread, BOOL on)
+d992 4
+a995 2
+  if (on) thread->flags |= Profile;
+  else thread->flags &= ~ Profile;
+d1005 2
+a1006 1
+PRIVATE void stopthread(THREAD *thread)
+d1018 2
+a1019 1
+PRIVATE void unstopthread(THREAD *thread)
+d1056 4
+a1059 1
+PRIVATE void gotoframethread(THREAD *thread, int frame)
+d1071 2
+a1072 1
+PRIVATE void timeoutthread(THREAD *thread)
+d1074 2
+a1075 1
+  unless (thread->port == NullPort) AbortPort(thread->port, EK_Timeout);
+d1421 6
+a1426 1
+PRIVATE void addbreak(word modnum, word line, word threshold,BOOL temp)
+d1431 1
+a1431 1
+  BREAKPOINT *breakpoint;
+d1433 3
+a1435 1
+  if ((breakpoint = New(BREAKPOINT)) == NULL) return;
+d1446 9
+a1454 4
+  Wait(&debug->lock);
+  AddHead(&debug->breakpointlist, &breakpoint->node);
+  Signal(&debug->lock);
+}
+d1463 2
+a1464 1
+PRIVATE void rembreak(BREAKPOINT *breakpoint)
+d1466 3
+a1468 2
+  Remove(&breakpoint->node);
+  Free(breakpoint);
+d1479 4
+a1482 1
+PRIVATE BOOL cmpwatch(WATCHPOINT *watchpoint, MEMLOCATION *loc)
+d1495 4
+a1498 1
+PRIVATE WATCHPOINT *findwatch(void *addr, word size)
+d1500 3
+a1502 2
+  WATCHPOINT *watchpoint;
+  MEMLOCATION loc;
+d1507 1
+a1507 1
+  watchpoint = (WATCHPOINT *)SearchList(&debug->watchpointlist, (WordFnPtr)cmpwatch, (word)&loc);
+d1519 4
+a1522 1
+PRIVATE void addwatch(void *addr, word size)
+d1524 2
+a1525 1
+  WATCHPOINT *watchpoint;
+d1527 1
+a1527 1
+  Wait (&debug->lock);
+d1529 1
+a1529 3
+  if ((watchpoint = findwatch(addr, size)) == NULL)
+  {
+    unless ((watchpoint = (WATCHPOINT *)Malloc(sizeof(WATCHPOINT) + size)) == NULL)
+d1531 10
+a1540 5
+      watchpoint->loc.addr = addr;
+      watchpoint->loc.size = size;
+      watchpoint->usage = 1;
+      memcpy(&watchpoint->copy, addr, (int)size);
+      AddHead(&debug->watchpointlist, &watchpoint->node);
+d1542 8
+a1549 4
+  }
+  else watchpoint->usage++;
+  Signal(&debug->lock);  
+}
+d1558 2
+a1559 1
+PRIVATE void remwatch(WATCHPOINT *watchpoint)
+d1566 7
+a1572 5
+  {
+    Remove(&watchpoint->node);
+    Free(watchpoint);
+  }
+  else watchpoint->usage --;
+@
+
+
+1.7
+log
+@tidied up, removed debugging
+@
+text
+@d20 1
+a20 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.6 1992/11/04 15:01:39 nickc Exp nickc $";
+d55 1
+a55 1
+extern wordptr		get_module_table(	void );
+d214 1
+a214 1
+	  wordptr	procinfo,
+d587 1
+a587 1
+hashval( wordptr procinfo )
+d595 1
+a595 1
+	wordptr procinfo )
+d601 1
+a601 1
+findfunc( wordptr procinfo )
+d616 1
+a616 1
+entered( wordptr procinfo )
+d639 1
+a639 1
+returned( wordptr procinfo )
+d665 3
+a667 3
+	     wordptr	procinfo,
+	     wordptr	frame_ptr,
+	     wordptr	stack_ptr )
+d711 1
+a711 1
+	      wordptr	procinfo,
+d758 1
+a758 1
+	       wordptr	sourceinfo )
+d770 10
+a779 1
+  modnum = WP_StructGet( SourceInfo, Modnum, sinfo );
+d825 3
+a827 3
+	     wordptr	procinfo,
+	     wordptr    frame_ptr,
+	     wordptr	stack_ptr )
+d834 1
+a834 1
+	      wordptr	procinfo,
+d843 1
+a843 1
+	       wordptr	sourceinfo )
+d850 2
+a851 2
+		  word 		line,
+		  wordptr	sourceinfo )
+d865 1
+a865 1
+  modnum = WP_StructGet( SourceInfo, Modnum, source );
+d1041 1
+a1041 1
+	   void (*	func)( wordptr, wordptr, wordptr ) )
+d1052 1
+a1052 1
+	     void (*	func)( word, wordptr ) )
+d1063 1
+a1063 1
+	    word (*	func)( wordptr, word ) )
+d1084 1
+a1084 1
+  while (WP_StructGet( Module, Type, module ) != 0)
+d1089 1
+a1089 1
+      id = WP_StructGet( Module, Id, module );
+d1098 3
+a1100 3
+	  mod     = (WordPtr)WP_StructGet( ResRef, Module,   module );	  
+	  maxdata = WP_StructGet( Module, MaxData,  mod );
+	  maxfunc = WP_StructGet( Module, MaxCodeP, mod );
+d1103 1
+a1103 1
+      module += WP_StructGet( Module, Size, module ) / sizeof (word);
+d1116 1
+a1116 1
+  WP_memcpy( newtab, oldtab, 0, (maxid + 1) * 2 );
+d1133 1
+a1133 1
+  WP_memcpy( ptr, (word *)WP_GetWord( oldtab, DLib_Slot * 2 ), 0, maxdata );
+d1135 1
+a1135 1
+  WP_memcpy( ptr, (word *)(oldtab[ DLib_Slot * 2 ]), 0, maxdata );
+d1159 1
+a1159 1
+  wordptr	wptr;  
+d1167 1
+a1167 1
+  while (WP_StructGet( Module, Type, module ) != 0)
+d1172 1
+a1172 1
+      id = WP_StructGet( Module, Id, module );
+d1181 2
+a1182 2
+	  mod        = (WordPtr)WP_StructGet( ResRef, Module,   module );	  
+	  kernelfunc = WP_StructGet( Module, MaxCodeP, mod );
+d1192 2
+a1193 2
+	  mod      = (WordPtr)WP_StructGet( ResRef, Module,   module );	  
+	  utilfunc = WP_StructGet( Module, MaxCodeP, mod );
+d1196 1
+a1196 1
+      module += WP_StructGet( Module, Size, module ) / sizeof (word);
+d1208 1
+a1208 1
+  wptr = (wordptr) WP_GetWord( get_module_table(), KERNEL_SLOT * 2 + 1 );
+d1211 1
+a1211 1
+  WP_memcpy( ptr, wptr, 0, kernelfunc );
+d1213 1
+a1213 1
+  WP_memcpy( ptr, C40CAddress( wptr ), 0, kernelfunc );
+d1216 1
+a1216 1
+  WP_PutWord( get_module_table(), KERNEL_SLOT * 2 + 1, C40WordAddress( ptr ) );
+d1227 1
+a1227 1
+  wptr = (wordptr) WP_GetWord( get_module_table(), UTIL_SLOT * 2 + 1 );
+d1230 1
+a1230 1
+  WP_memcpy( ptr, wptr, 0, utilfunc );
+d1232 1
+a1232 1
+  WP_memcpy( ptr, C40CAddress( wptr ), 0, utilfunc );
+d1235 1
+a1235 1
+  WP_PutWord( get_module_table(), UTIL_SLOT * 2 + 1, C40WordAddress( ptr ) );
+d1249 1
+a1249 1
+ProcStop( wordptr modtab ) 
+d1544 1
+a1544 1
+  return (byte *)(WP_GetWord( get_module_table(), modnum * 2 ) + offset );
+d1549 1
+a1549 1
+PRIVATE wordptr
+d1554 1
+a1554 1
+  return (wordptr)(WP_GetWord( get_module_table(), modnum * 2 + 1 ) + offset );
+d1809 1
+a1809 1
+      wordptr	procinfo = thread->frameptr[ frame ].procinfo;
+d1828 1
+a1828 1
+PRIVATE wordptr
+d1833 1
+a1833 1
+  wordptr	code;
+d1837 1
+a1837 1
+  code = WP_GetWord( codeloc( modnum, offset ), 0 );  
+d1841 1
+a1841 1
+  while (WP_GetWord( code, i ) != T_ProcInfo)	/* XXX - could flow off end of Code space ! */
+d1858 1
+a1858 1
+addfunc( wordptr procinfo )
+d1992 1
+a1992 1
+	  call(dbg.port, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size, (word *)dbg.data, dbg.cmd.offset);
+d2303 1
+a2303 1
+  
+d2314 1
+d2321 4
+a2324 2
+      
+      unless ((dbgstream = Open( debugger, MyTask->Program->Module.Name, O_ReadWrite | O_Create )) == NULL)
+d2445 3
+a2447 3
+	      wordptr	procinfo,
+	      wordptr	frame_ptr,
+	      wordptr	stack_ptr )
+d2462 1
+a2462 1
+	       wordptr	procinfo,
+d2477 1
+a2477 1
+		wordptr	sourceinfo )
+@
+
+
+1.6
+log
+@C40 version completed
+@
+text
+@d20 1
+a20 1
+static char *rcsid = "$Header: /m/giga/Helios.tmp/Helios/cmds/debugger/lib/C40/RCS/dlib.c,v 1.5 1992/10/27 16:32:32 nickc Exp nickc $";
+d1906 1
+a1906 1
+remdebug(void)
+a1915 2
+      IOdebug( "remdebug: restoring GetMsg" );
+      
+a1916 3
+
+      IOdebug( "patchgetmsg done" );
+
+a1917 3
+
+      IOdebug( "patchputmsg done" );
+
+a1919 2
+      IOdebug( "patchfork done" );
+
+d2391 2
+a2392 7
+		  
+		  IOdebug( "initdebug: patching getmsg" );
+		  
+		  debug->GetMsg = patchgetmsg( DBGGetMsg );
+		  
+		  IOdebug( "initdebug: patching putmsg" );
+		  
+a2394 2
+		  IOdebug( "initdebug: patched" );
+
+d2420 1
+a2420 1
+      IOdebug( "FAILED TO LOCATE DEBUG SERVER" );
+@
+
+
+1.5
+log
+@temporary check in
+@
+text
+@d20 1
+a20 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.4 1992/10/26 10:55:19 nickc Exp nickc $";
+d43 2
+d47 2
+d187 1
+d189 1
+d191 1
+a191 1
+  mcb.Timeout = -1;
+d195 6
+a200 3
+  mcb.Control = (word *)&dbg->cmd;
+  mcb.Data = dbg->data;
+  while ((err = RealPutMsg(&mcb)) == EK_Timeout);
+d205 1
+d214 3
+a216 2
+	  WordPtr	procinfo,
+	  WordPtr	frame_pointer )
+d219 1
+a219 1
+  
+d233 1
+d271 4
+a274 1
+PRIVATE void profile(word modnum, word line)
+d277 5
+a281 1
+  line = line;
+d406 5
+a410 1
+PRIVATE void trace(word modnum, word line)
+d412 1
+a412 1
+  DBG dbg;
+d414 2
+a415 2
+  Port port = NewPort();
+  word err;
+d418 1
+d425 1
+a425 1
+  Wait(&debug->lock); /* ACE: This should not be necessary */
+d428 1
+a428 1
+  putdebug(debug->port, &dbg);
+d431 8
+a438 5
+  if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+  {
+    getdebug(port, &dbg);
+  }
+  else IOdebug( "DLIB: senddebug returned an error (%x)", err);
+d440 1
+a440 1
+  FreePort(port);
+d443 35
+a477 1
+  Signal(&debug->lock);
+d586 227
+d817 2
+a818 1
+	     wordptr    frame_ptr)
+d857 1
+a857 1
+  
+d872 3
+a874 1
+    trace( modnum, line );
+d895 10
+a904 6
+    IOdebug("DLIB: Failed to allocate frame stack");
+  
+  thread->frameptr  = thread->framestk + FrameStackSize;
+  thread->profiling = FALSE;
+  thread->stopping  = TRUE;
+  thread->tracing   = FALSE;
+d906 1
+a906 1
+  thread->watching  = FALSE;
+d908 6
+a913 1
+  thread->port      = NullPort;
+d984 4
+a987 1
+PRIVATE void tracethread(THREAD *thread, word flags)
+d989 11
+a999 4
+  if (flags & TraceOff) thread->flags &= ~flags;
+  else thread->flags |= flags;
+  if (thread->flags & TraceCommand) thread->tracing = TRUE;
+  else thread->tracing = FALSE;
+d1032 1
+a1032 1
+	   void (*	func)( wordptr, wordptr ) )
+d1066 3
+a1068 4
+  word		maxid   = 0;
+  word		maxdata = 0;
+  word		maxfunc = 0;
+  word		kernelfunc = 0;
+a1093 11
+#define KERNEL_SLOT	1
+      
+      if (id == KERNEL_SLOT)
+	{
+	  WordPtr	mod;
+
+	  
+	  mod        = (WordPtr)WP_StructGet( ResRef, Module,   module );	  
+	  kernelfunc = WP_StructGet( Module, MaxCodeP, mod );
+	}
+      
+d1097 5
+d1105 2
+d1108 2
+d1114 3
+a1116 1
+  if ((ptr = Malloc( kernelfunc * sizeof (word) )) == NULL)
+d1123 31
+a1153 1
+  /* we must copy the kernel's codetable area */
+a1154 1
+  WP_memcpy( ptr, oldtab, KERNEL_SLOT * 2 + 1, kernelfunc );
+d1156 1
+a1156 1
+  newtab[ KERNEL_SLOT * 2 + 1 ] = C40WordAddress( ptr );
+d1158 1
+a1158 1
+  if ((ptr = Malloc( maxdata * sizeof (word) )) == NULL)
+d1160 26
+a1185 2
+      Free( (word *)(newtab[ KERNEL_SLOT * 2 + 1 ]) );
+      Free( newtab );
+d1187 1
+a1187 1
+      return NULL;
+d1189 2
+d1192 8
+a1199 1
+  /* ACE: Only need to copy debug pointer really */
+d1201 5
+a1205 1
+  WP_memcpy( ptr, oldtab, DLib_Slot * 2, maxdata );
+d1207 3
+a1209 1
+  newtab[ DLib_Slot * 2 ] = (word)ptr;
+d1211 8
+a1218 1
+  initthread( ptr );
+d1221 1
+a1221 1
+  return (WordPtr)(newtab[ 1 ]);
+d1223 1
+a1223 1
+  return (WordPtr)(newtab[ 0 ]);
+d1226 5
+a1230 1
+} /* newmodtab */ 
+d1305 1
+d1539 2
+a1540 1
+PRIVATE WordPtr *
+d1545 1
+a1545 1
+  return (WordPtr *)(WP_GetWord( get_module_table(), modnum * 2 + 1 ) + offset );
+d1554 10
+a1563 1
+  return thread->frameptr[ frame ].frameptr + offset;  
+d1576 5
+a1580 2
+  dbg.cmd.size = size;
+  dbg.data = addr;
+d1584 6
+a1589 1
+PRIVATE void pokemem(byte *addr, word size, byte *data)
+d1591 5
+a1595 1
+  memcpy(addr, data, (int)size);
+d1598 7
+a1604 1
+PRIVATE void peekdata(Port port, word modnum, word offset, word size)
+d1606 2
+a1607 2
+  DBG dbg;
+  byte *addr = dataloc(modnum, offset);
+d1609 3
+d1614 6
+a1619 3
+  dbg.cmd.size = size;
+  dbg.data = addr;
+  putdebug(port, &dbg);
+d1622 6
+a1627 1
+PRIVATE void pokedata(word modnum, word offset, word size, byte *data)
+d1629 5
+a1633 1
+  memcpy(dataloc(modnum, offset), data, (int)size);
+d1653 2
+d1658 7
+a1664 1
+PRIVATE void pokestack(THREAD *thread, word frame, word offset, word size, byte *data)
+d1666 2
+a1667 3
+#ifdef CODE_IN_HIGH_MEMORY
+  WP_PutData( stackloc( thread, frame, offset ), 0, data, size / sizeof (word) );
+#else
+d1669 43
+a1711 1
+#endif
+d1714 6
+a1719 1
+PRIVATE void locatedata(Port port, word modnum, word offset)
+d1723 3
+d1727 9
+a1735 4
+  dbg.cmd.modnum = (int)dataloc(modnum, offset);
+  dbg.data = NULL;
+  putdebug(port, &dbg);
+}
+d1737 5
+a1741 1
+PRIVATE void locatestack(Port port, THREAD *thread, word frame, word offset)
+d1745 2
+d1748 6
+a1753 3
+  dbg.cmd.modnum = (word)stackloc(thread, frame, offset);
+  dbg.data = NULL;
+  putdebug(port, &dbg);
+d1756 7
+a1762 1
+PRIVATE void call(Port port, VoidFnPtr func, word argsize, word *args, word retsize)
+d1764 2
+a1765 2
+  DBG dbg;
+  word rets;
+d1767 7
+a1773 4
+/*
+  ACE: Only support functions return single word
+*/
+  rets = DoCall(func, argsize, args);
+d1775 6
+a1780 3
+  dbg.cmd.size = retsize;
+  dbg.data = (byte *)&rets;
+  putdebug(port, &dbg);	
+d1795 3
+a1797 1
+    dbg.cmd.modnum = -1;
+d1800 2
+a1801 1
+      WordPtr	procinfo = thread->frameptr[ frame ].procinfo;
+d1803 3
+a1805 3
+      dbg.cmd.modnum = WP_StructGet( ProcInfo, Modnum, procinfo );
+      dbg.cmd.offset = thread->frameptr[frame].line;
+      dbg.cmd.size   = WP_StructGet( ProcInfo, Offset, procinfo ) << 2;	/* XXX ??? */
+d1810 1
+a1810 1
+  putdebug(port, &dbg);
+d1812 2
+d1819 4
+a1822 4
+PRIVATE WordPtr
+findproc(
+	 word 	modnum,
+	 word	offset )
+d1824 1
+a1824 1
+  WordPtr	code;
+d1827 2
+a1828 2
+  
+  code = *codeloc( modnum, offset );
+d1832 1
+a1832 7
+  while (
+#ifdef CODE_IN_HIGH_MEMORY
+	 WP_GetWord( code, i )
+#else
+	 code[i]
+#endif
+	 != T_ProcInfo)	/* XXX - could flow off end of Code space ! */
+d1836 6
+a1841 3
+  
+  if (WP_RTOA( code + 1 ) == (APTR)(code - i))
+    return code;
+d1845 1
+a1845 1
+} /* findproc */
+a1847 14
+PRIVATE word
+hashval( WordPtr proc )
+{
+  return (uword)proc % HashMax;
+}
+
+PRIVATE int
+cmpfunc(
+	FUNC *	func,
+	WordPtr procinfo )
+{
+  return func->procinfo == procinfo;
+}
+
+d1849 1
+a1849 1
+addfunc( WordPtr procinfo )
+d1855 3
+a1874 61
+PRIVATE FUNC *
+findfunc( WordPtr procinfo )
+{
+  return (FUNC *)SearchList( &debug->functable[ hashval( procinfo ) ], (WordFnPtr)cmpfunc, procinfo );
+}
+
+PRIVATE void
+remfunc( FUNC * func )
+{
+  Remove(&func->node);
+  
+  Free(func);
+}
+
+PRIVATE void
+entered( WordPtr procinfo )
+{
+  DBG dbg;
+
+  
+  dbg.cmd.action = DBG_Entered;
+  dbg.cmd.thread = (word)&thread;
+  dbg.cmd.modnum = WP_StructGet( ProcInfo, Modnum, procinfo );
+  dbg.cmd.offset = WP_StructGet( ProcInfo, Offset, procinfo ) << 2;	/* XXX ??? */
+  dbg.data       = NULL;
+
+  IOdebug( "entered procedure %d of module %d", dbg.cmd.modnum, dbg.cmd.offset );
+  
+  Wait( &debug->lock ); /* ACE: This should not be necessary */
+  
+  putdebug( debug->port, &dbg );
+
+  Signal( &debug->lock );
+
+  return;
+  
+} /* entered */
+
+
+PRIVATE void
+returned( WordPtr procinfo )
+{
+  DBG dbg;
+
+  
+  dbg.cmd.action = DBG_Returned;
+  dbg.cmd.thread = (word)&thread;
+  dbg.cmd.modnum = WP_StructGet( ProcInfo, Modnum, procinfo );
+  dbg.cmd.offset = WP_StructGet( ProcInfo, Offset, procinfo ) << 2;	/* XXX ??? */
+  dbg.data       = NULL;
+  
+  Wait( &debug->lock ); /* ACE: This should not be necessary */
+  
+  putdebug( debug->port, &dbg );
+  
+  Signal( &debug->lock );
+
+  return;
+  
+} /* returned */
+
+d1899 1
+a1899 2
+-- crf : 05/08/91 - explicitly remove watchpoints on exiting from routines
+-- refer system.c : receiver () for the story ...
+d1901 1
+a1901 3
+* delwatchpoints();
+*
+* delete outstanding watchpoints
+d1904 3
+a1906 1
+PRIVATE void delwatchpoints ()
+d1908 15
+a1922 7
+  DBG dbg;
+  word err;
+  Port port = NewPort();
+  
+#ifdef CRs
+    IOdebug ("entered delwatchpoints");  
+#endif
+d1924 1
+a1924 3
+    dbg.port = port;
+    dbg.cmd.action = DBG_DelWatchIds;
+    dbg.data = NULL;
+d1926 1
+a1926 6
+    if((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+    {
+    	getdebug ( port, &dbg);
+    }
+    FreePort (port);
+}
+d1928 1
+a1928 32
+/**
+*
+* remdebug();
+*
+* Terminate debugging.
+*
+**/
+PRIVATE void remdebug(void)
+{
+  unless (debug == NULL)
+  {
+    int i;
+    
+#ifdef CRs
+    IOdebug ("remdebug running");
+#endif
+    
+    Wait(&debug->lock);
+    Signal(&debug->lock);
+        	    
+    (void)patchgetmsg(debug->GetMsg);
+#ifdef CRs
+    IOdebug("patchgetmsg done");
+#endif
+    (void)patchputmsg(debug->PutMsg);
+#ifdef CRs
+    IOdebug("patchputmsg done");
+#endif
+    (void)patchfork(debug->Fork);
+#ifdef CRs
+    IOdebug("patchfork done");
+#endif
+d1931 6
+a1936 6
+    /* ACE: This should kill off all threads */
+    /* ACE: Threads will be killed off anyway.
+            More importantly this frees the thread structure which
+            has disasterous effects - the patched module table is
+            thrown away ! */
+    (void)WalkList(&debug->threadlist, (WordFnPtr)remthread, 0);
+d1938 14
+a1951 4
+    (void)WalkList(&debug->breakpointlist, (WordFnPtr)rembreak, 0);
+#ifdef CRs
+    IOdebug("rembreak done");
+#endif
+d1953 2
+a1954 10
+/*    (void)WalkList(&debug->watchpointlist, (WordFnPtr)remwatch, 0);*/
+    for (i = 0; i < HashMax; i++)
+      (void)WalkList(&debug->functable[i], (WordFnPtr)remfunc, 0);
+#ifdef CRs
+    IOdebug("remfunc done");
+#endif
+    Close(debug->stream);
+    Free(debug);
+    debug = NULL;
+  }
+d1965 2
+a1966 1
+PRIVATE void debugworker(void)
+d1968 4
+a1971 4
+  DBG dbg;
+  byte data[1024]; /* ACE: not perfect */
+
+
+d1974 1
+a1974 1
+
+a1975 4
+  {
+     IOdebug( "got action %d", dbg.cmd.action ); 
+    
+    switch (dbg.cmd.action)
+d1977 61
+a2037 53
+      case DBG_Call:
+      /* ACE: Implement this by forking a new process to execute the function.
+              When the process has terminated we must return the result on the
+              reply port.
+      dbg.cmd.modnum = address of function
+      dbg.cmd.size   = size of parameters
+      dbg.cmd.offset = size of return parameters expected
+      dbg.data       = parameters
+      */
+      patchentry(&thread, ignore_entry);
+      patchcommand(&thread, ignore_command);
+      patchreturn(&thread, ignore_return);
+      call(dbg.port, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size, (word *)dbg.data, dbg.cmd.offset);
+      patchentry(&thread, _notify_entry);
+      patchcommand(&thread, _notify_command);
+      patchreturn(&thread, _notify_return);
+      continue;
+
+      case DBG_Fork:
+      /*
+      dbg.cmd.modnum = address of function
+      dbg.cmd.size   = size of parameters
+      dbg.cmd.offset = size of return parameters expected
+      dbg.data       = parameters
+      */
+      {
+        word * proc = (word *)DBGNewProcess(10000, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size);
+
+        unless (proc == NULL)
+        {
+          memcpy(proc, dbg.data, (int)dbg.cmd.size);
+          StartProcess(proc, 1);
+        }
+      }
+      continue;
+
+      case DBG_Free:
+      patchentry((THREAD *)dbg.cmd.thread, ignore_entry);
+      patchcommand((THREAD *)dbg.cmd.thread, ignore_command);
+      patchreturn((THREAD *)dbg.cmd.thread, ignore_return);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_FreeAll:
+      (void)patchgetmsg(debug->GetMsg);
+      (void)patchputmsg(debug->PutMsg);
+      (void)patchfork(debug->Fork);
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchentry, (word)ignore_entry);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)ignore_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchreturn, (word)ignore_return);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+d2039 1
+a2039 1
+      IOdebug (" remdebug called from debugworker" );
+d2041 18
+a2058 18
+      remdebug();
+      return;
+
+      case DBG_Go:
+      unstopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_GoAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)unstopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Goto:
+d2060 1
+a2060 1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1, FALSE);
+d2062 2
+a2063 2
+      /* This implementation of goto is crap */
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1);
+d2065 6
+a2070 6
+      unstopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_GotoAll:
+d2072 1
+a2072 1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1, TRUE);
+d2074 1
+a2074 1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1);
+d2076 101
+a2176 33
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)unstopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_GotoFrame:
+      gotoframethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.modnum);
+      patchcommand((THREAD *)dbg.cmd.thread, framestop_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_GotoFrameAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)gotoframethread, dbg.cmd.modnum);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)framestop_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchentry, (word)_notify_entry);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchreturn, (word)_notify_return);                  
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Kill:
+      Wait(&debug->lock);
+      remthread((THREAD *)dbg.cmd.thread);
+      Signal(&debug->lock);
+      /* ACE: Have to actually stop the thread */
+      continue;
+
+      case DBG_KillAll:
+      _exit(1);
+      continue;
+d2178 2
+a2179 9
+      case DBG_Profile:
+      if (dbg.cmd.modnum == -1)
+      {
+        profilethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.size);
+        patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      }
+      else
+      {
+      	FUNC *func = addfunc(findproc(dbg.cmd.modnum, dbg.cmd.offset));
+d2181 15
+a2195 71
+        if (dbg.cmd.size) func->flags |= Profile;
+	else func->flags &= ~Profile;
+      }
+      continue;
+
+      case DBG_ProfileAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)profilethread, dbg.cmd.size);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Step:
+      stopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_StepAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)stopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Stop:
+      stopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      continue;
+
+      case DBG_StopAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)stopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Timeout:
+      timeoutthread((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_TimeoutAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)timeoutthread, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Trace:
+      if (dbg.cmd.modnum == -1)
+      {
+        tracethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.size);
+        patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      }
+      else
+      {
+      	FUNC *func = addfunc(findproc(dbg.cmd.modnum, dbg.cmd.offset));
+
+	if (dbg.cmd.size & TraceOff) func->flags &= ~dbg.cmd.size;
+	else func->flags |= dbg.cmd.size;
+      }
+      continue;
+
+      case DBG_TraceAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)tracethread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_AddBreak:
+d2197 1
+a2197 1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, (int)dbg.cmd.size, FALSE);
+d2199 1
+a2199 1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+d2201 19
+a2219 19
+      continue;
+
+      case DBG_RemBreak:
+      {
+      	BREAKPOINT *breakpoint;
+      	
+        unless ((breakpoint = findbreak(dbg.cmd.modnum, dbg.cmd.offset)) == NULL)
+          rembreak(breakpoint);
+      }
+      continue;
+
+      case DBG_AddWatch:
+      addwatch((void *)dbg.cmd.modnum, dbg.cmd.size);
+      continue;
+
+      case DBG_RemWatch:
+      {
+      	WATCHPOINT *watchpoint;
+	Wait (&debug->lock);      	
+d2221 1
+a2221 1
+	IOdebug ("case RemWatch"); 
+d2223 2
+a2224 2
+        unless ((watchpoint = findwatch((void *)dbg.cmd.modnum, dbg.cmd.size)) == NULL)
+        {
+d2226 1
+a2226 1
+	  IOdebug ("RemWatch calling for %x", watchpoint);
+d2228 56
+a2283 57
+         remwatch(watchpoint);
+        }
+/*        dbg.data = NULL;
+        dbg.cmd.action = DBG_Ready;
+        putdebug(dbg.port, &dbg);  CR: does not work */
+	Signal (&debug->lock);
+      }
+      continue;
+
+      case DBG_PeekMem:
+      IOdebug( "PeekMem" );
+      peekmem(dbg.port, (void *)dbg.cmd.modnum, dbg.cmd.size);
+      continue;
+
+      case DBG_PokeMem:
+      IOdebug( "PokeMem" );
+      pokemem((void *)dbg.cmd.modnum, dbg.cmd.size, dbg.data);
+      continue;
+
+      case DBG_PeekData:
+      IOdebug( "PeekData" );
+      peekdata(dbg.port, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+      continue;
+
+      case DBG_PokeData:
+      IOdebug( "PokeData" );
+      pokedata(dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size, dbg.data);
+      continue;
+
+      case DBG_PeekStack:
+      IOdebug( "PeekStack" );
+      peekstack(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+      continue;
+
+      case DBG_PokeStack:
+      IOdebug( "PokeData" );
+      pokestack((THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size, dbg.data);
+      continue;
+
+      case DBG_LocateData:
+      IOdebug( "LocateData" );
+      locatedata(dbg.port, dbg.cmd.modnum, dbg.cmd.offset);
+      continue;
+
+      case DBG_LocateStack:
+      IOdebug( "LocateStack" );
+      locatestack(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset);
+      continue;
+
+      case DBG_Where:
+      IOdebug( "Where" );
+      where(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum);
+      continue;
+
+      default:
+      IOdebug("Unknown debug command %d", dbg.cmd.action);
+      continue;
+d2285 1
+a2285 2
+  }
+
+d2389 1
+a2389 1
+		  IOdebug ( "remdebug called from initdebug" );
+d2392 10
+a2401 1
+#if 0
+d2407 1
+d2411 1
+a2411 4
+#else
+		  debug->GetMsg = GetMsg;
+		  debug->PutMsg = PutMsg;		  
+#endif		  
+a2422 3
+#if 0
+		      IOdebug( "initdebug: patching fork" );
+		      
+d2424 1
+a2424 5
+		      
+		      IOdebug( "initdebug: return true" );
+#else
+		      debug->Fork = Fork;
+#endif		      
+a2447 2
+/* Standard notify entry function */
+
+d2451 2
+a2452 1
+	      wordptr	frame_ptr )
+a2453 6
+  FUNC *	func;
+  word		flags = thread.flags;
+  WordPtr	pinfo;
+  WordPtr	fptr;
+  
+
+a2457 8
+  
+  return;
+  
+  Wait( &debug->lock );
+  
+  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatchret, 1 );
+  
+  Signal( &debug->lock );
+d2459 1
+a2459 14
+#ifdef CODE_IN_HIGH_MEMORY
+  pinfo = procinfo;
+  fptr  = frame_ptr;
+#else
+  pinfo = (WordPtr)C40CAddress( procinfo );
+  fptr  = (WordPtr)C40CAddress( frame_ptr );
+#endif
+  
+  IOdebug( "_notify_entry pinfo = %x", pinfo );
+  
+  unless ((func = findfunc( pinfo )) == NULL)
+    flags = func->flags;
+  
+  pushframe( pinfo, fptr );
+a2460 8
+  if (flags & TraceEntry)
+    {
+      entered( pinfo );
+    }
+
+  thread.tracing   = (BOOL)(flags & TraceCommand);
+  thread.profiling = (BOOL)(flags & Profile);
+
+d2462 1
+a2462 2
+  
+} /* _notify_entry */
+a2464 2
+/* Standard notify return function */
+
+a2469 5
+  FUNC *	func;
+  word		flags;
+  WordPtr	pinfo;
+  
+  
+d2475 2
+a2476 37
+  /* ACE: Need a more efficient way of doing this */
+  
+  Wait( &debug->lock );
+  
+  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatchret, -1 );
+  
+  Signal( &debug->lock );
+
+  delwatchpoints () ; /* -- crf */
+
+#ifdef CODE_IN_HIGH_MEMORY
+  pinfo = procinfo;
+#else
+  pinfo = (WordPtr)C40CAddress( procinfo );
+#endif
+  
+  unless ((func = findfunc( pinfo )) == NULL)
+    flags = func->flags;
+  else
+    flags = thread.flags;
+  
+  if (flags & TraceReturn)
+    {
+      returned( pinfo );
+    }
+  
+  popframe();
+  
+  flags = thread.flags;
+  
+  unless ((func = findfunc( thread.frameptr->procinfo )) == NULL)
+    flags = func->flags;
+
+  thread.tracing   = (BOOL)(flags & TraceCommand);
+  thread.profiling = (BOOL)(flags & Profile);
+
+  return result;
+a2477 1
+} /* _notify_return */
+a2478 3
+
+/* Standard notify command function */
+
+a2483 4
+  word 		modnum;
+  WordPtr	sinfo;
+
+
+a2487 36
+  
+#ifdef CODE_IN_HIGH_MEMORY
+  sinfo = sourceinfo;
+#else
+  sinfo = (WordPtr)C40CAddress( sourceinfo );
+#endif
+
+  modnum = WP_StructGet( SourceInfo, Modnum, sinfo );
+  
+  IOdebug( "_notify_command: line = %d, module number = %d", line, modnum );
+  
+  thread.frameptr->line = line;
+  
+  if (thread.profiling)
+    {
+      profile( modnum, line );
+    }
+  
+#ifndef OLDCODE
+  Wait( &debug->lock );
+  
+  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatch, 0 );
+  
+  Signal( &debug->lock );
+#endif
+
+  if (thread.stopping)
+    {
+      stop( modnum, line );
+    }  
+  else
+    {
+      unless (breakpoint( modnum, line ))
+	{
+#ifdef OLDCODE
+	  Wait( &debug->lock );
+d2489 1
+a2489 10
+	  (void)WalkList( &debug->watchpointlist, (WordFnPtr)checkwatch, 0 );
+
+	  Signal( &debug->lock );
+#endif
+	  if (thread.tracing)
+	    {
+	      trace( modnum, line );
+	    }	  
+	}
+    }
+d2492 1
+a2492 3
+  
+} /* _notify_command */
+
+@
+
+
+1.4
+log
+@semi-working version
+@
+text
+@d15 1
+a15 1
+*	Copyright (c) 1992 Perihelios Software Ltd.
+d20 1
+a20 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/C40/RCS/dlib.c,v 1.3 1992/09/29 13:59:14 nickc Exp nickc $";
+d135 1
+a135 1
+  
+d217 2
+a218 1
+	IOdebug("DLIB: Frame pointer out of range");
+d239 2
+a240 2
+	
+	IOdebug("DLIB: Frame pointer out of range");
+d306 1
+d311 2
+a312 1
+  dbg.data = NULL;
+d314 1
+d319 1
+d321 1
+d323 4
+a326 1
+  suspend(&thread);
+d399 2
+a400 1
+  dbg.data = NULL;
+d402 1
+d406 1
+d411 2
+a412 1
+  else IOdebug("senddebug returned an error (%x)", err);
+d415 1
+d417 2
+d486 1
+a486 1
+    else IOdebug("senddebug returned an error (%x)", err);
+d1557 1
+a1557 1
+  
+d1560 2
+d1812 1
+d1817 1
+d1822 1
+d1827 1
+d1832 1
+d1837 1
+d1842 1
+d1847 1
+d1852 1
+d1861 2
+d1917 1
+a1917 1
+	  if (MySendEnv(dbgstream->Server, env) == Err_Null)
+d1943 1
+a1943 1
+	      unless ((debug = New(DEBUG)) == NULL)
+d1968 1
+a1968 1
+#if 0		  
+d1989 1
+a1989 1
+		  
+d2041 2
+@
+
+
+1.3
+log
+@fixed compilation warnings
+@
+text
+@d20 1
+a20 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/lib/RCS/dlib.c,v 1.2 1991/08/19 09:47:51 craig Exp nickc $";
+d27 4
+d37 1
+d41 1
+a41 14
+/**
+*
+* Static data.
+*
+**/
+
+PRIVATE THREAD thread;
+PRIVATE DEBUG *debug;
+
+/**
+*
+* Private function prototypes.
+*
+**/
+d43 2
+a44 35
+/* -- crf : 07/08/91 - not used -
+PRIVATE void dummy (WATCHPOINT *, int );
+*/
+
+PRIVATE BOOL initdebug(void);
+PRIVATE void remdebug(void);
+PRIVATE void debugworker(void);
+PRIVATE word getdebug(Port, DBG *);
+PRIVATE word putdebug(Port, DBG *);
+PRIVATE void initthread(THREAD *);
+PRIVATE void remthread(THREAD *);
+PRIVATE void suspend(THREAD *);
+PRIVATE void resume(THREAD *);
+PRIVATE void patchentry(THREAD *, void (*)(Proc *, byte *));
+PRIVATE void patchcommand(THREAD *, void (*)(word, Module *));
+PRIVATE void patchreturn(THREAD *, word (*)(Proc *, word));
+PRIVATE void ignore_entry(Proc *, byte *);
+PRIVATE void ignore_command(word, Module *);
+PRIVATE word ignore_return(Proc *, word);
+PRIVATE void framestop_command(word, Module *);
+PRIVATE void *DBGNewProcess(word, VoidFnPtr, word);
+PRIVATE word DBGFork(word, VoidFnPtr, word, ...);
+#ifdef V1_1
+PRIVATE void addbreak(word, word, word, BOOL);
+PRIVATE void remtempbreak(BREAKPOINT *);
+#else
+PRIVATE void addbreak(word, word, word);
+#endif
+PRIVATE BREAKPOINT *findbreak(word, word);
+PRIVATE void rembreak(BREAKPOINT *);
+PRIVATE void addwatch(void *, word);
+PRIVATE WATCHPOINT *findwatch(void *, word);
+PRIVATE void remwatch(WATCHPOINT *);
+PRIVATE void checkwatch(WATCHPOINT *, word );
+PRIVATE int checkwatchret(WATCHPOINT *, word );
+d46 6
+a51 4
+/* 
+-- crf : 05/08/91 - explicitly remove watchpoints on exiting from routines 
+*/
+PRIVATE void delwatchpoints (void) ;
+a52 34
+PRIVATE void profilethread(THREAD *, BOOL);
+PRIVATE void stopthread(THREAD *);
+PRIVATE void unstopthread(THREAD *);
+PRIVATE void tracethread(THREAD *, word);
+PRIVATE void gotoframethread(THREAD *, int);
+PRIVATE void timeoutthread(THREAD *);
+PRIVATE byte *dataloc(word, word);
+PRIVATE byte *stackloc(THREAD *, word, word);
+PRIVATE void peekmem(Port, byte *, word);
+PRIVATE void pokemem(byte *, word, byte *);
+PRIVATE void peekdata(Port, word, word, word);
+PRIVATE void pokedata(word, word, word, byte *);
+PRIVATE void peekstack(Port, THREAD *, word, word, word);
+PRIVATE void pokestack(THREAD *, word, word, word, byte *);
+PRIVATE void locatedata(Port, word, word);
+PRIVATE void locatestack(Port, THREAD *, word, word);
+PRIVATE void call(Port, VoidFnPtr, word, word *, word);
+PRIVATE void where(Port, THREAD *, word);
+
+PRIVATE Proc *findproc(word, word);
+PRIVATE FUNC *addfunc(Proc *);
+PRIVATE void remfunc(FUNC *);
+PRIVATE FUNC *findfunc(Proc *);
+PRIVATE void entered(Proc *);
+PRIVATE void returned(Proc *);
+
+PRIVATE word DBGGetMsg(MCB *);
+PRIVATE word DBGPutMsg(MCB *);
+
+extern word (*patchfork(word (*)(word, VoidFnPtr, word, ...)))(word, VoidFnPtr, word, ...);
+extern word (*patchputmsg(word (*)(MCB *)))(MCB *);
+extern word (*patchgetmsg(word (*)(MCB *)))(MCB *);
+extern void _DBGProcExit(void);
+extern word DoCall(VoidFnPtr, word, word *);
+a77 119
+/*
+-- crf : 11/08/91 - No longer needed
+*/
+#ifdef OLDCODE
+/**
+*
+* code = locatecode();
+*
+* Return loaded object.
+*
+**/
+PRIVATE Object *locatecode(void)
+{
+  Object *code = NULL;
+  char name[256];
+
+  MachineName(name);
+  strcat(name, "/loader/");
+  strcat(name, MyTask->Program->Module.Name);
+  if ((code = Locate(NULL, name)) == NULL)
+  {
+    /*
+    * We aren't where we thought we were.
+    */
+    Object *loader;
+
+    MachineName(name);
+    strcat(name, "/loader");
+    unless ((loader = Locate(NULL, name)) == NULL)
+    {
+      Stream *dir;
+
+      unless ((dir = Open(loader, "", O_ReadOnly)) == NULL)
+      {
+        DirEntry direntry;
+
+        until (Read(dir, (byte *)&direntry, sizeof(DirEntry), -1) <= 0)
+        {
+          Stream *stream;
+
+          unless ((stream = Open(loader, direntry.Name, O_Execute)) == NULL)
+          {
+            if ((Program *)stream->Server == MyTask->Program)
+            {
+              Close(stream);
+              code = Locate(loader, direntry.Name);
+              break;
+            }
+            Close(stream);
+          }
+        }
+        Close(dir);
+      }
+      Close(loader);
+    }
+  }
+  return code;
+}
+#endif
+
+/*
+-- crf : 11/08/91 - No longer needed
+*/
+#ifdef OLDCODE
+/**
+*
+* code = locatetask();
+*
+* Return task object.
+*
+**/
+PRIVATE Object *locatetask(void)
+{
+  char name[256];
+
+  MachineName(name);
+  strcat(name, "/tasks/");
+  strcat(name, ((ObjNode *)MyTask->TaskEntry)->Name);
+  return Locate(NULL, name);
+}
+#endif
+
+/*
+-- crf : 11/08/91 - No longer needed
+*/
+#ifdef OLDCODE
+/**
+*
+* obj = locatewm (Environ *env)
+*
+* Return Window Manager object.
+*
+**/
+PRIVATE Object *locatewm (Environ *env)
+{
+#ifdef HE12
+  return env->Objv[OV_CServer];
+/* 
+-- crf : OV_CServer = 7 = control console/window server (syslib.h)
+*/
+
+#else
+  int i;
+  Stream *window;
+  char wmname[256];
+
+  for ( i = 0; i < 3; i++ )	/* CR: search for an interactive I/O stream */
+    if ( env->Strv[i]->Flags & Flags_Interactive )
+    {
+      window = env->Strv[i];
+      break;
+    }
+  unless ( window ) return Null ( Object );
+  strcpy ( wmname, window->Name );
+  * ( strrchr ( wmname, '/' )) = '\0';
+  return Locate ( NULL, wmname );
+#endif
+}
+#endif
+d79 4
+a82 8
+/**
+*
+* err = MySendEnv(port, env);
+*
+*
+*
+**/
+PRIVATE word MySendEnv(Port port, Environ *env)
+d89 1
+a89 1
+
+d92 3
+a94 3
+  {
+    if ((flagv = Malloc(i * sizeof(word))) == NULL) return EC_Error+EG_NoMemory;
+  }
+a95 2
+  {
+    unless (str == (Stream *)MinInt)
+d97 5
+a101 2
+      flagv[i] = str->Flags;
+      str->Flags &= ~(Flags_CloseOnSend | Flags_OpenOnGet);
+a102 1
+  }
+d105 3
+a107 3
+  {
+    unless (str == (Stream *)MinInt) str->Flags = flagv[i];
+  }
+d109 1
+a110 114
+}
+
+/**
+*
+* debugging = initdebug();
+*
+* Try to locate the debug server. If found register ourselves with it
+* otherwise execute as normal.
+*
+*/
+PRIVATE BOOL initdebug(void)
+{
+  Object *debugger;
+
+#ifdef MEMCHECK
+  Fork(10000, memcheck, 0);
+#endif
+  /*
+  * Is the debug server loaded ?
+  */
+#ifdef	MYDEBUG
+  unless ((debugger = Locate(NULL, "/mydebug")) == NULL)
+#else
+  unless ((debugger = Locate(NULL, "/debug")) == NULL)
+#endif
+  {
+    Stream *dbgstream ;
+
+    /*
+    * Open a stream to it and register ourselves.
+    */
+    unless  ((dbgstream = Open(debugger, MyTask->Program->Module.Name, O_ReadWrite | O_Create)) == NULL)
+    {
+/*
+-- crf : 12/08/91 - do not need these routines
+*/
+#ifdef OLDCODE
+      Environ *env = getenviron();
+      Object *newobjv[5];
+
+      newobjv[0] = env->Objv[0];
+      /* ACE: should test for NULL object */
+      newobjv[1] = locatecode();
+      newobjv[2] = locatetask();
+      newobjv[3] = locatewm ( env );
+      newobjv[4] = Null ( Object );
+      
+      env->Objv = newobjv;
+      if (MySendEnv(dbgstream->Server, env) == Err_Null)
+#endif
+/*
+-- crf : 12/08/91 - need the following entries
+OV_Cdir		0	current directory			
+OV_Task		1	ProcMan task entry			
+OV_Code		2	Loader code entry			
+OV_CServer	7	control console/window server	
+
+-- don't need these ...
+OV_Source	3	original program source file		
+OV_Parent	4	this task's parent			
+OV_Home		5	home directory			
+OV_Console	6	control console			
+OV_Session	8	user's session manager entry		
+OV_TFM		9	user's task force manager	
+OV_TForce	10	TFM entry for parent task force	
+OV_End		11	NULL at end of Objv			
+*/
+      
+      Environ *env = getenviron();
+
+      if (MySendEnv(dbgstream->Server, env) == Err_Null)
+      {
+        unless ((debug = New(DEBUG)) == NULL)
+        {
+          int i;
+
+          debug->stream = dbgstream;
+          debug->port = dbgstream->Server;
+          debug->reply = dbgstream->Reply;
+          InitList(&debug->threadlist);
+          InitList(&debug->breakpointlist);
+          InitList(&debug->watchpointlist);
+          InitSemaphore(&debug->lock, 1);
+          for (i = 0; i < HashMax; i++) InitList(&debug->functable[i]);
+          initthread(&thread);
+          Close(debugger);
+#ifdef CRs
+          IOdebug ("remdebug called from initdebug ");
+#endif
+          atexit(remdebug);
+          debug->GetMsg = patchgetmsg(DBGGetMsg);
+          debug->PutMsg = patchputmsg(DBGPutMsg);
+          {
+            DBG dbg;
+
+            dbg.data = NULL;
+            (void)getdebug(debug->reply, &dbg);
+          }
+          if (Fork(10000, debugworker, 0))
+          {
+            debug->Fork = patchfork(DBGFork);
+            return TRUE;
+          }
+        }
+      }
+      Close(dbgstream);
+    }
+    Close(debugger);
+  }
+  patchentry(&thread, ignore_entry);
+  patchcommand(&thread, ignore_command);
+  patchreturn(&thread, ignore_return);
+  return FALSE;
+}
+d112 1
+a112 32
+/**
+*
+* remdebug();
+*
+* Terminate debugging.
+*
+**/
+PRIVATE void remdebug(void)
+{
+  unless (debug == NULL)
+  {
+    int i;
+    
+#ifdef CRs
+    IOdebug ("remdebug running");
+#endif
+    
+    Wait(&debug->lock);
+    Signal(&debug->lock);
+        	    
+    (void)patchgetmsg(debug->GetMsg);
+#ifdef CRs
+    IOdebug("patchgetmsg done");
+#endif
+    (void)patchputmsg(debug->PutMsg);
+#ifdef CRs
+    IOdebug("patchputmsg done");
+#endif
+    (void)patchfork(debug->Fork);
+#ifdef CRs
+    IOdebug("patchfork done");
+#endif
+a113 12
+#ifdef OLDCODE
+    /* ACE: This should kill off all threads */
+    /* ACE: Threads will be killed off anyway.
+            More importantly this frees the thread structure which
+            has disasterous effects - the patched module table is
+            thrown away ! */
+    (void)WalkList(&debug->threadlist, (WordFnPtr)remthread, 0);
+#endif
+    (void)WalkList(&debug->breakpointlist, (WordFnPtr)rembreak, 0);
+#ifdef CRs
+    IOdebug("rembreak done");
+#endif
+d115 1
+a115 11
+/*    (void)WalkList(&debug->watchpointlist, (WordFnPtr)remwatch, 0);*/
+    for (i = 0; i < HashMax; i++)
+      (void)WalkList(&debug->functable[i], (WordFnPtr)remfunc, 0);
+#ifdef CRs
+    IOdebug("remfunc done");
+#endif
+    Close(debug->stream);
+    Free(debug);
+    debug = NULL;
+  }
+}
+d117 4
+a120 8
+/**
+*
+* err = getdebug(port, dbg);
+*
+* Get debug command from the debuggger.
+*
+**/
+PRIVATE word getdebug(Port port, DBG *dbg)
+d125 1
+d127 1
+d129 1
+a129 1
+  mcb.Timeout = -1;
+d133 6
+a138 3
+  mcb.Control = (word *)&dbg->cmd;
+  mcb.Data = dbg->data;
+  while ((err = RealGetMsg(&mcb)) == EK_Timeout);
+d140 1
+d144 2
+a145 1
+#endif      
+d149 5
+a153 8
+/**
+*
+* putdebug(port, dbg);
+*
+* Send debug message to the debugger.
+*
+**/
+PRIVATE word putdebug(Port port, DBG *dbg)
+d174 5
+a178 8
+/**
+*
+* senddebug(port, reply, dbg);
+*
+* Send debug message to the debugger.
+*
+**/
+PRIVATE word senddebug(Port port, Port reply, DBG *dbg)
+d199 7
+a205 8
+/**
+*
+* debugworker();
+*
+* Accepts and obeys debug commands from debugger.
+*
+**/
+PRIVATE void debugworker(void)
+d207 1
+a207 5
+  DBG dbg;
+  byte data[1024]; /* ACE: not perfect */
+
+  dbg.cmd.size = 1024;
+  dbg.data = data;
+d209 1
+a209 3
+  until (getdebug(debug->reply, &dbg) < Err_Null)
+  {
+    switch (dbg.cmd.action)
+d211 3
+a213 17
+      case DBG_Call:
+      /* ACE: Implement this by forking a new process to execute the function.
+              When the process has terminated we must return the result on the
+              reply port.
+      dbg.cmd.modnum = address of function
+      dbg.cmd.size   = size of parameters
+      dbg.cmd.offset = size of return parameters expected
+      dbg.data       = parameters
+      */
+      patchentry(&thread, ignore_entry);
+      patchcommand(&thread, ignore_command);
+      patchreturn(&thread, ignore_return);
+      call(dbg.port, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size, (word *)dbg.data, dbg.cmd.offset);
+      patchentry(&thread, _notify_entry);
+      patchcommand(&thread, _notify_command);
+      patchreturn(&thread, _notify_return);
+      continue;
+d215 8
+a222 9
+      case DBG_Fork:
+      /*
+      dbg.cmd.modnum = address of function
+      dbg.cmd.size   = size of parameters
+      dbg.cmd.offset = size of return parameters expected
+      dbg.data       = parameters
+      */
+      {
+        word *proc = (word *)DBGNewProcess(10000, (VoidFnPtr)dbg.cmd.modnum, dbg.cmd.size);
+a223 7
+        unless (proc == NULL)
+        {
+          memcpy(proc, dbg.data, (int)dbg.cmd.size);
+          StartProcess(proc, 1);
+        }
+      }
+      continue;
+d225 1
+a225 6
+      case DBG_Free:
+      patchentry((THREAD *)dbg.cmd.thread, ignore_entry);
+      patchcommand((THREAD *)dbg.cmd.thread, ignore_command);
+      patchreturn((THREAD *)dbg.cmd.thread, ignore_return);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+d227 13
+a239 243
+      case DBG_FreeAll:
+      (void)patchgetmsg(debug->GetMsg);
+      (void)patchputmsg(debug->PutMsg);
+      (void)patchfork(debug->Fork);
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchentry, (word)ignore_entry);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)ignore_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchreturn, (word)ignore_return);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+#ifdef CRs
+      IOdebug (" remdebug called from debugworker" );
+#endif    
+      remdebug();
+      return;
+
+      case DBG_Go:
+      unstopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_GoAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)unstopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Goto:
+#ifdef V1_1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1, FALSE);
+#else
+      /* This implementation of goto is crap */
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1);
+#endif
+      unstopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_GotoAll:
+#ifdef V1_1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1, TRUE);
+#else
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, 1);
+#endif
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)unstopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_GotoFrame:
+      gotoframethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.modnum);
+      patchcommand((THREAD *)dbg.cmd.thread, framestop_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_GotoFrameAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)gotoframethread, dbg.cmd.modnum);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)framestop_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchentry, (word)_notify_entry);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchreturn, (word)_notify_return);                  
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Kill:
+      Wait(&debug->lock);
+      remthread((THREAD *)dbg.cmd.thread);
+      Signal(&debug->lock);
+      /* ACE: Have to actually stop the thread */
+      continue;
+
+      case DBG_KillAll:
+      _exit(1);
+      continue;
+
+      case DBG_Profile:
+      if (dbg.cmd.modnum == -1)
+      {
+        profilethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.size);
+        patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      }
+      else
+      {
+      	FUNC *func = addfunc(findproc(dbg.cmd.modnum, dbg.cmd.offset));
+
+        if (dbg.cmd.size) func->flags |= Profile;
+	else func->flags &= ~Profile;
+      }
+      continue;
+
+      case DBG_ProfileAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)profilethread, dbg.cmd.size);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Step:
+      stopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      resume((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_StepAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)stopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)resume, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Stop:
+      stopthread((THREAD *)dbg.cmd.thread);
+      patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      continue;
+
+      case DBG_StopAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)stopthread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Timeout:
+      timeoutthread((THREAD *)dbg.cmd.thread);
+      continue;
+
+      case DBG_TimeoutAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)timeoutthread, 0);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_Trace:
+      if (dbg.cmd.modnum == -1)
+      {
+        tracethread((THREAD *)dbg.cmd.thread, (int)dbg.cmd.size);
+        patchcommand((THREAD *)dbg.cmd.thread, _notify_command);
+      }
+      else
+      {
+      	FUNC *func = addfunc(findproc(dbg.cmd.modnum, dbg.cmd.offset));
+
+	if (dbg.cmd.size & TraceOff) func->flags &= ~dbg.cmd.size;
+	else func->flags |= dbg.cmd.size;
+      }
+      continue;
+
+      case DBG_TraceAll:
+      Wait(&debug->lock);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)tracethread, 0);
+      (void)WalkList(&debug->threadlist, (WordFnPtr)patchcommand, (word)_notify_command);
+      Signal(&debug->lock);
+      continue;
+
+      case DBG_AddBreak:
+#ifdef V1_1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, (int)dbg.cmd.size, FALSE);
+#else
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+#endif
+      continue;
+
+      case DBG_RemBreak:
+      {
+      	BREAKPOINT *breakpoint;
+      	
+        unless ((breakpoint = findbreak(dbg.cmd.modnum, dbg.cmd.offset)) == NULL)
+          rembreak(breakpoint);
+      }
+      continue;
+
+      case DBG_AddWatch:
+      addwatch((void *)dbg.cmd.modnum, dbg.cmd.size);
+      continue;
+
+      case DBG_RemWatch:
+      {
+      	WATCHPOINT *watchpoint;
+	Wait (&debug->lock);      	
+#ifdef CRs
+	IOdebug ("case RemWatch"); 
+#endif
+        unless ((watchpoint = findwatch((void *)dbg.cmd.modnum, dbg.cmd.size)) == NULL)
+        {
+#ifdef CRs
+	  IOdebug ("RemWatch calling for %x", watchpoint);
+#endif
+         remwatch(watchpoint);
+        }
+/*        dbg.data = NULL;
+        dbg.cmd.action = DBG_Ready;
+        putdebug(dbg.port, &dbg);  CR: does not work */
+	Signal (&debug->lock);
+      }
+      continue;
+
+      case DBG_PeekMem:
+      peekmem(dbg.port, (void *)dbg.cmd.modnum, dbg.cmd.size);
+      continue;
+
+      case DBG_PokeMem:
+      pokemem((void *)dbg.cmd.modnum, dbg.cmd.size, dbg.data);
+      continue;
+
+      case DBG_PeekData:
+      peekdata(dbg.port, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+      continue;
+
+      case DBG_PokeData:
+      pokedata(dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size, dbg.data);
+      continue;
+
+      case DBG_PeekStack:
+      peekstack(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size);
+      continue;
+
+      case DBG_PokeStack:
+      pokestack((THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size, dbg.data);
+      continue;
+
+      case DBG_LocateData:
+      locatedata(dbg.port, dbg.cmd.modnum, dbg.cmd.offset);
+      continue;
+
+      case DBG_LocateStack:
+      locatestack(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum, dbg.cmd.offset);
+      continue;
+
+      case DBG_Where:
+      where(dbg.port, (THREAD *)dbg.cmd.thread, dbg.cmd.modnum);
+      continue;
+
+      default:
+      IOdebug("Unknown debug command %d", dbg.cmd.action);
+      continue;
+a240 1
+  }
+d245 1
+a245 1
+* pushframe(proc, wptr);
+d247 1
+a247 1
+* Record new activation record for current thread.
+a249 14
+PRIVATE void pushframe(Proc *proc, byte *wptr)
+{
+  /* ACE: Should be able to take the test out at some stage */
+  unless (thread.framestk == NULL)
+  {
+    thread.frameptr--;
+    /* ACE: ! */
+    if (thread.frameptr < thread.framestk OR
+        thread.frameptr > thread.framestk + FrameStackSize)
+      IOdebug("DLIB: Frame pointer out of range");
+    thread.frameptr->proc = proc;
+    thread.frameptr->wptr = wptr;
+  }
+}
+d253 1
+a253 1
+* popframe();
+d255 1
+a255 1
+* Record termination of activation record for current thread.
+d258 1
+a258 1
+PRIVATE void popframe(void)
+d260 2
+a261 8
+  unless (thread.framestk == NULL)
+  {
+    thread.frameptr++;
+    /* ACE: ! */
+    if (thread.frameptr < thread.framestk OR
+        thread.frameptr > thread.framestk + FrameStackSize)
+      IOdebug("DLIB: Frame pointer out of range");
+  }
+d264 1
+d267 1
+a267 1
+* Notify functions:
+d269 1
+a269 1
+* Next follows a list of notify functions to suit all occasions.
+d272 9
+d284 1
+a284 1
+* profile(modnum, line);
+d286 1
+a286 1
+* Profile command.
+d289 1
+a289 1
+PRIVATE void profile(word modnum, word line)
+d291 1
+a291 2
+  modnum = modnum;
+  line = line;
+d322 33
+d407 1
+a407 1
+* _notify_entry(proc, wptr);
+d409 1
+a409 1
+* Standard notify entry function.
+d412 1
+a412 1
+PUBLIC void _notify_entry(Proc *proc, byte *wptr)
+d414 22
+a435 2
+  FUNC *func;
+  word flags = thread.flags;
+d437 5
+a441 12
+  if (debug == NULL AND !initdebug()) return;
+  Wait(&debug->lock);
+  (void)WalkList(&debug->watchpointlist, (WordFnPtr)checkwatchret, 1);
+  Signal(&debug->lock);
+  unless ((func = findfunc(proc)) == NULL) flags = func->flags;
+  pushframe(proc, wptr);
+  if (flags & TraceEntry) entered(proc);
+  if (flags & TraceCommand) thread.tracing = TRUE;
+  else thread.tracing = FALSE;
+  if (flags & Profile) thread.profiling = TRUE;
+  else thread.profiling = FALSE;
+}
+d443 9
+a451 11
+/**
+*
+* _notify_return(proc, result);
+*
+* Standard noifty return function.
+*
+**/
+PUBLIC word _notify_return(Proc *proc, word result)
+{
+  FUNC *func;
+  word flags = thread.flags;
+d453 6
+a458 4
+  /* ACE: Need a more efficient way of doing this */
+  Wait(&debug->lock);
+  (void)WalkList(&debug->watchpointlist, (WordFnPtr)checkwatchret, -1);
+  Signal(&debug->lock);
+d460 9
+a468 1
+  delwatchpoints () ; /* -- crf */
+d470 7
+a476 10
+  unless ((func = findfunc(proc)) == NULL) flags = func->flags;
+  if (flags & TraceReturn) returned(proc);
+  popframe();
+  flags = thread.flags;
+  unless ((func = findfunc(thread.frameptr->proc)) == NULL) flags = func->flags;
+  if (flags & TraceCommand) thread.tracing = TRUE;
+  else thread.tracing = FALSE;
+  if (flags & Profile) thread.profiling = TRUE;
+  else thread.profiling = FALSE;
+  return result;
+d481 1
+a481 1
+* _notify_command(line, module);
+d483 1
+a483 1
+* Standard notify command function.
+d486 1
+a486 1
+PUBLIC void _notify_command(word line, Module *module)
+d488 6
+a493 8
+  word modnum = (module->Type == T_Module) ? module->Id : ((Source *)module)->Id;
+
+  thread.frameptr->line = line;
+  if (thread.profiling) profile(modnum, line);
+#ifndef OLDCODE
+  Wait(&debug->lock);
+  (void)WalkList(&debug->watchpointlist, (WordFnPtr)checkwatch, 0);
+  Signal(&debug->lock);
+d495 7
+a501 4
+  if (thread.stopping) stop(modnum, line);
+  else
+  {
+    unless (breakpoint(modnum, line))
+d503 1
+a503 6
+#ifdef OLDCODE
+      Wait(&debug->lock);
+      (void)WalkList(&debug->watchpointlist, (WordFnPtr)checkwatch, 0);
+      Signal(&debug->lock);
+#endif
+      if (thread.tracing) trace(modnum, line);
+d505 2
+a506 1
+  }
+d509 7
+a515 11
+/**
+*
+* ignore_entry(proc, wptr)
+*
+*
+*
+**/
+PRIVATE void ignore_entry(Proc *proc, byte *wptr)
+{
+  proc = proc;
+  wptr = wptr;
+d518 4
+a521 1
+PRIVATE word ignore_return(Proc *proc, word result)
+a522 1
+  proc = proc;
+d526 4
+a529 1
+PRIVATE void ignore_command(word line, Module *module)
+d531 1
+a531 2
+  line = line;
+  module = module;
+d534 4
+a537 1
+PRIVATE void framestop_command(word line, Module *module)
+d539 4
+a542 1
+  word modnum = (module->Type == T_Module) ? module->Id : ((Source *)module)->Id;
+d544 9
+d554 21
+a574 7
+  if (thread.profiling) profile(modnum, line);
+  Wait(&debug->lock);
+  (void)WalkList(&debug->watchpointlist, (WordFnPtr)checkwatch, 0);
+  Signal(&debug->lock);
+  if (thread.frameptr >= thread.stopframe) stop(modnum, line);
+  else if (thread.tracing) trace(modnum, line);
+}
+d576 2
+a577 8
+/**
+*
+* initthread(thread);
+*
+* Intialise a thread structure.
+*
+**/
+PRIVATE void initthread(THREAD *thread)
+d579 9
+a587 5
+  Wait(&debug->lock);
+  AddHead(&debug->threadlist, &thread->node);
+  Signal(&debug->lock);
+  InitSemaphore(&thread->sync, 0);
+  if ((thread->framestk = (FRAME *)Malloc(FrameStackSize * sizeof(FRAME))) == NULL)
+d589 2
+a590 1
+  thread->frameptr = thread->framestk + FrameStackSize;
+d592 2
+a593 2
+  thread->stopping = TRUE;
+  thread->tracing = FALSE;
+d595 1
+a595 1
+  thread->watching = FALSE;
+d597 8
+a604 2
+  thread->port = NullPort;
+}
+a605 7
+/**
+*
+* remthread(thread);
+*
+* Remove a thread.
+*
+**/
+a613 12
+* suspend(thread);
+*
+* Suspend execution of a thread.
+*
+**/
+PRIVATE void suspend(THREAD *thread)
+{
+  Wait(&thread->sync);
+}
+
+/**
+*
+d700 7
+a706 8
+/**
+*
+* patchentry(thread, func);
+*
+* Patch the notify entry routine.
+*
+**/
+PRIVATE void patchentry(THREAD *thread, void (*func)(Proc *, byte *))
+d711 7
+a717 8
+/**
+*
+* patchcommand(thread, func);
+*
+* Patch the notify command routine.
+*
+**/
+PRIVATE void patchcommand(THREAD *thread, void (*func)(word, Module *))
+d722 7
+a728 8
+/**
+*
+* patchreturn(thread, func);
+*
+* Patch the notify return routine.
+*
+**/
+PRIVATE void patchreturn(THREAD *thread, word (*func)(Proc *, word))
+d733 5
+a737 8
+/**
+*
+* modtab = newmodtab(oldmodtab);
+*
+* Create a new modtab.
+*
+**/
+word *newmodtab(word *oldmodtab)
+d739 8
+a746 4
+  word *modtab;
+  Module *module = &MyTask->Program->Module;
+  word maxid = 0;
+  word maxdata = 0;
+d748 5
+a752 5
+#ifdef OLDCODE
+  /* remove from release version */
+  /* ACE: Check we're right */
+  unless (MyTask->ModTab == oldmodtab); /* IOdebug("DLIB: Not the modtab!");*/
+#endif
+d754 30
+a783 7
+  until (module->Type == 0)
+  {
+    if (module->Id > maxid) maxid = module->Id;
+    if (module->Id == DLib_Slot) maxdata = ((ResRef *)module)->Module->MaxData;
+    module = (Module *)((byte *)module + module->Size);
+  }
+  if ((modtab = (word *)Malloc((maxid + 1) * sizeof(word))) == NULL)
+d785 27
+a811 7
+  memcpy(modtab, oldmodtab, (int)(maxid + 1) * sizeof(word));
+  modtab[0] = (word)modtab;
+  if ((modtab[DLib_Slot] = (word)Malloc(maxdata * sizeof(word))) == NULL)
+  {
+    Free(modtab);
+    return NULL;
+  }
+d813 6
+a818 4
+  memcpy((void *)modtab[DLib_Slot], (void *)oldmodtab[DLib_Slot], (int)maxdata * sizeof(word));
+  initthread((THREAD *)modtab[DLib_Slot]);
+  return modtab;
+}
+d820 5
+a824 11
+/**
+*
+* proc = DBGNewProcess(stacksize, func, argsize);
+*
+* A private version of NewProcess().
+*
+**/
+PRIVATE void *DBGNewProcess(word stacksize, VoidFnPtr func, word argsize)
+{
+  word *stack = Malloc(stacksize);
+  word *display = stack + (stacksize / sizeof(word)) - 6;
+d826 1
+a826 9
+  if (stack == NULL) return NULL;
+  if ((display[0] = (word)newmodtab((word *)(((word **)&stacksize)[-1][0]))) == NULL)
+  {
+    Free(stack);
+    return NULL;
+  }
+  display[1] = (word)stack;
+  return InitProcess(display, func, _DBGProcExit, display, argsize);
+}
+a827 11
+/**
+*
+* success = DBGFork(stacksize, func, argsize, ...);
+*
+*
+*
+**/
+PRIVATE word DBGFork(word stacksize, VoidFnPtr func, word argsize, ...)
+{
+  byte *args = (byte *)(&argsize + 1);
+  word *proc = (word *)DBGNewProcess(stacksize, func, argsize);
+d829 5
+a833 5
+  if (proc == NULL) return FALSE;
+  memcpy(proc, args, (int)argsize);
+  StartProcess(proc, 1);
+  return TRUE;
+}
+d835 2
+a836 9
+#ifdef NOT_USED
+/**
+*
+* ProcStop(modtab);
+*
+*
+*
+**/
+PRIVATE void ProcStop(word *modtab)
+d838 3
+d846 1
+d848 25
+a872 2
+  {
+    DBG dbg;
+d874 6
+a879 8
+    dbg.cmd.action = DBG_EndThread;
+    dbg.cmd.thread = (word)&thread;
+    dbg.data = NULL;
+    putdebug(debug->port, &dbg);
+  }
+  remthread(&thread);
+  Free((void *)modtab[DLib_Slot]);
+  Free(modtab);
+d881 13
+d895 67
+a961 1
+#endif /* NOT_USED */
+a962 8
+/**
+*
+* addbreak(modnum, line, count);
+* addbreak(modnum, line, count,temp); version 1.1 onwards
+*
+* Add a breakpoint.
+*
+**/
+d989 1
+a989 1
+* found = cmpbreak(breakpoint, loc);
+d991 1
+a991 1
+* Support routine for findbreak();
+d994 1
+a994 1
+PRIVATE BOOL cmpbreak(BREAKPOINT *breakpoint, LOCATION *loc)
+d996 2
+a997 2
+  return breakpoint->loc.modnum == loc->modnum AND
+         breakpoint->loc.line == loc->line;
+d1000 1
+d1003 1
+a1003 1
+* breakpoint = findbreak(modnum, line);
+d1005 1
+a1005 1
+* Find a breakpoint.
+d1008 1
+a1008 1
+PRIVATE BREAKPOINT *findbreak(word modnum, word line)
+d1010 2
+a1011 9
+  BREAKPOINT *breakpoint;
+  LOCATION loc;
+
+  loc.modnum = modnum;
+  loc.line = line;
+  Wait(&debug->lock);
+  breakpoint = (BREAKPOINT *)SearchList(&debug->breakpointlist, (WordFnPtr)cmpbreak, (word)&loc);
+  Signal(&debug->lock);
+  return breakpoint;
+d1016 1
+a1016 1
+* rembreak(breakpoint);
+d1018 1
+a1018 1
+* Remove breakpoint.
+d1021 1
+a1021 1
+PRIVATE void rembreak(BREAKPOINT *breakpoint)
+d1023 7
+a1029 3
+  Remove(&breakpoint->node);
+  Free(breakpoint);
+}
+d1031 1
+a1031 15
+#ifdef V1_1
+/**
+*
+* remtempbreak(breakpoint);
+*
+* Remove breakpoint.
+*
+**/
+PRIVATE void remtempbreak(BREAKPOINT *breakpoint)
+{
+  if (breakpoint->temp == TRUE)
+  {
+    Remove(&breakpoint->node);
+    Free(breakpoint);
+  }
+a1032 1
+#endif
+d1046 1
+a1063 33
+* found = cmpwatch(watch, loc);
+*
+* Support routine for findwatch().
+*
+**/
+PRIVATE BOOL cmpwatch(WATCHPOINT *watchpoint, MEMLOCATION *loc)
+{
+  return watchpoint->loc.addr == loc->addr AND
+         watchpoint->loc.size == loc->size;
+}
+
+/**
+*
+* watchpoint = findwatch(addr, size);
+*
+* Find a watchpoint.
+*
+**/
+PRIVATE WATCHPOINT *findwatch(void *addr, word size)
+{
+  WATCHPOINT *watchpoint;
+  MEMLOCATION loc;
+  
+  loc.addr = addr;
+  loc.size = size;
+
+  watchpoint = (WATCHPOINT *)SearchList(&debug->watchpointlist, (WordFnPtr)cmpwatch, (word)&loc);
+
+  return watchpoint;
+}
+
+/**
+*
+a1100 74
+/**
+*
+* checkwatch(watchpoint);
+*
+* Check a watchpoint to see if it has been activated.
+*
+**/
+PRIVATE void checkwatch(WATCHPOINT *watchpoint, word scope)
+{
+  unless (memcmp(watchpoint->loc.addr, &watchpoint->copy, (int)watchpoint->loc.size) == 0)
+  {
+    DBG dbg;
+    Port port = NewPort();  
+    word err;
+    
+#ifdef CRs
+    IOdebug ("entered checkwatch");  
+#endif
+    dbg.port = port;
+    dbg.cmd.action = DBG_Changed;
+    dbg.cmd.modnum = (word)watchpoint->loc.addr;
+    dbg.cmd.size = watchpoint->loc.size;
+    dbg.cmd.offset = scope ;/* CR: should transfer the callers id */
+    dbg.data = NULL;
+
+/* 
+-- crf : 25/07/91 - Bug 700
+-- Problem : loss of synchronization between debugger and dlib with regard
+-- to watchpointing (refer "system.c").
+-- Solution : explicitly force synchronization. I am using the same fixes
+-- that were made to "trace()".
+
+-- crf : 25/07/91 - The above fix also fixes the following :
+-- Bug 652 - watchpointing multiple variables (1)
+-- Bug 701 - watchpointing multiple variables (2)
+-- Bug 703 - watchpointing multiple variables (3)
+*/
+
+/* -- crf : synchronization fix */
+#ifdef BUG
+    putdebug(debug->port, &dbg);
+#else
+    if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+    {
+      getdebug(port, &dbg);
+    }
+#endif
+
+/*
+-- crf : 28/07/91
+-- Take note of Carsten's comment below ("CR: causes timing problems")
+-- I think I have sorted out the synchronization problems with the use of
+-- the sub-routine "delwatchpoints()" ... this will require testing.
+*/
+
+#ifdef PARSYTEC
+    if ((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+    {
+      /* getdebug(port, &dbg); CR: causes timing problems */
+#ifdef CRs
+    IOdebug ("err = %d in checkwatch",err);  
+#endif
+    }
+#endif
+
+    else IOdebug("senddebug returned an error (%x)", err);
+    FreePort(port);
+    memcpy(&watchpoint->copy, watchpoint->loc.addr, (int)watchpoint->loc.size);
+#ifdef OLDCODE
+    thread.watchstop = TRUE;
+#endif
+  }
+}
+
+d1123 15
+a1137 1
+PRIVATE byte *dataloc(word modnum, word offset)
+d1139 1
+a1139 1
+  return (byte *)(MyTask->ModTab[modnum] + offset);
+d1142 5
+a1146 1
+PRIVATE byte *stackloc(THREAD *thread, word frame, word offset)
+d1148 1
+a1148 1
+  return thread->frameptr[frame].wptr + offset;
+d1151 5
+a1155 1
+PRIVATE void peekmem(Port port, byte *addr, word size)
+d1188 7
+a1194 1
+PRIVATE void peekstack(Port port, THREAD *thread, word frame, word offset, word size)
+d1196 3
+a1198 2
+  DBG dbg;
+  byte *addr = stackloc(thread, frame, offset);
+d1202 3
+a1204 2
+  dbg.cmd.size = size;
+  dbg.data = addr;
+d1210 5
+a1214 1
+  memcpy(stackloc(thread, frame, offset), data, (int)size);
+d1252 5
+a1256 1
+PRIVATE void where(Port port, THREAD *thread, word frame)
+d1260 1
+d1262 1
+d1266 7
+a1272 2
+  {
+    ProcInfo *procinfo = GetProcInfo(thread->frameptr[frame].proc);
+a1273 4
+    dbg.cmd.modnum = procinfo->Modnum;
+    dbg.cmd.offset = thread->frameptr[frame].line;
+    dbg.cmd.size   = (procinfo->Offset << 2);
+  }
+d1275 1
+d1277 5
+a1281 1
+}
+d1283 4
+a1286 1
+PRIVATE Module *findmodule(word modnum)
+d1288 5
+a1292 1
+  Module *module = &MyTask->Program->Module;
+d1294 16
+a1309 5
+  until (module->Type == 0)
+  {
+    if (module->Id == modnum) return module;
+    module = (Module *)((byte *)module + module->Size);
+  }
+a1310 1
+}
+d1312 1
+a1312 6
+PRIVATE Proc *findproc(word modnum, word offset)
+{
+  byte *code = *(byte **)dataloc(modnum, offset);
+  Proc *proc;
+  Module *module;
+  int i;
+a1313 9
+  if ((module = findmodule(modnum)) == NULL) return NULL;
+  proc = (Proc *)module;
+  for (i = 0; i < module->Size; i += sizeof(word))
+  {
+    if (proc->Type == T_Proc AND RTOA(proc->Proc) == code) return proc;
+    proc = (Proc *)((word *)proc + 1);
+  }
+  return NULL;
+}
+d1315 2
+a1316 1
+PRIVATE word hashval(Proc *proc)
+d1321 4
+a1324 1
+PRIVATE int cmpfunc(FUNC *func, Proc *proc)
+d1326 1
+a1326 1
+  return func->proc == proc;
+d1329 2
+a1330 1
+PRIVATE FUNC *addfunc(Proc *proc)
+d1332 3
+a1334 2
+  FUNC *func;
+  int hash = hashval(proc);
+d1336 14
+a1349 10
+  if ((func = (FUNC *)SearchList(&debug->functable[hash], (WordFnPtr)cmpfunc, (word)proc)) == NULL)
+  {
+    /* ACE: Test for no memory */
+    func = New(FUNC);
+    func->proc = proc;
+    func->flags = 0;
+    func->time = 0;
+    func->calls = 0;
+    AddHead(&debug->functable[hash], &func->node);
+  }
+d1353 2
+a1354 1
+PRIVATE FUNC *findfunc(Proc *proc)
+d1356 1
+a1356 1
+  return (FUNC *)SearchList(&debug->functable[hashval(proc)], (WordFnPtr)cmpfunc, (word)proc);
+d1359 2
+a1360 1
+PRIVATE void remfunc(FUNC *func)
+d1363 1
+d1367 2
+a1368 1
+PRIVATE void entered(Proc *proc)
+a1370 1
+  ProcInfo *procinfo = GetProcInfo(proc);
+d1372 1
+d1375 16
+a1390 7
+  dbg.cmd.modnum = procinfo->Modnum;
+  dbg.cmd.offset = (procinfo->Offset << 2);
+  dbg.data = NULL;
+  Wait(&debug->lock); /* ACE: This should not be necessary */
+  putdebug(debug->port, &dbg);
+  Signal(&debug->lock);
+}
+d1392 2
+a1393 1
+PRIVATE void returned(Proc *proc)
+a1395 1
+  ProcInfo *procinfo = GetProcInfo(proc);
+d1397 1
+d1400 13
+a1412 7
+  dbg.cmd.modnum = procinfo->Modnum;
+  dbg.cmd.offset = (procinfo->Offset << 2);
+  dbg.data = NULL;
+  Wait(&debug->lock); /* ACE: This should not be necessary */
+  putdebug(debug->port, &dbg);
+  Signal(&debug->lock);
+}
+d1414 2
+a1415 1
+PRIVATE word DBGGetMsg(MCB *mcb)
+d1419 1
+a1419 1
+  thread.port = mcb->MsgHdr.Dest;
+d1421 2
+a1422 2
+  err =  RealGetMsg(mcb);
+  thread.port = NullPort;
+d1430 1
+a1430 1
+  thread.port = mcb->MsgHdr.Dest;
+d1432 2
+a1433 2
+  err =  RealPutMsg(mcb);
+  thread.port = NullPort;
+d1438 4
+a1441 1
+* checkwatchret(watchpoint);
+d1443 1
+a1443 1
+* notify debugger of changed frame
+d1446 1
+a1446 1
+PRIVATE int checkwatchret(WATCHPOINT *watchpoint, word scope)
+d1453 1
+a1453 1
+    IOdebug ("entered checkwatchreturn");  
+d1455 1
+d1457 1
+a1457 4
+    dbg.cmd.action = DBG_Changed;
+    dbg.cmd.modnum = (word)watchpoint->loc.addr;
+    dbg.cmd.size = watchpoint->loc.size;
+    dbg.cmd.offset = scope ;/* CR: should transfer the callers id */
+d1459 1
+a1464 1
+    return TRUE;
+d1469 58
+a1526 2
+-- crf : 05/08/91 - explicitly remove watchpoints on exiting from routines
+-- refer system.c : receiver () for the story ...
+d1528 1
+a1528 1
+* delwatchpoints();
+d1530 1
+a1530 1
+* delete outstanding watchpoints
+d1533 1
+a1533 1
+PRIVATE void delwatchpoints ()
+d1536 5
+a1540 2
+  word err;
+  Port port = NewPort();
+d1542 239
+d1782 1
+a1782 1
+    IOdebug ("entered delwatchpoints");  
+d1784 20
+d1805 42
+a1846 3
+    dbg.port = port;
+    dbg.cmd.action = DBG_DelWatchIds;
+    dbg.data = NULL;
+d1848 13
+a1860 1
+    if((err = senddebug(debug->port, port, &dbg)) == Err_Null)
+d1862 119
+a1980 1
+    	getdebug ( port, &dbg);
+d1982 10
+a1991 1
+    FreePort (port);
+d1994 59
+a2052 1
+char* strrchr (const char *str, int c)
+d2054 49
+a2102 8
+   char *s = ( char * ) str;
+   
+   while (*s) s++;
+   while (*s != c && s > ( char * ) str)
+      s--;
+   if (*s == c) return s;
+   return NULL;
+}
+a2103 7
+/***********************************************
+*
+*
+*	CR: just a dummy to be used in a Walk
+*
+*
+***********************************************/
+d2105 1
+a2105 1
+/* -- crf : 07/08/91 - not used -
+d2107 4
+a2110 1
+PRIVATE void dummy (WATCHPOINT *watchpoint, int i)
+d2112 60
+a2171 4
+	if (watchpoint && i) return;
+	return;
+}
+*/
+@
+
+
+1.2
+log
+@changes from V1.1 to V2.0 (see documentation for details)
+@
+text
+@d13 4
+d19 3
+a21 1
+static char *rcsid = "$Header: /users/craig/cmds/debugger/lib/RCS/dlib.c,v 1.1 1990/08/28 17:09:30 james Exp craig $";
+d65 1
+a65 1
+PRIVATE void patchcommand(THREAD *, void (*)(int, Module *));
+d68 1
+a68 1
+PRIVATE void ignore_command(int, Module *);
+d70 1
+a70 1
+PRIVATE void framestop_command(int, Module *);
+d74 1
+a74 1
+PRIVATE void addbreak(int, int, int, BOOL);
+d77 1
+a77 1
+PRIVATE void addbreak(int, int, int);
+d79 1
+a79 1
+PRIVATE BREAKPOINT *findbreak(int, int);
+d81 2
+a82 2
+PRIVATE void addwatch(void *, int);
+PRIVATE WATCHPOINT *findwatch(void *, int);
+d95 1
+a95 1
+PRIVATE void tracethread(THREAD *, int);
+d98 10
+a107 10
+PRIVATE byte *dataloc(int, int);
+PRIVATE byte *stackloc(THREAD *, int, int);
+PRIVATE void peekmem(Port, byte *, int);
+PRIVATE void pokemem(byte *, int, byte *);
+PRIVATE void peekdata(Port, int, int, int);
+PRIVATE void pokedata(int, int, int, byte *);
+PRIVATE void peekstack(Port, THREAD *, int, int, int);
+PRIVATE void pokestack(THREAD *, int, int, int, byte *);
+PRIVATE void locatedata(Port, int, int);
+PRIVATE void locatestack(Port, THREAD *, int, int);
+d109 1
+a109 1
+PRIVATE void where(Port, THREAD *, int);
+d111 1
+a111 1
+PRIVATE Proc *findproc(int, int);
+d284 1
+a284 1
+  int i;
+d496 1
+a496 1
+  mcb.MsgHdr.DataSize = (dbg->data == NULL) ? 0 : dbg->cmd.size;
+d525 1
+a525 1
+  mcb.MsgHdr.DataSize = (dbg->data == NULL) ? 0 : dbg->cmd.size;
+d553 1
+a553 1
+  mcb.MsgHdr.DataSize = (dbg->data == NULL) ? 0 : dbg->cmd.size;
+d613 1
+a613 1
+          memcpy(proc, dbg.data, dbg.cmd.size);
+d682 1
+a682 1
+      gotoframethread((THREAD *)dbg.cmd.thread, dbg.cmd.modnum);
+d711 1
+a711 1
+        profilethread((THREAD *)dbg.cmd.thread, dbg.cmd.size);
+d769 1
+a769 1
+        tracethread((THREAD *)dbg.cmd.thread, dbg.cmd.size);
+d790 1
+a790 1
+      addbreak(dbg.cmd.modnum, dbg.cmd.offset, dbg.cmd.size, FALSE);
+d929 1
+a929 1
+PRIVATE void profile(int modnum, int line)
+d942 1
+a942 1
+PRIVATE void stop(int modnum, int line)
+d968 1
+a968 1
+PRIVATE BOOL breakpoint(int modnum, int line)
+d986 1
+a986 1
+PRIVATE void trace(int modnum, int line)
+d1023 1
+a1023 1
+  int flags = thread.flags;
+d1048 1
+a1048 1
+  int flags = thread.flags;
+d1076 1
+a1076 1
+PUBLIC void _notify_command(int line, Module *module)
+d1078 1
+a1078 1
+  int modnum = (module->Type == T_Module) ? module->Id : ((Source *)module)->Id;
+d1121 1
+a1121 1
+PRIVATE void ignore_command(int line, Module *module)
+d1127 1
+a1127 1
+PRIVATE void framestop_command(int line, Module *module)
+d1129 1
+a1129 1
+  int modnum = (module->Type == T_Module) ? module->Id : ((Source *)module)->Id;
+d1246 1
+a1246 1
+PRIVATE void tracethread(THREAD *thread, int flags)
+d1297 1
+a1297 1
+PRIVATE void patchcommand(THREAD *thread, void (*func)(int, Module *))
+d1325 2
+a1326 2
+  int maxid = 0;
+  int maxdata;
+d1342 1
+a1342 1
+  memcpy(modtab, oldmodtab, (maxid + 1) * sizeof(word));
+d1350 1
+a1350 1
+  memcpy((void *)modtab[DLib_Slot], (void *)oldmodtab[DLib_Slot], maxdata * sizeof(word));
+d1390 1
+a1390 1
+  memcpy(proc, args, argsize);
+d1395 1
+d1424 2
+d1435 1
+a1435 1
+PRIVATE void addbreak(int modnum, int line, int threshold,BOOL temp)
+d1437 1
+a1437 1
+PRIVATE void addbreak(int modnum, int line, int threshold)
+d1443 1
+d1445 3
+a1447 3
+  breakpoint->loc.line = line;
+  breakpoint->threshold = threshold;
+  breakpoint->count = 0;
+d1450 1
+a1450 1
+  breakpoint->temp = temp;
+d1452 1
+d1478 1
+a1478 1
+PRIVATE BREAKPOINT *findbreak(int modnum, int line)
+d1529 1
+a1529 1
+PRIVATE void addwatch(void *addr, int size)
+d1541 1
+a1541 1
+      memcpy(&watchpoint->copy, addr, size);
+d1569 1
+a1569 1
+PRIVATE WATCHPOINT *findwatch(void *addr, int size)
+d1630 1
+a1630 1
+  unless (memcmp(watchpoint->loc.addr, &watchpoint->copy, watchpoint->loc.size) == 0)
+d1688 1
+a1688 1
+    memcpy(&watchpoint->copy, watchpoint->loc.addr, watchpoint->loc.size);
+d1717 1
+a1717 1
+PRIVATE byte *dataloc(int modnum, int offset)
+d1722 1
+a1722 1
+PRIVATE byte *stackloc(THREAD *thread, int frame, int offset)
+d1727 1
+a1727 1
+PRIVATE void peekmem(Port port, byte *addr, int size)
+d1738 1
+a1738 1
+PRIVATE void pokemem(byte *addr, int size, byte *data)
+d1740 1
+a1740 1
+  memcpy(addr, data, size);
+d1743 1
+a1743 1
+PRIVATE void peekdata(Port port, int modnum, int offset, int size)
+d1755 1
+a1755 1
+PRIVATE void pokedata(int modnum, int offset, int size, byte *data)
+d1757 1
+a1757 1
+  memcpy(dataloc(modnum, offset), data, size);
+d1760 1
+a1760 1
+PRIVATE void peekstack(Port port, THREAD *thread, int frame, int offset, int size)
+d1772 1
+a1772 1
+PRIVATE void pokestack(THREAD *thread, int frame, int offset, int size, byte *data)
+d1774 1
+a1774 1
+  memcpy(stackloc(thread, frame, offset), data, size);
+d1777 1
+a1777 1
+PRIVATE void locatedata(Port port, int modnum, int offset)
+d1787 1
+a1787 1
+PRIVATE void locatestack(Port port, THREAD *thread, int frame, int offset)
+d1812 1
+a1812 1
+PRIVATE void where(Port port, THREAD *thread, int frame)
+d1831 1
+a1831 1
+PRIVATE Module *findmodule(int modnum)
+d1843 1
+a1843 1
+PRIVATE Proc *findproc(int modnum, int offset)
+d1860 1
+a1860 1
+PRIVATE int hashval(Proc *proc)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d14 3
+a29 2
+static char *rcsid = "$Header$";
+
+d45 4
+d78 8
+a85 1
+PRIVATE void checkwatch(WATCHPOINT *);
+d145 4
+d203 1
+d205 4
+d225 1
+d227 4
+d233 34
+d309 1
+a309 1
+**/
+d320 3
+d324 1
+d326 1
+a326 1
+    Stream *dbgstream;
+d333 4
+d338 1
+a338 1
+      Object *newobjv[4];
+d344 3
+a346 1
+      newobjv[3] = NULL;
+d349 22
+d386 3
+d427 8
+d436 3
+d440 3
+d444 4
+d457 5
+a461 1
+    (void)WalkList(&debug->watchpointlist, (WordFnPtr)remwatch, 0);
+d464 3
+d486 3
+d495 4
+d515 3
+d523 4
+d543 3
+d551 4
+d572 1
+d630 3
+d685 2
+d793 1
+a793 1
+
+d806 5
+a810 2
+
+        unless ((watchpoint = findwatch((void *)dbg.cmd.modnum, dbg.cmd.offset)) == NULL)
+d812 4
+a815 1
+          if (--watchpoint->usage == 0) remwatch(watchpoint);
+d817 4
+d1020 4
+a1024 1
+  unless ((func = findfunc(proc)) == NULL) flags = func->flags;
+d1045 6
+d1521 2
+a1522 1
+
+a1530 1
+      Wait(&debug->lock);
+a1531 1
+      Signal(&debug->lock);
+d1535 1
+d1562 1
+a1562 1
+
+d1565 1
+a1565 1
+  Wait(&debug->lock);
+d1567 1
+a1567 1
+  Signal(&debug->lock);
+d1580 11
+a1590 2
+  Remove(&watchpoint->node);
+  Free(watchpoint);
+d1600 1
+a1600 1
+PRIVATE int memcmp(const void *m1, const void *m2, unsigned int size)
+d1617 1
+a1617 1
+PRIVATE void checkwatch(WATCHPOINT *watchpoint)
+d1622 7
+a1628 1
+
+d1632 1
+d1634 16
+d1651 26
+d1939 88
+@

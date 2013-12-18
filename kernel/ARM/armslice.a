@@ -1,0 +1,446 @@
+-- File:	armslice.a
+-- Subsystem:	ARM Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	Sept '92
+--
+-- Description: ARM Helios executive support assembler functions.
+--
+--		This file is used in conjunction with gslice.c and armintr.a
+--		to provide the the Helios ARM thread sheduling services.
+--
+-- RcsId: $Id: armslice.a,v 1.2 1993/08/24 08:41:11 paul Exp $
+--
+-- (C) Copyright 1992 Perihelion Software Ltd.
+-- 
+-- RcsLog: $Log: armslice.a,v $
+-- Revision 1.2  1993/08/24  08:41:11  paul
+-- Integrated latest ARM world with Heliosv1.3.1 release.
+-- (CheckPoint).
+--
+-- Revision 1.1  1992/09/25  15:49:45  paul
+-- Initial revision
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include cpustate.m	-- SaveState and CPURegs structures
+include module.m	-- Function macro
+
+
+_if _defp '__IOC [
+	include ARM/ioc.m
+]
+_if _defp '__VY86PID [
+	include ARM/vy86pid.m
+]
+
+------------------------------------------------------------------------------
+-- Functions to save and restore the processors state, allowing us to swap
+-- between different threads.
+
+
+-- word SaveCPUState(CPURegs *cpusave);
+--
+-- Save processor context
+--
+-- SaveCPUState() saves the current CPU state in the structure it was passed.
+-- It returns a value of 0 (FALSE) when exiting directly from the function.
+-- If the function is `returned from' as result of RestoreCPUState()
+-- function call, then 1 (TRUE) is returned. This is achieved by placing a
+-- 1 into the C return register ready for a RestoreCPUState().
+--
+-- The header file <cpustate.h/m> holds the definition of the CPURegs
+-- structure.
+--
+-- Expected to be called in SVC mode.
+-- Called from C so must conform to PCS.
+
+	Function SaveCPUState
+
+	-- Save non banked registers and SVC sp and lr
+        add     a2, a1, CPURegs.R_V1	-- dont bother saving PCS arg regs.
+        stmia   a2!, {v1-v5,mt,sl,fp,tmp,sp,lr}
+
+	-- Note PC is not saved as this is only used by RestoreSlicedState().
+	-- Only RestoreCPUState will be used with state saved by SaveCPUState().
+
+	-- Save user mode banked regs. Writeback in above stm should have
+	-- incremented a2 to point to CPURegs.PC, we now use an increment before
+	-- style stm to correctly save the user mode SP and LR. Note that this
+	-- is dependent on the order of registers in the CPU save state.
+
+	stmib	a2, {sp, lr}^
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM bug).
+
+	-- Return FALSE to note normal return from SaveCPUState()
+	mov	a1, FALSE
+        movs    pc, lr
+
+
+-- void RestoreCPUState(CPURegs *cpusave);
+--
+-- Resume a CPU state previously saved by SaveCPUState
+--
+-- Passed a pointer to the CPU context save area.
+-- See <cpustate.h/m> for order of regs in area.
+--
+-- Expected to be called in SVC mode.
+-- Called from C so must conform to PCS
+
+	Function RestoreCPUState
+
+	-- Restore non banked registers and SVC mode sp and lr
+        add     a2, a1, CPURegs.R_V1	-- dont bother restoring PCS arg regs.
+        ldmia   a2!, {v1-v5,mt,sl,fp,tmp,sp,lr}
+
+	-- Restore banked User mode regs. Writeback in above ldm should have
+	-- incremented a2 to point to CPURegs.PC, we now use an increment before
+	-- style ldm to correctly load the user mode SP and LR. Note that this
+	-- is dependent on the order of registers in the CPU save state.
+	ldmib	a2, {sp, lr}^
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM bug).
+
+	-- Note return via RestoreCPUState() (a1 = TRUE)
+	mov	a1, TRUE
+	movs	pc, lr
+
+
+
+-- void RestoreSlicedState(CPURegs *cpusave);
+--
+-- Restore a SLICED processor context.
+--
+-- Passed a pointer to the CPU context save area in r0, which it restores.
+-- This function never returns as control will resume at the point of the
+-- restored PC.
+--
+-- Expected to be called in SVC mode.
+-- Called from C but never returns, so need not conform to PCS
+
+	Function RestoreSlicedState
+
+	-- Restore banked user mode registers (SP and LR)
+	add	a2, a1, CPURegs.R_USER_SP
+        ldmia   a2, {sp, lr}^
+
+	-- Note next instruction doesn't access banked regs
+	-- (guard banked regs access against mode change ARM feature).
+
+	_if _defp '__ARM6BASED [
+		ldr	tmp, (a1, CPURegs.R_CPSR)
+		msr	spsr, tmp
+	]
+
+	-- ARM6 automatically restores cpsr at same time as PC.
+	-- Restore non banked regs, SVC mode regs, PC, and PSR (implicit return)
+	ldmia	a1, {r0-r15}^
+
+	-- Note that (^) used with PC in reg. list means set PSR flags,
+	-- not access user bank registers.
+
+
+
+------------------------------------------------------------------------------
+-- TimerIntrHandler
+--
+-- Time slicer system timer interrupt handler.
+-- 
+-- This handler is called from the IRQ interrupt handler when the system timer
+-- interrupt has been identified. We are in IRQ mode and IRQ (but possibly not
+-- FIQ) interrupts are currently disabled. The IRQ handler has already stacked
+-- the non banked registers in the current users save state.
+--
+-- This code is responsible for incrementing the system time, resuming threads
+-- from the timer Q that are due to be awakened, and slicing the current thread
+-- if its timeslice quanta has expired.
+--
+-- IOC dependencies: Assumes IOC timer 0 interrupt every millisecond, has to
+-- clear IOC timer 0 interrupt.
+--
+-- The code is organised so that the most likely set of circumstances causes
+-- no branches until the return. i.e. There will usually be items on the timer
+-- Q, but they will not usually need waking up and the interrupt will not
+-- usually require the current thread to be timesliced.
+--
+-- In theory, there should be no way for higher priority threads to have been
+-- added to the run Q's and a lower priority one to be still running: System()
+-- and SetPhysPri() always Yield(), Resume() is only called at HighPri, so only 
+-- interrupts can cause this to happen. This is catered for by the
+-- CheckIRQDispatch: segment of the interrupt handler. If there have been any
+-- new threads resumed, then this code should be called.
+--
+-- If new timer threads have been scheduled, return is via CheckIRQDispatch:
+-- in the main interrupt handler, if the current thread is to be timesliced,
+-- then DispatchFromIRQ: is branched to, else ExternContinueThread:.
+--
+-- ExternCheckIRQDispatch:	expects a1 = ExecRoot, r14_irq/r13_irq unchanged
+-- ExternContinueThread:	expects a1 = ExecRoot, r14_irq/r13_irq unchanged
+-- ExternIRQDispatch:		expects a1 = ExecRoot, a2 = current threads pri
+--				r14_irq/r13_irq unchanged.
+--
+-- Entered with:
+--	__IOC:
+--		tmp =	IOC_base
+--	__VY86PID:
+--		tmp =	IO_base
+--	r14_irq =	current threads return address and PSR (DO NOT CORRUPT)
+--	r13_irq =	current threads SaveState.CPUcontext (DO NOT CORRUPT)
+--			Registers {r0-r12} have already been saved to the
+--			SaveState.CPUcontext.
+
+	Function TimerIntrHandler
+
+	import ExternContinueThread, ExternCheckDispatch, ExternIRQDispatch
+
+	_test _defp '__IOC [
+		-- a1 = ExecRoot, a1 should never be corrupted.
+		GetExecRoot a1
+
+		-- IOC timer 0, has automatically reloaded itself with the
+		-- timeslice quanta, we just have to clear its interrupt.
+		mov	a2, IRQA_TM0
+		strb	a2, (tmp, ioc_regs.irq_a + intr_block.clear)
+
+		-- Increment soft system timer
+		-- Set a2 = current microsecond time.
+		ldr	a2, (a1, ExecRoot.Timer)
+		-- Add a milliseconds worth of microseconds to the system's time
+		-- @@@ This should be more configurable (we allow the time quanta
+		-- to be changed, so this should be set from an execroot value).
+		add	a2, ONEMILLISEC
+		str	a2, (a1, ExecRoot.Timer)
+	][ _test _defp '__VY86PID [
+		-- Set following conditional to _true for 'Cylon' LED display, 
+		-- or _false for no LED alteration by timer handler.
+		_if _false [
+			-- This routine corrupts a1-a4
+			-- The SCR (scratch) register in the VL86C551 serial device is
+			-- used as the state storage area for the LED heartbeat.
+			-- The following bit allocations are used:
+			--	b0-b1	active LED
+			--	b2	direction
+			--	b3-b7	count until next LED change
+		_def 'hb_lpmask [0x3]	-- LED position mask
+		_def 'hb_dir [1 << 2]	-- direction bit
+		_def 'hb_inc [1 << 3]	-- lowest bit of count
+		_def 'hb_oflow [1 << 8]	-- first bit outside the byte
+			-- Using this simple count means we only change the LED every
+			-- 32 timer events. On a standard 10ms timer this gives around
+			-- on third of a second between each change.
+			ldr	a1,hw_SERIAL_holder2	-- get the serial device address
+			ldrb	a2,(a1,hw_serial.SCR)	-- and load the current state
+			add	a2,a2,hb_inc		-- increment the counter
+			tst	a2,hb_oflow		-- check for overflow
+			beq	no_LED_change		-- and exit quick if we haven't
+			tst	a2,hb_dir		-- get the current direction
+			addeq	a2,a2,1			-- and either increment or
+			subne	a2,a2,1			-- decrement the LED number
+			and	a3,a2,hb_lpmask		-- get pure LED number
+			cmp	a3,0			-- and check the limits
+			cmpne	a3,3			-- so that we can change the
+			eoreq	a2,a2,hb_dir		-- direction flag accordingly
+			add	a3,a3,4			-- we can then make this into
+			mov	a4,1			-- a true GPIO value by shifting
+			mvn	a4,a4 lsl a3		-- and inverting the value.
+			ldr	a3,hw_PARALLEL_holder	-- get the GPIO hardware address
+			strb	a4,(a3,hw_parallel.GPIO)-- and update the LED
+		no_LED_change:
+			strb	a2,(a1,hw_serial.SCR)	-- storing the new state back
+			b	heartbeat_completed	-- and continuing with the timer code
+		hw_SERIAL_holder2:
+			word	hw_SERIAL
+		hw_PARALLEL_holder:
+			word	hw_PARALLEL
+		heartbeat_completed:
+		]
+
+		-- a1 = ExecRoot, a1 should never be corrupted.
+		GetExecRoot a1
+
+		-- Reset PID periodic timer interrupt.
+		mov	a2, hw_intc_resetirq_timer
+		strb	a2, (tmp, hw_intc.IRQRST)
+
+		-- Increment soft system timer.
+		-- Leaving a2 set to current microsecond time.
+		ldr	a2, (a1, ExecRoot.Timer)
+
+		-- Add a 10 milliseconds worth of microseconds to the system's
+		-- software timer.
+		add	a2, ((ONEMILLISEC * 10) & ~0xff)
+		add	a2, ((ONEMILLISEC * 10) & 0xff)
+
+		str	a2, (a1, ExecRoot.Timer)
+	][
+		error "Unknown system timer source - add H/W specific code"
+
+		-- May have to re-load the system timer and clear the timers
+		-- interrupt source...
+
+		-- Increment system timer.
+		-- Set a2 = current microsecond time.
+		ldr	a2, (a1, ExecRoot.Timer)
+		-- Add system timer interrupt periods worth of microseconds to
+		-- the system's time.
+		add	a2, ONEMILLISEC
+		str	a2, (a1, ExecRoot.Timer)
+	]]
+
+
+	-- Check timer Q for threads to reshedule
+	-- Set a3 = TimerQ SaveState pointer.
+	ldr	a3, (a1, ExecRoot.TimerQ)
+	teq	a3, 0
+	beq	CheckTimeSlice			-- Empty timer Q
+
+	-- Check if top SaveState should be woken up now.
+	-- TimerQ SaveStates are in shortest time to wakeup order.
+	--
+	-- if (After(xroot->Timer, ss->wakeup)
+	--	DoWakeup(); (current time is after wakeup)
+
+	ldr	a4, (a3, SaveState.endtime)
+        cmp	a4, a2
+	ble	DoWakeup
+
+CheckTimeSlice:
+	-- Continue interrupted thread if timeslicing disabled, or we are
+	-- running at HighPri, otherwise, decrement threads slice time and
+	-- if <= 0 slice the thread, otherwise, continue it.
+
+	-- If we are running at HighPri, or timeslicing is disabled, then
+	-- we should continue the current thread.
+	--
+	-- Check if we are running at HighPri (run to completion).
+	-- Set a2 = interrupted threads priority.
+	ldr	a2, (a1, ExecRoot.CurrentPri)
+	teq	a2, 0
+	-- Check if timeslicing is disabled.
+	ldrne	tmp, (a1, ExecRoot.SliceEnabled)
+	teqne	tmp, 0
+
+	bEQ	ExternContinueThread		-- If either, return.
+
+	-- Decrement system timer ticks until slice time (@ 0) counter.
+	ldr	tmp, (a1, ExecRoot.SliceTime)
+	subs	tmp, 1
+	str	tmp, (a1, ExecRoot.SliceTime)
+
+	-- If timeslice has not yet expired then return from interrupt and
+	-- continue thread.
+
+	bGT	ExternContinueThread		-- If not, return
+
+
+TimeSliceExpired:
+	-- The current threads timeslice has expired.
+	--
+	-- If we are the only thread at this priority, (which must be the
+	-- highest available priority) then reset timeslice and contine thread,
+	-- otherwise slice the interrupted thread.
+	--
+	-- if (Queues[pri].head != NULL)
+	--	ExternIRQDispatch();
+	-- else {
+	--	ExecRoot->SliceTime = ExecRoot->TickPerSlice;
+	--	ExternContinueThread();
+	-- }
+	--
+	-- Entered with:
+	-- 	a1 = ExecRoot
+	--	a2 = interrupted threads priority
+
+	-- If run Q for current priority is not empty, then slice thread
+	add	a4, a1, ExecRoot.Queue0.tail
+	ldr	tmp, (a4, a2 lsl 3)		-- Index by sizeof(ThreadQ) (8)
+	teq	tmp, 0
+	bne	ExternIRQDispatch		-- Not empty so slice.
+
+	-- Reload time slice counter and continue thread
+	ldr	a2, (a1, ExecRoot.TicksPerSlice)
+	str	a2, (a1, ExecRoot.SliceTime)
+	b	ExternContinueThread
+
+	-- @@@ Could copy code from ExternContinueThread: here, to remove
+	-- the 5 cycle branch penalty.
+
+DoWakeup:
+	-- The top SaveState on the timer Q is due to wakeup now.
+	-- Add it to its priorities run Q.
+	--
+	-- If we loop on multiple wakeups, then the maximum latency will
+	-- not be deterministic. - So just wakeup first candidate, the rest
+	-- will be woken at timer 0 period intervals (usually ~1Ms).
+	--
+	-- Entered with:
+	-- 	a1 = ExecRoot
+	-- 	a3 = Head SaveState on TimerQ.
+
+	-- Remove Head SaveState from Timer Q.
+	ldr	tmp, (a3, SaveState.next)
+	str	tmp, (a1, ExecRoot.TimerQ)	-- Replace with next on Q.
+
+	-- Add SaveState to its priorities run Q.
+	-- Set a2 = threads priority.
+	ldr	a2, (a3, SaveState.priority)
+	-- tmp = &ExecRoot->Queues[0].tail = base of run Q's
+	add	tmp, a1, ExecRoot.Queue0.tail
+
+	_if _defp '__ARM6 [
+		error "possible ARM6 change - Add FIQ disable to PSR"
+	]
+	-- Must disable all interrupts while altering run Q's.
+	teqp	pc, IRQMode | IRQDisable | FIQDisable
+
+	-- do: Queue[pri].tail = Queue[pri].tail->next = ss
+	-- Adding to empty Q is safe as tail will be pointing to head
+	-- and .next is top element.
+	-- a2 lsl 3 = index Queue[] by priority * sizeof(ThreadQ) (8)
+	ldr	a4, (tmp, a2 lsl 3)		-- a4 = q[pri].tail
+	str	a3, (a4, SaveState.next)	-- Queues[pri].tail->next = ss
+	str	a3, (tmp, a2 lsl 3)		-- Queues[pri].tail = ss
+	mov	tmp, 0				-- Q ends at this savestate
+	str	tmp, (a3, SaveState.next)	-- ss->next = null
+
+	-- And re-enable FIQ's if they were not disabled in original PSR.
+	-- r14_irq holds interrupted PC/PSR
+	tst	r14_irq, FIQDisable
+	teqeqp	pc, IRQMode | IRQDisable
+
+	-- If a TimedWait()/TimedSuspend() thread times out then the status
+	-- value must be left unmolested so that concurrent Resume()'s can
+	-- detect that the thread is special - see Resume().
+	--
+	-- if (ss->status != THREAD_TIMEDWAIT)
+	--	ss->status = THREAD_RUNNABLE;
+
+	ldr	tmp, (a3, SaveState.status)
+	teq	tmp, THREAD_TIMEDWAIT
+	movne	tmp, THREAD_RUNNABLE
+	strne	tmp, (a3, SaveState.status)
+
+	-- if (new pri >= current pri)
+	--	CheckTimeSlice();
+	-- else {
+	--	HighestAvailPri = new pri;
+	-- 	DispatchFromIRQ();
+	-- }
+
+	ldr	tmp, (a1, ExecRoot.CurrentPri)
+	cmp	a2, tmp
+
+	-- If same or lower priority timer thread has been resumed,
+	-- check if current threads timeslice has expired.
+	bcs	CheckTimeSlice		-- cs = (hs) unsigned higher or same
+
+	str	a2, (a1, ExecRoot.HighestAvailPri)
+	mov	a2, tmp
+	b	ExternIRQDispatch
+
+
+
+-- end of armslice.a

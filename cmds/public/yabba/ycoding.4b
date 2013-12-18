@@ -1,0 +1,717 @@
+Y coding
+
+Daniel J. Bernstein
+
+Copyright 1991. All rights reserved.
+Draft 4b, March 19, 1991.
+
+This is a draft. That means it's supposed to be unreadable, misleading,
+boring, useless, and generally wrong. Any deviations from the norm are
+accidents---happy accidents, but accidents nonetheless. End of warning.
+
+
+----- 1. Introduction
+
+--- LZW coding
+
+Fix an alphabet A, and take a string I over that alphabet. Construct a
+``dictionary'' D---a one-to-one mapping from strings to integers---as
+follows:
+
+  0. Start by mapping each symbol of A to a unique integer.
+  1. Find the longest prefix p of I contained in D. (Rather, contained
+     in the domain of D. It is convenient to ignore this distinction.)
+  2. Take the next symbol c after p in I.
+  3. Add pc to the dictionary, mapping to another unique integer.
+  4. Strip p from the front of I, so that I begins with c.
+  5. Repeat from step 1 until I is empty (i.e., until step 2 fails).
+
+For example, say A is the set abcdefghijklmnopqrstuvwxyz, and say I is
+the string yabbadabbadabbadoo. D starts with all single characters from
+A. Now the longest match between I and D is I's first character, y; and
+the charater after that is a. So we add ya to the dictionary and strip y
+from the front of I.
+
+Now I is abbadabbadabbadoo, and D has all single characters plus ya. The
+longest match between D and I is a, so we add ab to the dictionary and
+remove the a. We continue in this manner until I is empty:
+
+  I                     match  add    new dictionary
+  yabbadabbadabbadoo    y      ya     ya (plus all single characters)
+   abbadabbadabbadoo    a      ab     ya ab
+    bbadabbadabbadoo    b      bb     ya ab bb
+     badabbadabbadoo    b      ba     ya ab bb ba
+      adabbadabbadoo    a      ad     ya ab bb ba ad
+       dabbadabbadoo    d      da     ya ab bb ba ad da
+	abbadabbadoo    ab     abb    ya ab bb ba ad da abb
+	  badabbadoo    ba     bad    ya ab bb ba ad da abb bad
+	    dabbadoo    da     dab    ya ab bb ba ad da abb bad dab
+	      bbadoo    bb     bba    ya ab bb ba ad da abb bad dab bba
+		adoo    ad     ado    ya ab bb ba ad da abb bad dab bba ado
+		  oo    o      oo     ya ab bb ba ad da abb bad dab bba ado oo
+		   o    o
+
+While we construct the dictionary we can output the value of each match
+under the dictionary. This produces a sequence of numbers which, as we
+will see below, is sufficient to reconstruct the original string. This
+mapping from strings to sequences of numbers is called LZW coding.
+
+Typically the numbers in the dictionary are chosen sequentially, from 0
+to |A| - 1 for the initial single-character strings and then from |A| on
+up. In the above example, the matches are y a b b a d ab ba da bb ad o o,
+which have numbers 24 0 1 1 0 3 27 29 31 28 30 14 14. That sequence is
+the result of yabbadabbadabbadoo under LZW coding.
+
+
+--- LZW decoding
+
+How do we reconstruct the original string if we're given the coded
+sequence? The secret is to reconstruct the dictionary.
+
+  0. Start by mapping each symbol of A to a unique integer. Set I to the
+     empty string. Read a number from the input, and set p to the
+     corresponding single-character string.
+  1. Append p to I.
+  2. Read a number from the input, and let c be the first character of
+     the corresponding string in the dictionary.
+  3. Add pc to the dictionary, mapping to the next unique integer.
+  4. Set p to the dictionary string corresponding to the number read.
+  5. Repeat from step 1 until end-of-input (i.e., until step 2 fails).
+
+For example, take the input sequence 24 0 1 1 0 3 27 29 31 28 30 14 14.
+D starts with all single characters from A; p starts as the single
+character y; and I starts empty.
+
+Now p is appended to I, so that I contains y. The 0 in the input means
+that the next character of I is an a; and ya is added to the dictionary.
+p is then set to a.
+
+Next, p is appended to I, so that I contains ya. The 1 in the input
+means that the next character of I is b; and ab is added to the
+dictionary. p is then set to b. We continue this way through the entire
+input:
+
+  input  c   added    new p   I
+  24                  y       y
+  0      a   (ya,26)  a       ya
+  1      b   (ab,27)  b       yab
+  1      b   (bb,28)  b       yabb
+  0      a   (ba,29)  a       yabba
+  3      d   (ad,30)  d       yabbad
+  27    *a*  (da,31)  ab      yabbadab      27 is ab, so *a* is the 1st char
+  29    _b_  (abb,32) ba      yabbadabba    29 is ba, so _b_ is the 1st char
+  31     d   (bad,33) da      yabbadabbada
+  28     b   (dab,34) bb      yabbadabbadabb
+  30     a   (bba,35) ad      yabbadabbadabbad
+  14     o   (ado,36) o       yabbadabbadabbado
+  14     o   (oo,37)  o       yabbadabbadabbadoo
+
+Notice the slightly twisted statement of steps 2 through 4. p is set to
+the dictionary string corresponding to the number read from the input,
+but first c is set to the first character of that string, and the old pc
+is added to the dictionary. This roundabout presentation is necessary
+because the number on the input may be the number of the very last
+dictionary string added---and that last string depends on the first
+character of the current string. This overlap is always safe but is one
+of the first problems to look out for in a new implementation.
+
+
+--- So who cares about this LZW stuff anyway?
+
+What's the point of LZW coding? When the input string has lots of the
+same characters or sequences of characters, the dictionary will rapidly
+grow to include those sequences. Then a single number in the output
+sequence might represent several characters of input, and will use less
+space.
+
+For example, take the simplest natural encoding of a string over our
+lowercase alphabet A. There are 26 symbols, so we can represent each
+with 5 bits. Our string yabbadabbadabbadoo has 18 characters and takes
+90 bits under this encoding.
+
+On the other hand, the string after encoding has just 13 numbers:
+24 0 1 1 0 3 27 29 31 28 30 14 14. For these values there are 26 27 28
+29 30 31 32 33 34 35 36 37 38 choices respectively, so they take 5 5 5 5
+5 5 5 6 6 6 6 6 6 bits in the natural way, for a total of just 71 bits.
+
+Most strings that come up in practice have similar redundancy, and LZW
+coding will produce an output that takes less space than its input. This
+is why LZW coding is usually called LZW compression. It often reduces
+longer strings to 50% or even 30% of their original size, so that they
+take a fraction as much disk space and communication time as they would
+in their uncompressed form.
+
+
+--- A bit of jargon
+
+Many audio and video compression methods throw away some information.
+They don't reconstruct exactly the original pictures and sounds, but
+nobody really notices. These are called inexact, or sometimes lossy,
+compressors. In contrast, LZW always lets you get back exactly the
+original string. It is an exact, or lossless, compressor.
+
+Any compressor that splits its input into substrings and codes the
+strings with a dictionary is called (logically enough) a dictionary
+compressor.
+
+A substring of an input string---particularly a substring that is coded
+as a single output number---is called a ``phrase.'' In LZW, one string
+is added to the dictionary per phrase.
+
+Some compression methods use fixed tables: ``the'' becomes a special,
+single character, ``of'' becomes another, etc. They're called static, or
+nonadaptive, compressors. Others, like LZW, build their dictionaries
+dynamically to adapt to any input; LZW is an example of an adaptive
+compressor. Somewhere in between are compressors that make two passes
+over the input, building a dictionary the first time through and then
+producing output the second time through. They're called semiadaptive.
+
+One useless theoretical property of LZW is that it is universal. This
+means that on a certain wide class of inputs it will give as close as
+you want to the best possible compression of any method. The longer your
+strings are, the closer it comes to optimal. Universality doesn't make
+one whit of difference in practice---to get within 1% of optimal with
+LZW you'd have to start compressing the planet---but it generally
+indicates that a method is both simple and trustworthy. Non-universal
+compressors are usually much more complicated, and will fail miserably
+on inputs they weren't designed specifically to handle.
+
+
+
+----- 2. Implementing LZW
+
+--- Encoding
+
+The most natural way to find the longest match between I and strings in
+D is one character at a time. Start with p as the first character of I
+(or as the null string if that is more convenient). Read the next
+character, c. If pc is in the dictionary, set p to pc and repeat.
+Otherwise p and c are set.
+
+So the dictionary has to support two basic operations: searching for pc
+if p is known to be there already, and adding pc if it is not there.
+Most implementors use some form of trie---array trie, list trie, hash
+trie, huptrie---for this job. The array trie, as in Woods' ``hyper-LZ''
+[9], offers extreme speed at the expense of |A| (typically 256) words
+of memory for each string in the trie. The huptrie and straight hash
+trie use only a small amount of memory per string but still allow
+reasonably fast searches in the average case. We will not consider these
+structures in further detail.
+
+In any case at most a fixed number of operations happen for every input
+character, so LZW coding takes linear time no matter how long the input
+is. Unfortunately, computers don't have infinite memory. Implementations
+typically limit the dictionary to some size, usually between 1024 and
+65536 strings. When the dictionary reaches that size it can either
+remain fixed for the rest of the input, or it can be cleared and start
+from single characters again. The second strategy effectively breaks the
+input into ``blocks'' with independent dictionaries. If the input
+``feels'' different in different blocks, blocking will produce good
+results, because it will weed useless strings out of the dictionary.
+
+The ``compress'' program [8] introduced an important blocking variant.
+Instead of clearing the dictionary as soon as it reaches its maximum
+size, compress periodically checks how well it is doing. It will only
+clear the dictionary when its compression ratio deteriorates. This way
+the blocks adapt to the input. Note that all of these blocking
+techniques require space for a special output code to clear the
+dictionary.
+
+Another variant is LRU replacement: the least-recently-used strings are
+removed from the dictionary at some opportune time. This provides a
+smoother transition between blocks than clearing the dictionary.
+Unfortunately, it is difficult to find good heuristics for when to
+remove what strings. Blocking is still more of an art than a science.
+
+
+--- Preparing for encryption
+
+It is very useful to compress a message before encrypting it, as
+compression removes much of the statistical regularity of straight text.
+However, the usual coding leaves a lot of redundancy. If the dictionary
+has 33 strings, for example, and 6 bits are used to represent a choice
+among those strings, then the high bit will almost always be 0. These
+high bits come in predictable locations, so an attacker can almost
+always figure out the key given a long enough stretch of compressed
+text.
+
+To prevent this, the compressor should introduce random bits as follows:
+Given a choice between 0 and 40, 0 through 22 are encoded as either
+themselves or from 41 through 63. The choice should be made with a
+high-delay random number generator such as a subtractive generator.
+23 through 40 are always encoded as themselves. This method greatly
+reduces the amount of extra information available per bit without
+appreciably slowing down the coding. Because random bits are used at
+unpredictable times, an attacker cannot easily take advantage of the
+determinism of the pseudo-random generator.
+
+Most implementations also add a recognizable header to compressed text.
+This header should be removed before encryption.
+
+
+--- Decoding
+
+LZW decoding is even easier than encoding: the dictionary does not have
+to support searching. The easiest (and generally fastest) method is to
+keep I in memory as it is reconstructed, and to keep track of which
+substring of I a given dictionary number corresponds to. To add pc to
+the dictionary means to add the pair (pointer to start of pc within I,
+length of pc) at the right spot in an array indexed by dictionary
+numbers. There are methods which take slightly less memory than this,
+but they are slower.
+
+
+
+----- 3. MW and AP coding
+
+--- MW: Adapting better
+
+LZW adapts to its input relatively slowly: strings in the dictionary
+only get one character longer at a time. If LZW is fed a million
+consecutive x's, its longest dictionary string will only have around
+1400 x's, and it will only achieve around 1000:1 compression. Is there
+any better way for it to notice the redundancy?
+
+The answer is yes. Instead of adding p plus one character of the next
+phrase to the dictionary, we can add p plus the entire next phrase to
+the dictionary. This defines MW coding. For example:
+
+  I                     match  added to dictionary
+  yabbadabbadabbadoo    y        
+   abbadabbadabbadoo    a      ya (concatenation of last two matches)
+    bbadabbadabbadoo    b      ab
+     badabbadabbadoo    b      bb
+      adabbadabbadoo    a      ba
+       dabbadabbadoo    d      ad
+	abbadabbadoo    ab     dab
+	  badabbadoo    ba     abba
+	    dabbadoo    dab    badab
+	       badoo    ba     dabba
+		 doo    d      bad
+		  oo    o      do
+		   o    o
+
+Even such a short example shows how quickly MW begins to adapt. By the
+fifteenth character ``dabba'' is already established as a dictionary
+phrase. On the other hand, MW will miss shorter phrases where there is
+less redundancy, so it generally performs only somewhat better than LZW
+in practice. In this example it outputs 13 numbers, just like LZW. But
+given a million x's it will end up with a dictionary string of length
+around half a million, and it will output just 30 bytes.
+
+
+
+
+--- Problems of MW
+
+MW lacks some properties of LZW that we don't realize are so helpful
+until they are taken away. Most importantly, not every prefix of a
+dictionary string is in the dictionary. This means that the
+character-at-a-time search method we saw for LZW doesn't work. Instead,
+every prefix of a string in the dictionary must be added to the trie,
+and every node in the trie must be given a tag saying whether it is in
+the dictionary or not. Furthermore, finding the longest string may
+require backtracking: if the dictionary contains xxxx and xxxxxxxx, we
+don't know until we've read to the eighth character of xxxxxxxy that we
+have to choose the shorter string. This seems to imply that MW coding
+requires backtracking and hence is fundamentally slower than LZW coding.
+(Decoding can be made reasonably fast, though.)
+
+Another problem is that a string may be added to the dictionary twice.
+This rules out certain implementations and requires extra care in
+others. It also makes MW a little less safe than LZW before encryption.
+
+
+--- AP: Adapting faster
+
+There is a natural way to preserve the good adaptation of MW while
+eliminating its need for backtracking: instead of just concatenating the
+last two phrases and putting the result into the dictionary, put all
+prefixes of the concatenation into the dictionary. (More precisely, if S
+and T are the last two matches, add St to the dictionary for every
+nonempty prefix t of T, including T itself.) This defines AP coding. For
+example:
+
+  I                     match  added to dictionary
+  yabbadabbadabbadoo    y        
+   abbadabbadabbadoo    a      ya
+    bbadabbadabbadoo    b      ab
+     badabbadabbadoo    b      bb
+      adabbadabbadoo    a      ba
+       dabbadabbadoo    d      ad
+	abbadabbadoo    ab     da, dab        (d + all prefixes of ab)
+	  badabbadoo    ba     abb, abba      (ab + all prefixes of ba)
+	    dabbadoo    dab    bad, bada, badab
+	       badoo    ba     dabb, dabba
+		 doo    d      bad
+		  oo    o      do
+		   o    o
+
+Since AP adds more strings to the dictionary, it takes more bits to
+represent a choice. However, it does provide a fuller range of matches
+for the input string, and in practice it achieves slightly better
+compression than MW in quite a bit less time.
+
+
+----- 4. Y coding
+
+--- Completing the square
+
+LZW adds one dictionary string per phrase and increments strings by one
+character at a time. MW adds one dictionary string per phrase and
+increments strings by several characters at a time. AP adds one
+dictionary string per input character and increments strings by several
+characters at a time. These properties define three broad classes of
+methods and point naturally to a fourth: coders that add one dictionary
+string per input character and increment strings by one character at a
+time. An example of such a method is Y coding. (It is worth noting at
+this point that LZ77 variants are characterized by adding several
+dictionary strings per input character.)
+
+
+--- The incomprehensible definition
+
+Y coding is defined as follows: The dictionary starts with all single
+characters. One string pc starting at each input position is added to
+the dictionary, where p is in the dictionary before that character and
+pc is not.
+
+To put it differently, ``yowie'' appears in the dictionary as soon as
+the regular expression yo.*yow.*yowi.*yowie matches the text. It is
+added at the final e. So yabbadabbadabbadoo leads to the dictionary ya,
+ab, bb, ba, ad, da, abb, bba, ada, dab, abba, bbad, bado, ado, oo.
+
+We haven't defined the coding yet. While we build the dictionary, we
+keep track of a current longest match (initially empty). Right after
+reading an input character and before integrating it into the
+dictionary, we see whether the longest match plus that character is
+still in the dictionary *constructed before the start of that longest
+match*. If so, we use that as the new longest match, and proceed.
+Otherwise, we output the number of the longest match, and set the
+longest match to just that new character.
+
+To decode, we read these matches, one by one. We take each one as a
+sequence of characters as defined by the dictionary, and output that
+sequence. Meanwhile we take each character and feed it as input to the
+dictionary-building routine.
+
+
+--- A comprehensible example
+
+We can run through the string keeping track of dictionary matches, as
+follows:
+
+  I                        add    current matches
+  abcabcabcabcabcabcabcx          a
+   bcabcabcabcabcabcabcx   ab     b
+    cabcabcabcabcabcabcx   bc     c
+     abcabcabcabcabcabcx   ca     a
+      bcabcabcabcabcabcx          ab b
+       cabcabcabcabcabcx   abc       bc c
+        abcabcabcabcabcx   bca          ca a
+         bcabcabcabcabcx   cab             ab  b
+          cabcabcabcabcx            _____  abc bc  c
+           abcabcabcabcx   abca    / \   \___  bca ca a
+            bcabcabcabcx   bcab   cab ab   b \____  \_/
+             cabcabcabcx   cabc       abc  bc   c \__/
+              abcabcabcx              abca bca  ca   a
+               bcabcabcx   abcab           bcab cab  ab    b
+                cabcabcx   bcabc                cabc abc   bc   c
+                 abcabcx   cabca                     abca  bca  ca  a
+                  bcabcx           ,-----------------abcab bcab cab ab b
+                   cabcx   abcabc  `--bcabc cabc  abc    bc    c
+		    abcx   bcabca           cabca abca   bca   ca   a
+		     bcx   cabcab                 abcab  bcab  cab  ab  b
+		      cx                          abcabc bcabc cabc abc bc c
+		       x   abcabcx x
+			    bcabcx
+			     cabcx
+			      abcx
+			       bcx
+				cx
+
+The strings on the right side are the current matches-so-far after each
+input character. We start with no matches. When we read a character, we
+append it to each match so far; if the results are in the dictionary, we
+make them the new matches, and add the character as a match by itself.
+If any of them are not in the dictionary we take them out of the list
+and add them to the dictionary.
+
+Before reading the fifth c, for example, the matches are bcab, cab, ab,
+and b. We append c to each one: bcabc doesn't match, so we add it to the
+dictionary. The rest are still in the dictionary, so our new list is
+cabc, abc, bc, and a lone c. And so on.
+
+When the x is read, the current list is abcab bcab cab ab b. Now none of
+abcabx bcabx cabx abx bx are in the dictionary, so we add all of them,
+and the list becomes just a single x.
+
+
+--- The crucial observation
+
+It is not clear so far that Y is a linear-time algorithm: each input
+character demands additions to several matches. However, *every
+substring of a dictionary string is in the dictionary*. This is clear
+from the regular-expression characterization of dictionary strings: if
+yo.*yow.*yowi.*yowie matches the text, then ow.*owi.*owie (for example)
+certainly does as well.
+
+Say the current match list is wonka onka nka ka a, and we read the
+character x. The next list has to be one of the following:
+
+  wonkax onkax nkax kax ax x
+         onkax nkax kax ax x
+               nkax kax ax x
+                    kax ax x
+                        ax x
+                           x
+
+If onkax matches, for example, then nkax must match as well, and so must
+kax and ax and x.
+
+So the match list will always consist of one string and its suffixes.
+Hence we can keep track of just the longest string in the match list.
+For example, with the input string oompaoompapaoompaoompapa:
+
+  input  test   add    match
+  o                    o
+  o      oo     oo     o
+  m      om     om     m
+  p      mp     mp     p
+  a      pa     pa     a
+  o      ao     ao     o
+  o      oo            oo
+  m      oom    oom    om
+  p      omp    omp    mp
+  a      mpa    mpa    pa
+  p      pap    pap
+                ap     p
+  a      pa            pa
+  o      pao    pao    ao
+  o      aoo    aoo    oo
+  m      oom           oom
+  p      oomp   oomp   omp
+  a      ompa   ompa   mpa
+  o      mpao   mpao
+	        pao    ao
+  o      aoo           aoo
+  m      aoom   aoom   oom
+  p      oomp          oomp
+  a      oompa  oompa  ompa
+  p      ompap  ompap
+	        mpap   pap
+  a      papa   papa
+                apa    pa
+
+
+--- A comprehensible definition
+
+Here is another definition of how to construct the Y dictionary, based
+on the chart above.
+
+  0. Start with the dictionary mapping every character of A to a unique
+     integer. Set m to the empty string.
+  1. Append the next character c of I to m.
+  2. If m is not in the dictionary, then add m to the dictionary, remove
+     the first character of m, and repeat this step.
+  3. Repeat from step 1 until the input is exhausted.
+
+We must be careful in defining output: the output is not synchronized
+with the dictionary additions, and we must be careful not to have the
+longest output match overlap itself. To this end we split the dictionary
+into two parts, the first part safe to use for the output, the second
+part not safe.
+
+  0. Start with S mapping each single character to a unique integer;
+     T empty; m empty; and o empty. (S and T are the two parts of the
+     dictionary.)
+  1. Read a character c. If oc is in S, set o to oc; otherwise output
+     S(o), set o to c, add T to S, and remove everything from T.
+  2. While mc is not in S or T, add mc to T (mapping to the next
+     available integer), and chop off the first character of m.
+  3. After m is short enough that mc is in the dictionary, set m to mc.
+  4. Repeat as long as there are enough input characters (i.e., until
+     step 1 fails).
+  5. Output S(o) and quit.
+
+Here's how to decode:
+
+  0. Initialize (D,m) as above.
+  1. Read D(o) from the input and take the inverse under D to find o.
+  2. As long as o is not the empty string, find the first character c of
+     o, and update (D,m) as above. Also output c and chop it off from
+     the front of o.
+  3. Repeat from step 1 until the input is exhausted.
+
+The coding only requires two fast operations on strings in the
+dictionary: testing whether sc is there if s's position is known, and
+finding s's position given cs's position. The decoding only requires the
+same operations plus finding the first character of a string given its
+spot in the dictionary.
+
+
+--- Some properties of Y coding
+
+We propose ``per-phrase dictionary'' to describe the dictionaries
+constructed by LZW and MW, ``per-character dictionary'' for AP and Y.
+We also propose ``phrase-increment'' to describe MW and AP,
+``character-increment'' for LZW and Y. More precisely, a per-phrase
+dictionary is one which contains one string per output phrase, while a
+per-character dictionary contains one string per input character. Each
+string in a character-increment dictionary is exactly one character
+longer than a string added at a previous step; in contrast, a string in
+a phrase-increment dictionary can be much longer than any of its
+prefixes formerly in the dictionary. According to this terminology,
+Y is an exact character-increment per-character dictionary compressor.
+
+Y has a similar feel to LZJ, which has a dictionary consisting of all
+unique substrings up to a certain length in a block of the input.
+However, Y can adapt much more effectively to redundant text.
+
+
+
+----- 5. Results
+
+The author has implemented Y coding [2] along with, for instruction and
+amusement, AP coding. In this section we survey various implementation
+issues and compare the effectiveness of the coding methods explained
+here.
+
+The author's implementation, yabbawhap, uses a huptrie [3] for the
+dictionary. yabba keeps track of the separate dictionaries S and T for Y
+coding by remembering the highest position within D that is ``safe''
+inside S; all higher positions are in T.
+
+yabbawhap uses compress's strategy of adaptive blocking. The user may
+vary most aspects of compression dynamically, including two parameters
+of the heuristic used to control blocking.
+
+Here are results of these methods on the Bell-Witten-Cleary text corpus,
+along with a highly redundant 180489-byte ``makelog'' added by the
+author to show an extreme case.
+
+     __bib__book1__book2____geo_makelog___news___obj1___obj2_paper1_paper2_
+Z12  54094 394419 325147  78026   34757 230765  16528 160099  29433  40881
+Z14  46817 357387 281354  77696   25647 202594  14048 138521  25077  37196
+Z16__46528_332056_250759__77777___25647_182121__14048_128659__25077__36161_
+MW___41040_336793_230862__80296____8299_168652__13273_109266__22749__34234_
+AP2  47056 389702 297205  84582   20925 219665  13824 134547  26937  39415
+AP6  40770 338046 261270  79471   14762 190502  13824 123323  22413  34637
+AP3__40311_322178_228978__80106____8821_167896__13825_113296__22414__33320_
+Y2   46882 363339 287110  80817   28159 212617  13858 141783  26131  38037
+Y6   40874 320622 256578  76275   21220 185097  13858 125900  22452  33671
+Y3___40456_306813_229851__76695___14411_168287__13859_114323__22453__32733_
+
+    paper3_paper4_paper5_paper6_____pic__progc__progl__progp__trans_
+Z12  23567   7091   6670  22333   66236  21825  31987  22936  46185
+Z14  22163   6957   6580  18695   63277  19143  27116  19209  39605
+Z16__22163___6957___6580__18695___62215__19143__27148__19209__38240_
+MW___21495___6697___6169__16899___65102__16976__22223__15095__27742_
+AP2  22293   6595   6146  19770   74061  18868  27191  17962  38781
+AP6  20869   6595   6146  16786   68349  16691  22716  15138  30415
+AP3__20870___6596___6147__16787___67980__16692__22451__15139__28056_
+Y2   21609   6443   6033  19418   71952  18897  27607  19429  40444
+Y6   20355   6443   6033  16677   66117  17063  23625  16616  33026
+Y3___20356___6444___6034__16678___65377__17064__23512__16617__31300_
+
+Z12 is LZW with 12 bits (i.e., a dictionary of at most 4096 strings),
+using compress -b12. MW is MW using the author's squeeze program [4],
+with a dictionary of at most 300000 strings (roughly equivalent to
+1500000 input characters). AP2 is AP with an input block size of 21000,
+using whap -m21000; AP6 has a block size of 65533, and AP3 has a block
+size of 300000. Y is like AP but using yabba.
+
+Y is notably effective upon book1 and news.
+
+XXX what else do people want to see in this section?
+
+
+
+----- 6. Conclusion
+
+--- Life goes on
+
+Y coding is not much more complex than LZW coding and produces generally
+better results. It is one of the most effective non-Huffman-based
+LZ78-style compressors.
+
+
+--- How to achieve fame and fortune
+
+It may be possible to implement Y so that the decoding does not have to
+do all the work of the coding. In particular, three-fourths of the
+dictionary strings are typically not used at all; they should not have
+to be handled during decoding. Even if Y cannot be sped up, there is
+probably some character-increment per-character dictionary compressor
+that achieves similar results to Y but runs as quickly as LZW or AP.
+This is a area for future research.
+
+We have not discussed different ways to code the output numbers. Huffman
+coding and arithmetic coding both produce quite respectable improvements
+over and above the compression of the basic Y method. Little is known
+about the best way to code a sequence from a dynamically expanding
+alphabet; it is a bit counterintuitive that semiadaptive Huffman coding
+upon an output Y sequence can produce worse results than adaptive
+Huffman coding.
+
+It would be interesting to compare a straight modeller with Y plus a
+Huffman coder to see which produces better results.
+
+
+--- Acknowledgments
+
+The author would like to thank James Woods for his support and
+encouragement, as well as for many copies of papers; Richard Stallman,
+for motivating the author to find Y coding; and Herbert J. Bernstein for
+general comments and for suggesting the order of presentation of this
+material.
+
+
+--- So who are these LZWMWAPY people anyway?
+
+LZW stands for Lempel, Ziv, Welch. In 1977 Ziv and Lempel discovered the
+first in what are now called the LZ family of dictionary compressors.
+The original LZ algorithms were like LZW, but transmitted both p and c
+and then skipped past pc. They also started with a dictionary of just
+the null string. (For detailed surveys of various LZ methods, the reader
+should consult [1], [5], [7], [11].) Welch popularized the LZ variant,
+now called LZW, in which the extra character was not transmitted but
+became the first character of the next phrase.
+
+Miller and Wegman independently discovered several LZ variants in 1984,
+including LZW and MW. In fact, Seery and Ziv had in 1978 [6] proposed an
+LZ variant where two adjacent phrases were concatenated; this is related
+to MW in approximately the same way that LZ is related to LZW. (Seery
+and Ziv also introduced an important improvement for binary alphabets:
+if 01101 and 01100 are in the dictionary, there is no way that 0110 can
+possibly be a longest match, so it can effectively be removed from the
+dictionary.)
+
+AP stands for ``all prefixes.'' It was originally discovered by Storer
+in 1988 (?) and independently rediscovered by this author in 1990.
+
+Y actually does stand for yabbadabbadoo. The author discovered Y coding
+on December 26, 1990; he used yabbadabbadabbadoo as an example in
+explaining the method to Woods the next day. Woods replied [10] ``I'll
+have to look at your yabbadabbadoo code again to see how it differs from
+LZR.'' The author promptly adopted ``Y coding'' as the official name.
+(Ross Williams has suggested [12] that ``LZDB coding'' might be more
+appropriate.)
+
+
+--- References
+
+Yeah, yeah, I'm still writing up proper citations. XXX
+
+[1]  Bell, Witten, Cleary, compression article, 1989
+[2]  Bernstein, yabbawhap program, 1990-1991
+[3]  Bernstein, huptrie article, 1990
+[4]  Bernstein, squeeze program, 1989
+[5]  Miller and Wegman, compression article, 1987
+[6]  Seery and Ziv, LZ78 extensions article, 1978
+[7]  Storer, compression book, 1988
+[8]  Woods et al., compress program, 1985
+[9]  Woods, private communication, 1990
+[10] Woods, private communication, 1990
+[11] Williams, compression book, 1991
+[12] Williams, private communication, 1991

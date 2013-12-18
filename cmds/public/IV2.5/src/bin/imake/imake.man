@@ -1,0 +1,254 @@
+.TH IMAKE 1 "26 October 1988" "X Version 11"
+.SH NAME
+imake \- C preprocessor interface to the make utility
+.SH SYNOPSIS
+.B imake
+[
+.B \-Ddefine
+] [
+.B \-Idirectory
+] [
+.B \-T
+] [
+.B \-f
+.I imakefile
+] [
+.B \-s
+[
+.I makefile
+]] [
+.B \-v
+] [ make options or arguments ]
+.SH DESCRIPTION
+.I Imake
+takes a template and an Imakefile and runs the C preprocessor on it producing a
+temporary makefile in /usr/tmp.  It then runs
+.I make
+on this pre-processed makefile.
+See IMPLEMENTATION DETAIL below.
+.PP
+By default,
+.I Imake
+looks first for the file named
+.I Imakefile
+and if that fails, looks for the file named
+.I imakefile,
+both in the current working directory.
+.SH OPTIONS
+.TP 5
+.B \-Ddefine
+Define.
+This argument is passed on to the preprocessor, cpp.
+This can also be accomplished with the environment variable,
+IMAKEINCLUDE.
+.TP 5
+.B \-Idirectory
+Include directory.
+This argument is passed on to the preprocessor, cpp.
+This can also be accomplished with the environment variable,
+IMAKEINCLUDE.
+.TP 5
+.B \-T template
+Template file.
+Specifies the template file to be initially included by cpp,
+instead of the default file
+.I Imake.template.
+.TP 5
+.B \-f imakefile
+File.
+Specifies an alternate imakefile for
+.I imake to use.
+.TP 5
+.B \-s [ filename ]
+Show.
+.I Imake
+will preprocess the imakefile,
+and direct it to the standard output.
+The
+.I make
+program will not be invoked.
+If the filename argument is present
+the output will be directed instead to the named file.
+Typically, this is
+.I \-s Makefile.
+.TP 5
+.B \-v
+Verbose.
+.I Imake
+will display the command line it uses to invoke the C preprocessor before
+actually doing so.
+.SH "ENVIRONMENT VARIABLES"
+Imake consults its environment for three variables:
+.TP 5
+.B IMAKEINCLUDE
+If defined, this should be a valid include argument for the
+C preprocessor.  E.g. ``-I/usr/include/local''.
+Actually, any valid
+.I cpp
+argument will work here.
+.TP 5
+.B IMAKECPP
+If defined, this should be a valid path to a preprocessor program.
+E.g. ``/usr/local/cpp''.
+By default,
+.I imake
+will use /lib/cpp.
+.TP 5
+.B IMAKEMAKE
+If defined, this should be a valid path to a make program.
+E.g. ``/usr/local/make''.
+By default,
+.I imake
+will use whatever
+.I make
+program is found using
+.I execvp(3).
+.SH IMPLEMENTATION DETAIL
+.I Imake
+first determins the name of the imakefile from the command line \-f
+flag or from the content of the current directory, depending
+on whether Imakefile or imakefile exist.
+We shall call this \fI<imakefile>\fP.
+It also determines the name of the template
+from the command line \-T flag or the default, Imake.template.
+Call this \fI<template>\fP.
+.PP
+The program then examines the imakefile looking for any lines
+that begin with a '#' character.  If it finds one,
+it checks to see if it is a valid C preprocessor directive
+from the set
+.I #include,
+.I #define,
+.I #undef,
+.I #ifdef,
+.I #else,
+.I #endif
+or
+.I #if.
+If it is,
+.I imake
+leaves it unchanged.
+If not,
+it pads the beginning of the line with a null C comment ``/**/''
+so that the line will by untouched by the preprocessor.
+This is usefull for preserving the use of
+.I make
+style ``#'' comments.
+If any lines needed to be changed,
+a temporary file named /tmp/tmp-imake.* will receive the "padded"
+imakefile.
+Call this file, whether it needed to be changed or not,
+\fI<input-imakefile>\fP.
+.PP
+Then the program
+starts up the C preprocessor with the command line
+.RS 5
+.sp 1
+/lib/cpp -I. -I/usr/lib/local/imake.includes -Uunix
+.sp 1
+.RE
+perhaps prepending the argument list with the IMAKEINCLUDE
+environment variable,
+the \fI\-I\fP, and the \fI\-D\fP command line arguments;
+or changing the preprocessor program to the IMAKECPP environment variable.
+Standard input is from the
+.I imake
+program and standard output is directed to a temporary file in
+/usr/tmp/tmp-make.*;
+unless there was an argument to the \-s flag, in which case
+output is directed there.
+Call this file \fI<makefile>\fP.
+The first three lines provided as input to the preprocessor
+will be
+.RS 5
+.sp 1
+#define IMAKE_TEMPLATE          "\fI<template>\fP"
+.br
+#define INCLUDE_IMAKEFILE       "\fI<input-imakefile>\fP"
+.br
+#include IMAKE_TEMPLATE
+.sp 1
+.RE
+.PP
+Note that this implies that the template must have, at a bare minimum,
+the line
+.RS 5
+.sp 1
+#include INCLUDE_IMAKEFILE
+.sp 1
+.RE
+.PP
+Next,
+.I imake
+reads the entire output of the preprocessor into memory,
+stripping off any double '@' signs encountered in the input.
+This is very useful for writing cpp multi-line macros that
+won't be coalesced into a single line the way
+.I cpp
+normally does.
+In addition, trailing white space on any line is thrown away to keep
+.I make
+from getting upset;
+and most blank lines are thrown
+away.
+For example, the macro
+.ta .8i 1.6i 5i
+.nf
+
+#define	program_target(program, objlist)	@@\e
+program:	objlist		@@\e
+	$(CC) -o $@ objlist $(LDFLAGS)
+
+.fi
+when called with
+.I "program_target(foo, foo1.o foo2.o)"
+will expand to
+.nf
+
+foo:	foo1.o foo2.o
+	$(CC) -o $@ foo1.o foo2.o $(LDFLAGS)
+
+.fi
+.DT
+.PP
+Finally,
+if the
+.B -s
+option has not been specified,
+.I imake
+calls the program
+.RS 5
+.sp 1
+	make MAKE=\fI<program>\fP MAKEFILE=\fI<imakefile>\fP -f \fI<makefile>\fP makeargs
+.sp 1
+.RE
+where ``makeargs'' is replaced with any arguments found on the command line.
+.SH FILES
+.ta 3i
+/usr/tmp/tmp-imake.\fInnnnnn\fP	temporary input file for cpp
+.br
+/usr/tmp/tmp-make.\fInnnnnn\fP	temporary input file for make
+.br
+/lib/cpp	default C preprocessor
+.br
+/usr/lib/local/imake.includes	default directory for include files.
+.DT
+.SH "SEE ALSO"
+make(1)
+.br
+S. I. Feldman
+.I
+Make \- A Program for Maintaining Computer Programs
+.SH "AUTHOR"
+Todd Brunhoff; Tektronix, inc. and Project Athena, MIT.
+.SH "BUGS"
+The C-preprocessor, Cpp,
+on a Sun compresses all tabs in a macro expansion to a single
+space.  It also replaces an escaped newline with a space instead of
+deleting it.  There is a kludge in the code to try to get around this
+but it depends on the fact that all targets have a ':' somewhere in
+the line and all actions for a target do not have a ':'.
+.PP
+You can use \fImake\fP-style '#' comments in the Imakefile, but
+not in the template or any other included files.  If you want
+them, you must preceed them with a C null comment, /**/.

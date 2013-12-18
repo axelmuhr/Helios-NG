@@ -1,0 +1,1449 @@
+--{{{ Header
+
+--
+-- IEEE64.a - assembly language software emulation of IEEE 64 bit floating point routines
+--
+--  Copyright (C) 1991, Rowley Associates
+--                      32 Rowley
+--                      Cam
+--                      Dursley
+--                      Glos. GL11 5NT
+--                      England.
+--
+-- Notes: Original code assembled using TI's ASM40 V4.13 Beta
+--
+-- Modified by: Nicholas Clifton       (who?)
+--
+-- Copyright (c) 1992 - 1994 by Perihelion Software Ltd.
+--   All Rights Reserved
+--
+-- $Id: IEEE64.a,v 1.3 1994/02/01 16:10:24 nickc Exp $
+--
+
+--}}}
+--{{{ Includes
+
+_include 'c40.m
+_include 'basic.m
+_include 'module.m
+
+--}}}
+
+	StartModule IEEE64 -1 1
+
+--
+-- see IEEE64.h for a description of the IEEE64 and IEEE32 structures
+--
+
+--{{{ Code
+
+IEEEOverflow:
+--{{{ Handle overflows
+
+--
+-- This label is branched too whenever a calculation has overflowed.
+-- Ideally it ought to set a flag somewhere which could then be
+-- interrogated and/or reset by function calls
+--
+	BuD	  R_LR				-- return (delayed)
+	   LDI	 -1,	R_A2			-- return the most positive IEEE64 value
+	   LSH3  -1,	R_A2,	R_A1		-- make sure sign bit is not set
+	   NOP					-- padding
+--
+-- end of IEEEOverflow
+--
+
+--}}}
+
+--{{{ int    FTSTD( IEEE64 val )
+
+.FTSTD:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number
+--	R_A2	low  part of IEEE 64 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	0 if val == 0.0,  -1 iff val < 0.0,   1 iff val > 0.0
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Tests the argument for position relative to 0.0
+--	(This function is now redundant given the special representation of 0.0)
+--
+	BuD		R_LR			-- return (delayed)
+	   CMPI	 0,	R_A1			-- test the value of the high part
+	   LDIn	-1,	R_A1result		-- if argument is < 0.0 return -1
+	   LDIp	 1,	R_A1result		-- if argument is > 0.0 return 1
+--
+-- end of FTSTD
+--
+
+--}}}
+--{{{ IEEE64 _FNEGD( IEEE64 val )
+
+._FNEGD:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number
+--	R_A2	low  part of IEEE 64 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	-val (high part)
+--	R_A2	-val (low  part)
+--
+-- Corrupts
+--	R_T1, ST
+--
+-- Purpose
+--	Negates its argument
+--
+--	Does NOT conform to Helios C calling conventions
+--
+	CMPI	 0,		R_A1		-- negative zero is 0
+	BuD	 R_LR				-- return (delayed)
+	   LDHI	 0x8000,	R_T1		-- sign is in top bit
+	   LDIeq 0,		R_T1		-- do not invert if value is 0.0
+	   XOR	 R_T1,		R_A1		-- invert sign bit
+--
+-- end of _FNEGD
+--
+
+--}}}
+--{{{ int    FCMPD( IEEE64 left, IEEE64 right )
+
+.FCMPD:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number
+--	R_A2	low  part of IEEE 64 bit FP number
+--	R_A3	high part of IEEE 64 bit FP number
+--	R_A4	low  part of IEEE 64 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	<0 iff left < right,   0 iff left == right,   >0 iff left > right
+--
+-- Corrupts
+--	R_T1, R_FT1, R_A2, R_A3, R_A4, ST
+--
+-- Purpose
+--	Compares two IEEE floating point numbers
+--
+	CMPI	 0,		R_A1		-- check sign of 'left'
+	BnnD	 LeftP				-- if it is not negative skip next bit (delayed)
+	   LDHI	 0x7FFF,	R_T1		-- load mask of all but sign bit
+	   OR	 0xFFFF,	R_T1		-- load bottom half of mask
+	   LDI	-1,		R_FT1		-- load special inversion mask
+	XOR	 R_T1,		R_A1		-- invert all but sign bit
+	NOT	 R_A2				-- invert bottom word
+LeftP:
+	CMPI	 0,		R_A3		-- check sign of 'right'
+	LDInn	 0,		R_T1		-- destroy first inversion mask
+	LDInn	 0,		R_FT1		-- destroy second inversion mask
+	XOR	 R_T1,		R_A3		-- (maybe) invert all but sign bit
+	BuD	 R_LR				-- return (dealyed)
+	   XOR	 R_FT1,		R_A4		-- (maybe) invert bottom word
+	   SUBI	 R_A4,		R_A2		-- subtract bottom words
+	   SUBB	 R_A3,		R_A1		-- subtract high words
+--
+-- end of FCMPD
+--
+
+--}}}
+--{{{ unsigned long FDTOU( IEEE64 val )
+
+.FDTOU:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number
+--	R_A2	low  part of IEEE 64 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	unsigned 32 bit approximation of argument
+--
+-- Corrupts
+--	R_T1, R_FT1, ST	(NB/ must not corrupt R_FT2, R_A3, R_ADDR1, see FDTOI)
+--
+-- Purpose
+--	Converts an IEEE 64 bit FP number into an unsigned long
+--
+	LSH3	 -20,		R_A1,	R_T1	-- get exponent into temporary register
+	CMPI	  0x800,	R_T1		-- test sign bit of number
+	BhsD	  R_LR				-- if number is negative then return (delayed)
+	   LDIhs  0,		R_A1result	-- if number is negative then result is 0
+	   SUBI   0x3FF,	R_T1		-- subtract excess from exponent
+	   LDIn   0,		R_A1result	-- for powers of two less than 1, truncate to zero
+	Bn	  R_LR				-- and return
+	CMPI	  32,		R_T1		-- check for powers of two > 2^32
+	LDInc	 -1,		R_T1		-- if so load largest possible value
+	Bnc	  R_LR				-- and return
+	LSH	  12,		R_A1		-- remove expoent
+	LSH	 -12,		R_A1		-- restore mantissa to its normal position
+	LDHI	  0x10,		R_FT1		-- load bit
+	OR	  R_FT1,	R_A1		-- set assumed bit before binary point
+	SUBI	  20,		R_T1		-- Compute number of shifts required to align
+	LSH	  R_T1,		R_A1		-- mantissa correctly
+	BuD	  R_LR				-- return (delayed)
+	   SUBI   32,		R_T1		-- Similarly compure the number of shifts required
+	   LSH	  R_T1,		R_A2		-- to align the bottom part of the mantissa
+	   OR	  R_A2,		R_A1		-- join the two parts together
+--
+-- end of FDTOU
+--
+
+--}}}
+--{{{ signed long FDTOI( IEEE64 val )
+
+.FDTOI:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number
+--	R_A2	low  part of IEEE 64 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	signed 32 bit approximation of argument
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, R_A3, R_ADDR1, ST
+--
+-- Purpose
+--	Converts an IEEE 64 bit FP number into an signed long
+--       For IEEE values which cannot be represented in the 32-bit signed range,
+--       the values are clamped.  Thus, numbers greater than 2**31-1 are returned
+--       as 2**31-1, and numbers less than -(2**31) are retured as -(2**31).
+--
+	LDI	   R_LR,	R_ADDR1		-- save out return address
+	LAJ	  .FDTOU			-- convert to unsigned long
+	   LDI	   R_A1,	R_A3		-- save sign of input XXX - relies on FTODU not using R_A3
+	   LDHI    0x8000,	R_FT2		-- load sign bit mask XXX - relies on FDTOU not using R_FT2
+	   ANDN    R_FT2,	R_A1		-- remove sign bit
+        CMPI	   0,		R_A3		-- check sign of argument.
+	Bnn	   Positive			-- check for positive arguments.
+	BuD	   R_ADDR1			-- return (delayed)
+	    NEGI   R_A1				-- negate result
+	    LDIgt  0,		R_A1		-- input less than most -ve integer, so return most -ve integer
+	    OR	   R_FT2,	R_A1		-- ensure that sign bit is set
+Positive:
+	BuD	   R_ADDR1			-- return (delayed)
+	    CMPI   0,		R_A1		-- check to see if sign overflow occured
+	    LDIlt -1,		R_A1		-- if -ve then return most +ve integer
+	    ANDN   R_FT2,	R_A1		-- ensure sign bit is not set
+--
+-- end of FDTOI
+--
+
+--}}}
+--{{{ IEEE64 _FUTOD( unsigned long int val )
+
+._FUTOD:
+--
+-- Upon Entry:
+--	R_A1	number to convert
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	high part of IEEE64 FP number
+--	R_A2	low  part of IEEE64 FP number
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, ST  (must not corrupt R_TMP1, see FITOD)
+--
+-- Purpose
+--	Converts an unsigned 32 bit number into a IEEE 64 bit
+--	floating point number
+--
+--	Does NOT conform to Helios C calling conventions
+--
+	LDI	 R_A1,		R_A2		-- copy number into low part
+_FUTOD1:
+	Bz	 R_LR				-- Return with 0.0 if value is zero.
+	FLOAT	 R_A1,		R_T1		-- Get exponent into R_T1
+_FUTOD2:
+	STF	 R_T1,		*\-\-AR6(1)	-- save on stack as a float
+	LDI	*AR6++(1),	R_T1		-- pull back off stack as an int
+	LSH	-24,		R_T1		-- get exponent
+--  Compute excess-1022 exponent for IEEE real into R_FT1.  This is "one" less
+--  than the true IEEE exponent as the assumed-one-bit is added in later to
+--  counter this.
+        LDI 	 R_T1,		R_FT2		-- copy exponent
+        SUBRI    52,		R_T1		-- compute number of bits to move to get value normalized.
+        CMPI     32,		R_T1		-- if more than 32 bit positions, do a quick 32-bit shift.
+        BloD	 SmallShift			-- if shift is < 32 we can optimise differently
+	   LDI	 R_FT2,		R_FT1		-- copy exponent
+	   ADDI	 0x3fE,		R_FT1		-- add in excess
+           LSH   20,		R_FT1		-- move exponent into correct bit position for IEEE format.
+	LDI	 R_A2,		R_A1		-- swap low and
+        LDI      0,		R_A2		-- high parts
+	BuD	 R_LR				-- return (delayed)
+           SUBI  32,		R_T1		-- decrement shift count
+	   LSH	 R_T1,		R_A1      	-- shift high 32 bits left by r2 bits
+	   ADDI	 R_FT1,		R_A1      	-- add in the IEEE exponent
+SmallShift:
+	LSH	 R_T1,		R_A1		-- shift high 32 bits left by R_T1
+	SUBI3	 32,		R_T1,	R_FT2	-- isolate most significant R_T1 bits of
+	LSH3	 R_FT2,		R_A2,	R_FT2	-- R_A2 into low bits of R_FT2.
+	BuD	 R_LR				-- return (delayed)
+	   OR	 R_FT2,		R_A1		-- or-in to the residual
+	   LSH	 R_T1,		R_A2      	-- shift out high R_T1 bits of low order 32 bits
+	   ADDI	 R_FT1,		R_A1      	-- add in the IEEE exponent
+--
+-- end of _FUTOD
+--
+
+--}}}
+--{{{ IEEE64 _FITOD( signed long int val )
+
+._FITOD:
+--
+-- Upon Entry:
+--	R_A1	number to convert
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	high part of IEEE64 FP number
+--	R_A2	low  part of IEEE64 FP number
+--
+-- Corrupts
+--	R_TMP1, R_T1, R_FT1, R_FT2, ST
+--
+-- Purpose
+--	Converts an signed 32 bit number into a IEEE 64 bit
+--	floating point number
+--
+--	Does NOT conform to Helios C calling conventions
+--
+--	BEWARE of interaction with FUTOD
+--
+	LDI	  R_A1,		R_A2		-- copy argument
+	Bge	  _FUTOD1			-- if it is 0 or +ve, skip into unsigned convert routine
+	LDI	  R_LR,		R_TMP1		-- save return address
+	LAJ	  _FUTOD2			-- convert anyway
+	   NEGI   R_A1				-- Negative argument: use (float)x = -(float)(-x).
+	   LDI	  R_A1,		R_A2		-- copy argument
+	   FLOAT  R_A1,		R_T1		-- and convert to FP
+	BuD	  R_TMP1			-- return (delayed)
+	   LDHI   0x8000,	R_T1		-- mask of sign bit
+	   XOR	  R_T1,	R_A1			-- invert sign bit
+	   NOP					-- padding
+--
+-- end of _FITOD
+--
+
+--}}}
+--{{{ IEEE64 _FSUBD( IEEE64 a, IEEE64 b )
+
+._FSUBD:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number (a)
+--	R_A2	low  part of IEEE 64 bit FP number (a)
+--	R_A3	high part of IEEE 64 bit FP number (b)
+--	R_A4	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	(a - b) (high part)
+--	R_A2	(a - b) (low  part)
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, R_TMP1, R_TMP2, R_TMP3, ST
+--
+-- Purpose
+--	Calculates the difference between two IEEE 64 reals
+--
+--	Does NOT conform to Helios C calling conventions
+--
+	CMPI	0,	R_A3		-- are we are subtracting zero ?
+	Beq	R_LR			-- if so then return
+	LDHI	0x8000,	R_T1		-- load mask of sign bit
+	XOR	R_T1,	R_A3		-- invert sign bit of subtrahend
+	--
+	-- XXX - BEWARE - drop through into _FADD code
+	--
+--
+-- end of _FSUBD 	(NB/ drops through into _FADD)
+--
+--
+
+--}}}
+--{{{ IEEE64 _FADDD( IEEE64 a, IEEE64 b )
+
+._FADDD:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number (a)
+--	R_A2	low  part of IEEE 64 bit FP number (a)
+--	R_A3	high part of IEEE 64 bit FP number (b)
+--	R_A4	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	a + b (high part)
+--	R_A2	a + b (low part)
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, R_TMP1, R_TMP2, R_TMP3, ST
+--
+-- Purpose
+--	Computes the sum of two IEEE 64 bit reals
+--
+--	Does NOT conform to Helios C calling conventions
+--
+--  Typical: 97 cycles
+--
+	ADDI	 R_A2,		R_A2		-- rotate left 'a' by one 
+	ADDC	 R_A1,		R_A1		-- moving mantissa sign into R_A2{0}.
+	ADDC	 0,		R_A2		--
+	ADDI	 R_A4,		R_A4		-- rotate left 'b' by one 
+	ADDC	 R_A3,		R_A3		-- moving mantissa sign into R_A4{0}.
+	ADDC	 0,		R_A4		--
+	SUBI3	 R_A4,		R_A2,	R_T1	-- compare the two values
+	SUBB3	 R_A3,		R_A1,	R_T1	-- (This is a 64 bit comparison)
+	Bnc	 NoSwap				-- if a > b then skip next bit
+	LDI	 R_A2,		R_T1		-- swap low parts
+	LDI	 R_A4,		R_A2		-- of 'a' and 'b'
+	LDI	 R_T1,		R_A4		--
+	LDI	 R_A1,		R_T1		-- swap high parts
+	LDI	 R_A3,		R_A1		-- of 'a' and 'b'
+	LDI	 R_T1,		R_A3		--
+
+NoSwap:
+	LSH3	-16,		R_A3,	R_T1	-- move smaller exponent into R_T1
+	AND	 0xFFE0,	R_T1		-- mask out all but exponent
+	Bz	 ReturnOther			-- return larger argument if smaller argument is zero
+	XOR3	 R_A2,		R_A4,	R_TMP3	-- match the low parts of the values
+	AND	 1,		R_TMP3		-- only interested in sign bits
+	LSH	 1,		R_TMP3		-- move into bit position 2
+	ANDN	 1,		R_A4		-- remove sign bit from mantissa of smaller value
+	LSH	-1,		R_A2		-- remove sign bit from mantissa of larger  value
+	RORC	 R_TMP3				-- put sign bit in R_TMP3{31}, ('signs differ' is now R_TMP3{0})
+	LSH	 1,		R_A2		-- restore mantissa of larger value
+	LSH3	-16,		R_A1,	R_FT2	-- move larger exponent into R_FT2
+	AND	 0xFFE0,	R_FT2		-- only interested in the exponent
+	LHU1	 R_A1,		R_TMP1	        -- get exponent of larger value
+	AND	 0x1F,		R_TMP1		-- mask out exponent bits
+	OR	 0x20,		R_TMP1		-- set assumed binary bit
+	MH1	 R_TMP1,	R_A1		-- restore correct mantissa
+	LHU1	 R_A3,		R_TMP1	        -- get exponent of smaller value
+	AND	 0x1F,		R_TMP1		-- mask out exponent bits
+	OR	 0x20,		R_TMP1		-- set assumed binary bit
+	MH1	 R_TMP1,	R_A3		-- restore corrected mantissa
+	LSH3	-1,		R_FT2,	R_TMP2	-- save exponent of larger value
+	SUBI	 R_T1,		R_FT2		-- compute diff of exponents, (= no. shifts to align mantissas)
+        Bz       Aligned			-- a zero shift means they are aligned already
+	LSH	-5,		R_FT2		-- move shift count into low bits of R_FT2
+	CMPI	 53,		R_FT2		-- see if the smaller number will make any difference to the sum
+        Bnc      FADD_Normalised		-- if > 53 shifts are needed, all significant bits will be lost
+        CMPI     32,		R_FT2		-- check for quick right shift by 32 bits.
+        Bc       ResidualShifts			-- but skip if not possible
+	LDI	 R_A3,		R_A4	        -- move high part to low part
+	LDI	 0,		R_A3		-- load high part with zero		
+	SUBI	 32,		R_FT2		-- adjust shift count
+        Bz	 Aligned			-- A zero shift count means that the mantissas are now aligned
+
+ResidualShifts:
+	LHU0	 R_A3,		R_T1		-- save bottom 16 bits of high part
+	NEGI	 R_FT2				-- change direction of shift
+	LSH	 R_FT2,		R_A3		-- move high part down
+	LSH	 R_FT2,		R_A4		-- move low part down
+	ADDI	 32,		R_FT2		-- swap shift magnitude
+	LSH	 R_FT2,		R_T1		-- adjust saved high part
+	OR	 R_T1,		R_A4		-- and merge into low part
+
+Aligned:
+	TSTB	 1,		R_TMP3		-- do we need a 'difference' or a 'sum' ?
+        Bnz      Difference			-- we need a difference
+	ADDI	 R_A4,		R_A2		-- sum the low parts of the mantissas
+	ADDC	 R_A3,		R_A1		-- sum the high parts
+	LDHI	 0x40,		R_TMP1		-- load mask of 54th bit
+	TSTB	 R_TMP1,	R_A1		-- test for overflow into 54th bit
+	Bz	 FADD_Round			-- no overflow
+	LSH	-1,		R_A1		-- adjust high part of mantissa
+	RORC	 R_A2				-- propogate adjustment into low part
+	ADDI	 0x10,		R_TMP2		-- increment exponent
+	CMPI	 0x7FFF,	R_TMP2		-- check exponent
+	Bhi	 IEEEOverflow			-- has it overflowed ?
+
+FADD_Round:
+	ADDI	 1,		R_A2		-- round the sum
+	ADDC	 0,		R_A1		-- propogate adjustment into high part of mantissa
+	TSTB	 R_TMP1,	R_A1		-- check for overflow again
+	Bz	 FADD_Normalised		-- still OK ?
+        LSH	-1,		R_A1	  	-- adjust high part of mantissa
+        RORC	 R_A2				-- propogate adjustment to low part
+        ADDI	 0x10,		R_TMP2		-- increment exponent
+
+FADD_Normalised:
+        LSH	-1,		R_A1		-- remove the least significant (guard) bit
+        RORC	 R_A2				-- propogate removal
+        LHU1     R_A1,		R_TMP1		-- get top section of high part of mantissa
+        AND      0x0f,		R_TMP1		-- remove the assumed binary bit
+        ADDI     R_TMP2,	R_TMP1		-- add in exponent
+	BuD	 R_LR				-- return (delayed)
+	   MH1   R_TMP1,	R_A1		-- restore the exponent back into the mantissa
+           ANDN  1,		R_TMP3          -- kill 'signs differ' flag
+           OR    R_TMP3,	R_A1           	-- insert sign bit
+
+Difference:
+        SUBI     R_A4,		R_A2		-- compute the difference of the mantissas
+        SUBB     R_A3,		R_A1		-- include the high parts aswell
+	Beq	 CheckLSW			-- catch result of zero
+        FLOAT    R_A1,		R_FT1		--  Compute the bit position of the MSB in the MSW.
+        STF	 R_FT1,	   *\-\-R_USP(1)	-- save on stack as a float
+	BuD      GotCount 		
+           LDI	*R_USP++(1),	R_FT1		-- pull off stack as an integer
+           LSH  -24,		R_FT1		-- get top nibble
+           ADDI  32,		R_FT1		-- this is in the MSW, so add extra 32 bits to account for LSW.
+
+CheckLSW:					--  Compute the bit position of the MSB in the LSW.
+
+--  Check for bit 31 being set.  We must do this as FLOAT uses two's
+--  complement arithmetic, so we load a shift count of 32 if it is set.
+
+        CMPI	 0,		R_A2		-- check for a zero result (cannot be normalized)
+	Bz	 R_LR				-- and return if result is zero
+        LDIn     32,		R_FT1		-- if bit 31 is set load a shift count of 32
+        Bn       GotCount			-- and skip next bit
+        FLOAT    R_A2,		R_FT1		-- otherwise convert to FP
+        STF	 R_FT1,	   *\-\-R_USP(1)	-- save on stack as FP
+        LDI	*R_USP++(1),	R_FT1		-- pull off stack as int
+        LSH     -24,		R_FT1		-- top nibble is shift count
+GotCount:
+        SUBRI    53,		R_FT1		-- compute number of bits to move to get value normalized.
+        LSH3     4,		R_FT1,	R_TMP1	-- modify exponent according to number of positions shifted.
+        SUBI     R_TMP1,	R_TMP2		--
+	BleD	 R_LR				-- check for zero or underflow
+           LDIle 0,		R_A1		-- return 0 if underflow has occured 
+           LDIle 0,		R_A2		-- 
+           CMPI  32,		R_FT1		-- if more than 32 bit positions
+        Blo      SmallShift1			-- do a quick 32-bit shift
+        LDI      R_A2,		R_A1		-- otherwise load low part of mantissa into high part
+        LDI      0,		R_A2		-- load low part with zero
+        SUBI     32,		R_FT1		-- and adjust shift count
+
+SmallShift1:
+        LSH      R_FT1,		R_A1      	-- shift high part of mantissa left by R_FT1 bits
+        SUBI3    32,		R_FT1,	R_TMP1 	-- isolate most significant R_FT1 bits ... 
+	BuD      FADD_Round			-- branch to rounding code (delayed)
+           LSH3	 R_TMP1,	R_A2,	R_TMP1 	-- ... of low part of mantissa into low bits of R_TMP1.
+           OR    R_TMP1,	R_A1      	-- and OR into the high part of the mantissa
+           LSH   R_FT1,		R_A2      	-- shift out high R_FT1 bits of low part of mantissa
+ReturnOther:
+	BuD	 R_LR				-- return (delayed)
+           LSH3 -1,		R_A2,	R_A4	-- extract sign bit from end of mantissa
+           RORC  R_A1				-- put sign bit onto head of exponent
+           RORC  R_A2				-- restore mantissa
+--
+-- end of _FADDD
+--
+
+--}}}
+--{{{ IEEE64 _FMULD( IEEE64 a, IEEE64 b )
+
+._FMULD:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number (a)
+--	R_A2	low  part of IEEE 64 bit FP number (a)
+--	R_A3	high part of IEEE 64 bit FP number (b)
+--	R_A4	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	(a * b) (high part)
+--	R_A2	(a * b) (low  part)
+--
+-- Corrupts
+--	R_TMP1, R_TMP2, R_TMP3, R_FT1, R_FT2, R_T1, R_ATMP, R_ST
+--
+-- Purpose
+--	Calculates the product of two IEEE 64 reals
+--
+--	Does NOT conform to Helios C calling conventions
+--
+--  Typical: 63 cycles.
+--
+	XOR3	 R_A1,  	R_A3,	R_TMP1	--  Set 'signs differ' flag in R_TMP1{31}.
+	LSH	-31,		R_TMP1		-- fill rest of word with 0
+	LSH	 31,		R_TMP1		-- restore flag to correct place
+	LSH3	-20,		R_A1,	R_T1	-- remove mantissa from LHS exponent
+	AND	 0x7FF,		R_T1		-- mask out unwanted bits
+	BzD	 R_LR				-- if mantissa is zero then return
+	   LDIz	 0,		R_A1		-- return 0 (high)
+	   LDIz	 0,		R_A2		-- return 0 (low)
+	   LSH3	-20,		R_A3,	R_FT1	-- remove mantissa from RHS exponent
+	AND	 0x7FF,		R_FT1		-- mask out unwanted bits
+	BzD	 R_LR				-- if the RHS is zero, return
+	   LDIz	 0,		R_A1		-- return 0 (high)
+	   LDIz	 0,		R_A2		-- return 0 (low)
+	   ADDI	 R_T1,		R_FT1		-- calculate resultant exponent
+	SUBI	 0x3ff,		R_FT1		-- and normalize it
+	BlsD	 R_LR				-- if the number is too small, return 
+	   LDIls 0,		R_A1		-- return 0 (high)
+	   LDIls 0,		R_A2		-- return 0 (low)
+	   NOP					-- padding
+	Bn	 IEEEOverflow			-- and if it is too big then overflow
+	LSH	 12,		R_A1		-- eliminate LHS exponent
+	OR	 1,		R_ST		-- set carry
+	RORC	 R_A1				-- set assumed bit in mantissa
+	LSH	-3,		R_A1		-- align to just above bottom byte
+	LWR3	 R_A2,		R_A1		-- merge top byte of low part into bottom byte of high part
+	LSH	 8,		R_A2		-- lose top byte of low part of mantissa
+	LSH	 12,		R_A3		-- eliminate RHS exponent
+	OR	 1,		R_ST		-- set carry
+	RORC	 R_A3				-- set assumed bit in mantissa
+	LSH	-3,		R_A3		-- align to just above bottom byte
+	LWR3	 R_A4,		R_A3		-- merge top byte of low part into bottom byte of high part
+	LSH	 8,		R_A4		-- lose top byte of low part of mantissa
+	MPYUHI3	 R_A3,		R_A2,	R_ATMP	-- mply high part of 'b' & low  part of 'a' and save high result
+	MPYUHI3	 R_A1,		R_A4,	R_FT2	-- mply high part of 'a' & low  part of 'b' and save high result
+	MPYUHI3	 R_A3,		R_A1,	R_TMP3	-- mply high part of 'b' & high part of 'a' and save high result
+	MPYI	 R_A3,		R_A1		-- as above, but record low part of result
+	ADDI	 R_ATMP,	R_FT2		-- sum low parts partial products
+	ADDC	 0,		R_TMP3		-- propogate carry into high parts partial product
+	ADDI	 R_A1,		R_FT2		-- sum results
+	ADDC	 0,		R_TMP3		-- propogate again
+	ADDI3	 1,		R_FT2,	R_A2	-- round low part of result, and move to correct register
+	ADDC3	 0,		R_TMP3,	R_A1	-- propogate carry to high part, and move to correct register
+	LBU3	 R_A1,		R_FT2		-- get high byte of result
+	TSTB	 2,		R_FT2		-- has carry propogated into higher order bit of result ?
+	Bz	 NoCarry			-- if not then skip next bit
+	ADDI	 1,		R_FT1		-- increment exponent
+	LSH	-1,		R_A1		-- decrement mantissa
+	RORC	 R_A2				-- carry decrement through to low part
+
+NoCarry:
+	LSH	-4,		R_A2		-- get ready to receive four bits from high part of mantissa
+	LSH	 32 - 4,	R_A1,	R_TMP2	-- get bottom of high part of mantissa into temporary
+	OR	 R_TMP2,	R_A2		-- merge into low part of mantissa
+	LSH	-4,		R_A1		-- move high part of mantissa into correct position
+	LHU1	 R_A1,		R_TMP2		-- get high half-word of mantissa
+	TSTB	 0x10,		R_TMP2		-- has the assumed bit been set ?
+	Bnz	 FMULD_Normalised		-- yup then skip next bit
+	LSH	 1,		R_A2		-- move mantissa up by one
+	ROLC	 R_A1				-- propogate into high part of mantissa
+	SUBI	 1,		R_FT1		-- correct exponent
+	BlsD	 R_LR				-- if exponent has underflowed then return
+	   LDIls 0,		R_A1		-- return 0 (high)
+	   LDIls 0,		R_A2		-- return 0 (low)
+FMULD_Normalised:
+	   CMPI	 0x7FF,		R_FT1		-- check exponent
+	Bhi	 IEEEOverflow			-- has it overflow ?
+	LSH      12,		R_A1		-- remove implied bit of fraction
+	LSH	 -12,		R_A1		-- move fraction back into place
+	BuD	 R_LR				-- return (delayed)
+	   LSH	 20,		R_FT1		-- move exponent into position
+	   OR	 R_FT1,		R_A1		-- merge into mantissa
+	   OR	 R_TMP1,	R_A1		-- restore sign bit
+--
+-- end of _FMULD
+--
+
+--}}}
+--{{{ IEEE64 _FDIVD( IEEE64 a, IEEE64 b )
+
+._FDIVD:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number (a)
+--	R_A2	low  part of IEEE 64 bit FP number (a)
+--	R_A3	high part of IEEE 64 bit FP number (b)
+--	R_A4	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	(a / b) (high part)
+--	R_A2	(a / b) (low  part)
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, R_ADDR1, R_ADDR2, R_ADDR3, R_ATMP, R_TMP1, R_TMP2, R_TMP3, ST
+--
+-- Purpose
+--	Calculates the quotient of two IEEE 64 reals
+--
+--	Does NOT conform to Helios C calling conventions
+--
+--  Typical: 425 cycles.
+--
+	LSH3	-16,		R_A3,	R_FT1	-- get top half of high part in temporary reg
+	AND	 0x7FF0,	R_FT1		-- mask out all but the exponent
+	Bz	 DivideByZero			-- catch division by 0
+	LSH3	-16,		R_A1,	R_ADDR2	-- get top half of high part into a temp reg
+	AND	 0x7FF0,	R_ADDR2		-- mask out all but the exponent
+	Bz	 R_LR				-- (0/x) == 0, so return
+	SUBI	 R_FT1,		R_ADDR2		-- compute resultant exponent
+	ADDI	 0x3FF0,	R_ADDR2		-- normalize exponent
+	CMPI	 0x7FFF,	R_ADDR2		-- check for an oversize exponent
+	Bhi	 IEEEOverflow			-- and so handle overflow
+	XOR3	 R_A1,		R_A3,	R_ATMP	-- examine the top parts of the mantissas
+	LSH	-31,		R_ATMP		-- remove all but the "signs differ" bit
+	LDHI	 0x0F,		R_FT1		-- load mask of significant bits in top quarter of mantissa
+	OR	 0xFFFF,	R_FT1		-- augment msk with rest of bits in top word
+	AND	 R_FT1,		R_A1		-- mask out exponent and sign from mantissa
+	AND	 R_FT1,		R_A3		-- mask out exponent and sign from mantossa
+	ADDI	 1,		R_FT1		-- adjust mask to be assumed bit
+	LDI	 22 - 1,	RC		-- itterate 22 times
+	RPTBD	 EndLoop1			-- start of first loop (delayed)
+	   OR	 R_FT1,		R_A1		-- set assumed bit of mantissa
+	   OR	 R_FT1,		R_A3		-- set assumed but of mantissa
+	   LDI	-1,		R_FT2		-- initialise high part of result mantissa
+	 SUBI3	 R_A4,		R_A2,	R_T1	-- perform a trial subtraction
+	 SUBB3	 R_A3,		R_A1,	R_FT1	-- including top parts of mantissas
+	 LDInc	 R_T1,		R_A2		-- if the subtraction was OK then do it for real
+	 LDInc	 R_FT1,		R_A1		-- remembering high part aswell
+	 ADDC	 R_FT2,		R_FT2		-- adjust result mantissa
+	 ADDI	 R_A2,		R_A2		-- shift dividend left one bit
+EndLoop1:
+	 ADDC	 R_A1,		R_A1		-- propogate shift to high part of mantissa
+	LDI	 32 - 1,	RC		-- do the division for the low 32 bits
+	NOT	 R_FT2				-- invert divide result
+	RPTBD	 EndLoop2			-- start of second loop (delayed)
+	   LSH	 31,		R_ATMP		-- restore sign to correct position
+	   LHU1	 R_FT2,		R_ADDR3		-- get top quarter of result mantissa
+	   LDI	-1,		R_ADDR1		-- initialise low part of result mantissa
+	 SUBI	 R_A4,		R_A2,	R_T1	-- perform trial subtraction
+	 SUBB	 R_A3,		R_A1,	R_FT1	-- including top part of mantissas
+	 LDInc	 R_T1,		R_A2		-- if the subtraction is possible, then do it
+	 LDInc	 R_FT1,		R_A1		-- including top part
+	 ADDC	 R_ADDR1,	R_ADDR1		-- adjust result mantissa
+	 ADDI	 R_A2,		R_A2		-- shift dividend left one bit
+EndLoop2:
+	 ADDC	 R_A1,		R_A1		-- propogate shift into high part of mantissa
+	NOT	 R_ADDR1			-- invert divide result
+	TSTB	 0x20,		R_ADDR3		-- has the bit after the top bit of the mantissa been set ?
+	Bnz	 FDIV_Round			-- if not then skip next bit
+	SUBI	 0x10,		R_ADDR2		-- decrement exponent
+	BleD	 R_LR				-- if the new exponent has underflowed then return 0 (delayed)
+	   LDIle 0,		R_A1		-- load a 0 result (high)
+	   LDIle 0,		R_A2		-- load a 0 result (low)
+	   ADDI	 R_ADDR1,	R_ADDR1		-- normalize result mantissa
+	ADDC	 R_FT2,		R_FT2		-- top half aswell
+FDIV_Round:
+	ADDI3	 1,		R_ADDR1, R_A2	-- round quotient, placing into correct result register
+	ADDC3	 0,		R_FT2,   R_A1	-- propogate round and register transfer
+	Bnc	 FDIV_Normalised		-- catch mantissa overflow
+	RORC	 R_A1				-- renormalize mantissa
+	RORC	 R_A2				-- lower half aswell
+FDIV_Normalised:
+	LSH	-1,		R_A1		-- remove rounding bit
+	RORC	 R_A2				-- propogate shift
+	LHU1	 R_A1,		R_T1		-- get top half of high part of mantissa
+	AND	 0x0F,		R_T1		-- remove assumed bit
+	BuD	 R_LR				-- return (delayed)
+	   OR	 R_ADDR2,	R_T1		-- insert exponent
+	   MH1	 R_T1,		R_A1		-- and replace back into mantissa
+	   OR	 R_ATMP,	R_A1		-- insert the sign bit
+
+DivideByZero:
+--
+patchinstr( PATCHC40MASK24ADD, shift( -2, CODESTUB ( .raise ) ),
+	LAJ	 0 )				-- call raise()
+	   LDI	 2,		R_A1		-- 2 = SIGFPE
+	   NOP					-- padding
+	   NOP					-- padding
+--	
+-- end of _FDIVD
+--
+
+--}}}
+--{{{ IEEE64 _FSTOD( IEEE32 val )
+
+._FSTOD:
+--
+-- Upon Entry:
+--	R_A1	IEEE 32 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	IEEE64 value (high part)
+--	R_A2	IEEE64 value (low  part)
+--
+-- Corrupts
+--	R_FT1, ST
+--
+-- Purpose
+--	Converts a 32 bit IEEE number into a 64 bit IEEE number
+--
+--	Does NOT conform to Helios C calling conventions
+--
+	CMPI	 0,		R_A1		  -- is argument zero ?
+	BzD	 R_LR				  -- return if argument is zero (delayed)
+	   LDI	 0,		R_A2		  -- load low part of result with 0
+	   LSH3	-23,		R_A1,	R_FT1	  -- get sign and exponent
+	   AND	 0xFF,		R_FT1		  -- remove sign
+	ADDI	 0x3FF - 0x7F,	R_FT1		  -- IEEE 32-bit is excess 127, IEEE 64-bit is excess 1023
+	LSH	 32 - 12 + 1,	R_FT1		  -- move exponent back to correct position + 1
+	LSH	 1,		R_A1		  -- get sign bit into carry
+	RORC	 R_FT1				  -- put sign bit into exponent
+	LSH3	 32 - 4,	R_A1,	R_A2	  -- bottom 3 bits of mantissa go into low part of 64 bit value
+	BuD	 R_LR				  -- return (delayed)
+	   LSH	 8,		R_A1		  -- get rid of exponent in original value
+ 	   LSH	-12,		R_A1		  -- move mantissa back to new location
+	   OR	 R_FT1,		R_A1		  -- merge in the exponent
+--
+-- end of _FSTOD
+--
+
+--}}}
+--{{{ IEEE32 FDTOS( IEEE64 val )
+
+.FDTOS:
+--
+-- Upon Entry:
+--	R_A1	high part of IEEE 64 bit FP number
+--	R_A2	low  part of IEEE 64 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	IEE32 value
+--
+-- Corrupts
+--	R_A2, R_A3, R_A4, R_TMP1, ST
+--
+-- Purpose
+--	Converts a 64 bit IEEE number into a 32 bit IEEE number
+--
+	LSH3	-16,		R_A1,	R_A3	-- get exponent into R_A3, bits 4 - 14
+	AND	 0x7FF0,	R_A3		-- mask out all but exponent
+	SUBI	 0x3FF0 - 0x7F0,R_A3		-- convert exponent into excess 127 for IEEE 32-bit real
+	BleD	 R_LR				-- return if exponent is zero (delayed)
+	   LDIle 0,		R_A1		-- load 0 if exponent is zero (high)
+	   CMPI	 0,		R_A1		-- check sign of 64 bit value
+	   LDInn 0,		R_TMP1		-- not negative, sign => 0
+	LDIn	 1,		R_TMP1		-- negative,     sign => 1
+	CMPI	 0xFF0,		R_A3		-- is exponent too large for 32 bit format
+	Bgt	 FDTOS_Overflow			-- yup
+	LDHI	 0x1000,	R_A4		-- least significant bit of low part of mantissa
+	ADDI	 R_A4,		R_A2		-- round 32 bit result up
+	BncD	 NoAdjustment			-- check for overflow into higher order bits (delayed)	
+	   LSH	 19,		R_A3		-- shift exponent to bits 23-30 
+	   LSH	 12,		R_A1		-- remove exponent from source value
+ 	   LSH	-12,		R_A1		-- restore mantissa to correct position
+	ADDI	 1,		R_A1		-- ripple carry through into higher order bits
+	LDHI	 0x10,		R_A4		-- first of the (original) exponent bits
+	TSTB	 R_A4,		R_A1		-- has it changed ?
+	Bz	 NoAdjustment			-- nope, then we are OK
+	LSH	-1,		R_A1		-- divide mantissa by one
+	RORC	 R_A2				-- propogating divide into low part of mantissa
+	LDHI	 0x80,		R_A4		-- first of exponent bits
+	ADDI	 R_A4,		R_A3		-- increment exponent by one
+	Bn	 FDTOS_Overflow			-- and branch if the sign bit has been (accidently) set
+
+NoAdjustment:
+	LSH3	 3 - 32,	R_A2,	R_A4	-- move low part of mantiass to correct position
+	LSH	 3,		R_A1		-- move high part of mantissa up 3 bits
+	OR	 R_A4,		R_A1		-- merge low part of mantissa into result
+	BuD	 R_LR				-- return (delayed)
+	   OR	 R_A3,		R_A1		-- merge exponent and mantissa
+	   ROR	 R_TMP1				-- get sign bit into bit 31
+	   OR	 R_TMP1,	R_A1		-- merge sign bit.
+
+FDTOS_Overflow:
+	BuD	 R_LR				-- return (delayed)
+	   LDI	-1,		R_A1		-- load most negative number
+	   SUBI	 1,		R_TMP1		-- positive should shift right, negative does nothing
+	   LSH	 R_TMP1,	R_A1		-- do the shift
+--
+-- end of FDTOS
+--
+
+--}}}
+--{{{ IEEE64 FNEGD( IEEE64 val )
+
+.FNEGD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	high part of IEEE 64 bit FP number
+--	R_A3	low  part of IEEE 64 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--	Area pointed to by R_A1 will have had the result place into it
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, R_T1, ST
+--
+-- Purpose
+--	Negates its argument
+--
+--	Does conform to the Helios C calling conventions
+--
+	LDI	 R_LR,	   R_ADDR1		-- save return address
+	LAJ	._FNEGD				-- perform the invert
+	   LSH3	-2,	   R_A1,   R_ATMP	-- convert byte offset to word offset
+	   LDI	 R_A2,	   R_A1			-- move argument to correct register
+	   LDI	 R_A3,	   R_A2			-- ditto
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ATMP(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ATMP(1)		-- save low  part of result
+	   NOP					-- padding
+--
+-- end of FNEGD
+--
+
+--}}}
+--{{{ IEEE64 FUTOD( unsigned long int val )
+
+.FUTOD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte) offset to space where result should be placed
+--	R_A2	number to convert
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_ADDR1, R_ATMP, R_T1, R_FT1, R_FT2, ST  (must not corrupt R_TMP1, see FITOD)
+--
+-- Purpose
+--	Converts an unsigned 32 bit number into a IEEE 64 bit
+--	floating point number
+--
+--	Does conform to Helios C calling conventions
+--
+	LDI	 R_LR,	   R_ADDR1		-- save return address
+	LAJ	._FUTOD				-- perform the convertion
+	   LSH3	-2,	   R_A1,   R_ATMP	-- convert byte offset to word offset
+	   LDI	 R_A2,	   R_A1			-- move argument to correct register
+	   NOP					-- padding
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ATMP(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ATMP(1)		-- save low  part of result
+	   NOP					-- padding
+--
+-- end of FUTOD
+--
+
+--}}}
+--{{{ IEEE64 FITOD( signed long int val )
+
+.FITOD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	number to convert
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_ADDR1, R_ATMP, R_TMP1, R_T1, R_FT1, R_FT2, ST
+--
+-- Purpose
+--	Converts an signed 32 bit number into a IEEE 64 bit
+--	floating point number
+--
+--	Does conform to Helios C calling conventions
+--
+--	BEWARE of interaction with FUTOD
+--
+	LDI	 R_LR,	   R_ADDR1		-- save return address
+	LAJ	._FITOD				-- perform the convertion
+	   LSH3	-2,	   R_A1,   R_ATMP	-- convert byte offset to word offset
+	   LDI	 R_A2,	   R_A1			-- move argument to correct register
+	   NOP					-- padding
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ATMP(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ATMP(1)		-- save low  part of result
+	   NOP	 				-- padding
+--
+-- end of FITOD
+--
+
+--}}}
+--{{{ IEEE64 FSUBD( IEEE64 a, IEEE64 b )
+
+.FSUBD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	high part of IEEE 64 bit FP number (a)
+--	R_A3	low  part of IEEE 64 bit FP number (a)
+--	R_A4	high part of IEEE 64 bit FP number (b)
+--     *R_USP	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_ADDR1, R_ATMP, R_T1, R_FT1, R_FT2, R_TMP1, R_TMP2, R_TMP3, ST
+--
+-- Purpose
+--	Calculates the difference between two IEEE 64 reals
+--
+--	Does conform to Helios C calling conventions
+--
+	LDI	 R_LR,	   R_ADDR1		-- save return address
+	LSH3	-2,	   R_A1,   R_ATMP	-- convert byte offset to word offset
+	LDI	 R_A2,	   R_A1			-- move argument to correct register
+	LAJ	._FSUBD				-- perform the subtraction
+	   LDI	 R_A3,	   R_A2			-- move next argument
+	   LDI	 R_A4,	   R_A3			-- ditto
+	   LDI	*R_USP,    R_A4			-- ditto
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ATMP(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ATMP(1)		-- save low  part of result
+	   NOP					-- padding
+--
+-- end of FSUBD
+--
+
+--}}}
+--{{{ IEEE64 FADDD( IEEE64 a, IEEE64 b )
+
+.FADDD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	high part of IEEE 64 bit FP number (a)
+--	R_A3	low  part of IEEE 64 bit FP number (a)
+--	R_A4	high part of IEEE 64 bit FP number (b)
+--     *R_USP	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, R_T1, R_FT1, R_FT2, R_TMP1, R_TMP2, R_TMP3, ST
+--
+-- Purpose
+--	Computes the sum of two IEEE 64 bit reals
+--
+--	Does conform to Helios C calling conventions
+--
+	LDI	 R_LR,	   R_ADDR1		-- save return address
+	LSH3	-2,	   R_A1,   R_ATMP	-- convert byte offset to word offset
+	LDI	 R_A2,	   R_A1			-- move argument to correct register
+	LAJ	._FADDD				-- perform the addition
+	   LDI	 R_A3,	   R_A2			-- move next argument
+	   LDI	 R_A4,	   R_A3			-- ditto
+	   LDI	*R_USP,	   R_A4			-- ditto
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ATMP(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ATMP(1)		-- save low  part of result
+	   NOP					-- padding
+--
+-- end of FADDD
+--
+
+--}}}
+--{{{ IEEE64 FMULD( IEEE64 a, IEEE64 b )
+
+.FMULD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	high part of IEEE 64 bit FP number (a)
+--	R_A3	low  part of IEEE 64 bit FP number (a)
+--	R_A4	high part of IEEE 64 bit FP number (b)
+--     *R_USP	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_ADDR1, R_ADDR2, R_TMP1, R_TMP2, R_TMP3, R_FT1, R_FT2, R_T1, R_ATMP, R_ST
+--
+-- Purpose
+--	Calculates the product of two IEEE 64 reals
+--
+--	Does conform to Helios C calling conventions
+--
+	LDI	 R_LR,	   R_ADDR1		-- save return address
+	LSH3	-2,	   R_A1,   R_ADDR2	-- convert byte offset to word offset
+	LDI	 R_A2,	   R_A1			-- move argument to correct register
+	LAJ	._FMULD				-- perform the multiplication
+	   LDI	 R_A3,	   R_A2			-- move next argument
+	   LDI	 R_A4,	   R_A3			-- ditto
+	   LDI	*R_USP,	   R_A4			-- ditto
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ADDR2(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ADDR2(1)		-- save low  part of result
+	   NOP					-- padding
+--
+-- end of FMULD
+--
+
+--}}}
+--{{{ IEEE64 FDIVD( IEEE64 a, IEEE64 b )
+
+.FDIVD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	high part of IEEE 64 bit FP number (a)
+--	R_A3	low  part of IEEE 64 bit FP number (a)
+--	R_A4	high part of IEEE 64 bit FP number (b)
+--     *R_USP	low  part of IEEE 64 bit FP number (b)
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, R_ADDR1, R_ADDR2, R_ADDR3, R_ATMP, R_TMP1, R_TMP2, R_TMP3, ST
+--
+-- Purpose
+--	Calculates the quotient of two IEEE 64 reals
+--
+--	Does conform to Helios C calling conventions
+--
+	STI	  R_A1,	   *\-\-R_USP(1)		-- save pointer on stack
+	STI	  R_LR,	   *\-\-R_USP(1)		-- save return address on stack
+	LDI	  R_A2,		R_A1			-- move argument to correct register
+	LAJ	  ._FDIVD				-- perform the multiplication
+	   LDI	  R_A3,		R_A2			-- move next argument
+	   LDI	  R_A4,		R_A3			-- ditto
+	   LDI	*+R_USP(2),	R_A4			-- ditto
+	LDI	 *R_USP++(1),   R_LR			-- recover return address
+	LSH3	 -2,	      *+R_USP(0),   R_ATMP	-- convert byte offset into word offset
+	BuD	  R_LR					-- return (delayed)
+	   STI	  R_A1,	     *++R_ATMP(R_BASE)		-- save high part of result
+	   STI	  R_A2,	      *+R_ATMP(1)		-- save low  part of result
+	   ADDI	  1,	        R_USP			-- correct stack
+--
+-- end of FDIVD
+--
+
+--}}}
+--{{{ IEEE64 FSTOD( IEEE32 val )
+
+.FSTOD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	IEEE 32 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, R_FT1, ST
+--
+-- Purpose
+--	Converts a 32 bit IEEE number into a 64 bit IEEE number
+--
+--	Does conform to Helios C calling conventions
+--
+	LDI	 R_LR,     R_ADDR1		-- save return address
+	LAJ	 ._FSTOD			-- perform the convertion
+	   LSH3	-2,	   R_A1,  R_ATMP	-- convert byte offset to word offset
+	   LDI	 R_A2,	   R_A1			-- move argument to correct register
+	   NOP					-- padding
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ATMP(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ATMP(1)		-- save low  part of result
+	   NOP					-- padding
+--
+-- end of FSTOD
+--
+
+--}}}
+--{{{ IEEE32 FFTOS( double val )
+
+.FFTOS:
+--
+-- Upon Entry:
+--	R_A1	TI format FP number (high part)
+--	R_A2	TI format FP number (low part)
+--	R_LR	return address
+--
+-- Upon Exit
+--      R_A1 	32 bit IEEE value
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Converts a double precision floating point number (TI format)
+--	into a 32 bit IEEE format FP number
+--
+_test _defp 'TOIEEE_WORKS_NOW
+[
+	STI	  R_A1,	  *\-\-R_USP(1)		-- save high part on stack as an integer
+	BuD	  R_LR				-- return (delayed)
+	   LDF	  *R_USP++(1), R_A1		-- load high part back off stack as a float
+	   LDI	  R_A2,	       R_A1		-- merge in low part
+	   TOIEEE R_A1				-- convert
+]
+[
+ 	ASH3	 -24,	        R_A1,	R_T1	-- get hold of exponent
+	CMPI	 -127,		R_T1		-- check size of exponent
+	BleD	  R_LR				-- return (delayed) if exponent is too small
+	   LDIle  0,		R_A1result	-- return 0.0 if we cannot convert
+	   LDHI	  0xFF80,	R_FT1		-- mask of exponent and sign bit
+	   CMPI	  127,		R_T1		-- check for overflow
+	BeqD	  R_LR				-- return (delayed) if exponent is too big
+	   LDIeq  R_FT1,	R_A1result	-- and return -ve infinity
+	   LDHI	  0x0080,	R_FT2		-- mask matching sign bit
+	   TSTB	  R_FT2,	R_A1		-- is the fraction negative ?
+	BeqD	  FFTOS_positive		-- nope: skip next bit (delayed)
+	   ADDI	  0x7F,		R_T1		-- adjust exponent
+	   LDI	  0,		R_FT2		-- default extra adjustment for exponent
+	   ANDN	  R_FT1,	R_A1		-- remove original exponent and sign
+	LDIeq	  1,		R_FT2		-- if fraction was zero, adjust exponent again and ...
+	LDIeq	  0,		R_A1		-- return a fraction of zero
+	ADDI	  R_FT2,	R_T1		-- adjust exponent if necessary
+	NOT	  R_A1	 			-- invert fraction bit pattern
+	ADDI	  1,		R_A1		-- add one to fraction
+	OR	  0x100,	R_T1		-- insert sign bit
+FFTOS_positive:
+	BuD	  R_LR				-- return (delayed)
+	   LSH	  23,		R_T1		-- move exponent to correct position
+	   ANDN	  R_FT1,	R_A1result	-- remove original exponent
+	   OR	  R_T1,		R_A1result	-- insert new expoent
+] -- TOIEEE not working
+
+--
+-- end of FFTOS
+--
+
+--}}}
+--{{{ IEEE64 _FFTOD( double val )
+
+._FFTOD:
+--
+-- Upon Entry:
+--	R_A1	TI format FP number (high part)
+--	R_A2	TI format FP number (low  part)
+--	R_LR	return address
+--
+-- Upon Exit
+--      R_A1 	64 bit IEEE value (high part)
+--      R_A2 	64 bit IEEE value (low  part)
+--
+-- Corrupts
+--	ST
+--	(must not corrupt R_ATMP, R_ADDR1)
+--
+-- Purpose
+--	Converts a double precision floating point number (TI format)
+--	into a 64 bit IEEE format FP number
+--
+--	Does NOT conform to Helios C calling conventions
+--
+	ASH3	-24,	R_A1,	R_T1		-- get hold of exponent, preserving sign
+	CMPI	-128,	R_T1			-- look for the special case of 0
+	BneD	 FFTOD_not_zero			-- skip second test if unnecessary
+	   LDI	 0,	R_FT2			-- default sign is +ve
+	   ADDI	 0x3FF,	R_T1			-- adjust exponent
+	   CMPI	 0,	R_A2			-- examine sign and fraction
+	LDIeq    0,	R_A1			-- returning 0.0
+	Beq	 R_LR				-- zero sign & fraction => 0.0
+FFTOD_not_zero:
+	LDHI	 0x8000,	R_FT1		-- load mask of sign bit
+	LSH	 1,	R_A2			-- extract sign bit from fraction
+	LDIc	 R_FT1,	R_FT2			-- copy sign bit mask into sign bit
+	Bnc	 FFTOD_positive			-- skip next bit if fraction is positive
+	NOT	 R_A2				-- invert fraction
+	ADDI	 2,	R_A2			-- add one to fraction
+	ADDC	 0,	R_T1			-- propgate addition into exponent
+FFTOD_positive:
+	LSH	 20,	R_T1			-- move exponent into position
+	LSH3	-12,	R_A2,	R_A1		-- move top part of fraction into position
+	LSH	 20,	R_A2			-- move bottom part of fraction into position	
+	BuD	 R_LR				-- return (delayed)
+	   OR	 R_T1,	R_A1			-- merge exponent into high part of result
+	   ANDN	 R_FT1,	R_A1			-- mask out sign bit
+	   OR	 R_FT2,	R_A1			-- merge correct sign bit
+--
+-- end of _FFTOD
+--
+
+--}}}
+--{{{ IEEE64 FSTOD( double a )
+
+.FFTOD:
+--
+-- Upon Entry:
+--      R_A1	pointer (byte offset) to location where result should be placed
+--	R_A2	TI format 40 bit FP number (high part)
+--	R_A3	TI format 40 bit FP number (low  part)
+--	R_LR	return address
+--
+-- Upon Exit
+--       	area pointed to by R_A1 will have been updated with the result
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, ST
+--
+-- Purpose
+--	Converts a 40 bit C40 FP number into a 64 bit IEEE number
+--
+--	Does conform to Helios C calling conventions
+--
+	LDI	 R_LR,     R_ADDR1		-- save return address
+	LAJ	 ._FFTOD			-- perform the convertion
+	   LSH3	-2,	   R_A1,  R_ATMP	-- convert byte offset to word offset
+	   LDI	 R_A2,	   R_A1			-- move argument to correct register
+	   LDI	 R_A3,	   R_A2			-- and again
+	BuD	 R_ADDR1			-- return (delayed)
+	   STI	 R_A1,	*++R_ATMP(R_BASE)	-- save high part of result
+	   STI	 R_A2,	 *+R_ATMP(1)		-- save low  part of result
+	   NOP					-- padding
+--
+-- end of FFTOD
+--
+
+--}}}
+--{{{ double FFTOS( IEEE32 val )
+
+.FSTOF:
+--
+-- Upon Entry:
+--	R_A1	IEEE format, 32 bit FP number
+--	R_LR	return address
+--
+-- Upon Exit
+--      R_A1 	TI format, 40 bit, double precision FP number
+--
+-- Corrupts
+--	ST
+--
+-- Purpose
+--	Converts a 32 bit IEEE format FP number into a double
+--	precision, 40 bit, TI format FP number
+--
+	BuD	   R_LR				-- return (delayed)
+	   STI	   R_A1,	*\-\-R_USP(1)	-- save number on stack
+	   FRIEEE *R_USP++(1),	     R_A1	-- pop off stack as FP number
+	   NOP					-- padding
+--
+-- end of FSTOF
+--
+
+--}}}
+--{{{ double FDTOF( IEEE64 val )
+
+.FDTOF:
+--
+-- Upon Entry:
+--	R_A1	IEEE format, 64 bit FP number (high part)
+--	R_A2	IEEE format, 64 bit FP number (low  part)
+--	R_LR	return address
+--
+-- Upon Exit
+--      R_A1 	TI format, 40 bit, extended precision FP number
+--
+-- Corrupts
+--	R_T1, R_FT1, R_FT2, ST
+--
+-- Purpose
+--	Converts a 64 bit IEEE format FP number into an extended
+--	precision, 40 bit, TI format FP number
+--
+	ASH3	 -20,	R_A1,	R_FT1		-- get hold of exponent
+	AND3	  0x08,	R_ST,	R_T1		-- save sign of fraction
+	AND	  0x7FF,	R_FT1		-- remove sign bit from exponent
+	LSH	 -20,		R_A2		-- remove redundant bits from low part of fraction
+	LSH3	  12,	R_A1,	R_FT2		-- move high part of fraction to top of word
+	OR	  R_A2,		R_FT2		-- merge in low part of fraction
+	SUBI	  0x3FF,	R_FT1		-- adjust exponent
+	CMPI	  127,		R_FT1		-- check for overflow
+	Bgt	  FDTOF_Overflow		-- and handle it if necessary
+	CMPI	 -128,		R_FT1		-- catch underflow
+	Blt	  FDTOF_Underflow2		-- and handle it if necessary
+	CMPI	  0,		R_T1		-- examine sign
+	Beq	  FDTOF_Return			-- positive numbers are OK
+	NEGI	  R_FT2,	R_FT2		-- negate fraction
+	LDIeq	  1,		R_A2		-- if result is zero then decrement exponent
+	LDIne	  0,		R_A2		-- otherwise do not decrement exponent
+	SUBI	  R_A2,		R_FT1		-- do subtraction
+FDTOF_Return:
+	LSH	  24,		R_FT1		-- move exponent to correct position
+	LSH	  20,		R_T1		-- move sign to correct position
+	LSH3	 -9,	R_FT2,	R_A1		-- move fraction to correct position in result register
+	OR	  R_T1,		R_A1		-- merge in the sign bit
+	OR	  R_FT1,	R_A1		-- merge in exponent
+	STI	  R_A1,	   *\-\-R_USP(1)	-- save on stack as an integer
+	BuD	  R_LR				-- return (delayed)
+	   LDF	 *R_USP++(1),	R_A1		-- pull off stack as a float
+	   LSH	 -1,		R_FT2		-- adjust fraction to avoid sign bit
+	   OR	  R_FT2,	R_A1		-- merge full fraction into result register
+FDTOF_Overflow:
+	LDI	  0x7F,		R_FT1		-- load largest exponent
+	CMPI	  0,		R_T1		-- check sign of result
+	BRD	  FDTOF_Return			-- load result (delayed)
+	   LDIeq -1,		R_FT2		-- load largest positive fraction
+	   LDIne  0,		R_FT2		-- load largest negative fraction
+	   LSH	 -1,		R_FT2		-- ensure that the sign bit is not set
+FDTOF_Underflow1:
+	BRD	  FDTOF_Return			-- load result (delayed)
+	   LDI	  0,		R_T1		-- return a positive result
+	   LDI	  0,		R_FT2		-- return a zero fraction
+	   LDI	  0x80,		R_FT1		-- return a zero result
+FDTOF_Underflow2:
+	CMPI	 -1023,		R_FT1		-- catch zero
+	Beq	  FDTOF_Underflow1		-- and handle it if necessary
+	CMPI	  0,		R_T1		-- check sign of result
+	LDIeq	  0x81,		R_FT1		-- load exponent of smallest positive value
+	LDIne	  0x80,		R_FT1		-- load exponent of smallest negative value
+	BRD	  FDTOF_Return			-- return result (delyaed)
+	   LDIeq  0,		R_FT2		-- load fraction of smallest positive value
+	   LDIne -1,		R_FT2		-- load fraction of smallest negative value
+	   LSH	 -1,		R_FT2		-- ensure that the sign bit is unset
+--
+-- end of FDTOF
+--
+
+--}}}
+
+--}}}
+
+--{{{ Init code
+
+	init
+	Bu	R_LR
+
+_defq 'export_func['name]
+[
+	export	.$name
+]
+
+export_func  FTSTD
+export_func _FNEGD
+export_func  FCMPD
+export_func  FDTOU
+export_func  FDTOI
+export_func _FUTOD
+export_func _FITOD
+export_func _FSUBD
+export_func _FADDD
+export_func _FMULD
+export_func _FDIVD
+export_func _FSTOD
+export_func  FDTOS
+export_func  FNEGD
+export_func  FUTOD
+export_func  FITOD
+export_func  FSUBD
+export_func  FADDD
+export_func  FMULD
+export_func  FDIVD
+export_func  FSTOD
+export_func  FFTOS
+export_func _FFTOD
+export_func  FFTOD
+export_func  FSTOF
+export_func  FDTOF
+
+--}}}
+
+	EndModule
+
+-- end of IEEE64.a

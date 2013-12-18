@@ -1,0 +1,357 @@
+
+
+
+
+            The internal structure of the Norcroft C compiler.
+            ==================================================
+
+
+                  Copyright (C) A.Mycroft and A.C.Norman
+                               August 1986
+
+
+
+
+The compiler is organized into a sequence of modules in a conventional manner,
+with the following structure:
+
+                preprocessor --------  table for macro definitions
+                     |                 standard header files
+                     |
+              lexical analysis  -----  symbol table for names
+                     |
+            main syntax routines ----  parse tree storage
+                     |
+              semantic analysis -----  global definition save area
+                     |
+             expression optimiser ---  syntax tree diagnostic printer
+                     |
+               codegeneration -------  flowgraph memory
+                     |
+              loop optimisation
+                     |
+             register allocation ----  virtual register table
+                     |
+            flowgraph linearisation
+                     |
+          ARM machine code generation
+                     |
+                    / \
+                   /   \
+                  /     \--- disassembler
+                  |
+          object file formatter ------  library and run-time system
+
+
+The nature of C means that there have to be a number of small-scale ways
+in which the front-end modules interact in a way not suggested in the
+above diagram - for instance after the directive '#if' the preprocessor
+has to parse and evaluate an expression, in effect meaning that it has to
+obtain access to the output of the syntax analysis phase. There are also
+a number of places within the code generation section of the system where
+it has proved useful to make use of information that should properly have
+been confined to some later (and hence more machine specific) section:
+for example the codegenerator has to be aware of some of the limitations
+of ARM address modes (in particular the limits on offset in memory
+reference instructions).
+
+The interface from the preprocessor to lexical analysis is at a level of
+characters. Lexical analysis prepares token-type identifiers (defined in
+a header file aeops.h) to hand to the parser. When an identifier, number
+or string is found it leaves an external variable holding additional
+information to show what member of one of these classes of token was
+involved. The preprocessor uses an internal table that contains all the
+standard header files. This table is created using a program segment that
+is itself mechanically made by reading the standard textual versions of
+the header files (see the utility genhdr).
+
+The unit of compilation for this compiler is a single procedure (or a
+single top-level declaration), so the parser builds a tree in a region of
+memory that is re-initialised before reading each procedure. A mixture of
+operator precedence and recursive descent is used in implementing the
+parser. Semantic analysis is done as parsing proceeds in order that it
+can report errors while it is still known where in the source file
+offending text was found. It has a number of responsibilities:
+    (a) Dealing with the C type structure so as to produce an output
+        parse tree where all effects of type and all conversions are
+        explicit.
+    (b) Copying any datastructures that need to persist from one
+        procedure body to another into global storage (e.g. the body of a
+        procedure that is being defined can be discarded once machine
+        code has been generated, but information about the function
+        prototype is required throughout the file).
+    (c) To simplify some source-level constructs in order that the
+        codegenerator that follows can be simplified. For instance
+        instances of (x++) are converted into an output parse tree that
+        might be thought of as representing (x = (int)x + nnn) where nnn
+        is some suitable integer. Also cases like (*x)++ where x may be
+        some complicated expression involving side effects get mapped
+        onto an internal parse tree node (LET g, g=x, *g = *g + nnn)
+        [the above cases would have further elaboration were the value of
+        the increment expression needed].
+    (d) The semantic analysis phase guarantees that no errorneous parse
+        trees get passed on to the codegenator.
+
+Expression optimisation is intended both to improve the quality of
+compiled code and to simplify the job of the codegenerator. Simple
+constant folding is done during parsing: a subsequent pass over the parse
+tree can combine some more operators.
+
+The output of these phases is a parse tree where all mode conversions and
+scaling operations are explicitly represented, and where all nodes in
+subtrees that represent expressions are annotated with a field that holds
+a 'machine representation'. This has a field that can take one of 4
+values which indicate:
+            signed integer,
+            unsigned integer,
+            floating point,
+            structure value,
+together with a second field that gives the width in bytes of the value
+that will be computed by the given expression. Observe that by this stage
+pointer types can be viewed as just integers of width 4 bytes, and void
+is anything you like (conventionally a signed integer) with width zero
+bytes.
+
+The output final form of the parse tree can be displayed if certain
+debugging options are enabled: the detailed structure of the parse tree
+can perhaps best be inferred from inspection of the code that does this
+printing.
+
+The first stage of codegeneration is a fairly direct tree walk that
+converts the parse tree into a directed graph representing basic blocks
+in the user's code. Each basic block has a header, and then a segment of
+abstract machine instructions. The intermediate instruction set used
+bears some resemblance to that used by the ARM itself, which makes
+further manipulation particularly smooth, but it follows the suggestions
+for an intermediate 'three address' instruction set as documented in the
+'red dragon' book on compiler construction, so it is better to view ARM
+as being like it than vice versa! While generating this code the system
+makes provisional allocation of registers - in versions up to 0.30 at
+least this means that VERY complicated expressions will cause the
+compiler to run out and fail. This register allocation is performed by
+allocating a virtual register to every intermediate value that can
+possibly be required, but filling in (as the virtual register is created)
+the number of a real register that it could be assigned to if no user
+variables were put in machine registers. Saving context across function
+calls is a substantial headache in this code.
+
+A future version of the compiler could hope to improve on the current
+codegenerator by adding extra lookahead and further passes:
+    (a) Allocate stack temporaries when a VERY complicated expression
+        can not be processed entirely in registers,
+    (b) Rebuild a parse tree from each basic block, identifying all
+        common subexpressions and then arranging an evaluation order that
+        minimises the need for work registers,
+    (c) Coordination with the expression optimiser so that idioms like
+        *(&x + 4) that can be generated as a result of codegeneration on
+        x.selector are treated better.
+
+The codegenerator builds tables that identify (clean) loops in the graph
+of basic blocks, and it notes when a procedure calls no others (a 'leaf'
+procedure).
+
+Loop optimisation can inspect the blocks that the codegenerator has
+listed, seeking invariant expressions that should be removed from the
+loop body. In version 0.40 it finds the instructions ADCON (load the address
+of a static/external variable), ADCONV (address of a local), MOVK
+(load an integer) and CMPK (compare against an integer) and puts a
+corresponding load instruction into the block pre-head. The original
+ADCON/ADCONV/MOVK/CMPK has a field in it filled in to show which (new)
+virtual register was so introduced, and final codegeneration tries to use
+this register instead of the original literal value. A limit is placed on
+the number of values that can be moved out of a loop (after all there are
+only a finite number of registers that could possibly hold the invariant
+values). In counting up to this limit ADCON instructions are counted before
+any oth the other sorts of invariant. This is because loading the address
+of a static variable is expensive (LDR) whereas the other invariants
+cost just one (or maybe 2) S-cycles. Loops are scanned from innermost
+ones outwards so that where relevant invariants get promoted out through
+several loop bodies. When a new register (s, say) is introduced to hold a
+value that will be loaded into virtual register r, then s will be read-
+only. An entry is made in a list to ensure that in collecting register
+clash information that registers r and s are never deemed to clash. This
+is necessary to prevent optimisation from being degraded in the face of
+loop optimisation of nested loops, where a third register (t) used to hold
+the value to be loaded into s might otherwise be considered to clash with
+r.
+
+If optimisation is inhibited (a state of affairs that has NOT been tested
+and is not expected to be used) registers are selected according to the
+mapping set up during codegeneration. Otherwise these mappings are
+discarded and a general allocation phase is invoked.
+
+Register allocation scans the abstract instructions, starting from the
+end and working backwards to the start, collecting lists that show what
+register values are needed at each stage in the program's execution. This
+process has to be iterated to obtain reliable information in the face of
+contorted control structures. When the iteration has converged a final
+pass over the code collects information about which registers are
+simultaneously in use. It also makes a list that shows what registers
+participate in direct move instructions, as in 'MOV rx, ry', since it
+will be useful in such cases if virtual registers rx and ry are mapped
+onto a single target register. Local variables that could fit in a
+machine register have their lifetimes analyzed here - each has a virtual
+register associated with it and so information about this register tells
+one about the behaviour of the variable.
+
+Having collected data on which virtual registers can NOT share machine
+registers an allocation is attempted. An order for allocating variables
+is chosen: the register that clashes with fewest others is scheduled for
+consideration last, then the one with next fewest and so on: this will
+tend to mean that the registers that are most constrained will be considered
+first while real registers are being allocated.
+Allocation looks at registers in the order just described, assigning each
+virtual register to a real one. If several real registers are available an
+attempt is made to use the 'MOV x,y' information to arrange that registers
+x and y are identified. If a dead-end is reached in the allocation some
+variable is spilled to the stack and the allocation pass is restarted from
+the beginning. Spilling discards registers based on a priority order (the
+registers used to hold loop invariants are spilled first, those corresponding
+to variables declared as 'register' come last), but with a value only being
+spilled if its register was involved in a partial allocation that could not
+be completed.
+
+Flowgraph linearisation is just a traversal of the directed graph of
+basic blocks, generating code from each. A natural side effect of this
+process is that unreachable code will be discarded, and a slightly less
+automatic effect is that chains of successive branch instructions can be
+replaced by single branches. To the extent that is convenient the
+flowgraph flattening process will lay out basic blocks so as to reduce
+the number of unconditional branches that have to be generated - in
+extreme cases this can lead to gross rearrangement of the user's code.
+This code involves taking special action to skip past empty basic blocks.
+Care has to be taken over the case of a loop of such blocks, as in the
+result of compiling the loop 'for (;;){}'. A bit BLKBUSY in the block head
+is used to detect and back off from such disasters. A second bit BLKUSED
+deals with normally re-entrancies in the flowgraph.
+
+Generation of ARM binary from the instructions within basic blocks is
+mostly fairly straightforward. Multiplication by constant values gets
+unfolded into suitable sequences of shifts and adds, and arithmetic on
+integers that do not fit in eight-bit fields expand into successions of
+eight-bit operations. Two areas of the code deserve special mention:
+literal values (strings, address constants, floating point constants) are
+colleced in a literal pool, which is flushed out immediately after each
+unconditional transfer of control. Account is kept of the instructions
+needing to address items in the pool, and if one of these would run out
+of addressability a branch is issued to a new label (thereby dumping the
+pool) and then the label is set. Special action is needed when a VERY long
+string is inserted in the literal pool (>4K bytes or so). In this case the
+pool can be flushed and restarted.
+
+In order to address local variables it is necessary to keep track of the
+displacement between the register sp (stack fringe pointer) and the base
+of the stack for the current procedure. Variables have addresses
+specified relative to this base, so when they are to be referenced a
+subtraction gives their offset relative to sp. Both variable addresses
+and sp offsets are kept as lists showing which local variables are active
+on the stack between its base and the item under consideration. The
+system can inspect this list and count up the number of bytes used on the
+stack by variables that have not been allocated to registers in order to
+find the displacements to use. Note that this defers stack-offset
+calculation until after register allocation so that register-allocated
+variables do not need shadowing stack slots. The parameters for a
+function are addressed relative to fp rather than sp, so the address
+field for such variables contains some tag bits and an absolute offset
+relative to fp.
+
+When the compiler is to produce assembly code output it disassembles the
+binary, using extra tables to indicate which words contain instructions,
+which string data and which address constants. Use of a model based on
+disassembly helps while debugging a compiler in that errors in the
+generator and the decoder are often separate so disassembled output
+reveals codegeneration bugs with high reliability.
+
+The generation of relocatable binary involves the building of a few
+tables of relocation and external reference information during previous
+phases, followed by the formatting of this data in Acorn's defined object
+file format.
+
+The kernel run-time system is in assembly code, and has been kept as
+small as we could conveniently manage. It has to trap various exceptions
+and turn them into C style events (via raise()), and it includes a
+collection of short stubs of code that make operation system calls (SWI)
+available as C procedures. The rest of the library is coded in C, and is
+organized in sections pretty well as suggested by the organization of the
+standard set of header files. A part of the library (opsys) contains
+startup code invoked by the assembly-coded kernel, and also provides for
+backtraces and similar examination of C internal datastructures. Parts of
+the library depend on the ARM's representation of floating point numbers
+and on the way in which bitfields are allocated within structures, but
+most of the code should not be particularly machine dependent provided
+you have 32-bit integers and a byte-addressed machine.
+
+A driver program (called 'cc') is provided to drive the compiler. It
+generates a temporary file containing commands to invoke the main body of
+the compiler and then (optionally) the linker. It then requests the
+operation system to obey commands from this file.
+
+
+Particular points raised by Acorn about the compiler will now be covered:
+
+(1) The compiler structure.
+    As discussed above.
+
+(2) The compiler codegeneration strategy.
+    As discussed above.
+
+(3) Building the compiler from source.
+    If the compiler has its source files as c.* (and its private
+    headers as h.*) then the command
+        cc main -link
+    will build a new version of the compiler, leaving the binary in
+    p.main.
+    The library can be rebuilt by something like
+        dir $.arm.clib
+        objasm -from s.startup -to o.startup -q
+        cc ansilib
+    If the header files in $.arm.clib.h are changed it is necessary to
+    rebuild the file containing the compiler's copy:
+        cc genhdr -link
+        run p.genhdr
+    This re-writes the file c.headers (reading $.arm.clib.h.* files on
+    the way). Then you need to go 'cc main -link' to build a system
+    incrporating the changes.
+    The driver program is rebuilt using
+        cc cc -link
+    and then moving p.cc to your library area.
+    Note that if non upwards compatible changes are made to the headers,
+    library or codegenerator the above sequences need CAREFUL adjustment
+    to ensure that the old and new compilers and libraries are kept in
+    step during the build process. This happens but infrequently and so
+    it is left to Acorn to sort out the details when they come to it!
+    From a directory where the compiler source lives as cc.c.*, the
+    command
+        exec cc.admin.testalt
+    may be of interest - it rebuilds the compiler and uses it to
+    compile itself as a check of basic self consistency after a
+    change.  The file c.altmain has been used at various times to
+    include macros, pragmas etc so that conditional compilation in the
+    main sources can select two versions of the compiler. In the set
+    of source files delivered altmain is pretty vacuuous.
+
+(4) The compiler's internal datastructures were not originally designed
+    to be available to debugging tools, but the important ones are
+    displayed or sampled from time to time by options that have been used
+    to help us debug the compiler - to find what WE considered to be
+    key or important transitions and datastructures look through the
+    source files for things like (debugging & DEBUG_LEX) etc. Note that
+    many structures that the compiler builds are only kept for the time
+    taken to process one top-level transactions (function or declaration).
+
+(5) Particular non re-entrant parts of the library are:
+        malloc() and friends,
+        rand(),
+        the file-table used by fopen/fclose,
+        buffer used by tmpname(),
+        initial time used in clock() implementation,
+        error recovery code in clib.s.startup & clib.o.opsys,
+        onexit() and signal() tables,
+        ...
+    You can see that quite enough of these seem to require state-saving
+    in the run-time system pretty-well however it is implemented.
+
+
+
+                                                       1st September 1986
+

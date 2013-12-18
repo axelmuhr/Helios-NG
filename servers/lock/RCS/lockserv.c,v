@@ -1,0 +1,682 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	94.06.10.11.08.55;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.09.04.10.41.58;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.11.06.17.50.01;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.03.28.17.22.19;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@A simple lock server.
+@
+
+
+1.4
+log
+@fixed inclusion of event.h vs intr.h
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S			                --
+--                     -----------                                      --
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- lockserv.c								--
+--                                                                      --
+--	very simple locking server					--
+--                                                                      --
+--	Author:  BLV 21.2.90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+
+/*--------------------------------------------------------
+-- 		     Include Files			--
+--------------------------------------------------------*/
+#include <helios.h>	/* standard header */
+#include <string.h>
+#include <codes.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <gsp.h>
+#include <root.h>
+#include <link.h>
+#include <message.h>
+#include <protect.h>
+#ifdef __TRAN
+#include <event.h>
+#else
+#include <intr.h>
+#endif
+#include <nonansi.h>
+#include <stdlib.h>
+
+	/* There is a shortage of subsystem codes...	*/
+#ifndef SS_LockDevice
+#define SS_LockDevice SS_NullDevice
+#endif
+
+/*--------------------------------------------------------
+--		Private Data Definitions 		--
+--------------------------------------------------------*/
+
+
+static void do_open(ServInfo *);
+static void do_create(ServInfo *);
+static void do_delete(ServInfo *);
+
+static DirNode LockRoot;
+static DispatchInfo LockInfo = {
+	(DirNode *) &LockRoot,
+	NullPort,
+	SS_LockDevice,
+	NULL,
+	{ NULL,	0 },
+	{
+		{ do_open,	5000 },
+		{ do_create,	2000 },
+		{ DoLocate,	2000 },
+		{ DoObjInfo,	2000 },
+		{ InvalidFn,	2000 },
+		{ do_delete,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 },
+		{ InvalidFn,	2000 }
+	}
+};
+
+
+int main(void)
+{ Port		server_port;
+  NameInfo	nameinfo;
+  Object	*this_processor;
+  Object	*nametable_entry;
+  char		mcname[IOCDataMax];
+
+#ifdef DEBUG
+	/* If the program is to be started from the shell	*/
+	/* but still linked with s0.o then it must accept 	*/
+	/* an environment.					*/
+  { Environ	env;
+    GetEnv(MyTask->Port,&env);
+  }
+#endif
+
+	/* If embedded in the nucleus, acknowledge start-up	*/
+#ifdef IN_NUCLEUS
+  { MCB		m;
+    InitMCB(&m, 0, MyTask->Parent, NullPort, 0x456);
+    (void) PutMsg(&m);
+  }
+#endif
+
+  server_port = NewPort();
+  if (server_port == NullPort)
+   { IOdebug("Lock server : failed to allocate port");
+     Exit(EXIT_FAILURE << 8);
+   }
+  LockInfo.ReqPort = server_port;
+
+  MachineName(mcname);
+  LockInfo.ParentName	= mcname;
+
+  if ((this_processor = Locate(Null(Object), mcname)) == Null(Object))
+   { IOdebug("Lock server : failed to locate processor %s", mcname);
+     FreePort(server_port);
+     Exit(EXIT_FAILURE << 8);
+   }
+
+	/* Initialise the directory tree.			*/
+  InitNode( (ObjNode *) &LockRoot, "lock", Type_Directory, 0, DefDirMatrix );
+  InitList( &LockRoot.Entries);
+  LockRoot.Nentries = 0;
+
+	/* .. of the server is a link to the processor level	*/
+  { LinkNode *Parent;
+
+    Parent = (LinkNode *)Malloc(sizeof(LinkNode) + (word)strlen(mcname));	
+    if (Parent == NULL)
+     { IOdebug("Lock Server: out of memory during initialisation");
+       Exit(EXIT_FAILURE << 8);
+     }
+    InitNode( &Parent->ObjNode, "..", Type_Link, 0, DefLinkMatrix );
+    Parent->Cap = this_processor->Access;
+    strcpy(Parent->Link, this_processor->Name);
+    LockRoot.Parent = (DirNode *)Parent;
+  }
+
+	/* Register the server with the system.		*/
+  nameinfo.Port     = server_port;
+  nameinfo.Flags    = Flags_StripName;
+  nameinfo.Matrix   = DefDirMatrix;
+  nameinfo.LoadData = NULL;
+
+  nametable_entry = Create(this_processor, "lock", Type_Name,
+	 sizeof(NameInfo), (byte *)&nameinfo);
+  Close(this_processor);
+
+  if (nametable_entry == Null(Object))
+   { IOdebug("Lock server : failed to enter name in name table");
+     FreePort(server_port);
+     Exit(EXIT_FAILURE << 8);
+   }
+
+	/* Call the dispatcher.						*/
+  Dispatch(&LockInfo);
+
+	/* Tidy up.							*/
+	/* Dispatch will return iff the server_port has been freed	*/  
+  Delete(nametable_entry, Null(char));
+
+  Exit(EXIT_SUCCESS);
+}
+
+
+/*--------------------------------------------------------
+-- Action Procedures					--
+--							--
+--------------------------------------------------------*/
+
+static void do_open(ServInfo *servinfo)
+{ MCB            *m          = servinfo->m;
+  MsgBuf         *r;
+  char           *pathname   = servinfo->Pathname;
+  Port           reqport;
+  DirNode        *d;
+  ObjNode        *f;
+    
+  d = (DirNode *) GetTargetDir(servinfo);
+  if (d == Null(DirNode))
+   { ErrorMsg(m, EO_Directory); return; }
+  
+  f = GetTargetObj(servinfo);
+  if (f == Null(ObjNode))
+   { ErrorMsg(m, EO_File); return; }
+
+  if (f->Type != Type_Directory)
+   { ErrorMsg(m, EO_Directory + EG_WrongFn + EO_Object); return; }
+   
+  r = New(MsgBuf);
+  if( r == Null(MsgBuf) )
+   { ErrorMsg(m,EC_Error+EG_NoMemory); return; }
+
+  FormOpenReply(r, m, f, Flags_Server | Flags_Closeable, pathname);
+  reqport		= NewPort();  
+  r->mcb.MsgHdr.Reply	= reqport;
+  PutMsg(&r->mcb);
+  Free(r);
+   
+  DirServer(servinfo, m, reqport);
+  FreePort(reqport);
+  return;
+}
+
+static void do_create(ServInfo *servinfo)
+{ MCB 		*m		= servinfo->m;
+  IOCCreate	*req		= (IOCCreate *)(m->Control);
+  char		*pathname	= servinfo->Pathname;
+  MsgBuf 	*r;
+  DirNode 	*d;
+  ObjNode	*f;
+
+  d = GetTargetDir(servinfo);
+  if (d == Null(DirNode))
+   { ErrorMsg(m,EO_Directory); return; }
+
+  f = GetTargetObj(servinfo);
+  if (f != Null(ObjNode))
+   { ErrorMsg(m,EC_Error + EG_InUse + EO_File); return; }
+
+  m->MsgHdr.FnRc	= SS_LockDevice;
+
+  if (req->Type == Type_Stream)
+   { f = New(ObjNode);
+     if (f == Null(ObjNode))
+      { ErrorMsg(m, EC_Error + EG_NoMemory + EO_Object); return; }
+     InitNode(f, objname(pathname), Type_Stream, 0, DefFileMatrix);
+     Insert(d, f, TRUE);
+   }
+  else
+   { DirNode *subdir = New(DirNode);
+     if (subdir == Null(DirNode))
+      { ErrorMsg(m, EC_Error + EG_NoMemory + EO_Directory); return; }
+     InitNode((ObjNode *) subdir, objname(pathname), Type_Directory,
+		0, DefDirMatrix);
+     InitList(&subdir->Entries);
+     Insert(d, (ObjNode *) subdir, TRUE);
+     f = (ObjNode *) subdir;
+   }
+
+  r = New(MsgBuf);
+  if (r == Null(MsgBuf))
+   { Unlink(f, TRUE);
+     Free(f);
+     ErrorMsg(m, EC_Error + EG_NoMemory + EO_Message);
+     return;
+   }
+
+  req->Common.Access.Access = AccMask_Full;
+  FormOpenReply(r, m, f, 0, pathname);
+  PutMsg(&r->mcb);
+  Free(r);
+}
+
+static void do_delete(ServInfo *servinfo)
+{ MCB		*m	= servinfo->m;
+  ObjNode	*f;
+
+  f = GetTarget(servinfo);
+  if (f == Null(ObjNode))
+   { ErrorMsg(m, EO_File); return; }
+
+  if (f->Type == Type_Directory)
+   { DirNode	*d	= (DirNode *) f;
+     if (d->Nentries != 0)
+      { ErrorMsg(m, EC_Error + EG_InUse + EO_Directory); return; }
+   }
+
+	/* Allow the server to be terminated.			*/
+  if (f == (ObjNode *) &LockRoot)
+   { ErrorMsg(m, Err_Null);	/* send back a success code	*/
+     AbortPort(LockInfo.ReqPort, EC_Fatal + EG_Exception + EE_Abort);
+   }
+  else
+   { Unlink(f, FALSE);
+     servinfo->TargetLocked	= FALSE;
+     Free(f);
+     ErrorMsg(m, Err_Null);
+   }
+}
+
+@
+
+
+1.3
+log
+@fixed compile time warning
+@
+text
+@d30 1
+d32 3
+@
+
+
+1.2
+log
+@New version of the lock server that matches the example in the book
+@
+text
+@d120 1
+a120 1
+    Parent = (LinkNode *)Malloc(sizeof(LinkNode) + strlen(mcname));	
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d6 1
+a6 1
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+a16 2
+#include <helios.h>	/* standard header */
+
+d20 1
+a20 2
+
+#include <stdio.h>
+d25 6
+d34 4
+d52 1
+a52 1
+	SS_NullDevice,
+d73 11
+a83 6
+{ Port            server_port = NewPort();
+  NameInfo        nameinfo;
+  Object          *root, *name;
+  char            mcname[100];
+  
+  { Environ env;
+d86 1
+a86 2
+  
+  MachineName(mcname);
+d88 9
+a96 2
+  LockInfo.ParentName = mcname;
+  
+d99 1
+a99 1
+     return(1);
+d101 1
+d103 4
+a106 1
+  if ((root = Locate(Null(Object), mcname)) == Null(Object))
+d109 1
+a109 1
+     return(1);
+d111 3
+a113 2
+   
+  InitNode( (ObjNode *) &LockRoot, "lock", Type_Directory, 0, DefRootMatrix );
+a115 2
+ 
+  LockInfo.ReqPort = server_port;
+d117 3
+a119 4
+	/* .. of root is a link to our machine root	*/
+  { Object *o;
+    LinkNode *Parent;
+    o = Locate(NULL,mcname);
+d121 4
+d126 2
+a127 2
+    Parent->Cap = o->Access;
+    strcpy(Parent->Link,mcname);
+a128 1
+    Close(o);
+d131 1
+d137 5
+a141 3
+  name = Create(root, "lock", Type_Name, sizeof(NameInfo), (byte *)&nameinfo);
+  Close(root);
+  if (name == Null(Object))
+d144 1
+a144 1
+     return(1);
+d147 1
+d150 3
+a152 2
+    /* Dispatch will return iff the server_port has been freed */  
+  Delete(name, Null(char));
+d154 1
+a154 1
+  return(0);
+a156 6
+/*--------------------------------------------------------
+-- NewFile						--
+--							--
+-- Add a new file to the directory			--
+--							--
+--------------------------------------------------------*/
+a157 47
+ObjNode *NewFile(DirNode *dir,string name, word flags, Matrix matrix)
+{
+	ObjNode *f = New(ObjNode);
+
+	if( f == NULL ) return NULL;
+
+	InitNode(f,name,Type_File,flags,matrix);
+	
+	f->Account = 0;
+	
+	Insert( dir, f, TRUE );
+
+	return f;
+}
+
+DirNode *NewDir(DirNode *dir,string name, word flags, Matrix matrix)
+{
+	DirNode *d = New(DirNode);
+
+	if( d == NULL ) return NULL;
+
+	InitNode((ObjNode *)d,name,Type_Directory,flags,matrix);
+
+	InitList(&d->Entries);
+	d->Nentries = 0;
+	d->Parent = dir;
+
+	Insert(dir, (ObjNode *)d, TRUE );
+
+	return d;
+}
+
+static ObjNode *CreateNode(MCB *m, DirNode *d, string pathname)
+{
+	ObjNode *f;
+	char *name;
+	IOCCreate *req = (IOCCreate *)(m->Control);
+
+	name = objname(pathname);	
+
+	if( req->Type == Type_Directory ) 
+		f = (ObjNode *)NewDir(d, name, 0, DefDirMatrix );
+	else	f = NewFile(d, name, Flags_Selectable, DefFileMatrix );
+
+	return f;
+}
+
+a165 1
+  IOCMsg2        *req        = (IOCMsg2 *)(m->Control);
+a169 1
+  byte           *data = m->Data;
+d173 1
+a173 3
+   { ErrorMsg(m, Err_Null);
+     return;
+   }
+d176 2
+d179 2
+a180 6
+     /* O_Create + O_Exclusive => object must not exist */
+  if ((f != Null(ObjNode)) && (req->Arg.Mode & O_Create) &&
+                              (req->Arg.Mode & O_Exclusive))
+   { ErrorMsg(m, EC_Error + EG_InUse + EO_Name);
+     return;
+   }
+d184 1
+a184 3
+   { ErrorMsg(m,EC_Error+EG_NoMemory);
+     return;
+   }
+a185 23
+        /* Create new object ? */
+  if ((f == Null(ObjNode)) && (req->Arg.Mode & O_Create) )
+   { unless ( CheckMask(req->Common.Access.Access, AccMask_W) )
+     { ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+       Free(r);
+       return;
+     }
+     f = CreateNode(m, d, pathname);
+   }
+   
+     /* Does object exist now ? */
+  if (f == Null(ObjNode)) 
+   { ErrorMsg(m, Err_Null);
+     Free(r);
+     return;
+   }
+   
+  unless( CheckMask(req->Common.Access.Access,req->Arg.Mode&Flags_Mode) ) 
+   { ErrorMsg(m,EC_Error+EG_Protected+EO_File);
+     Free(r);
+     return;
+   }
+
+d187 2
+a188 3
+
+  reqport = NewPort();  
+  r->mcb.MsgHdr.Reply = reqport;
+d192 1
+a192 38
+  if (f->Type == Type_Directory)
+   { DirServer(servinfo, m, reqport);
+     FreePort(reqport);
+     return;
+   }
+  
+  f->Account++;
+  UnLockTarget(servinfo);
+  
+  forever
+   { word e;
+     m->MsgHdr.Dest = reqport;
+     m->Timeout     = StreamTimeout;
+     m->Data        = data;
+
+     e = GetMsg(m);
+     if (e == EK_Timeout) break;
+     if (e < Err_Null) continue;
+     
+     Wait(&f->Lock);
+     
+     switch(m->MsgHdr.FnRc & FG_Mask)
+     {
+       case FG_Close :
+                     if (m->MsgHdr.Reply != NullPort) ErrorMsg(m, Err_Null);
+                     FreePort(reqport);
+                     f->Account--;
+                     Signal(&f->Lock);
+                     return;
+       default       :
+                     ErrorMsg(m, EC_Error + EG_FnCode + EO_File);
+                     break;
+     }
+
+     Signal(&f->Lock);
+   }
+
+  f->Account--;
+d194 1
+d198 6
+a203 7
+{
+	MCB *m = servinfo->m;
+	MsgBuf  *r;
+	DirNode *d;
+	ObjNode *f;
+	IOCCreate *req = (IOCCreate *)(m->Control);
+	char *pathname = servinfo->Pathname;
+d205 3
+a207 1
+	d = GetTargetDir(servinfo);
+d209 3
+a211 5
+	if( d == NULL )
+	{
+		ErrorMsg(m,EO_Directory);
+		return;
+	}
+d213 1
+a213 7
+	f = GetTargetObj(servinfo);
+	
+	if( f != NULL )
+	{
+		ErrorMsg(m,EC_Error+EG_Create+EO_File);
+		return;
+	}
+d215 17
+a231 5
+	unless( CheckMask(req->Common.Access.Access,AccMask_W) ) 
+	{
+		ErrorMsg(m,EC_Error+EG_Protected+EO_Directory);
+		return;
+	}
+d233 7
+a239 1
+	r = New(MsgBuf);
+d241 4
+a244 21
+	if( r == NULL )
+	{
+		ErrorMsg(m,EC_Error+EG_NoMemory);
+		return;
+	}
+
+	f = CreateNode( m, d, pathname );
+
+	if( f == NULL )
+	{
+		ErrorMsg(m,0);
+		Free(r);
+		return;
+	}
+
+	req->Common.Access.Access = AccMask_Full;
+	
+	FormOpenReply(r,m,f, 0, pathname);
+	PutMsg(&r->mcb);
+
+	Free(r);
+d248 2
+a249 4
+{
+	MCB *m = servinfo->m;
+	ObjNode *f;
+	IOCCommon *req = (IOCCommon *)(m->Control);
+d251 3
+a253 1
+	f = GetTarget(servinfo);
+d255 5
+a259 11
+	if( f == NULL )
+	{
+		ErrorMsg(m,EO_File);
+		return;
+	}
+	
+	unless( CheckMask(req->Access.Access,AccMask_D) ) 
+	{
+		ErrorMsg(m,EC_Error+EG_Protected+EO_File);
+		return;
+	}
+d261 11
+a271 18
+	if( f->Type == Type_Directory &&
+		((DirNode *)f)->Nentries != 0 )
+	{
+		ErrorMsg(m,EC_Error+EG_Delete+EO_Directory);
+		return;
+	}
+	else if ( f->Type == Type_File )
+	{
+		if( f->Account != 0 )
+		{
+			ErrorMsg(m,EC_Error+EG_InUse+EO_File);
+			return;
+		}
+	}
+
+	Unlink(f,FALSE);
+	Free(f);
+	ErrorMsg(m,Err_Null);
+@

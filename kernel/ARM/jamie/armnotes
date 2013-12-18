@@ -1,0 +1,420 @@
+
+                  IMPORTANT RULES FOR ARM CODE WRITERS
+                  ====================================
+  Date: 1/8/90
+ Issue: 1.0
+Author: A.R.P.Thomas 
+
+                          ================
+                          = Introduction =
+                          ================
+ The ARM processor family uses Reduced Instruction Set (RISC) techniques to
+maximise performance; as such, the instruction set allows some instructions
+and code sequences to be constructed that will give rise to unexpected (and
+potentially erroneous) results. These cases must be avoided by all machine
+code writers and generators if correct program operation across the whole
+range of ARM processors is to be obtained.
+
+ This document lists the instructions code sequences to be avoided. It is
+*STRONGLY* recommended that you take the time familiarise yourself with
+these cases because some will only fail under particular circumstances which
+may not arise during testing.
+
+ If you know of any other instructions or code sequences that should be
+avoided, please let me know.
+
+ Could you also please inform me if you have used any of the instructions or
+code sequences listed here in your programs; we would like to build up a
+picture of which programs (if any) are at risk. Thanks for your help.
+
+
+              ============================================
+              = Instructions and code sequences to avoid =
+              ============================================
+ The instructions and code sequences are split into a number of categories.
+Each category starts with a recommendation or warning, and indicates which
+of the three main ARM variants (ARM2, ARM3, ARM2aS) that it applies to. The
+text then goes on to explain the conditions in more detail and to supply
+examples where appropriate.
+
+ Unless a program is being targeted SPECIFICALLY for a single version of the
+ARM processor family, all of these recommendations should be adhered to.
+This will ensure consistent program operation across all the relevant
+computers in the Acorn range.
+
+
+1) TSTP/TEQP/CMPP/CMNP: Changing mode
+-------------------------------------
+  ####################################################################
+  # When the processor's mode is changed by altering the mode bits   #
+  # in the PSR using a data processing operation, care must be taken #
+  # not to access a banked register (R8-R14) in the following        #
+  # instruction. Accesses to the unbanked registers (R0-R7,R15) are  #
+  # safe.                                                            #
+  ####################################################################
+  # Applicability: ARM2                                              #
+  ####################################################################
+
+ The following instructions are affected, but note that mode changes can
+only be made when the processor is in a non-user mode:-
+
+   TSTP Rn,<Op2>
+   TEQP Rn,<Op2>
+   CMPP Rn,<Op2>
+   CMNP Rn,<Op2>
+
+ These are the only operations that change all the bits in the PSR
+(including the mode bits) without affecting the PC (thereby forcing a
+pipeline refill during which time the register bank select logic settles).
+
+e.g. Assume processor starts in Supervisor mode in each case:-
+
+ a)  TEQP PC,#0
+     MOV  R0,R0            SAFE: NOP added between mode change and access
+     ADD  R0,R1,R13_usr          to a banked register (R13).
+
+ b)  TEQP PC,#0
+     ADD  R0,R1,R2         SAFE: No access made to a banked register
+
+ c)  TEQP PC,#0
+     ADD  R0,R1,R13_usr    *FAILS*: Data NOT read from Register R13_usr!
+
+ The safest default is always to add a NOP (e.g. MOV R0,R0) after a mode
+changing instruction; this will guarantee correct operation regardless of
+the following code sequence.
+
+
+
+2) LDM/STM: Forcing transfer of the user bank (Part 1)
+---------------------------------------------
+  ###################################################################
+  # Don't use write back when forcing user bank transfer in LDM/STM #
+  ###################################################################
+  # Applicability: ARM2,ARM3,ARM2aS                                 #
+  ###################################################################
+
+ For STM instructions the S bit is redundant as the PSR is always stored
+with the PC whenever R15 is in the transfer list. In user mode programs the
+S bit is ignored, but in other modes it has a second interpretation. S=1
+used to force transfers to take values from the user register bank instead
+of from the current register bank. This is useful for saving the user state
+on process switches.
+ Similarly, in LDM instructions the S bit is redundant if R15 is not in the
+transfer list. In user mode programs, the S bit is ignored, but in non-user
+mode programs where R15 is not in the transfer list, S=1 is used to force
+loaded values to go to the user registers instead of the current register
+bank.
+ In both cases where the processor is in a non-user mode and transfer
+to/from the user bank is forced by setting the S bit, write back of the base
+will also be to the user bank though the base will be fetched from the
+current bank. Therefore don't use write back when forcing user bank transfer
+in LDM/STM.
+
+e.g. In all cases, the processor is assumed to be in a non-user mode:-
+
+     STMxx Rn!,<Rlist>   SAFE: Storing non-user registers with write back to
+                               the non-user base register
+
+     LDMxx Rn!,<Rlist>   SAFE: Loading non-user registers with write back to
+                               the non-user base register
+
+     STMxx Rn,<Rlist>^   SAFE: Storing user registers, but no base
+                               write-back
+
+     STMxx Rn!,<Rlist>^  *FAILS*: Base fetched from non-user register, but
+                                   written back into user register
+
+     LDMxx Rn!,<Rlist>^  *FAILS*: Base fetched from non-user register, but
+                                   written back into user register
+
+
+
+
+3) LDM: Forcing transfer of the user bank (Part 2)
+-----------------------------------------
+  ######################################################################
+  # When loading user bank registers with an LDM in a non-user mode,   #
+  # care must be taken not to access a banked register (R8-R14) in the #
+  # following instruction. Accesses to the unbanked registers          #
+  # (R0-R7,R15) are safe.                                              #
+  ######################################################################
+  # Applicability: ARM2,ARM3,ARM2aS                                    #
+  ######################################################################
+
+ Because the register bank switches from user mode to non-user mode during
+the first cycle of the instruction following an "LDM Rn,<Rlist>^", an
+attempt to access a banked register in that cycle may cause the wrong
+register to be accessed.
+
+e.g. In all cases, the processor is assumed to be in a non-user mode:-
+
+   LDM Rn,<Rlist>^
+   ADD R0,R1,R2             SAFE: Access to unbanked registers after LDM^
+
+   LDM Rn,<Rlist>^
+   MOV R0,R0                SAFE: NOP inserted before banked register used
+   ADD R0,R1,R13                  following an LDM^
+
+   LDM Rn,<Rlist>^
+   ADD R0,R1,R13            *FAILS*: Accessing a banked register immediately
+                                     after an LDM^ returns the wrong data!
+
+   ADR   R14, saveblock
+   LDMIA R14, {R0 - R14}^
+   LDR   R14, [R14,#15*4]   *FAILS*: Banked base register (R14_svc) used
+   MOVS   PC, R14                    immediately after the LDM^
+
+
+NOTE:
+ The ARM2 and ARM3 processors *usually* give the expected result, but cannot
+be guaranteed to do so under all circumstances, therefore this code sequence
+should be avoided in future. In particular, the static ARM (ARM2aS) *always*
+fails under these conditions!
+
+
+
+4) CDP/SWI: Coprocessor data operation/software interrupt interaction
+---------------------------------------------------------------------
+ ###########################################################################
+ # A coprocessor data operation (CDP) must not be followed immediately by  #
+ # a software interrupt (SWI).                                             #
+ # Note: The floating point instruction set contains many coprocessor data #
+ #       operations.                                                       #
+ #       e.g. ADF,MUF,SUF,RSF,DVF,RDF,POW,RPW,RMF,FML,FDV,FRD,POL,MVF,MNF, #
+ #            ABS,RND,SQT,LOG,LGN,EXP,SIN,COS,TAN,ASN,ACS,ATN              #
+ ###########################################################################
+ # Applicability: ARM2                                                     #
+ ###########################################################################
+
+ The implementation of the CDP instruction on ARM2 causes a Software
+Interrupt (SWI) to take the Undefined Instruction trap if the SWI was the
+next instruction after the CDP.
+
+e.g.
+    SIN F0
+    MOV R0,R0
+    SWI &11        SAFE: SWI correctly executes because of NOP padding
+
+    SIN F0
+    SWI &11        *FAILS*: Processor incorrectly takes undefined
+                            instruction trap instead of software interrupt
+                            trap
+
+
+
+5) Undefined instruction/Prefetch abort traps
+---------------------------------------------
+  ######################################################################
+  # Care must be taken when writing the Prefetch abort trap handler to #
+  # allow for an unexpected call due to an undefined instruction       #
+  ######################################################################
+  # Applicability: ARM2,ARM3                                           #
+  ######################################################################
+
+ When an undefined instruction is fetched from the last word of a page,
+where the next page is absent from memory, the undefined instruction will
+cause the undefined instruction trap to be taken, and the following
+(aborted) instructions will cause a prefetch abort trap. One might expect
+the undefined instruction trap to be taken first, then the return to the
+succeeding code will cause the abort trap. In fact the prefetch abort has a
+higher priority than the undefined instruction trap, so the prefetch abort
+handler is entered _before_ the undefined instruction trap, indicating a
+fault at the address of the undefined instruction (which is in a page which
+is actually present). A normal return from the prefetch abort handler (after
+loading the absent page) will cause the undefined instruction to execute and
+take the trap correctly. However the indicated page is already present, so
+the prefetch abort handler may simply return control, causing an infinite
+loop to be entered.
+ Therefore, the prefetch abort handler should check whether the indicated
+fault is in a page which is actually present, and if so it should suspect
+the above condition and pass control to the undefined instruction handler.
+This will restore the expected sequential nature of the execution sequence.
+A normal return from the undefined instruction handler will cause the next
+instruction to be fetched (which will abort), the prefetch abort handler
+will be reentered (with an address pointing to the absent page), and
+execution can proceed normally.
+
+
+                       ========================
+                       = Other points to note =
+                       ========================
+
+ This section highlights some obscure cases of ARM operation which should be
+borne in mind when writing code.
+
+1) Use of R15
+-------------
+ *******************************************************************
+ * WARNING: When the PC is used as a destination, operand or base  *
+ *          register, different results will be obtained depending *
+ *          on the instruction and the exact usage of R15          *
+ *******************************************************************
+ * Applicability: ARM2,ARM3,ARM2aS                                 *
+ *******************************************************************
+
+  Full details of the value derived from or written into R15+PSR for each
+instruction class is given in the datasheet. Care must be taken when using
+R15 because small changes in the instruction can yield significantly
+different results.
+
+e.g. Consider data operations of the type:-
+                <opcode>{cond}{S} Rd,Rn,Rm
+    a) When R15 is used in the Rm position, it will give the value of the PC
+       together with the PSR flags.
+    b) When R15 is used in the Rn position, it will give the value of the PC
+       without the PSR flags (PSR bits replaced by zeros).
+
+    MOV R0,#0
+    ORR R1,R0,R15   ; R1:=PC+PSR  (bits 31:26,1:0 reflect PSR flags)
+    ORR R2,R15,R0   ; R2:=PC      (bits 31:26,1:0 set to zero)
+
+
+
+2) STM: Inclusion of the base in the register list
+--------------------------------------------------
+ ***********************************************************************
+ * WARNING: In the case of a STM with writeback that includes the base *
+ *          register in the register list, the value of the base       *
+ *          register stored depends upon its position in the register  *
+ *          list                                                       *
+ ***********************************************************************
+ * Applicability: ARM2,ARM3,ARM2aS                                     *
+ ***********************************************************************
+
+ During a STM, the first register is written out at the start of the second
+cycle of the instruction. When writeback is specified, the base is written
+back at the end of the second cycle. A STM which includes storing the base,
+with the base as the first register to be stored, will therefore store the
+unchanged value whereas with the base second or later in the transfer order,
+will store the modified value.
+
+ e.g.
+    MOV   R5,#&1000
+    STMIA R5!,{R5-R6}  ;  Stores value of R5=&1000
+
+    MOV   R5,#&1000
+    STMIA R5!,{R4-R5}  ;  Stores value of R5=&1008
+
+
+
+
+3) MUL/MLA: Register restrictions
+---------------------------------
+  ****************************************************
+  *   Given  MUL Rd,Rm,Rs                            *
+  *      or  MLA Rd,Rm,Rs,Rn                         *
+  *                                                  *
+  *   Then   Rd & Rm must be different registers     *
+  *               Rd must not be R15                 *
+  ****************************************************
+  * Applicability: ARM2,ARM3,ARM2aS                  *
+  ****************************************************
+
+ Due to the way the Booth's algorithm has been implemented, certain
+combinations of operand registers should be avoided. (The assembler will
+issue a warning if these restrictions are overlooked.)
+ The destination register (Rd) should not be the same as the Rm operand
+register, as Rd is used to hold intermediate values and Rm is used
+repeatedly during the multiply. A MUL will give a zero result if Rm=Rd, and
+a MLA will give a meaningless result.
+ The destination register (Rd) should also not be R15. R15 is protected from
+modification by these instructions, so the instruction will have no effect,
+except that it will put meaningless values in the PSR flags if the S bit is
+set.
+ All other register combinations will give correct results, and Rd, Rn and
+Rs may use the same register when required.
+
+
+
+4) LDM/STM: Address Exceptions
+------------------------------
+  ************************************************************************
+  * WARNING: Illegal addresses formed during a LDM or STM operation will *
+  *          not cause an address exception                              *
+  ************************************************************************
+  * Applicability: ARM2,ARM3,ARM2aS                                      *
+  ************************************************************************
+
+ Only the address of the first transfer of a LDM or STM is checked for an
+address exception; if subsequent addresses over- or under-flow into illegal
+address space they will be truncated to 26 bits but will not cause an
+address exception trap.
+
+e.g. Assume processor is in a non-user mode & MEMC being accessed:-
+       {these examples are very contrived}
+
+    MOV R0,#&04000000  ; R0=&04000000
+    STMIA R0,{R1-R2}   ; Address exception reported (base address illegal)
+
+    MOV R0,#&04000000
+    SUB R0,R0,#4       ; R0=&03FFFFFC
+    STMIA R0,{R1-R2}   ; No address exception reported (base address legal)
+                       ; code will overwrite data at address &00000000
+
+NOTE:
+ The exact behaviour of the system depends upon the memory manager to which
+the processor is attached; in some cases, the wraparound may be detected and
+the processor aborted.
+
+
+
+5) LDC/STC: Address Exceptions
+------------------------------
+  ************************************************************************
+  * WARNING: Illegal addresses formed during a LDC or STC operation will *
+  *          not cause an address exception (affects LDF/STF)            *
+  ************************************************************************
+  * Applicability: ARM2,ARM3,ARM2aS                                      *
+  ************************************************************************
+
+ The coprocessor data transfer operations act like STM and LDM with the
+processor generating the addresses and the coprocessor supplying/reading the
+data. As with LDM/STM, only the address of the first transfer of a LDM or
+STM is checked for an address exception; if subsequent addresses over- or
+under-flow into illegal address space they will be truncated to 26 bits but
+will not cause an address exception trap.
+ Note that the floating point LDF/STF instructions are forms of LDC & STC!
+
+e.g. Assume processor is in a non-user mode & MEMC being accessed:-
+       {these examples are very contrived}
+
+    MOV R0,#&04000000  ; R0=&04000000
+    STC CP1,CR0,[R0]   ; Address exception reported (base address illegal)
+
+    MOV R0,#&04000000
+    SUB R0,R0,#4       ; R0=&03FFFFFC
+    STFD F0,[R0]       ; No address exception reported (base address legal)
+                       ; code will overwrite data at address &00000000
+
+NOTE:
+ The exact behaviour of the system depends upon the memory manager to which
+the processor is attached; in some cases, the wraparound may be detected and
+the processor aborted.
+
+
+
+6) LDC: Data transfers to a coprocessor fetch more data than expected
+---------------------------------------------------------------------
+ ***************************************************************************
+ * Care should be taken when performing LDC operations near read-sensitive *
+ * memory locations                                                        *
+ ***************************************************************************
+ * Applicability: ARM3                                                     *
+ ***************************************************************************
+
+ Due to the pipelining introduced into the ARM3 coprocessor interface, an
+LDC operation will cause one or more extra words of data to be fetched from
+memory by ARM3 and then discarded.
+
+e.g. Assume processor is in a non-user mode, FPU hardware attached and MEMC
+     being accessed:-
+       {this example is very contrived}
+
+    MOV  R13,#&03000000 ; R13=Address of I/O space
+    STFD F0,[R13,#-8]!  ; Store F.P. register 0 at top of physical memory
+                        ; (two words of data transferred)
+    LDFD F1,[R13],#8    ; Load F.P. register 1 from top of physical memory
+                        ; but THREE words of data are transferred, and the
+                        ; third access will read from I/O space which may be
+                        ; read sensitive!  *** BEWARE ***
+

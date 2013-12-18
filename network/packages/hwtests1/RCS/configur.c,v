@@ -1,0 +1,244 @@
+head	1.1;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	92.01.16.13.22.17;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@The configuration part of the hardware test suite. This program scans
+the current network and produces a CDL script that can be used to run
+the test suite.
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/**
+*** configure.c
+***  The purpose of this program is to examine the current network and
+***  produce a suitable CDL script for running the hardware test suite.
+***  This script should include:
+***    a) a memory program on every free processor with a blocksize as
+***       argument. This blocksize should be the expected amount of free
+***       memory, estimated at memsize - 640K.
+***    b) two communication programs over every link.
+***    c) a control program with streams to every worker.
+***
+*** Arguments: none
+***
+*** Streams : stdout > the CDL script to be produced
+**/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <rmlib.h>
+#include <helios.h>
+#include <queue.h>
+
+/**-----------------------------------------------------------------------------
+*** Structures.
+**/
+	/* One of these data structures is produced for every worker.	*/
+	/* They are held in a list, and the list is scanned at the	*/
+	/* end of the run to produce the taskforce declaration.		*/
+typedef struct ComponentDeclaration {
+	Node	Node;
+	char	Command[64];
+} ComponentDeclaration;
+
+/**-----------------------------------------------------------------------------
+*** Static variables.
+**/
+	/* TaskforceList holds details of all the components		*/
+static	List	TaskforceList;
+
+	/* ComponentCount keeps track of the number of components in	*/
+	/* the Taskforce.						*/
+static	int	ComponentCount	= 0;
+
+/**-----------------------------------------------------------------------------
+*** Forward declarations.
+***
+*** Most of the work is done by using RmLib to apply functions to every
+*** processor in the network.
+**/
+
+static	int	DeleteUnwanted(RmProcessor, ...);
+static	int	MemoryScan(RmProcessor , ...);
+static	int	LinksScan(RmProcessor, ...);
+static	int	ComponentsWalk(ComponentDeclaration *, int *);
+
+/**-----------------------------------------------------------------------------
+*** Code.
+**/
+
+int main(void)
+{ RmNetwork	network;
+  int		junk;
+
+  network = RmGetNetwork();
+  if (network == (RmNetwork) NULL)
+   { fputs("configure: failed to obtain network details.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  if (RmApplyProcessors(network, &DeleteUnwanted) < 1)
+   { fputs("configure: the network is somewhat lacking in free processors.\n",
+		stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  InitList(&TaskforceList);
+  ComponentCount	= 0;
+
+	/* Output some header information.				*/
+  puts("#! /helios/bin/cdl");
+  puts("# CDL script for the hardware testsuite.");
+  puts("# This script is generated automatically by the configure program.");
+  puts("# Arguments: \\$1 == number of days");
+  puts("#            \\$2 == number of hours");
+  puts("#            \\$3 == number of minutes");
+  putchar('\n');
+
+	/* These scans produce component declarations.		*/
+  (void) RmApplyProcessors(network, &MemoryScan);
+  (void) RmApplyProcessors(network, &LinksScan);
+
+	/* This produces the taskforce declaration.		*/   
+  printf("\ncontrol \\$1 \\$2 \\$3 %d (", ComponentCount);
+  junk = 0;
+  (void) WalkList(&TaskforceList, (WordFnPtr) &ComponentsWalk, &junk);
+  puts(")");
+
+  return(EXIT_SUCCESS);
+}
+
+
+	/* Delete undesirable processors from the network. This		*/
+	/* includes processors not currently in the free pool, I/O	*/
+	/* processors, native processors, and routers. The combined	*/
+	/* result is a count of the number of suitable free processors.	*/
+static int DeleteUnwanted(RmProcessor processor)
+{ int	purpose;
+
+  purpose = RmGetProcessorPurpose(processor) & RmP_Mask;
+  if ((RmGetProcessorOwner(processor) == RmO_FreePool) &&
+      (purpose == RmP_Normal))
+   return(1);
+
+  RmRemoveProcessor(processor);
+  RmFreeProcessor(processor);
+  return(0);
+}
+
+	/* MemoryScan should put another component declaration into	*/
+	/* the CDL script, generating a unique component name via a	*/
+	/* static counter variable. This new component is also added	*/
+	/* the list of components.					*/
+static int MemoryScan(RmProcessor processor, ...)
+{ static 	int	next_memory	= 0;
+  ComponentDeclaration	*component	= New(ComponentDeclaration);
+  int			memory_size;
+
+  if (component == NULL)
+   { fputs("configure: out of memory building taskforce.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  printf("component memory%d { code memory; puid /%s; }\n", next_memory,
+		RmGetProcessorId(processor));
+  memory_size = RmGetProcessorMemory(processor);
+  if (memory_size <= (1024 * 1024))
+   memory_size = (384 * 1024);
+  else
+   memory_size -= (1024 * 1024);
+  sprintf(component->Command, "memory%d %d %d", next_memory, next_memory,
+		memory_size);
+
+  AddTail(&TaskforceList, &(component->Node));
+  ComponentCount++;
+  next_memory++;
+  return(1);
+}
+
+	/* For every processor to be tested, and for every link	*/
+	/* between these processors, this routine adds another	*/
+	/* two components. The component declarations define	*/
+	/* streams between the two programs, and a counter	*/
+	/* variable is used to generate unique pipe names.	*/
+	/* Every link thus treated is broken to ensure that	*/
+	/* the CDL script does not run two tests across every	*/
+	/* link.						*/
+static int LinksScan(RmProcessor processor, ...)
+{ static int		counter		= 0;
+  int			number_links	= RmCountLinks(processor);
+  RmProcessor		neighbour;
+  int			destlink;
+  int			i;
+  ComponentDeclaration	*dec1, *dec2;
+
+  for (i = 0; i < number_links; i++)
+   { neighbour = RmFollowLink(processor, i, &destlink);
+     if ((neighbour == RmM_NoProcessor) || (neighbour == RmM_ExternalProcessor))
+      continue;
+
+	/* output component declarations				*/
+     printf("component linktest%d { streams , , , , <| pipe%d, >| pipe%d; \n",
+		counter, counter, counter+1);
+     printf("                   code linktest; puid /%s; }\n",
+		 RmGetProcessorId(processor));
+     printf("component linktest%d { streams , , , , <| pipe%d, >| pipe%d; \n",
+		counter+1, counter+1, counter);
+     printf("                   code linktest; puid /%s; }\n",
+		RmGetProcessorId(neighbour));
+
+	/* Add these components to the taskforce.			*/
+     dec1	= malloc(sizeof(ComponentDeclaration));
+     dec2	= malloc(sizeof(ComponentDeclaration));
+     if ((dec1 == NULL) || (dec2 == NULL))
+      { fprintf(stderr, "configure: not enough memory to build taskforce.\n");
+	exit(EXIT_FAILURE);
+      }
+     sprintf(dec1->Command, "linktest%d %d", counter, counter);
+     sprintf(dec2->Command, "linktest%d %d", counter+1, counter+1);
+     AddTail(&(TaskforceList), &(dec1->Node));
+     AddTail(&(TaskforceList), &(dec2->Node));
+     ComponentCount += 2;
+
+	/* Update the static counter to allow for these two tasks	*/
+     counter += 2;
+
+	/* Ignore this link from now on.				*/
+     RmBreakLink(processor, i);
+   }
+  return(0);
+}
+
+	/* For every component in the taskforce this routine	*/
+	/* incorporates the component in the taskforce		*/
+	/* declaration. An extra argument is used to suppress	*/
+	/* the comma before the first component.		*/
+static int ComponentsWalk(ComponentDeclaration *component, int *junk)
+{
+  if (*junk != 0)
+   putchar(',');
+  printf(" <> %s", component->Command);
+  *junk += 1;
+  return(0);
+}
+
+
+@

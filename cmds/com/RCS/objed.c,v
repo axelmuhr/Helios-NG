@@ -1,0 +1,1139 @@
+head	1.15;
+access;
+symbols
+	Helios_1_3_1:1.15
+	Helios_C40_1_3_Official_Release:1.10
+	Alenia_release:1.10
+	Helios1_3:1.10
+	C40_Field_Test_2:1.10
+	C40_Field_Test_R1:1.10
+	Helios13_beta:1.10
+	Helios1_2_2:1.6
+	Helios1_2_2Beta:1.5
+	Helios1_2_1:1.5
+	Helios1_2:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.15
+date	93.08.27.14.11.05;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	93.08.27.12.14.49;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	93.08.16.16.24.12;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	93.08.02.16.58.49;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	93.07.12.11.40.13;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.06.26.15.37.58;	author bart;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.05.21.08.00.45;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.03.25.11.23.23;	author martyn;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.12.02.14.55.05;	author martyn;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.10.11.17.30.16;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.03.03.23.06.27;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.09.26.19.10.03;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.13.18.54.47;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.24.27;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.32.56;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@allows the changing of stack and heap set for an executable file
+at run time
+@
+
+
+1.15
+log
+@added wwarning message if trying to set stacksize on a non-program
+@
+text
+@#if 0
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.14 1993/08/27 12:14:49 nickc Exp nickc $";
+#endif
+
+#include <stdio.h>
+#include <module.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+
+Program 	prog;
+ImageHdr	hdr;
+FILE *		fd;
+
+
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#endif
+
+#define _ARG_ if( *arg == 0 ) arg = *(++argv);
+
+#ifdef HOSTISBIGENDIAN
+int	swapopt = TRUE;	/* default to swapping */
+#else
+int	swapopt = FALSE;
+#endif
+
+word
+swapword( word it )
+{
+  if (!swapopt)	return (it);
+    {
+      byte	from[4];
+      byte	to[4];
+
+      *((word *)from) = it;
+
+      to[0] = from[3];
+      to[1] = from[2];
+      to[2] = from[1];
+      to[3] = from[0];
+      
+      return(*((word *)to));
+    }
+}
+
+void
+putmodules( void )
+{
+  word 		isize = swapword( hdr.Size );
+  word *       	v;
+  Module *	m;
+  int		rsize;
+  word		mtype;
+
+  
+  v  = (word *)malloc( (int)isize );
+  
+  if ( v == NULL )
+    return;
+  
+  fseek( fd, sizeof (ImageHdr), SEEK_SET );
+  
+  rsize = fread( v, 1, (int)isize, fd );
+  
+  if ( rsize != isize )
+   { fprintf(stderr, "Image file smaller than header size\n" );
+     exit(1);
+   }
+  
+  m = (Module *)v;
+  
+  while ((mtype = swapword( m->Type )) != 0 )
+    {
+      word	msize    = swapword( m->Size    );
+      word	mslot    = swapword( m->Id      );
+      word	mdsize   = swapword( m->MaxData );
+      word	mversion = swapword( m->Version );
+      char *	mname    = m->Name;
+
+      
+      switch ( mtype )
+	{		
+	case T_Program:
+	  printf( "Program : %10s slot %3ld version %4ld size %5ld datasize %4ld\n",
+		 mname, mslot, mversion, msize, mdsize );
+	  break;
+	  
+	case T_Module:
+	  printf( "Module  : %10s slot %3ld version %4ld size %5ld datasize %4ld\n",
+		 mname, mslot, mversion, msize, mdsize );
+	  break;
+	  
+	case T_ResRef:
+	  printf( "ResRef  : %10s slot %3ld version %4ld\n",
+		 mname, mslot, mversion );
+	  break;
+	  
+	default:
+	  fprintf( stderr, "Unknown module type: %lx\n", mtype );
+	  exit(1);
+	}
+      
+      m = (Module *)((char *)m + msize);
+    }
+  
+  free( v );
+
+  return;
+  
+} /* putmodules */
+
+typedef struct Image_Magics
+  {
+    unsigned long	Magic;
+    char *		Type;	  
+  }
+Image_Magics;
+
+
+int
+main(
+     int argc,
+     char **argv )
+{
+  long 		info      = false;
+  int		size;
+  long		changed   = false;
+  long		progtype;
+  char *	file      = NULL;
+  char *	type 	  = NULL;
+  char *	name	  = 0;
+  long		stacksize = -1;
+  long		heapsize  = -1;
+  long		modules	  = false;
+
+  
+  argv++;
+  
+  while ( *argv != 0 )
+    {
+      char *arg = *argv;
+      
+      if ( *arg++ == '-' )
+	{
+	  switch ( *arg++ )
+	    {
+	    case 'n':
+	      _ARG_;
+	      name = arg;
+	      break;
+	      
+	    case 's':
+	      _ARG_;
+	      stacksize = (long)atol( arg );
+	      break;
+	      
+	    case 'h':
+	      _ARG_;
+	      heapsize = (long)atol( arg );
+	      break;			
+	      
+	    case 'i':
+	      info = true;
+	      break;	
+	      
+	    case 'm':
+	      modules = true;
+	      break;
+	      
+	    }
+	}
+      else
+	{
+	  file = *argv;
+	}
+      
+      argv++;
+    }
+
+  if (file == NULL)
+    {
+      fprintf( stderr, "objed: must have name of file to examine\n" );
+      exit(1);
+    }
+  
+  if (name == 0 && stacksize == -1 && heapsize == -1) /* nowt to write */
+    {
+      fd = fopen(file,"rb");
+    }
+  else
+    {
+#if defined(__TRAN) || defined(__ARM) || defined(R140) || defined(__C40) || defined (__HELIOS)
+      fd = fopen( file, "r+b" );
+#else
+      fd = fopen( file, "rwb" );
+#endif
+    }
+  
+  if ( fd == 0 ) 
+    { fprintf(stderr, "Cannot open %s\n",file );
+      exit(1);
+    }
+  
+  size = fread( &hdr, 1, sizeof (ImageHdr), fd );
+  
+  if ( size != sizeof(ImageHdr) )
+   { fprintf( stderr, "Read failure: %d\n", size );
+     exit(1);
+   }
+  
+    {
+      static Image_Magics	Values[] =
+	{
+	  /*
+	   * XXX - the following have been extracted from /hsrc/include/module.h
+	   *       make sure that they are kept up to date
+	   */
+
+	  { 0x12345678L,	"Transputer Helios Executable\n" },
+	  { 0xc4045601L,	"Helios-C40 Executable\n" },
+	  { 0x0a245601L,	"Helios-ARM Executable\n" },
+	  { 0x86045601L,	"Helios-I860 Executable\n" },
+#ifdef HOSTISBIGENDIAN
+	  { 0x01560468L,	"Helios-M68K Executable\n" },
+#else
+	  { 0x68045601L,	"Helios-M68K Executable\n" },
+#endif
+	  { TaskForce_Magic,	"Task Force Binary\n" },
+	  { RmLib_Magic,	"Resource Management Library Binary\n" }
+	};
+      unsigned long	value = swapword( hdr.Magic );
+      int		i;
+
+
+      for (i = sizeof (Values) / sizeof (Values[0]); i--;)
+	{
+	  if (value == Values[ i ].Magic)
+	    {
+	      printf( Values[ i ].Type );
+	      break;	      
+	    }
+	}
+      
+      if (i < 0)
+	{
+	  fprintf( stderr,  "File not object image\n" );
+	  exit(1);
+	}
+
+      if (Values[i].Magic == 0x01560468)
+	{
+	  swapopt = FALSE;
+	}      
+    }
+  
+  if ( info )
+    printf( "Image size = %ld bytes\n", swapword( hdr.Size ) );
+
+  size = fread( &prog, 1, sizeof (Program), fd );
+  
+  if ( size != sizeof (Program) )
+   { fprintf(stderr, "Read failure: %d\n", size );
+     exit(1);
+   }
+   
+  progtype = swapword( prog.Module.Type );
+  
+  if   ( progtype == T_Program ) type = "Program";
+  elif ( progtype == T_Module  ) type = "Module";
+  elif ( progtype == T_ResRef  ) type = "ResRef"; 
+  
+  if ( type == NULL )
+   { fprintf(stderr, "Invalid Module type: %lx\n",progtype );
+     exit(1);
+   }
+  
+  if ( info )
+    {
+      printf( "Object type is %s\n",type );
+  
+      printf( "Name is '%s' ",prog.Module.Name );
+    }
+  
+  if ( name != 0 )
+    {
+      int i;
+
+      
+      changed = true;
+      
+      for (i = 0; i < 32; i++ )
+	prog.Module.Name[ i ] = 0;
+      
+      strncpy( prog.Module.Name, name, 31 );
+      
+      if ( info )
+	printf( "New = '%s'", prog.Module.Name );
+    }
+  
+  if ( info )
+    putchar('\n');
+  
+  if ( swapword( prog.Module.Type ) == T_Program )
+    {
+      if ( info )
+	printf( "Stacksize = %ld ", swapword( prog.Stacksize ) );
+      
+      if ( stacksize != -1 )
+	{
+	  changed = true;
+	  
+	  prog.Stacksize = swapword( stacksize );
+	  
+	  if ( info )
+	    printf( "New = %ld", stacksize );
+	}
+      
+      if ( info )
+	printf( "\nHeapsize = %ld ", swapword( prog.Heapsize ) );
+      
+      if ( heapsize != -1 )
+	{
+	  changed = true;
+	  
+	  prog.Heapsize = swapword( heapsize );
+	  
+	  if ( info )
+	    printf( "New = %ld", heapsize );
+	}
+      
+      if ( info )
+	putchar('\n');
+    }
+  else if (stacksize != -1 || heapsize != -1)
+    {
+      printf( "Cannot set stacksize/heapsize - image does not include a program stucture\n" );
+    }
+  
+  if ( modules )
+    putmodules();
+  
+  if ( changed )
+    {
+      
+      fseek( fd, 0L, SEEK_SET );
+      
+      size = fwrite( &hdr, 1, sizeof (ImageHdr), fd );
+      
+      if ( size != sizeof (ImageHdr) )
+	{ fprintf(stderr,  "Write failure writing header: wrote %d bytes, errno = %d\n",
+	      size, errno);
+	  exit(1);
+	}
+      
+      size = fwrite( &prog, 1, sizeof (Program), fd );
+      
+      if ( size != sizeof (Program) )
+	{ fprintf( stderr, "Write failure writing program: wrote %d bytes, errno = %d\n",
+	      size, errno);
+	  exit(1);
+	}	      
+    }
+  
+  fclose( fd );
+  
+  return 0;
+
+} /* main */
+@
+
+
+1.14
+log
+@fixed to cope with big endian machines
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.13 1993/08/16 16:24:12 nickc Exp nickc $";
+d334 4
+@
+
+
+1.13
+log
+@fixed for compilation on transputer
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.12 1993/08/02 16:58:49 nickc Exp nickc $";
+d22 5
+d28 2
+a29 3
+#ifdef HOSTISBIGENDIAN
+long
+swap( long x )
+d31 4
+a34 3
+  long 		r;
+  char *	a = (char *)&x;
+  char *	b = (char *)&r;
+d36 1
+d38 8
+a45 11
+  b[ 0 ] = a[ 3 ];
+  b[ 1 ] = a[ 2 ];
+  b[ 2 ] = a[ 1 ];
+  b[ 3 ] = a[ 0 ];
+
+  return r;
+
+} /* swap */
+#else
+#define swap(x) (x)
+#endif /* not HOSTISBIGENDIAN */
+d50 1
+a50 1
+  word 		isize = swap( hdr.Size );
+d73 1
+a73 1
+  while ((mtype = swap( m->Type )) != 0 )
+d75 4
+a78 4
+      word	msize    = swap( m->Size    );
+      word	mslot    = swap( m->Id      );
+      word	mdsize   = swap( m->MaxData );
+      word	mversion = swap( m->Version );
+a211 3
+  if ( info )
+    printf( "Image size = %ld bytes\n", swap( hdr.Size ) );
+
+d224 3
+d228 1
+d232 1
+a232 1
+      unsigned long	value = swap( hdr.Magic );
+d244 1
+a244 1
+
+d249 5
+d257 3
+d267 1
+a267 1
+  progtype = swap( prog.Module.Type );
+d304 1
+a304 1
+  if ( swap( prog.Module.Type ) == T_Program )
+d307 1
+a307 1
+	printf( "Stacksize = %ld ", swap( prog.Stacksize ) );
+d313 1
+a313 1
+	  prog.Stacksize = swap( stacksize );
+d320 1
+a320 1
+	printf( "\nHeapsize = %ld ", swap( prog.Heapsize ) );
+d326 1
+a326 1
+	  prog.Heapsize = swap( heapsize );
+@
+
+
+1.12
+log
+@made into a universal objedt reader
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.11 1993/07/12 11:40:13 nickc Exp nickc $";
+d213 1
+a213 1
+      Image_Magics	Values[] =
+@
+
+
+1.11
+log
+@fixed compile time warnings
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.10 1992/06/26 15:37:58 bart Exp nickc $";
+d23 1
+a25 3
+#ifndef HOSTISBIGENDIAN
+{ return (x); }
+#else
+d40 3
+a42 2
+#endif /* HOSTISBIGENDIAN */
+
+a43 1
+
+d45 1
+a45 1
+putmodules( )
+d110 7
+d120 2
+a121 2
+int argc,
+char **argv )
+d211 36
+a246 5
+  
+  if ( swap(hdr.Magic) != Image_Magic )
+   { fprintf(stderr,  "File not object image\n" );
+     exit(1);
+   }
+@
+
+
+1.10
+log
+@Fixed to compile on SUN4 as well as for Helios
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /users/bart/hsrc/cmds/com/RCS/objed.c,v 1.9 1992/05/21 08:00:45 nickc Exp bart $";
+d24 1
+a24 2
+swap( x )
+  long x;
+d99 1
+a99 1
+	  fprintf( stderr, "Unknown module type: %x\n", mtype );
+d114 3
+a116 3
+main(argc,argv )
+int argc;
+char **argv;
+d122 1
+a122 1
+  char *	file;
+d172 6
+d226 1
+a226 1
+   { fprintf(stderr, "Invalid Module type: %x\n",progtype );
+@
+
+
+1.9
+log
+@fixed bug opening file
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.8 1992/03/25 11:23:23 martyn Exp nickc $";
+a6 1
+#include <stdarg.h>
+d9 1
+a45 4
+void
+error( char * str, ... )
+{
+  va_list	ap;
+a46 19
+
+  va_start( ap, str );
+
+  fprintf( stderr, "Error: " );
+
+  vfprintf( stderr, str, ap );
+
+  putc( '\n', stderr );
+
+  if ( fd != 0 )
+    fclose( fd );
+
+  va_end( ap );
+  
+  exit( 20 );
+
+} /* error */
+
+
+d48 1
+a48 1
+putmodules( void )
+d67 3
+a69 1
+    error( "Image file smaller than header size" );
+d100 2
+a101 1
+	  error( "Unknown module type: %x", mtype );
+d115 3
+a117 3
+main(
+     int 	argc,
+     char **	argv )
+d188 3
+a190 1
+    error( "Cannot open %s",file );
+d195 3
+a197 1
+    error( "Read failure: %d", size );
+d203 3
+a205 1
+    error( "File not object image" );
+d210 4
+a213 2
+    error( "Read failure: %d", size );
+  
+d221 3
+a223 1
+    error( "Invalid Module type: %x",progtype );
+a287 1
+      extern unsigned long oserr;
+a288 1
+      
+d294 4
+a297 2
+	error( "Write failure writing header: wrote %d bytes, errno = %d, oserr = %lx",
+	      size, errno, oserr );
+d302 4
+a305 2
+	error( "Write failure writing program: wrote %d bytes, errno = %d, oserr = %lx",
+	      size, errno, oserr );
+@
+
+
+1.8
+log
+@only open file for writing if absolutely necessary. Having done this,
+I discovered that the changed flag which determines whether or not the
+image header is written back to the file, was never initialised. objed'ed
+files were (probably) *always* modified.
+@
+text
+@d1 3
+a3 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.7 1991/12/02 14:55:05 martyn Exp $";
+d7 7
+a13 2
+
+#define _ARG_ if( *arg == 0 ) arg = *(++argv);
+a14 1
+FILE *fd;
+d20 6
+a25 2
+long swap(x)
+long x;
+d30 3
+a32 12
+	long r;
+	char *a = (char *)&x;
+	char *b = (char *)&r;
+
+	b[0] = a[3];
+	b[1] = a[2];
+	b[2] = a[1];
+	b[3] = a[0];
+
+	return r;
+}
+#endif
+a33 2
+long atol();
+void putmodules();
+d35 4
+a38 2
+Program prog;
+ImageHdr hdr;
+d40 1
+a40 16
+main(argc,argv)
+int argc;
+char **argv;
+{
+	int info = false;
+	int size;
+	int changed = false;
+	long progtype;
+	char *file;
+	char *type = NULL;
+	char *name = 0;
+	long stacksize = -1;
+	long heapsize = -1;
+	int modules = false;
+	
+	argv++;
+d42 2
+a43 3
+	while( *argv != 0 )
+	{
+		char *arg = *argv;
+a44 34
+		if( *arg++ == '-' )
+		{
+			switch( *arg++ )
+			{
+			case 'n':
+				_ARG_;
+				name = arg;
+				break;
+
+			case 's':
+				_ARG_;
+				stacksize = (long)atol(arg);
+				break;
+
+			case 'h':
+				_ARG_;
+				heapsize = (long)atol(arg);
+				break;			
+
+			case 'i':
+				info = true;
+				break;	
+				
+			case 'm':
+				modules = true;
+				break;
+				
+			}
+		}
+		else {
+			file = *argv;
+		}
+		argv++;
+	}
+d46 4
+a49 8
+	if(name == 0 && stacksize == -1 && heapsize == -1) /* nowt to write */
+		fd = fopen(file,"rb");
+	else
+#if defined(__TRAN) || defined(__ARM) || defined(R140)
+		fd = fopen(file,"r+b");
+#else
+		fd = fopen(file,"rwb");
+#endif
+a50 2
+	if( fd == 0 ) 
+		error("Cannot open %s",file);
+d52 1
+a52 1
+	size = fread(&hdr,1,sizeof(ImageHdr),fd);
+d54 1
+a54 2
+	if( size != sizeof(ImageHdr) )
+		error("Read failure: %d",size);
+d56 1
+a56 1
+	if ( info ) printf("Image size = %ld bytes\n",swap(hdr.Size));
+d58 1
+a58 2
+	if( swap(hdr.Magic) != Image_Magic )
+		error("File not object image");
+d60 2
+a61 1
+	size = fread(&prog,1,sizeof(Program),fd);
+d63 3
+a65 2
+	if( size != sizeof(Program) )
+		error("Read failure: %d",size);
+d67 1
+a67 1
+	progtype = swap(prog.Module.Type);
+a68 4
+	
+	if   ( progtype == T_Program ) type = "Program";
+	elif ( progtype == T_Module  ) type = "Module";
+	elif ( progtype == T_ResRef  ) type = "ResRef"; 
+d70 62
+a131 4
+	if( type == NULL )
+		error("Invalid Module type: %x",progtype);
+		
+	if ( info ) printf("Object type is %s\n",type);
+a132 1
+	if ( info ) printf("Name is '%s' ",prog.Module.Name);
+d134 24
+a157 1
+	if( name != 0 )
+d159 26
+a184 5
+		int i;
+		changed = true;
+		for(i=0; i<32; i++ ) prog.Module.Name[i] = 0;
+		strncpy(prog.Module.Name,name,31);
+		if ( info ) printf("New = '%s'",prog.Module.Name);
+d186 1
+a186 3
+	if ( info ) putchar('\n');
+
+	if( swap(prog.Module.Type) == T_Program )
+d188 1
+a188 17
+		
+		if ( info ) printf("Stacksize = %ld ",swap(prog.Stacksize));
+		if( stacksize != -1 )
+		{
+			changed = true;
+			prog.Stacksize = swap(stacksize);
+			if ( info ) printf("New = %ld",stacksize);
+		}
+		if ( info ) printf("\nHeapsize = %ld ",swap(prog.Heapsize));
+		if( heapsize != -1 )
+		{
+			changed = true;
+			prog.Heapsize = swap(heapsize);
+			if ( info ) printf("New = %ld",heapsize);
+		}
+		if ( info ) putchar('\n');
+
+d190 77
+a266 4
+
+	if( modules ) putmodules();
+
+	if( changed )
+d268 6
+a273 11
+		fseek(fd,0L,SEEK_SET);
+
+		size = fwrite(&hdr,1,sizeof(ImageHdr),fd);
+
+		if( size != sizeof(ImageHdr) )
+			error("Write failure: %d",size);
+
+		size = fwrite(&prog,1,sizeof(Program),fd);
+
+		if( size != sizeof(Program) )
+			error("Write failure: %d",size);
+d275 5
+a279 26
+
+	fclose( fd );
+	return 0;
+}
+
+void putmodules()
+{
+	word isize = swap(hdr.Size);
+	word *v;
+	Module *m;
+	int rsize;
+	word mtype;
+	
+	v  = (word *)malloc(swap(hdr.Size));
+
+	if( v == NULL ) return;
+	
+	fseek(fd,sizeof(ImageHdr),SEEK_SET);
+
+	rsize = fread(v,1,isize,fd);
+
+	if( rsize != isize ) error("Image file smaller than header size");
+	
+	m = (Module *)v;
+	
+	while( (mtype=swap(m->Type)) != 0 )
+d281 6
+a286 28
+		word msize = swap(m->Size);
+		word mslot = swap(m->Id);
+		word mdsize = swap(m->MaxData);
+		word mversion = swap(m->Version);
+		char *mname = m->Name;
+
+		switch( mtype )
+		{		
+		case T_Program:
+			printf("Program : %10s slot %3d version %4d size %5d datasize %4d\n",
+				mname,mslot,mversion,msize,mdsize);
+			break;
+			
+		case T_Module:
+			printf("Module  : %10s slot %3d version %4d size %5d datasize %4d\n",
+				mname,mslot,mversion,msize,mdsize);
+			break;
+			
+		case T_ResRef:
+			printf("ResRef  : %10s slot %3d version %4d\n",
+				mname,mslot,mversion);
+			break;
+		
+		default:
+			error("Unknown module type: %x",mtype);
+		}
+		
+		m = (Module *)((char *)m + msize);
+d288 31
+a318 2
+
+	free(v);
+d320 1
+a320 13
+}
+
+error(str,a,b,c,d,e,f)
+char *str;
+int a,b,c,d,e,f;
+{
+	fprintf(stderr,"Error: ");
+	fprintf(stderr,str,a,b,c,d,e,f);
+	putc('\n',stderr);
+
+	if( fd != 0 ) fclose(fd);
+	exit(20);
+}
+@
+
+
+1.7
+log
+@finally removed ORION
+@
+text
+@d1 1
+a1 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/objed.c,v 1.6 1991/10/11 17:30:16 paul Exp martyn $";
+d45 1
+a45 1
+	int changed;
+d95 3
+d99 1
+a99 1
+	fd = fopen(file,"r+b");
+d101 1
+a101 1
+	fd = fopen(file,"rwb");
+@
+
+
+1.6
+log
+@made more portab;le[2~le
+@
+text
+@d1 1
+a1 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/objed.c,v 1.5 91/03/03 23:06:27 paul Exp $";
+d95 1
+a95 1
+#if defined(ORION) || defined(__TRAN) || defined(__ARM) || defined(R140)
+@
+
+
+1.5
+log
+@fixed to make work with -DR140
+@
+text
+@d1 1
+a1 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/objed.c,v 1.4 90/09/26 19:10:03 paul Exp $";
+d10 1
+a10 1
+#if defined(ORION) || defined(R140) || defined(SUN4)
+a11 2
+#define Malloc malloc
+#define Free free
+d16 1
+a16 1
+#if defined(ORION) || defined(__TRAN) || defined(__ARM) || defined(R140)
+d193 1
+a193 1
+	v  = (word *)Malloc(swap(hdr.Size));
+d237 1
+a237 1
+	Free(v);
+@
+
+
+1.4
+log
+@arm integration with 1.2
+@
+text
+@d1 1
+a2 2
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/objed.c,v 1.3 90/09/13 18:54:47 nick Exp $";
+
+d10 1
+a10 1
+#ifdef ORION
+d18 1
+a18 1
+#if defined(ORION) || defined(__TRAN) || defined(__ARM)
+d97 1
+a97 1
+#if defined(ORION) || defined(__TRAN) || defined(__ARM)
+@
+
+
+1.3
+log
+@HELIOS flag changed to __TRAN
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/objed.c,v 1.2 90/08/23 10:24:27 james Exp Locker: nick $";
+d19 1
+a19 1
+#if defined(ORION) || defined(__TRAN)
+d98 1
+a98 1
+#if defined(ORION) || defined(__TRAN)
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/objed.c,v 1.1 90/08/22 16:32:56 james Exp Locker: james $";
+d19 1
+a19 1
+#if defined(ORION) || defined(HELIOS)
+d98 1
+a98 1
+#if defined(ORION) || defined(HELIOS)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+static char rcsid[] = "$Header$";
+@

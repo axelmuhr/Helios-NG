@@ -1,0 +1,216 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- tranasm.a								--
+--                                                                      --
+--	Assembler downcodes to support C version of kernel.		--
+--	Most of these could be implemented in C with assembler inserts	--
+--	but putting these here keeps the C code relatively free of 	--
+--	machine dependencies.						--
+--                                                                      --
+--	Author:  NHG 11/8/88						--
+--                                                                      --
+--------------------------------------------------------------------------
+rcsid[ $Id: tranasm.a,v 1.1 1992/01/10 13:08:46 paul Exp $ ]
+
+include basic.m
+include procs.m
+include structs.m
+include debug.m
+
+	align
+..ErrorCodes:
+	word	#81058001	-- 0 Err_Timeout 
+	word	#a1098003	-- 1 Err_BadPort 
+	word	#a1098004	-- 2 Err_BadRoute 
+	word	#c1098012	-- 3 Err_DeadLink 
+	word	#a1010000	-- 4 Err_NoMemory 
+	word	#810b8004	-- 5 Err_Congestion 
+	word	#e10e0004	-- 6 Err_Kill 
+	word	#c10e0005	-- 7 Err_Abort 
+	word	#810b8003	-- 8 Err_NotReady 
+	word	#a1098012	-- 9 Err_BadLink 
+
+_if _false_
+[
+	_defq 'hipri['hipri_body]
+	[
+	deftemp [
+		ajw -4
+		ldpri stl 1			-- save current pri
+		ldpri cj templab 1		-- if already hipri skip
+		ldc templab 3 - 2 ldpi
+		stl -1
+		ldlp 0 runp
+	templab 3 :
+		mint mint stnl 11
+	templab 1 :
+	        _set '_stackinc _add _stackinc 4
+		hipri_body
+	        _set '_stackinc _sub _stackinc 4
+		ldl 1 cj templab 2		-- if was hipri skip
+		ldlp 0 adc 1 runp
+		stopp
+	templab 2 :
+		ajw 4
+	]
+	]
+]
+
+----------------------------------------------------------
+-- HiPri						--
+--							--
+-- Execute the supplied procedure at high priority.	--
+-- At present a maximum of three args may be passed.	--
+--							--
+----------------------------------------------------------
+
+proc HiPri
+[
+	word	func		-- pointer to function
+	word	arg0		-- first argument
+	word	arg1		-- second argument
+	word	arg3		-- third argument
+]
+[
+	word	result		-- return value from func
+]
+[
+	hipri
+	[
+--		func mint stnl 1023	-- DEBUG Feature
+--		ldlp 0 mint stnl 1022
+
+		arg3 stl 0	-- hipri leaves local 0 free
+		arg1
+		arg0
+		ldl _add _stackinc _ModTab
+		call ..CallFunc
+		store result
+
+--		mint ldnl 1023 adc 1 mint stnl 1023
+	]
+	result				-- return with result
+]
+
+..CallFunc:
+	ldl 11		-- get fnptr from proc args
+	gcall
+
+----------------------------------------------------------
+-- Kernel entry points					--
+--							--
+-- The external entry points of the following procedures--
+-- have been down-coded into assembler to keep the	--
+-- performance of the system up.			--
+--							--
+----------------------------------------------------------
+
+proc GetMsg[word mcb]
+[word rc]
+[
+	hipri
+	[
+		call1 _GetMsg mcb 
+		store rc
+	]
+	rc
+]
+
+proc PutMsg[word mcb]
+[word rc]
+[
+	hipri
+	[
+		call1 _PutMsg mcb 
+		store rc
+	]
+	rc
+]
+
+proc XchMsg[word txmcb word rxmcb]
+[word rc]
+[
+	hipri
+	[
+		call2 _XchMsg txmcb rxmcb
+		store rc
+	]
+	rc
+]
+
+----------------------------------------------------------
+-- CallWithModTab					--
+--							--
+-- Call the given procedure using the supplied module	--
+-- table, passing up to 1 argument.			--
+-- Called from TaskInit to call the init procedures of	--
+-- a new task and from CallException to call an 	--
+-- exception handler.					--
+--							--
+----------------------------------------------------------
+
+proc CallWithModTab
+[
+	word		arg0
+	word		arg1
+	word		func
+	word		modtab
+]
+[]
+[
+	modtab stl _ModTab		-- replace my own ModTab
+	func				-- get function
+	gcall				-- enter it
+
+	-- the routine will use current stack frame and return
+	-- directly to caller
+]
+
+
+-- new functions added in Helios v1.2
+
+
+proc InitErrorCodes[]
+[]
+[
+	ldc	..ErrorCodes-2
+	ldpi
+]
+
+-- return pointer to current tasks modtab
+proc _GetModTab[]
+[]
+[
+	ldl _ModTab
+]
+
+proc GetPhysPri[]
+[]
+[
+-- return physical pri
+	ldpri
+]
+
+proc SetPhysPri[word pri]
+[]
+[
+-- only set pri if different
+-- if different, toggle pri
+]
+
+proc GetPhysPriRange[]
+[]
+[
+	ldc 1
+]
+
+
+
+
+-- End of tranasm.a

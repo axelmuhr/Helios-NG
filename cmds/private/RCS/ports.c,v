@@ -1,0 +1,458 @@
+head	1.6;
+access;
+symbols
+	Helios_1_3_1:1.4
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	C40_Field_Test_R1:1.3
+	Helios13_beta:1.3
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.6
+date	94.03.07.13.40.57;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	94.03.04.12.33.47;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	93.08.08.16.52.33;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.03.11.12.15.34;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.27.09;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.34.13;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@oops - fixed previous delta which tried to examine the Users list in the PTE even though this can be overloaded.
+@
+text
+@/*{{{  Header */
+
+#ifdef __TRAN
+static char *rcsid = "$Header: /hsrc/cmds/private/RCS/ports.c,v 1.5 1994/03/04 12:33:47 nickc Exp nickc $";
+#endif
+
+/*}}}*/
+/*{{{  Includes */
+
+#include <stdio.h>
+#include <syslib.h>
+#include <task.h>
+#include <servlib.h>
+
+#ifdef NEW_SYSTEM
+#include <message.h>
+#else
+typedef struct PTE {
+	byte		Type;
+	byte		Cycle;
+	byte		Flags;
+	byte		Uses;
+	word		Owner;
+	word		TxId;
+	word		RxId;
+} PTE;
+
+#define in_kernel 1	/* trick root.h into letting us define PTE	*/
+#endif
+
+#include <root.h>
+#include <stdlib.h>
+#include <string.h>	/* for memcpy */
+
+/*}}}*/
+/*{{{  Variables */
+
+char lbuf[80];
+
+/*}}}*/
+/*{{{  Constants */
+
+#define T_Free		0
+#define T_Local 	1
+#define T_Surrogate	2
+#define T_Trail		3
+#define T_Permanent	4
+
+#define PTNumBlocks	64	/* NB/ This must match definition in kernel.h */
+
+/*}}}*/
+/*{{{  Code */
+
+/*{{{  main() */
+
+int
+main(
+     int 	argc,
+     char **	argv )
+{
+  RootStruct *	root = GetRoot();
+  PTE *		p;
+  PTE **	basetab;
+  word		ptsize;
+  word		freeq   = root->PTFreeq;
+  word		i;
+  bool		freeonly = false;
+  bool		full = false;
+#ifdef NEW_SYSTEM
+  ExecInfo	sExecInfo;
+
+  
+  GetExecInfo( &sExecInfo );
+
+  basetab = (PTE **)malloc( (int)root->PTSize * sizeof (PTE *) );
+  
+  if (basetab == NULL) 
+    {
+      fprintf( stderr, "no memory available\n" );
+      return EXIT_FAILURE;
+    }
+  
+  WaitMutex( sExecInfo.PortsLock );
+
+  /* copy the PortTable */
+  
+  memcpy( basetab, root->PortTable, (int)root->PTSize );
+  
+  SignalMutex( sExecInfo.PortsLock );
+  
+  ptsize  = root->PTSize / sizeof (PTE *);
+#else  
+
+  basetab = (root->PortTable);
+  ptsize  = root->PTSize / 4 - 1;
+
+#endif
+
+  
+  if ( argc > 1 )
+    {
+      char *s = argv[1];
+
+      do
+	{
+	  switch( *s )
+	    {
+	    case 'f': freeonly = true; break;
+	    case 'a': full = true; break;
+	    }
+	}
+      while ( *(++s) != '\0' );
+    }
+
+  if ( !freeonly )
+    {
+      word j;
+
+      
+      printf( "PortTable:\n" );
+#ifdef NEW_SYSTEM
+      printf( "  Port    Type  Rcv" );
+#else
+      printf( "  Port    Type  Age" );
+      if ( full ) printf("   TxId     RxId    ");
+#endif
+      printf("         Owner\n");
+
+      for ( j = 0; j < ptsize; j++ )
+	{
+	  p = basetab[ j ];
+
+	  if ( p == 0 ) break;
+	  if ( p == (PTE *)(MinInt) ) continue;
+
+	  for ( i = 0; i < PTNumBlocks; i++ )
+	    {
+	      PTE *	pte = &p[i];
+	      char *	state = pte->Type==T_Local     ? "Local" :
+		                pte->Type==T_Free      ? "Free " :
+		                pte->Type==T_Trail     ? "Trail" :
+		                pte->Type==T_Permanent ? "Perm " :
+		                                         "Surr " ;
+
+	      if ( pte->Type != T_Free )
+		{
+		  printf("%02x%02x%02lx%02lx  %s %3d",
+			 (pte->Type==T_Local)?0x80:0xe0,
+			 pte->Cycle,j,i,state,
+#ifdef NEW_SYSTEM
+			 pte->Receiving
+#else
+			 pte->Uses
+#endif			 
+			 );
+#ifndef NEW_SYSTEM
+		  if ( full )
+		    printf("   %08x %08x", pte->TxId,pte->RxId);
+#endif		
+				
+		  if ( pte->Owner == NULL ) printf("        Kernel");
+		  else 
+		    {
+		      Task *task = (Task *)pte->Owner;
+		      ObjNode *entry = (ObjNode *)task->TaskEntry;
+		      
+		      if ( entry != NULL )
+			printf("   %11s",entry->Name);
+		      else
+			printf("   task %p entry %p",task,entry);
+		    }
+
+		  if ( pte->Type == T_Local )
+		    putchar('\n');
+		  else
+#ifdef NEW_SYSTEM
+		    printf("   link %1d\n",pte->Link);
+#else
+		  printf("   link %1d -> %08x\n",pte->Flags,pte->TxId);
+#endif				  
+		}
+	    }
+	}
+    }
+
+  printf( "Free Queue :\n" );
+
+  i = 0;
+  
+  while ( freeq > 0 )
+    {
+      i++;
+      printf( "%04lx ", freeq & 0xffff );
+      p = basetab[ (freeq >> 8) & 0xff ];
+      freeq = p[ freeq & 0xff ].Owner;
+    }
+
+  printf( "\nFree Queue size = %ld\n", i );
+
+#ifdef NEW_SYSTEM
+  free( basetab );
+#endif
+  
+  return EXIT_SUCCESS;
+}
+
+/*}}}*/
+
+/*}}}*/
+@
+
+
+1.5
+log
+@updated to work with new RT kernel
+@
+text
+@d4 1
+a4 1
+static char *rcsid = "$Header: /users/nickc/RTNucleus/cmds/private/RCS/ports.c,v 1.4 1993/08/08 16:52:33 paul Exp nickc $";
+a53 18
+#ifdef NEW_SYSTEM
+/*{{{  ListLength() */
+
+static word
+One( void )
+{
+  return 1;
+}
+  
+word
+ListLength( List * pList )
+{
+  return WalkList( pList, One );
+}
+
+/*}}}*/
+#endif
+
+d121 3
+a124 1
+#ifndef NEW_SYSTEM
+d147 1
+a147 1
+		  printf("%02x%02x%02lx%02lx  %s %3ld",
+d151 1
+a151 1
+			 0 /*ListLength( &pte->Users ) */
+@
+
+
+1.4
+log
+@fixed for arm
+@
+text
+@d1 1
+d3 6
+a8 1
+static char *rcsid = "$Header: /dsl/HeliosRoot/Helios/cmds/private/RCS/ports.c,v 1.3 1992/03/11 12:15:34 paul Exp paul $";
+d15 3
+d29 2
+d32 2
+d35 2
+a36 4
+#if defined __C40 || defined __ARM
+/* dont use internal kernel GetRoot() just because we have defined in_kernel */
+# define GetRoot() ((RootStruct *)GetRootBase())
+#endif
+d40 3
+d49 29
+a77 1
+main(int argc,char **argv)
+d79 35
+a113 9
+	RootStruct *root = GetRoot();
+	PTE *p;
+	PTE **basetab = (root->PortTable);
+	word ptsize = root->PTSize/4 - 1;
+	word freeq = root->PTFreeq;
+	word i,j;
+	word nlines = 0;
+	bool freeonly = false;
+	bool full = false;
+d115 8
+a122 1
+	if( argc > 1 )
+d124 5
+a128 8
+		char *s = argv[1];
+		do {
+			switch( *s )
+			{
+			case 'f': freeonly = true; break;
+			case 'a': full = true; break;
+			}
+		} while( *(++s) != '\0' );
+d130 2
+d133 1
+a133 1
+    if( !freeonly )
+d135 11
+a145 5
+	printf("PortTable:\n");
+	printf("  Port    Type  Age");
+	if( full ) printf("   TxId     RxId    ");
+	printf("         Owner\n");
+	for( j = 0; j < ptsize; j++ )
+d147 15
+a161 4
+		p = basetab[j];
+		if( p == 0 ) break;
+		if( p == (PTE *)(MinInt) ) continue;
+		for( i = 0; i < 64; i++ )
+d163 13
+a175 14
+			PTE *pte = &p[i];
+			char *state = pte->Type==T_Local 	? "Local" :
+				      pte->Type==T_Free		? "Free " :
+				      pte->Type==T_Trail	? "Trail" :
+				      pte->Type==T_Permanent	? "Perm " :
+								  "Surr " ;
+			if( pte->Type != T_Free )
+			{
+				printf("%02x%02x%02x%02x  %s %3d",
+					(pte->Type==T_Local)?0x80:0xe0,
+					pte->Cycle,j,i,state,pte->Uses);
+				if( full ) printf("   %08x %08x",
+							pte->TxId,pte->RxId);
+					
+d177 20
+a196 13
+				if( pte->Owner == NULL ) printf("        Kernel");
+				else 
+				{
+					Task *task = (Task *)pte->Owner;
+					ObjNode *entry = (ObjNode *)task->TaskEntry;
+					
+					if( entry != NULL ) printf("   %11s",entry->Name);
+					else printf("   task %x entry %x",task,entry);
+				}
+
+				if( pte->Type == T_Local ) putchar('\n');
+				else printf("   link %1d -> %08x\n",pte->Flags,pte->TxId);
+			}
+d198 1
+d201 12
+a212 1
+	printf("Free Queue :\n");
+d214 1
+a214 9
+	i = 0;	
+	while( freeq > 0 )
+	{
+		i++;
+		printf("%04x ",freeq & 0xffff);
+		p = basetab[(freeq >> 8) & 0xff];
+		freeq = p[freeq & 0xff].Owner;
+	}
+	printf("\nFree Queue size = %d\n",i);
+d216 5
+d222 4
+@
+
+
+1.3
+log
+@fixed for C40
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/ports.c,v 1.2 1990/08/23 10:27:09 james Exp $";
+d22 1
+a22 1
+#ifdef __C40
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/ports.c,v 1.1 90/08/22 16:34:13 james Exp Locker: james $";
+d21 5
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+static char rcsid[] = "$Header$";
+@

@@ -1,0 +1,830 @@
+
+--_def 'BUG1 1
+--_def 'BUG17 1
+
+_defq 'printword['reg] [
+	adds	-24,sp,sp
+	st.l	r16,0(sp)
+	st.l	r17,4(sp)
+	st.l	r18,8(sp)
+	st.l	r19,12(sp)
+	st.l	r20,16(sp)
+	mov	reg,r17
+	CALL	put_word
+	mov	r25,r16
+	ld.l	0(sp),r16
+	ld.l	4(sp),r17
+	ld.l	8(sp),r18
+	ld.l	12(sp),r19
+	ld.l	16(sp),r20
+	adds	24,sp,sp
+]
+--endm
+	include structs.m
+	include queue.m
+	include	i860.m
+	include	exec.m
+	include adapter.m
+	include instrhac.m
+	include clock.m
+
+_defq 'IN_KERNEL 1
+
+_test _not _defp 'IN_KERNEL
+[	include	module.m
+	StartModule lowlevel -1 1
+]
+[.ModStart:]
+--
+-- CACHE FLUSH PROCEDURE
+--
+-- r16 is the reserved area for flushing the cache
+--
+-- This routine does not do any other memory data accesses
+--
+-- It does not corrupt r23,r24
+--
+
+.FlushData::
+         ld.c  psr,r26
+         andnot psr_im,r26,r25
+         st.c  r25,psr
+
+         mov   r1,r22
+
+         adds  -1,r0,r19                  -- r19 <- -1 (loop increment)
+         ld.c  dirbase,r21
+
+         or    2<<db_rcshft,r21,r21       -- RC <-- 0b10 (assuming was 0)
+         CALL  D_FLUSH
+         st.c  r21,dirbase                -- Replace in block 0
+
+         or    1<<db_rbshft,r21,r21       -- RB <-- 0b01
+         CALL  D_FLUSH
+         st.c  r21,dirbase                -- Replace in block 1
+
+         xor   (1<<db_rbshft)|(2<<db_rcshft),r21,r21  -- Clear RC and RB
+         st.c  r21,dirbase
+
+         st.c  r26,psr
+         BRI   r22                        -- Return
+         nop
+
+D_FLUSH: addu  -32,r16,r18                -- Copy dummy block address-32
+         or    127,r0,r20                 -- Loop count
+         ld.l  32(r18),r31                -- Clear current writes
+         ld.l  32(r18),r31                -- See B2 bug 10
+         shl   0,r31,r31                  -- Interlock on r31
+         BLA   [r19] [r20] [D_FLUSH_1]          -- Initialise LCC
+         nop
+
+	PCALIGN 32
+D_FLUSH_1:
+         ixfr  r0,f0
+         bla   r19,r20,D_FLUSH_1
+         flush 32(r18)++                  -- Flush this data cache location
+         ixfr  r0,f0
+         BRI   r1
+         ld.l  -512(r18),r0               -- Load from flush area to clear
+                                          -- pending writes.
+                                          -- A hit is guaranteed.
+
+	PCALIGN 32
+.SetModTab::
+	BRI	r1
+	mov	r16,r15
+
+	PCALIGN 32
+._GetModTab::
+	BRI	r1
+	mov	r15,r16
+
+	PCALIGN	32
+.GetDirBase::
+	ld.c	dirbase,r16
+	BRI	r1
+	nop
+
+	PCALIGN	32
+.SetDirBase::
+	mov	r1,r23
+	mov	r16,r24
+
+	LOADC	[FLUSHSPACE] r16
+	CALL	.FlushData
+	nop
+	LOADC	[adapter] r25
+--	printword r24
+	st.c	r24,dirbase
+	nop
+	nop
+	nop			-- See section 4.3
+	nop			-- and Erratum No. 4 on page 3
+	nop
+	nop
+
+	BRI	r23
+	nop
+
+--
+-- Install_Trap_Handler(Trap_routine)
+--
+-- installs the trap handler in address 0xffffff00
+--
+	PCALIGN	32
+.Install_Trap_Handler::
+	addu	-8,sp,sp
+
+	LOADC	[EXECPTRS] r17
+	st.l	r16,ExecPtrs.TRAPRTNP(r17)
+	fnptr	.Trap_Exit r16
+	st.l	r16,ExecPtrs.TRAPEXIT(r17)
+	st.l	r1,0(sp)
+
+_if _defp 'DEBUG
+	[
+	LOADC	[0xf000a000] r16		-- for debugging only
+	st.l	r16,ExecPtrs.Execroot(r17)
+	LOADC	[0xf000e000] r16		-- for debugging only
+	st.l	r16,ExecPtrs.SysStack(r17)
+	]
+--
+-- This commented bit installs a
+--	nop
+--	nop
+--	br	0xfffff000
+--	nop
+--
+-- sequence i.e. branch to the base of the page in which the 
+-- trap handler is running. This may be needed if the trap-handler
+-- exceeds 256 bytes (which it will do if I need putword).
+-- This is also likely to be needed when we start saving the floating
+-- point pipeline.
+--
+_defq MAKEBRANCH 1
+_test _defp 'MAKEBRANCH
+[_def F_NOP   [0xa0000000]
+_def F_BR    [0x68000000]
+_def BROFF   [((0-(0xf00+4+8))>>2)&0x3ffffff]
+	LOADC	[F_BR | BROFF] r16
+	LOADC	[0xffffff00] r17		-- Trap address
+
+	st.l	r16,8(r17)		
+	LOADC	[F_NOP] r16
+	st.l	r16,0(r17)		-- See bug 1
+	st.l	r16,4(r17)		--  "   "
+	st.l	r16,12(r17)		-- delayed slot
+
+	LOADC	[0xfffff000] r16		-- Copy to base of 4K page
+					-- containing trap area
+	]
+	[	LOADC	[0xffffff00] r16 ] -- Copy to trap area
+	
+
+	fnptr	Trap_Entry r17
+	LOADC	[TRAPSIZE] r18
+	LOADC   [0xf0009ff0] r20
+	
+--	st.l	r16,0(r20)
+--	st.l	r17,4(r20)
+--	st.l	r18,8(r20)
+--	st.l	r0,12(r20)
+--	mov	r0,r21
+
+	CALL	memcopy			-- copy code
+	nop
+
+--	LOADC	[FLUSHSPACE] r16
+--	CALL	.FlushData
+--	nop
+
+	ld.l	0(sp),r1
+	BRI	r1
+	addu	8,sp,sp
+	
+
+	PCALIGN	32
+--
+-- This code gets copied to location 0xffffff00
+-- or to location 0xfffff000 with a branch at location 0xffffff00.
+-- The address of the C part of the trap-handler is in location
+-- 0xfffffffc.
+--
+Trap_Entry:
+_if _defp 'BUG1
+[	nop
+	nop
+]
+	st.l	r16,EXECPTRS+ExecPtrs.SaveREG(r0) -- save r16 (interrupts are off)
+	ld.c	psr,r16			-- Must be done before 1st arith op
+					-- otherwise CC gets modded
+	st.l	r16,EXECPTRS+ExecPtrs.SavePSR(r0)
+	LOADC	[EXECPTRS+ExecPtrs.Execroot] r16
+	ld.l	0(r16),r16		-- fetch execroot
+	ld.l	EXECROOT.CurrentP(r16),r16
+	addu	SaveState.TrapData,r16,r16
+	st.l	r17,TrapData.IREGS+17*4(r16)	-- store r17
+
+	ld.l	EXECPTRS+ExecPtrs.SavePSR(r0),r17	-- fetch old psr
+	st.l	r17,TrapData.PSR(r16)		-- store old psr
+	ld.l	EXECPTRS+ExecPtrs.SaveREG(r0),r17	-- fetch old r16
+	st.l	r17,TrapData.IREGS+16*4(r16)	-- save old r16
+
+	st.l	r2,TrapData.IREGS+2*4(r16)	-- We move over to a system stack soon
+	st.l	r1,TrapData.IREGS+0*4(r16)
+--	st.l	r3,TrapData.IREGS+3*4(r16)
+	st.l	r18,TrapData.IREGS+18*4(r16)
+	st.l	r19,TrapData.IREGS+19*4(r16)
+	st.l	r20,TrapData.IREGS+20*4(r16)
+	st.l	r21,TrapData.IREGS+21*4(r16)
+	st.l	r22,TrapData.IREGS+22*4(r16)
+	st.l	r23,TrapData.IREGS+23*4(r16)
+	st.l	r24,TrapData.IREGS+24*4(r16)
+	st.l	r25,TrapData.IREGS+25*4(r16)
+	st.l	r26,TrapData.IREGS+26*4(r16)
+	st.l	r27,TrapData.IREGS+27*4(r16)
+	st.l	r28,TrapData.IREGS+28*4(r16)
+	st.l	r29,TrapData.IREGS+29*4(r16)
+	st.l	r30,TrapData.IREGS+30*4(r16)
+	st.l	r31,TrapData.IREGS+31*4(r16)
+
+	st.c	r0,psr			-- clear trap bits so that bri's work
+
+	ld.c	db,r17		-- except for fir saving these reg's are not needed for the moment
+	st.l	r17,TrapData.DB(r16)	-- done here so dumpregs will show them
+
+	ld.c	dirbase,r17
+	st.l	r17,TrapData.DIRBASE(r16)
+
+	ld.c	fir,r17
+	st.l	r17,TrapData.FIR(r16)
+
+	ld.c	fsr,r17
+	st.l	r17,TrapData.FSR(r16)
+
+_if _defp	'DEBUG
+	[
+	LOADC	[0x41414141] r17
+	nop
+	LOADC	[adapter] r18
+	nop
+appb1:      ld.b     Adapter.LA_Ostat(r18),r20
+            and      o_rdy, r20, r0
+            BC       appb1
+--            BRI      r1
+            st.b     r17,Adapter.LA_Odata(r18)
+--appb2:	br	appb2	
+--		nop
+
+	]
+	LOADC	[EXECPTRS] r17
+	ld.l	ExecPtrs.SysStack(r17),r2
+--
+--   newtd = Trap_Handler(TrapData *oldtd);
+--   goto Trap_Exit;
+--
+	ld.l	ExecPtrs.TRAPRTNP(r17),r18
+	BRI	r18
+	ld.l	ExecPtrs.TRAPEXIT(r17),r1
+	nop
+
+	PCALIGN 32
+TRAPSIZE: equ	.-Trap_Entry
+--
+-- void Trap_Exit(struct TrapData *)
+--
+-- Hopefully all of the hard work has been done
+-- and all we have to do here is to restore the processor
+-- state and return.
+--
+.Trap_Exit::
+--_def 'DEBUG1 1
+_if _defp 'DEBUG1
+	[
+	LOADC	[0x42424242] r17
+	nop
+	LOADC	[adapter] r18
+	nop
+bppb1:      ld.b     Adapter.LA_Ostat(r18),r20
+            and      o_rdy, r20, r0
+            BC       bppb1
+--            BRI      r1
+            st.b     r17,Adapter.LA_Odata(r18)
+--appb2:	br	appb2	
+--		nop
+	]
+	ld.l	TrapData.IREGS+2*4(r16),r2
+	ld.l	TrapData.IREGS+0*4(r16),r1
+-- 16 & 17 will be done later.
+	ld.l	TrapData.IREGS+18*4(r16),r18
+	ld.l	TrapData.IREGS+19*4(r16),r19
+	ld.l	TrapData.IREGS+20*4(r16),r20
+	ld.l	TrapData.IREGS+21*4(r16),r21
+	ld.l	TrapData.IREGS+22*4(r16),r22
+	ld.l	TrapData.IREGS+23*4(r16),r23
+	ld.l	TrapData.IREGS+24*4(r16),r24
+	ld.l	TrapData.IREGS+25*4(r16),r25
+	ld.l	TrapData.IREGS+26*4(r16),r26
+	ld.l	TrapData.IREGS+27*4(r16),r27
+	ld.l	TrapData.IREGS+28*4(r16),r28
+	ld.l	TrapData.IREGS+29*4(r16),r29
+	ld.l	TrapData.IREGS+30*4(r16),r30
+	ld.l	TrapData.IREGS+31*4(r16),r31
+	
+	ld.l	TrapData.PSR(r16),r17
+	st.c	r17,psr
+--	st.c	r0,psr
+
+--	ld.l	TrapData.DB(r16),r17
+--	st.c	r17,db
+
+--	ld.l	TrapData.DIRBASE(r16),r17
+--	st.c	r17,dirbase
+
+--	ld.l	TrapData.FSR(r16),r17
+--	st.c	r17,fsr
+
+	ld.l	TrapData.IREGS+16*4(r16),r17
+	st.l	r17,EXECPTRS+ExecPtrs.SaveREG(r0)
+	ld.l	TrapData.IREGS+17*4(r16),r17
+	ld.l	TrapData.FIR(r16),r16
+	BRI	r16
+	ld.l	EXECPTRS+ExecPtrs.SaveREG(r0),r16
+
+	PCALIGN 32
+-- memory to memory copying (wordsize only)
+memcopy::
+--	BRI	r1
+--	nop 
+  	 addu	-4,r18,r18
+	 adds	r0,r18,r0
+  	 bc	memcopy1
+--	 addu	1,r21,r21
+--	 st.l   r21,12(r20)
+  	 ld.l	0(r17),r19
+  	 st.l	r19,0(r16)
+  	 addu	4,r17,r17
+  	 br	memcopy
+  	 addu	4,r16,r16
+memcopy1:	 
+  	BRI	r1
+  	 nop	 	
+
+--
+-- Enable Interrupts
+--
+	PCALIGN 32
+.Enable_Ints::
+	ld.c	psr,r16
+	or	psr_im,r16,r16
+	BRI	r1
+	st.c	r16,psr
+
+--
+-- Disable Interrupts
+--
+	PCALIGN 32
+.Disable_Ints::
+	ld.c	psr,r16
+	andnot	psr_im,r16,r16
+	BRI	r1
+	st.c	r16,psr
+
+	PCALIGN 32
+.Clear_Fsr::
+	st.c	r0,fsr	
+	BRI	r1
+	nop
+
+--
+-- 
+--
+	PCALIGN 32
+.Set_Psr::
+	BRI	r1
+	st.c	r16,psr
+
+	PCALIGN 32
+.Save_Psr::
+	BRI	r1
+	ld.c	psr,r16
+
+--
+-- Call a supervisor level routine
+-- with (no more than) 3 arguments
+--
+	PCALIGN	32
+._system::
+	mov	r16,r30
+	mov	r17,r16
+	mov	r18,r17
+	mov	r19,r18
+	trap	0x1234,r30,r0
+	nop
+	BRI	r1
+	nop
+
+
+	PCALIGN 32
+.ltest::
+--	LOADC	[0x12345678] r16
+	BRI	r1
+	nop
+--
+-- SaveCPUState
+--
+-- Save the bits of the CPU state necessary
+-- such that the current process may be resumed
+-- by RestoreCPUState. This basically involves
+-- the bits not saved by Trap_Entry
+--
+	PCALIGN	32
+.SaveCPUState::
+	addu	SaveState.TrapData,r16,r16
+	st.l	r2,TrapData.SystemStack(r16)
+	st.l	r1,TrapData.IREGS+1*4(r16)	-- r1 is where the process will resume
+	st.l	r3,TrapData.IREGS+3*4(r16)
+	st.l	r4,TrapData.IREGS+4*4(r16)
+	st.l	r5,TrapData.IREGS+5*4(r16)
+	st.l	r6,TrapData.IREGS+6*4(r16)
+	st.l	r7,TrapData.IREGS+7*4(r16)
+	st.l	r8,TrapData.IREGS+8*4(r16)
+	st.l	r9,TrapData.IREGS+9*4(r16)
+	st.l	r10,TrapData.IREGS+10*4(r16)
+	st.l	r11,TrapData.IREGS+11*4(r16)
+	st.l	r12,TrapData.IREGS+12*4(r16)
+	st.l	r13,TrapData.IREGS+13*4(r16)
+	st.l	r14,TrapData.IREGS+14*4(r16)
+	st.l	r15,TrapData.IREGS+15*4(r16)
+
+--	ld.c	psr,r17		-- this is the only sys reg needed to be saved at the moment	
+--	st.l	r17,TrapData.PSR(r16)   -- probably not strictly needed, but safer
+
+--	LOADC	1 r17		-- Return 1 on return from RestoreCPUState
+--	st.l	r17,16*4(r16)   -- this might overwrite r16 saved by Trap_Entry
+	BRI	r1
+	mov	r0,r16
+
+
+
+	PCALIGN	32
+.RestoreCPUState::
+	addu	SaveState.TrapData,r16,r16
+	ld.l	TrapData.SystemStack(r16),r2
+	ld.l	TrapData.IREGS+1*4(r16),r1
+	ld.l	TrapData.IREGS+3*4(r16),r3
+	ld.l	TrapData.IREGS+4*4(r16),r4
+	ld.l	TrapData.IREGS+5*4(r16),r5
+	ld.l	TrapData.IREGS+6*4(r16),r6
+	ld.l	TrapData.IREGS+7*4(r16),r7
+	ld.l	TrapData.IREGS+8*4(r16),r8
+	ld.l	TrapData.IREGS+9*4(r16),r9
+	ld.l	TrapData.IREGS+10*4(r16),r10
+	ld.l	TrapData.IREGS+11*4(r16),r11
+	ld.l	TrapData.IREGS+12*4(r16),r12
+	ld.l	TrapData.IREGS+13*4(r16),r13
+	ld.l	TrapData.IREGS+14*4(r16),r14
+	ld.l	TrapData.IREGS+15*4(r16),r15
+
+--	ld.l	TrapData.PSR(r16),r17
+--	st.c	r17.psr			-- to cover a special case (init.) 
+
+	LOADC	1 r16
+	BRI	r1
+	nop
+
+	PCALIGN	32
+.StartCPUState::
+	addu	SaveState.TrapData,r16,r16
+	ld.l	TrapData.PSR(r16),r17
+	st.c	r17,psr			-- to cover a special case (init.) 
+
+	ld.l	TrapData.IREGS+1*4(r16),r1
+	ld.l	TrapData.IREGS+2*4(r16),r2
+	ld.l	TrapData.IREGS+3*4(r16),r3
+	ld.l	TrapData.IREGS+15*4(r16),r15
+	ld.l	TrapData.IREGS+17*4(r16),r17
+	ld.l	TrapData.IREGS+18*4(r16),r18
+	ld.l	TrapData.IREGS+19*4(r16),r19
+
+	BRI	r3
+	ld.l	TrapData.IREGS+16*4(r16),r16
+
+
+--
+--	The following routine are based on ones used for the 68020 Helios
+--	They are probably not optimal, but should work
+--
+	PCALIGN	32
+.setjmp::
+	st.l	r1,1*4(r16)
+	st.l	r2,2*4(r16)
+	st.l	r3,3*4(r16)
+	st.l	r4,4*4(r16)
+	st.l	r5,5*4(r16)
+	st.l	r6,6*4(r16)
+	st.l	r7,7*4(r16)
+	st.l	r8,8*4(r16)
+	st.l	r9,9*4(r16)
+	st.l	r10,10*4(r16)
+	st.l	r11,11*4(r16)
+	st.l	r12,12*4(r16)
+	st.l	r13,13*4(r16)
+	st.l	r14,14*4(r16)
+	st.l	r15,15*4(r16)
+	st.l	r17,17*4(r16)
+	st.l	r18,18*4(r16)
+	st.l	r19,19*4(r16)
+	st.l	r20,20*4(r16)
+	st.l	r21,21*4(r16)
+	st.l	r22,22*4(r16)
+	st.l	r23,23*4(r16)
+	st.l	r24,24*4(r16)
+	st.l	r25,25*4(r16)
+	st.l	r26,26*4(r16)
+	st.l	r27,27*4(r16)
+	st.l	r28,28*4(r16)
+	st.l	r29,29*4(r16)
+	st.l	r30,30*4(r16)
+	st.l	r31,31*4(r16)
+	
+	ld.l	0(r2),r17
+	st.l    r17,0*4(r16)
+
+	BRI	r1
+	mov     r0,r16
+
+	PCALIGN	32
+.longjmp::
+	ld.l	1*4(r16),r1
+	ld.l	2*4(r16),r2
+
+	ld.l	0*4(r16),r18
+	st.l	r18,0(r2)
+
+	ld.l	3*4(r16),r3
+	ld.l	4*4(r16),r4
+	ld.l	5*4(r16),r5
+	ld.l	6*4(r16),r6
+	ld.l	7*4(r16),r7
+	ld.l	8*4(r16),r8
+	ld.l	9*4(r16),r9
+	ld.l	10*4(r16),r10
+	ld.l	11*4(r16),r11
+	ld.l	12*4(r16),r12
+	ld.l	13*4(r16),r13
+	ld.l	14*4(r16),r14
+	ld.l	15*4(r16),r15
+	ld.l	18*4(r16),r18
+	ld.l	19*4(r16),r19
+	ld.l	20*4(r16),r20
+	ld.l	21*4(r16),r21
+	ld.l	22*4(r16),r22
+	ld.l	23*4(r16),r23
+	ld.l	24*4(r16),r24
+	ld.l	25*4(r16),r25
+	ld.l	26*4(r16),r26
+	ld.l	27*4(r16),r27
+	ld.l	28*4(r16),r28
+	ld.l	29*4(r16),r29
+	ld.l	30*4(r16),r30
+	ld.l	31*4(r16),r31
+
+	or	0,r17,r17
+	bc.t	ljmp1
+	or	1,r17,r17
+	nop
+ljmp1:	st.l	r17,0*4(r16)
+	ld.l	17*4(r16),r17
+	BRI	r1
+	ld.l	0*4(r16),r16
+--
+	PCALIGN	32
+
+.rd_psr::
+	ld.c	psr,r16
+	BRI	r1
+	nop
+
+	PCALIGN	32
+.cpu_state::
+	st.l	r17,TrapData.IREGS+17*4(r16)	
+	ld.c	psr,r17
+	st.l	r17,TrapData.PSR(r16)
+
+	st.l	r1,TrapData.IREGS+1*4(r16)	
+	st.l	r2,TrapData.IREGS+2*4(r16)	
+	st.l	r3,TrapData.IREGS+3*4(r16)	
+	st.l	r4,TrapData.IREGS+4*4(r16)	
+	st.l	r5,TrapData.IREGS+5*4(r16)	
+	st.l	r6,TrapData.IREGS+6*4(r16)	
+	st.l	r7,TrapData.IREGS+7*4(r16)	
+	st.l	r8,TrapData.IREGS+8*4(r16)	
+	st.l	r9,TrapData.IREGS+9*4(r16)	
+	st.l	r10,TrapData.IREGS+10*4(r16)	
+	st.l	r11,TrapData.IREGS+11*4(r16)	
+	st.l	r12,TrapData.IREGS+12*4(r16)	
+	st.l	r13,TrapData.IREGS+13*4(r16)	
+	st.l	r14,TrapData.IREGS+14*4(r16)	
+	st.l	r15,TrapData.IREGS+15*4(r16)
+	st.l	r16,TrapData.IREGS+16*4(r16)
+	st.l	r18,TrapData.IREGS+18*4(r16)
+	st.l	r19,TrapData.IREGS+19*4(r16)
+	st.l	r20,TrapData.IREGS+20*4(r16)
+	st.l	r21,TrapData.IREGS+21*4(r16)
+	st.l	r22,TrapData.IREGS+22*4(r16)
+	st.l	r23,TrapData.IREGS+23*4(r16)
+	st.l	r24,TrapData.IREGS+24*4(r16)
+	st.l	r25,TrapData.IREGS+25*4(r16)
+	st.l	r26,TrapData.IREGS+26*4(r16)
+	st.l	r27,TrapData.IREGS+27*4(r16)
+	st.l	r28,TrapData.IREGS+28*4(r16)
+	st.l	r29,TrapData.IREGS+29*4(r16)
+	st.l	r30,TrapData.IREGS+30*4(r16)
+	st.l	r31,TrapData.IREGS+31*4(r16)
+
+
+	ld.c	db,r17
+	st.l	r17,TrapData.DB(r16)
+
+	ld.c	dirbase,r17
+	st.l	r17,TrapData.DIRBASE(r16)
+
+	ld.c	fir,r17
+	st.l	r17,TrapData.FIR(r16)
+
+	ld.c	fsr,r17
+	st.l	r17,TrapData.FSR(r16)
+
+	BRI	r1
+	nop
+
+--
+-- put_word
+--
+-- args:
+--    r16 = adapter address
+--    r17 = word to send
+--
+	PCALIGN	32
+put_word:
+            mov      r1,r18            -- Save return address
+            CALL     put_la_byte
+            mov      r17,r19           -- Save value to send
+
+            CALL     put_la_byte
+            shr      8,r19,r17         -- fetch 2nd value
+
+            CALL     put_la_byte
+            shr      16,r19,r17        -- fetch 3rd value
+
+            CALL     put_la_byte
+            shr      24,r19,r17        -- fetch 4th value
+
+            BRI      r18
+            nop
+--
+-- get_word
+--
+-- args:
+--    r16 = adapter address
+--
+-- result:
+--    r16 = word
+--
+	PCALIGN	32
+get_word:
+            mov      r1,r18            -- Save return address
+
+            CALL     get_la_byte
+            mov      r16,r19           -- Save la address
+            and      0xff,r16,r20      -- Insert first byte
+
+            CALL     get_la_byte       -- Get 2nd byte
+            mov      r19,r16
+            shl      8,r16,r16
+            or       r16,r20,r20
+
+            CALL     get_la_byte       -- Get 3rd
+            mov      r19,r16
+            shl      16,r16,r16
+            or       r16,r20,r20
+
+            CALL     get_la_byte       -- Get 4th
+            mov      r19,r16
+            shl      24,r16,r16
+
+            BRI      r18
+            or       r20,r16,r16
+
+--
+-- get_la_byte
+--
+-- args:
+--    r16 = adapter address
+--
+-- returns:
+--    r16 = value
+--
+-- Do not corrupt r18
+--
+	PCALIGN	32
+get_la_byte:
+gb1:        ld.b     Adapter.LA_Istat(r16),r17
+            and      i_rdy, r17, r0
+            BC       gb1
+            ld.b     Adapter.LA_Idata(r16),r16    -- sign extended
+            BRI      r1
+            and      0xff,r16,r16         -- Truncate
+
+--
+-- put_la_byte
+--
+-- args:
+--    r16 = adapter address
+--    r17 = byte to send
+--
+-- returns:
+--    nothing
+--
+-- Do not corrupt r18
+--
+	PCALIGN	32
+put_la_byte:
+pb1:        ld.b     Adapter.LA_Ostat(r16),r20
+            and      o_rdy, r20, r0
+            BC       pb1
+            BRI      r1
+            st.b     r17,Adapter.LA_Odata(r16)
+--
+-- la_rx_rdy
+--
+-- args:
+--    r16 = adapter address
+--
+-- returns:
+--    r16 != 0 if rdy otherwise 0
+--
+	PCALIGN	32
+la_rx_rdy:
+            ld.b     Adapter.LA_Istat(r16),r16
+            BRI      r1
+            and      i_rdy, r16, r16
+--
+-- la_tx_rdy
+--
+-- args:
+--    r16 = adapter address
+--
+-- returns:
+--    r16 != 0 if rdy otherwise 0
+--
+	PCALIGN	32
+la_tx_rdy:
+            ld.b     Adapter.LA_Ostat(r16),r16
+            BRI      r1
+            and      o_rdy, r16, r16
+
+	PCALIGN	32
+.test_print::
+	mov	r1,r23
+	LOADC	[0x30313233] r17
+	LOADC   [adapter] r16
+	CALL    put_word
+	nop
+	BRI     r23
+	nop
+
+	PCALIGN 32
+.pc::
+	mov     r1,r16
+	BRI	r1
+	nop
+
+	PCALIGN 32
+	_if _not _defp 'IN_KERNEL
+	[ static [
+	ld.l	@_FlushData(r15),r16		
+	extern func	FlushData
+	extern func	GetDirBase
+	extern func	SetDirBase
+	extern func	Install_Trap_Handler
+	extern func	Trap_Exit
+	extern func	Enable_Ints
+	extern func	Disable_Ints
+	extern func	_GetModTab
+	extern func	SetModTab
+	extern func	_system
+	extern func	SaveCPUState
+	extern func	RestoreCPUState
+	extern func	Set_Psr
+	extern func	ltest
+	extern func     rd_psr
+	extern func	cpu_state
+	extern func	test_print
+     	]
+	stubs [
+	stub		memcpy
+	]
+	EndModule
+	]

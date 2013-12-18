@@ -1,0 +1,779 @@
+head	1.7;
+access;
+symbols
+	Helios_1_3_1:1.7
+	Helios_C40_1_3_Official_Release:1.7
+	Alenia_release:1.7
+	Helios13_beta:1.3
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.7
+date	92.11.04.14.45.42;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.10.27.15.08.13;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.09.29.12.37.54;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.08.26.12.08.56;	author craig;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.10.01.13.20.13;	author craig;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.08.19.09.44.04;	author craig;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.16.49.08;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@C40 version completed
+@
+text
+@/**
+*
+* Title:  Helios Debugger - Debug Server.
+*
+* Author: Andy England
+*
+* Date:   February 1989
+*
+*         (c) Copyright 1988 - 1992, Perihelion Software Ltd.
+*
+*         All Rights Reserved.
+*
+**/
+
+#ifdef __TRAN
+static char *rcsid = "$Header: /m/giga/Helios.tmp/Helios/cmds/debugger/RCS/server.c,v 1.6 1992/10/27 15:08:13 nickc Exp nickc $";
+#endif
+
+#include "tla.h"
+
+#define SS_DebugServer 0x13000000
+
+typedef struct
+{
+  ObjNode objnode;
+  DEBUG *debug;
+} File;
+
+PRIVATE NameInfo debugnameinfo =
+{
+  NullPort,
+  Flags_StripName,
+  DefDirMatrix,
+  NULL
+};
+
+PRIVATE DirNode root;
+PRIVATE Object *debugger;
+
+PRIVATE void do_open(ServInfo *);
+PRIVATE void do_create(ServInfo *);
+PRIVATE void do_delete(ServInfo *);
+/** #ifdef NEWCODE   not yet defined
+PRIVATE void do_serverinfo(ServInfo *);
+#endif **/
+
+PRIVATE DispatchInfo debuginfo =
+{
+  &root,
+  NullPort,
+  SS_DebugServer,
+  NULL,
+  { NULL, 0 },
+  {
+    { do_open,      20000},
+    { do_create,     2000},
+    { DoLocate,      2000},
+    { DoObjInfo,     2000},
+    { NullFn,        2000}, /* do_serverinfo() */
+    { do_delete,     2000},
+    { DoRename,      2000},
+    { DoLink,        2000},
+    { DoProtect,     2000},
+    { DoSetDate,     2000},
+    { DoRefine,      2000},
+    { NullFn,        2000}
+  }
+};
+
+PUBLIC void tidyup(void)
+{
+  Delete(debugger, NULL);
+  Close(debugger);
+}
+
+#ifdef MEM_REPORT
+/*
+-- crf : 16/08/91 - Bart's patch routines
+-- (very useful for tracking down memory leaks)
+*/
+/**
+*** This unbelievably gruesome code zaps the module table entries for
+*** Malloc and Free, installing my own routines which call the system ones
+*** and produce some debugging.
+**/
+
+static	WordFnPtr	real_Malloc;
+static	WordFnPtr	real_Free;
+
+static word	my_Malloc(int x)
+{ word result = ((real_Malloc)(x));
+
+  IOdebug( "TLA: Malloc(%d) : %x", x, result);
+  return(result);
+}
+
+static word	my_Free(int x)
+{ word	result = ((real_Free)(x));
+
+  IOdebug( "TLA: Free(%x)", x);
+  return(result);
+}
+
+void PatchMalloc(void)
+{ int	*table = (int *) &MyTask;
+
+  IOdebug( "TLA: Installing own versions of Malloc and Free");
+/*
+  printf("table[26] is %x\n", table[26]);
+  printf("table[27] is %x\n", table[27]);
+  printf("&Malloc is %x\n", &Malloc);
+  printf("&Free is %x\n", &Free);
+*/
+  real_Malloc = (WordFnPtr) table[26];
+  real_Free   = (WordFnPtr) table[27];
+  table[26]   = (int) &my_Malloc;
+  table[27]   = (int) &my_Free;
+}
+#endif
+
+
+PUBLIC int main(int argc, char *argv[])
+{
+  char mcname[100];
+
+#ifdef MEM_REPORT
+/*
+-- crf : 16/08/91 - tracking down memory leaks ...
+*/
+  PatchMalloc() ;
+  IOdebug ( "TLA: starting ...") ;
+  IOdebug ( "TLA: Bytes free : %d   Heap size : %d", Malloc(-1), Malloc(-3));
+#endif
+
+/*
+-- crf : 01/10/91 - Bug 706
+-- Ensure that the debugger does not already exist.
+*/	
+    if (Locate (NULL, "/debug") != NULL)
+      {	
+	exit(EEXIST);
+      }
+
+  /*
+   * Find out the name of our processor.
+   */
+  
+  MachineName(mcname);
+  
+  debuginfo.ParentName = mcname;
+  
+  /*
+   * Initialise the root of the directory structure.
+   */
+  
+  initdebug(argc, argv);
+
+#ifdef	MYDEBUG
+  InitNode((ObjNode *)&root, "mydebug", Type_Directory, 0, DefDirMatrix);
+#else
+#if 0
+  InitNode((ObjNode *)&root, "debug", Type_Directory, 0, DefDirMatrix);
+#else
+/*
+-- crf: 26/08/92 - Bug 928 (cannot run clients on remote processors if 
+-- processor protection is set (nsrc))
+*/
+  InitNode((ObjNode *)&root, "debug", Type_Directory, 0, 0x23134BC7 /* DefDirMatrix */);
+#endif
+#endif
+
+  InitList(&root.Entries);
+  
+  root.Nentries = 0;
+  
+  /*
+   * 
+   */
+  
+/* CR: MyTask->Port might be used for signal handling...
+  debugnameinfo.Port = debuginfo.ReqPort = MyTask->Port;
+*/
+  
+  debugnameinfo.Port = debuginfo.ReqPort = NewPort();
+  
+  /*
+   * Make the parent of root the machine.
+   */
+  
+  {
+    Object *machine;
+    LinkNode *parent;
+
+    machine = Locate(NULL, mcname);
+    parent = (LinkNode *)Malloc(sizeof(LinkNode) + (word)strlen(mcname));
+    InitNode(&parent->ObjNode, "..", Type_Link, 0, DefDirMatrix);
+    parent->Cap = machine->Access;
+    strcpy(parent->Link, mcname);
+    root.Parent = (DirNode *)parent;
+#ifdef MYDEBUG
+    debugger = Create(machine, "mydebug", Type_Name, sizeof(NameInfo), (BYTE *)&debugnameinfo);
+#else
+    debugger = Create(machine, "debug", Type_Name, sizeof(NameInfo), (BYTE *)&debugnameinfo);
+#endif
+
+    Close(machine);
+
+    if(debugger == NULL)
+      exit(1);
+  }
+  
+  Dispatch(&debuginfo);
+
+  tidyup();
+  return 0;
+}
+
+PRIVATE File *newfile(DirNode *dir, char *name, word flags, Matrix matrix)
+{
+  File *file;
+  static int debugid = 1;
+
+  if ((file = New(File)) == NULL) return NULL;
+  /* ACE: Temporary hack */
+  strcat(name, ".");
+  addint(name, debugid++);
+
+  InitNode(&file->objnode, name, Type_File, (int)flags, matrix);
+  file->objnode.Size = 0;
+  file->objnode.Account = 0;
+  file->debug = newdebug(name);
+  Insert(dir, &file->objnode, TRUE);
+  return file;
+}
+
+PRIVATE DirNode *newdir(DirNode *dir, char *name, word flags, Matrix matrix)
+{
+  DirNode *dirnode;
+
+  if ((dirnode = New(DirNode)) == NULL) return NULL;
+  InitNode((ObjNode *)dirnode, name, Type_Directory, (int)flags, matrix);
+  InitList(&dirnode->Entries);
+  dirnode->Nentries = 0;
+  dirnode->Parent = dir;
+  Insert(dir, (ObjNode *)dirnode, TRUE);
+  return dirnode;
+}
+
+PRIVATE File *createnode(MCB *mcb, DirNode *dir, char *name)
+{
+  IOCCreate *req = (IOCCreate *)mcb->Control;
+
+  if (req->Type == Type_Directory)
+    return (File *)newdir(dir, name, 0, DefDirMatrix);
+  return newfile(dir, name, 0, DefFileMatrix);
+}
+
+/*
+* Action procedues.
+*/
+PRIVATE void do_create(ServInfo *servinfo)
+{
+  MCB *mcb = servinfo->m;
+  MsgBuf *msgbuf;
+  DirNode *dir;
+  File *file;
+  IOCCreate *req = (IOCCreate *)(mcb->Control);
+  char *pathname = servinfo->Pathname;
+
+  if ((dir = (DirNode *)GetTargetDir(servinfo)) == NULL)
+  {
+    ErrorMsg(mcb, EO_Directory);
+    return;
+  }
+  mcb->MsgHdr.FnRc = SS_DebugServer;
+  /*
+  * Check file does not already exist.
+  */
+  unless ((file = (File *)GetTargetObj(servinfo)) == NULL)
+  {
+    ErrorMsg(mcb, EC_Error+EG_Create+EO_File);
+    return;
+  }
+  /*
+  * Check that we can write to the directory.
+  */
+  unless (CheckMask(req->Common.Access.Access, AccMask_W))
+  {
+    ErrorMsg(mcb, EC_Error+EG_Protected+EO_Directory);
+    return;
+  }
+  if ((msgbuf = New(MsgBuf)) == NULL)
+  {
+    ErrorMsg(mcb, EC_Error+EG_NoMemory+EO_Message);
+    return;
+  }
+  if ((file = createnode(mcb, dir, objname(pathname))) == NULL)
+  {
+    ErrorMsg(mcb, EC_Error+EG_NoMemory+EO_File);
+    Free(msgbuf);
+    return;
+  }
+  FormOpenReply(msgbuf, mcb, &file->objnode, 0, pathname);
+  PutMsg(&msgbuf->mcb);
+  Free(msgbuf);
+}
+
+PRIVATE void do_open(ServInfo *servinfo)
+{
+  MCB *mcb = servinfo->m;
+  MsgBuf *msgbuf;
+  DirNode *dir;
+  File *file;
+  IOCMsg2 *req = (IOCMsg2 *)(mcb->Control);
+  Port reply = mcb->MsgHdr.Reply;
+  Port reqport;
+#ifdef NEWCODE
+  byte *data = mcb->Data;
+#endif
+  char *pathname = servinfo->Pathname;
+
+  debugf("do_open(%s)", pathname);
+
+  putmem();
+
+  if ((dir = (DirNode *)GetTargetDir(servinfo)) == NULL)
+  {
+    ErrorMsg(mcb, EO_Directory);
+    return;
+  }
+  
+  if ((msgbuf = New(MsgBuf)) == NULL)
+  {
+    ErrorMsg(mcb, EC_Error+EG_NoMemory);
+    return;
+  }
+  
+  if ((file = (File *)GetTargetObj(servinfo)) == NULL AND
+      (req->Arg.Mode & O_Create))
+  {
+    mcb->MsgHdr.FnRc = SS_DebugServer;
+    unless (CheckMask(req->Common.Access.Access, AccMask_W))
+    {
+      ErrorMsg(mcb, EC_Error+EG_Protected+EO_Directory);
+      Free(msgbuf);
+      return;
+    }
+    file = createnode(mcb, dir, objname(pathname));
+  }
+  
+  if (file == NULL)
+  {
+    ErrorMsg(mcb, EO_File);
+    Free(msgbuf);
+    return;
+  }
+  
+  unless (CheckMask(req->Common.Access.Access, (AccMask)(req->Arg.Mode & Flags_Mode)))
+  {
+    ErrorMsg(mcb, EC_Error+EG_Protected+EO_Directory);
+    Free(msgbuf);
+    return;
+  }
+  
+  FormOpenReply(msgbuf, mcb, &file->objnode, Flags_Server|Flags_Closeable, pathname);
+  /* ACE ? */
+  msgbuf->mcb.MsgHdr.Flags |= MsgHdr_Flags_preserve;
+  msgbuf->mcb.MsgHdr.Reply = reqport = NewPort();
+  PutMsg(&msgbuf->mcb);
+  Free(msgbuf);
+
+  if (file->objnode.Type == Type_Directory)
+  {
+    DirServer(servinfo, mcb, reqport);
+    FreePort(reqport);
+    return;
+  }
+  
+  file->objnode.Account++;
+  
+  UnLockTarget(servinfo);
+  
+  /* ACE */
+
+#ifdef MEM_REPORT
+/*
+-- crf : 16/08/91 - tracking down memory leaks ...
+*/
+  IOdebug ( "TLA: Debug session starting ...") ;
+  IOdebug ( "TLA: Bytes free : %d   Heap size : %d", Malloc(-1), Malloc(-3));
+#endif
+
+  startdebug(file->debug, reqport, reply);
+
+#ifdef NEWCODE
+  forever
+  {
+    word err;
+
+    
+    mcb->MsgHdr.Dest = reqport;
+    mcb->Timeout     = StreamTimeout;
+    mcb->Data        = data;
+
+    err = GetMsg(mcb);
+
+    if (err == EK_Timeout)
+      break;
+    
+    if (err < Err_Null) continue;
+
+    Wait(&file->objnode.Lock);
+
+    switch (mcb->MsgHdr.FnRc & FG_Mask)
+    {
+      case FG_Read:
+      break;
+
+      case FG_Write:
+      break;
+
+      case FG_Close:
+      if (mcb->MsgHdr.Reply != NullPort) ErrorMsg(mcb, Err_Null);
+      FreePort(reqport);
+      file->objnode.Account--;
+      Signal(&file->objnode.Lock);
+      break;
+
+      case FG_GetSize:
+      case FG_Seek:
+      case FG_SetSize:
+      break;
+
+      default:
+      ErrorMsg(mcb, EC_Error+EG_FnCode+EO_File);
+      break;
+    }
+    
+    Signal(&file->objnode.Lock);
+  }
+#endif
+  if (--file->objnode.Account == 0)
+  {
+    remdebug(file->debug);
+    Unlink(&file->objnode, FALSE);
+    Free(file);
+  }
+/*#ifdef NEWCODE    CR: this is necessary */
+  FreePort(reqport);
+  FreePort(reply);   	/* CR: hope I am right here */
+/*#endif*/
+
+  putmem();
+
+#ifdef MEM_REPORT
+/*
+-- crf : 16/08/91 - tracking down memory leaks ...
+*/
+  IOdebug ( "TLA: Debug session finished") ;
+  IOdebug ( "TLA: Bytes free : %d   Heap size : %d", Malloc(-1), Malloc(-3));
+#endif
+
+}
+
+PRIVATE void do_delete(ServInfo *servinfo)
+{
+  MCB *mcb = servinfo->m;
+  File *file;
+  IOCCommon *req = (IOCCommon *)(mcb->Control);
+
+  if ((file = (File *)GetTargetObj(servinfo)) == NULL)
+  {
+    ErrorMsg(mcb, EO_File);
+    return;
+  }
+  unless (CheckMask(req->Access.Access, AccMask_D))
+  {
+    ErrorMsg(mcb, EC_Error+EG_Protected+EO_File);
+    return;
+  }
+  if (file->objnode.Type == Type_Directory AND ((DirNode *)file)->Nentries != 0)
+  {
+    ErrorMsg(mcb, EC_Error+EG_Delete+EO_Directory);
+    return;
+  }
+  else if (file->objnode.Type == Type_File)
+  {
+    unless (file->objnode.Account == 0)
+    {
+      ErrorMsg(mcb, EC_Error+EG_InUse+EO_File);
+      return;
+    }
+    file->objnode.Size = 0;
+    remdebug(file->debug);
+  }
+  Unlink(&file->objnode, FALSE);
+  Free(file);
+  ErrorMsg(mcb, Err_Null);
+}
+@
+
+
+1.6
+log
+@fixed compile time warnings
+@
+text
+@d16 1
+a16 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/RCS/server.c,v 1.5 1992/09/29 12:37:54 nickc Exp nickc $";
+d93 1
+a93 1
+  IOdebug("Malloc(%d) : %x", x, result);
+d100 1
+a100 1
+  IOdebug("Free(%x)", x);
+d107 1
+a107 1
+  IOdebug("Installing own versions of Malloc and Free");
+d131 2
+a132 2
+  IOdebug ("tla starting ...") ;
+  IOdebug ("Bytes free : %d   Heap size : %d", Malloc(-1), Malloc(-3));
+d389 2
+a390 2
+  IOdebug ("Debug session starting ...") ;
+  IOdebug ("Bytes free : %d   Heap size : %d", Malloc(-1), Malloc(-3));
+d459 2
+a460 2
+  IOdebug ("TLA: Debug session finished") ;
+  IOdebug ("TLA: Bytes free : %d   Heap size : %d", Malloc(-1), Malloc(-3));
+@
+
+
+1.5
+log
+@fixed compile time warnings
+@
+text
+@d9 1
+a9 1
+*         (c) Copyright 1988, Perihelion Software Ltd.
+d14 4
+a17 3
+/*
+static char *rcsid = "$Header: /hsrc/cmds/debugger/RCS/server.c,v 1.4 1992/08/26 12:08:56 craig Exp nickc $";
+*/
+d140 3
+a142 1
+      exit(EEXIST);
+d145 3
+a147 2
+  * Find out the name of our processor.
+  */
+d149 1
+d151 1
+d153 3
+a155 2
+  * Initialise the root of the directory structure.
+  */
+d157 1
+d171 1
+d173 1
+d175 1
+d177 3
+a179 2
+  * 
+  */
+d183 1
+d185 1
+d187 3
+a189 2
+  * Make the parent of root the machine.
+  */
+a209 1
+
+d211 1
+d213 1
+d331 1
+d337 1
+d350 1
+d357 1
+d364 1
+d371 1
+d378 1
+d380 1
+d382 1
+d394 1
+d400 1
+d402 2
+a403 2
+    mcb->Timeout = StreamTimeout;
+    mcb->Data = data;
+d406 4
+a409 1
+    if (err == EK_Timeout) break;
+a416 1
+      debugf("Read");
+a419 1
+      debugf("Write");
+a422 1
+      debugf("close");
+d438 1
+d459 2
+a460 2
+  IOdebug ("Debug session finished") ;
+  IOdebug ("Bytes free : %d   Heap size : %d", Malloc(-1), Malloc(-3));
+@
+
+
+1.4
+log
+@Fixed Bug 928 (unable to run clients on remote processors when processor
+protection is set) - changed InitNode() access matrix
+Removed incorrect comments pertaining to exit on failure to create name
+server entry
+@
+text
+@d14 3
+a16 2
+
+static char *rcsid = "$Header: /users/craig/cmds/debugger/RCS/server.c,v 1.6 1992/08/26 12:01:40 craig Exp $";
+d180 1
+a180 1
+    parent = (LinkNode *)Malloc(sizeof(LinkNode) + strlen(mcname));
+d212 1
+a212 1
+  InitNode(&file->objnode, name, Type_File, flags, matrix);
+d225 1
+a225 1
+  InitNode((ObjNode *)dirnode, name, Type_Directory, flags, matrix);
+d338 1
+a338 1
+  unless (CheckMask(req->Common.Access.Access, req->Arg.Mode & Flags_Mode))
+@
+
+
+1.3
+log
+@Bug 706 - before allowing the debugger to start up, check that there is not
+already one running
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/RCS/server.c,v 1.2 1991/08/19 09:44:04 craig Exp craig $";
+d152 1
+d154 6
+d161 1
+d191 1
+a191 7
+/*
+-- crf : 16/07/91 - Bug 706
+-- If debugger is already running, don't allow it to be re-invoked
+-- Exit with error "Already exists"
+-- (assuming, of-course, that this will always be the reason that the debugger
+-- fails to start up ...)
+*/
+d193 1
+a193 1
+      exit(EEXIST);
+@
+
+
+1.2
+log
+@Major fixes to V1.1 for V2.0 (see documentation for details)
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /hsrc/cmds/debugger/RCS/server.c,v 1.1 1990/08/28 16:49:08 james Exp craig $";
+d133 7
+d192 1
+a192 1
+	
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d15 1
+a15 8
+#include <helios.h>
+#include <string.h>
+#include <codes.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <task.h>
+#include "debug.h"
+#include "source.h"
+d17 1
+a17 1
+static char *rcsid = "$Header$";
+d41 1
+a41 1
+#ifdef NEWCODE
+d43 1
+a43 1
+#endif
+d74 46
+d124 9
+d142 3
+d146 1
+d152 1
+d154 2
+d169 3
+d173 2
+d176 10
+d349 9
+d410 1
+a410 1
+#ifdef NEWCODE
+d412 11
+a424 1
+  putmem();
+@

@@ -1,0 +1,238 @@
+.TH IMB 4 "Oct 23, 1990"
+.SH NAME
+imb \- Device driver for Inmos B008 Motherboard
+
+Up to 3 devices (
+.I imb0 ,
+.I imb1
+and 
+.I imb2
+) may be configured. Switches on the board
+set up the 
+.I csr, 
+which can be 0x150, 0x200 or 0x300, corresponding to units 0, 1 and 2, 
+The dma channel can be 0, 1 or 3, and the interrupt request channel 
+can be 3 or 5.  These
+can either be set by the driver or by switches on the board, depending on
+the model of B008.
+
+The minor device number must be set up to define the unit number
+(and hence address), dma channel number and interrupt channel number.
+This is done by encoding the information in bit fields:
+
+.RS 5
+.nf
+bits 0,1        DMA channel, where 0 = none
+                                   1 = 0
+                                   2 = 1
+                                   3 = 3
+    
+bit 2           Interrupt channel, where 0 = 3 
+                                         1 = 5
+
+bits 3, 4       Unit number, where 0 uses address 0x150
+                                   1 uses address 0x200
+                                   2 uses address 0x300
+                                   3 is invalid
+.fi
+
+.RE
+Thus if a board is at address 0x200, uses interrupt channel 5 and DMA
+channel 2 then the minor device number should be set to 0x0e (15 decimal).
+
+.SH SYNOPSIS
+.nf
+.nh
+.ft B
+#include <sys/imbio.h>
+.PP
+.ft B
+fd     = open( device_pathname, flags );
+result = close( fd );
+result = read( fd, buffer, number_of_bytes );
+result = write( fd, buffer, number_of_bytes );
+result = ioctl( fd, command [, \fIarg\fB ] );
+.ft R
+
+.SH DESCRIPTION
+.LP
+The 
+.I imb
+device driver is a character based device driver, produced by K-par Systems 
+Ltd., to allow the Inmos B008 Transputer Motherboard to be used
+on a PC running under Interactive 386/ix Unix.
+
+Reading and writing can be done either directly to the
+link adaptors on the board, or by DMA. The default is to use link adaptors,
+but this can be changed by an 
+.BR ioctl (2).
+
+Only one user may have a device open at a time. If a user
+attempts to 
+.BR open (2)
+a device already opened by another user the
+open will fail with
+.B errno
+set to EBUSY.
+On the first open of the device by a user DMA is enabled and abort
+on error is cleared. On subsequent opens there is no change in these
+parameters. The only flags supported on the 
+.BR open (2)
+call are
+.B O_RDONLY,
+.B O_WRONLY 
+and
+.B O_RDWR.
+
+All the calls take the standard parameters defined in the System
+Calls Manual and will
+not be described further.  Error messages returned in
+.B errno
+conform to the standard error codes defined in
+.I <errno.h> .
+
+.SH IOCTLS
+.B imb
+responds to the following
+.BR ioctl s,
+defined in
+.B <sys/imbio.h>.
+.TP
+.SB IMB_RESET
+The argument is ignored.
+This performs a reset on the board. It will fail with 
+.B errno
+set to EIO if there is a read or write in progress.
+
+.TP
+.SB IMB_ANALYSE
+The argument is ignored.
+This performs a reset on the board with analyse asserted. 
+It will fail with 
+.B errno
+set to EIO if there is a read or write in progress.
+
+.TP
+.SB IMB_ENABLE_ERRORS
+The argument is ignored.
+This causes any reads or writes to abort if the error location on the
+board becomes asserted. This can be used to prevent the driver hanging in
+a read or write due to a transputer halting as a result of an error.
+The default setting is 
+.I not
+to abort on error.
+
+.TP
+.SB IMB_DISABLE_ERRORS
+The argument is ignored.
+This causes the state of the error location on the board to be ignored.
+This can cause the driver to hang in a read or write if an error on the
+transputer causes the transputer to halt. (See
+.B IMB_ENABLE_ERRORS
+above).
+
+.TP
+.SB IMB_INPUT_PENDING
+The argument is a pointer to an 
+.B int.
+On return, the
+.B int
+will contain 1 if the board has data ready to send to the host, and 0
+otherwise.
+
+.TP
+.SB IMB_OUTPUT_READY
+The argument is a pointer to an 
+.B int.
+On return, the
+.B int
+will contain 1 if the board if the board is ready to receive data and 0
+otherwise.
+
+.TP
+.SB IMB_ERROR
+The argument is a pointer to an 
+.B int.
+On return, the
+.B int
+will contain 1 if the error location on the board is 
+.I set
+, and 0 otherwise.
+
+.TP
+.SB IMB_TIMEOUT
+The argument is an 
+.B int,
+which should contain a timeout, in tenths of a second, to be used
+when doing reads and writes. 
+.B Note
+that dma reads and writes cannot be timed out once initiated.
+
+.TP
+.SB IMB_DMA
+The argument is an 
+.B int.
+which should take one of the following values (defined in 
+.B <sys/imbio.h>
+) :
+.RS
+.TP 25
+.SB IMB_DMA_OFF
+if DMA is not to be used for any transfers.
+.TP
+.SB IMB_DMA_READWRITE
+if DMA is to be used for both reads and writes.
+
+.TP
+.SB IMB_DMA_READ
+if DMA is to be used for reads only.
+.TP
+.SB IMB_DMA_WRITE
+if DMA is to be used for writes only.
+.RE
+.IP
+.I Note:
+DMA is never used for small transfers (typically less than 80 bytes)
+as it is not worth the extra overhead of setting up the transfer. Also
+it will not be used if there is already DMA in progress on the channel
+(i.e. if one process is doing a DMA read at the same time as another 
+process tries to do a DMA write).
+
+.SH FILES
+.B /dev/imb[0-2]
+.br
+.B /usr/include/sys/imbio.h
+- ioctl definitions
+.br
+.SH DIAGNOSTICS
+.B "imb*: C012 ISR check failed (isr = *);  disabling device."
+.br
+.B "imb*: C012 OSR check failed (osr = *);  disabling device."
+
+These usually indicate that the board registers were not found at
+the expected address.
+
+.B "imb*: Error on transputer - read aborted."
+.br
+.B "imb*: Error on transputer - write aborted."
+
+These indicate that the error location become set during a
+.I read
+or
+.I write
+when
+.B IMB_ENABLE_ERRORS
+has been set by an
+.I ioctl.
+
+.SH SEE ALSO
+.BR open (2), 
+.BR close (2), 
+.BR read (2), 
+.BR write (2), 
+.BR ioctl (2),
+.BR mdevice (4),
+.BR sdevice (4),
+
+.I "Inmos IMS B008 User Guide and Reference manual"
+

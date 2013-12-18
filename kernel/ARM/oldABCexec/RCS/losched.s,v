@@ -1,0 +1,282 @@
+head     1.1;
+branch   ;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @! @;
+
+
+1.1
+date     91.03.10.23.53.40;  author paul;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@        SUBT    Process scheduler SWI and internal code         > losched/s
+        ; Copyright (c) 1989, Active Book Company, Cambridge, United Kingdom.
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ARM HELIOS Executive: process scheduler
+        ;
+        ; Author:               James G Smith
+        ; History:      891023  File split from main module "loexec.s"
+        ;               900413  (Brian Knight) Functional Prototype version
+        ;
+        ; ---------------------------------------------------------------------
+
+        ASSERT  (ProcessQ_head = &00)   ; the "Scheduler" code assumes this
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_Scheduler ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; in:   r0 = current process description (SaveState *)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       SVC mode; IRQs undefined; FIQs undefined.
+code_exec_Scheduler
+        AND     r11,svc_r14,#Fbit               ; entry FIQ state
+        TEQP    r11,#(Ibit :OR: SVCmode)        ; disable IRQs
+
+        LDMFD   sp!,{r11,r12}                   ; recover entry r11 and r12
+
+        ; and fall through to the "Scheduler"
+
+        ; ---------------------------------------------------------------------
+        ; Enter the Scheduler. Examine the process queues and start the next
+        ; process due for execution.
+        ; in:  r0  = current process description (SaveState *)
+        ;      r13 = FD stack
+        ;      r14 = return address and PSR of caller
+        ;      SVC mode; IRQs disabled; FIQs undefined.
+        ;      Assumes process "r0" has been stored in the SaveState structure.
+        ; out: Never exits back to caller since it will have started another
+        ;      process or the idle process.
+        ;
+        ; We are either called through the SWI handler or from an IRQ. We
+        ; need to remember the callers state (including PC and PSR) in the
+        ; process description structure given (SaveState *).
+        ;
+        ; We need to access the registers belonging to the process that is
+        ; being re-scheduled. At the moment this code assumes that it is just
+        ; USR mode programs that are being re-scheduled and uses a feature of
+        ; the ARM processor to save these registers easily (Interrupted SVC
+        ; processes (if any) should already have been returned to directly by
+        ; the IRQ handler)
+        ;
+        ; Process queue updates CAN occur in interrupt handlers. This requires
+        ; that all queue manipulations are performed with IRQs disabled (ie.
+        ; calling "HardenedSignal" to notify the foreground process, will
+        ; "Resume" the process, which updates the process queues).
+        ;
+        ; NOTE: This code loses the reference to the SaveState structure passed
+        ;       into the routine. It relies on the caller preserving a
+        ;       reference to this SaveState. Since we do not return to the
+        ;       caller after this routine, we can end up with a phantom
+        ;       process if the caller has not placed the SaveState in some
+        ;       management queue.
+Scheduler
+        CMP     r0,#&00000000
+        BEQ     Scheduler1              ; invalid SaveState structure pointer
+
+        ADD     r0,r0,#SaveState_r1     ; address register area in structure
+        STMIA   r0,{r1-r14}^            ; and store all the USR mode registers
+        SUB     r0,r0,#SaveState_r1     ; recover the "SaveState" base address
+        STR     r14,[r0,#SaveState_pc]  ; store PC and PSR of process
+
+        ; We can now use the USR mode registers since they have been saved
+        ; (r0->r12)
+        ; (Note: we do NOT use the return address value now (svc_r14))
+
+Scheduler1
+        ; in:   r0 = SaveState structure pointer for process to be dispatched
+        ;       SVC mode; IRQs disabled; FIQs undefined
+        ;       svc_r14 : undefined and should NOT be used when IRQs enabled
+        ;       This entry point to the Scheduler does NOT preserve a
+        ;       processes state.
+        ;       (use "Scheduler" directly to perform process preservation)
+
+        LDR     r3,=ROOT_start                  ; ExecRoot structure address
+        LDR     r1,[r3,#ExecRoot_hipri]         ; highest priority pending
+        ADD     r2,r3,#ExecRoot_queues          ; base of the ProcessQs
+        ADD     r2,r2,r1,LSL #ProcessQ_shift    ; base of the pending ProcessQ
+try_next_queue
+        LDR     r0,[r2,#ProcessQ_head]          ; load the head (SaveState *)
+        TEQ     r0,#&00000000                   ; is it NULL?
+        BNE     LoadProcess                     ; NO - then start this process
+
+        ADD     r1,r1,#&01                      ; index onto the next ProcessQ
+        CMP     r1,#NumberPris                  ; number of available queues
+        ADDCC   r2,r2,#ProcessQ_size            ; step onto the next queue
+        BCC     try_next_queue
+        ; no more queues, so start the "IDLE" process
+
+        ; set the "xb_idle" flag (ignoring the previous state)
+        LDR     r1,[r3,#ExecRoot_flags]
+        ORR     r1,r1,#xb_idle          ; set the "xb_idle" flag
+        BIC     r1,r1,#xb_next          ; clear "next" timeslice flag for idle
+        STR     r1,[r3,#ExecRoot_flags]
+
+        MOV     r1,#(NumberPris - 1)    ; lowest user priority
+        STR     r1,[r3,#ExecRoot_pri]
+        STR     r1,[r3,#ExecRoot_hipri] ; highest priority that can run
+
+        ; The "IDLE" process does not have any FP state or module table pointer
+        MOV     r1,#&00000000
+        STR     r1,[r3,#ExecRoot_fparea]
+        STR     r1,[r3,#ExecRoot_initial_dp]
+	[	(memmap)
+	[	(hercules :LOR: activebook)
+	; Define the default MEMMAP state (updating the soft-copy)
+	MOV	r1,#(MAPEN_USR :OR: OS_MODE1)	; enable OS mode 1
+	MOV	r0,#MEMMAP_regs
+	STRB	r1,[r0,#&00]
+	LDR	r0,=hardware_regs
+	STR	r1,[r0,#MEMMAP_data]
+	; Place the default MEMMAP state into the "ExecRoot"
+	|
+	[	{TRUE}			; bodge test for MJackson
+	MOV	r1,#&00			; physical memory map
+	|
+	MOV	r1,#(mmumode_mapen :OR: mmumode_osmode :OR: mmumode_mode1)
+	]
+	LDR	r0,=mmu_mode
+	STRB	r1,[r0,#&00]		; define the default MEMMAP state
+	; Place the default MEMMAP state into the "ExecRoot"
+	]	; (hercules :LOR: activebook)
+	STR	r1,[r3,#ExecRoot_memmap]
+	]	; EOF (memmap)
+
+        LDR     r1,=IdleStack           ; a suitable fixed point in RAM memory
+        STMFD   sp!,{r1}                ; store on the stack
+        LDMIA   sp,{usr_sp}^            ; to be loaded into the USR mode "r13"
+        NOP                             ; wait for registers to be re-mapped
+        ADD     sp,sp,#&04              ; and claim back the stack location
+
+        AND     r0,pc,#Fbit             ; r0 = state of entry FIQ bit
+        ; get the PC (and PSR) of the idle process
+        ADR     svc_r14,IdleProcess
+        ; at the moment all the PSR flags are clear (USR mode, IRQ/FIQ enabled)
+        ; we should set the FIQ flag to our state (i.e. preserving)
+        ORR     svc_r14,svc_r14,r0      ; copy FIQ bit into process address
+        MOVS    pc,svc_r14              ; leave scheduler and enter idle
+
+        ; ---------------------------------------------------------------------
+
+LoadProcess
+        ; in:   r0 = SaveState structure for process to be loaded
+        ;       r1 = priority of the process being started
+        ;       r2 = ProcessQ of the process being started
+        ;       r3 = ExecRoot structure
+        ;       SVC mode, IRQs disabled, FIQs undefined
+        ; out:  does not return (enters process referenced by "r0")
+
+        LDR     r4,[r0,#SaveState_next]         ; reference the next SaveState
+        STR     r4,[r2,#ProcessQ_head]          ; make this the new head
+        TEQ     r4,#&00000000
+        STREQ   r2,[r2,#ProcessQ_tail]          ; queue is now empty
+        ADDEQ   r1,r1,#&01                      ; so step onto next queue
+        CMPEQ   r1,#NumberPris                  ; check for overflow
+        MOVEQ   r1,#(NumberPris - 1)            ; overflowed, then use limit
+        STR     r1,[r3,#ExecRoot_hipri]         ; highest priority that can run
+
+        ; This is a good place to use load and store multiples for speed
+        LDR     r4,[r0,#SaveState_pri]          ; pri of process about to waken
+        STR     r4,[r3,#ExecRoot_pri]           ; set priority
+
+        LDR     r4,[r0,#SaveState_fparea]       ; recover the FP state
+        STR     r4,[r3,#ExecRoot_fparea]
+
+        LDR     r4,[r0,#SaveState_initial_dp]   ; initial module table pointer
+        STR     r4,[r3,#ExecRoot_initial_dp]
+
+	[	(memmap)
+	LDR	r4,[r0,#SaveState_memmap]	; required MEMMAP state for
+	STR	r4,[r3,#ExecRoot_memmap]	; this process thread
+	[	(hercules :LOR: activebook)
+	MOV	r1,#MEMMAP_regs
+	STRB	r4,[r1,#&00]			; set the MEMMAP state
+	LDR	r1,=hardware_regs
+	STR	r4,[r1,#MEMMAP_data]		; and update the soft-copy
+	|
+	LDR	r1,=mmu_mode
+	STRB	r4,[r1,#&00]			; set the MEMMAP state
+	]	; (hercules :LOR: activebook)
+	]	; EOF (memmap)
+
+        MOV     r4,#TicksPerSlice               ; this is not really required
+        STR     r4,[r3,#ExecRoot_timeslice]     ; if the process is priority 0
+
+        ; load the PC (& PSR) of the process to be started
+        LDR     svc_r14,[r0,#SaveState_pc]
+
+        ; restore registers from process description
+        ADD     r0,r0,#SaveState_r0     ; address the base of the registers
+        LDMIA   r0,{r0-link}^           ; load them all (including USP & link)
+        NOP                             ; important (allow register re-mapping)
+        ; Leave the scheduler and enter the process (restoring IRQ state)
+        MOVS    pc,svc_r14
+
+        ; ---------------------------------------------------------------------
+        ; -- IDLE process -----------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+IdleProcess
+        ; in:   USR mode; IRQs enabled; FIQs undefined
+        ;       usr_r13 : small FD stack
+        ;       all other registers are undefined
+        ;
+        ; **** THIS CODE DOES NOT USE THE STACK IT HAS BEEN GIVEN ****
+        ;
+        ; Another type of process (priority level) could be provided by
+        ; the IDLE routine. At the moment the idle process just increments
+        ; the "ExecRoot_idleLog" field every second.
+
+	[	(idledbg)
+	ADRL	r0,idle_message1
+	BL	local_Output
+	ADRL	r0,idle_message2
+	]
+
+        LDR     r3,=ROOT_start
+        LDR     r1,[r3,#ExecRoot_cstimer]       ; centi-second counter
+        ADD     r1,r1,#100                      ; wait for a second
+IdleProcess1
+        LDR     r2,[r3,#ExecRoot_cstimer]       ; centi-second counter
+        CMP     r1,r2
+        BGE     IdleProcess1
+
+	[	(idledbg)
+	BL	local_Output
+	]
+
+        LDR     r2,[r3,#ExecRoot_idleLog]       ; idle seconds
+        ADD     r2,r2,#1
+        STR     r2,[r3,#ExecRoot_idleLog]
+
+        ADD     r1,r1,#100                      ; wait for next second
+
+        B       IdleProcess1
+
+	[	(idledbg)
+idle_message1	=	"Idle entered",&0A,&00
+idle_message2	=	"Idle (1 sec passed)",&0A,&00
+	ALIGN
+	]
+
+        ; ---------------------------------------------------------------------
+        ; storage area for PC relative constants
+        LTORG
+
+        ; ---------------------------------------------------------------------
+        LNK     loend.s
+@

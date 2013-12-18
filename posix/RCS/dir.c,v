@@ -1,0 +1,337 @@
+head	1.9;
+access;
+symbols
+	Helios_1_3_1:1.9
+	Helios_C40_1_3_Official_Release:1.8
+	Alenia_release:1.8
+	Helios1_3:1.8
+	C40_Field_Test_2:1.8
+	C40_Field_Test_R1:1.7
+	Helios13_beta:1.7
+	Helios1_2_2:1.6
+	Helios1_2_2Beta:1.4
+	Helios1_2_1:1.4
+	Helios1_2:1.1
+	V1_2Beta0:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.9
+date	93.07.12.10.35.41;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.09.04.10.53.24;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.05.01.16.59.11;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.10.31.11.51.39;	author martyn;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.10.31.11.17.41;	author martyn;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	91.03.11.17.33.07;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.03.11.17.25.08;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.02.15.16.12.48;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.05.13.27.51;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@posix directory routines
+@
+
+
+1.9
+log
+@fixed warnings from new C compiler
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     P O S I X    L I B R A R Y			--
+--                     --------------------------                       --
+--                                                                      --
+--             Copyright (C) 1988, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- dir.c								--
+--                                                                      --
+--	Directory handling for Posix.					--
+--                                                                      --
+--	Author:  NHG 8/5/88						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId:	 %W%	%G% Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: dir.c,v 1.8 1992/09/04 10:53:24 nickc Exp nickc $ */
+
+
+#include <helios.h>	/* standard header */
+
+#define __in_dir 1	/* flag that we are in this module */
+
+
+#include <posix.h>
+#include <syslib.h>
+#include <gsp.h>
+#include <string.h>
+
+#include "pposix.h"
+
+DIR *opendir( char * pathname )
+{
+	int e = 0;
+	int fd= -1;
+	DIR *dir = NULL;
+	char *path = (char *)Malloc(PATH_MAX + 1);
+	int length = strlen(pathname);
+
+	CHECKSIGS();
+	if( path == NULL )
+	{ e = ENOMEM; goto done; }
+		
+	strcpy(path, pathname);
+	if ((length > 1) && (path[length - 1] == '/')) path[length - 1] = '\0';
+	
+	if ((fd = open(path, O_RDONLY)) == -1) {e = errno; goto done; }
+
+	unless ( checkfd(fd)->pstream->stream->Type & Type_Directory )
+	{ e = ENOTDIR; goto done; }
+	
+	if ((dir = (DIR *)Malloc(sizeof(DIR))) == NULL)
+	{
+		e = ENOMEM;
+		goto done;
+	}
+	else {
+		fcntl(fd,F_SETFD,FD_CLOEXEC);		
+		dir->dd_fd = fd;
+		dir->dd_loc = 0;
+		dir->dd_pos = 0;
+		dir->dd_size = 0;
+	}
+
+done:
+	if( path != NULL ) Free(path);
+	if( e != 0 )
+	{
+		if( fd != -1 ) close( fd );
+		if( dir != NULL ) Free(dir);
+		errno = e;
+		dir = NULL;
+	}
+	CHECKSIGS();
+	return dir;
+}
+
+struct dirent *readdir( DIR * dir )
+{
+	int rdsize;
+
+	CHECKSIGS();
+	if( dir->dd_loc == dir->dd_size )
+	{
+		if ( (rdsize=read(dir->dd_fd,(byte *)dir->dd_buf,
+				 DIRBUFSIZE*sizeof(struct dirent))) <= 0 )
+		{
+				return NULL;
+		}
+		dir->dd_pos += dir->dd_size;
+		dir->dd_loc = 0;
+		dir->dd_size = (long)rdsize/sizeof(struct dirent);
+	}
+	
+	return &(dir->dd_buf[dir->dd_loc++]);
+}
+
+void rewinddir(DIR *dir)
+{
+	fdentry *fde = checkfd(dir->dd_fd);
+	Stream *s = fde->pstream->stream;
+	Stream *s1 = CopyStream(s);
+	s1->Pos = 0;
+	fde->pstream->stream = s1;
+	Close(s);
+	ReOpen(s1);
+	dir->dd_loc = 0;
+	dir->dd_pos = 0;
+	dir->dd_size = 0;
+}
+
+int closedir( DIR * dir )
+{
+	close(dir->dd_fd);
+	Free(dir);
+
+	return 0;
+}
+
+/* end of dir.c */
+@
+
+
+1.8
+log
+@fixed compile time warnings
+@
+text
+@d17 1
+a17 1
+/* $Id: dir.c,v 1.7 1992/05/01 16:59:11 nickc Exp nickc $ */
+d37 1
+a37 1
+	char *path = Malloc(PATH_MAX + 1);
+@
+
+
+1.7
+log
+@removed compiler warnings
+@
+text
+@d17 1
+a17 1
+/* $Id: dir.c,v 1.6 1991/10/31 11:51:39 martyn Exp nickc $ */
+d32 1
+a32 2
+DIR *opendir(pathname)
+char *pathname;
+d78 1
+a78 2
+struct dirent *readdir(dir)
+DIR *dir;
+d112 1
+a112 2
+int closedir(dir)
+DIR *dir;
+@
+
+
+1.6
+log
+@slight mod to readir change. Re-trying on interrupt doesn't really
+seem sensible - so abort directory read on ANY error.
+@
+text
+@d17 1
+a17 1
+/* $Id: dir.c,v 1.5 1991/10/31 11:17:41 martyn Exp martyn $ */
+d94 1
+a94 1
+		dir->dd_size = rdsize/sizeof(struct dirent);
+d119 2
+@
+
+
+1.5
+log
+@modified readdir.c to retry if the read is interrupted. In the old code,
+a return of -1 from the read was ignored with strange results !
+
+Also modified rewinddir to change the order of the closing of the old
+stream and the re-opening of the copied stream. In the old code, the
+Close was failing, as the ports had been re-allocated by the previous
+ReOpen - this was leaving an open stream for every rewinddir.
+@
+text
+@d17 1
+a17 1
+/* $Id: dir.c,v 1.4 91/03/11 17:33:07 nick Exp $ */
+d87 1
+a87 1
+		while( (rdsize=read(dir->dd_fd,(byte *)dir->dd_buf,
+a89 1
+			if(rdsize == 0 || (rdsize == -1 && errno != EINTR))
+@
+
+
+1.4
+log
+@small improvement to previous fix.
+@
+text
+@d17 1
+a17 1
+/* $Id: dir.c,v 1.3 91/03/11 17:25:08 nick Exp Locker: nick $ */
+d87 2
+a88 2
+		if( (rdsize=read(dir->dd_fd,(byte *)dir->dd_buf,
+				 DIRBUFSIZE*sizeof(struct dirent))) == 0 )
+d90 2
+a91 1
+			return NULL;
+d108 1
+a109 1
+	Close(s);
+@
+
+
+1.3
+log
+@rewinddir now ReOpens the directory.
+@
+text
+@d17 1
+a17 1
+/* $Id: dir.c,v 1.2 91/02/15 16:12:48 nick Exp $ */
+d104 5
+a108 2
+	s->Pos = 0;
+	ReOpen(s);
+@
+
+
+1.2
+log
+@bugs in freeing memory in opendir fixed
+@
+text
+@d17 1
+a17 1
+/* $Id: dir.c,v 1.1 90/09/05 13:27:51 nick Exp Locker: nick $ */
+d102 4
+a105 1
+	lseek(dir->dd_fd,0,SEEK_SET);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+/* $Id$ */
+d67 1
+a69 2
+		if( path != NULL ) Free(path);
+		if( dir != NULL ) Free(NULL);
+d71 1
+@

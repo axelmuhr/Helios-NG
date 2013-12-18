@@ -1,0 +1,436 @@
+SECTION "Norcroft C Interface"
+
+GET "chdr"
+
+LET start(init.pkt) BE
+$( LET argv = VEC argvupb
+   LET argc = 0
+   LET argl = ?
+
+   TEST init.pkt
+   THEN
+   $( /* initio() */ /* This will be done in _main */
+      argv := init.pkt!pkt.arg1
+      argl := init.pkt!pkt.arg2
+   $)
+   ELSE
+      FOR i = 0 TO (argvupb+1)*4 - 1 DO
+      $( LET ch = rdch()
+         IF ch = '*N' THEN
+         $(
+            argl := i
+            BREAK
+         $)
+         argv%i := ch
+      $)
+
+   callmain(argv,argl,init.pkt)
+   IF init.pkt
+   THEN
+      endtask(tcb!tcb.seglist!3)
+$)
+
+AND CtoB( bstr, cstr ) = VALOF
+$(
+   LET ch = 0%cstr
+   LET l = 0
+ 
+   UNTIL ch = 0 DO
+   $(
+      l := l+1
+      bstr%l := ch
+      ch := 0%(cstr+l)
+   $)
+   bstr%0 := l
+   RESULTIS bstr
+$)
+
+AND c.open(name, mode) = VALOF
+$( LET bstr = VEC 40
+   LET scb  = ?
+   LET file = ?
+   LET bmode = mode < 0
+
+   mode := ABS(mode)
+   CtoB(bstr,name)
+
+   TEST( mode = Act.FindOutput ) THEN
+       scb := findoutput(bstr)
+   ELSE
+       scb := findinput(bstr)
+
+   IF scb = 0 THEN RESULTIS 0
+
+   file := getvec( file.upb )
+   IF file = 0 RESULTIS file
+
+   file!file.scb       := scb
+   file!file.buf       := getvec(BUFSIZ-1)
+   file!file.bufpos    := 0
+   file!file.buflen    := 0
+   file!file.flags     := 0
+   file!file.pos       := 0
+   file!file.actualpos := 0
+   file!file.lastchar  := 0
+   set.binary(file, bmode)
+   file!file.len       := filelen(bstr,file)
+   RESULTIS file
+$)
+
+AND filelen(name,file) = VALOF
+$(
+   LET i = VEC info.upb
+   LET l = locateobj(name)
+   LET r = ?
+   LET b = ?
+   LET bl = ?
+
+   IF l = 0 THEN RESULTIS 0
+
+   b := getvec( 249 )
+   inputfile(file)
+   outputfile(file)
+   examine.object( l,i )
+   IF i!(info.size+1) = 0 THEN RESULTIS 0
+   r := (i!(info.size+1)-1) * 250
+   pointword( r )
+
+   bl := ABS (readwords( b, 250 ))*bytesperword
+
+   IF (bl > 0) & ~get.binary(file) & (b%(bl-1) < bytesperword) THEN
+      bl := bl-bytesperword+b%(bl-1)
+
+   r := r*bytesperword + bl
+
+   pointword(0)
+   freeobj(l)
+   freevec(b)
+   RESULTIS r
+$)
+
+AND examine.object(lock, entryinfo) =
+    sendpkt(notinuse, lock!lock.task, action.examineobject, ?, ?, lock, entryinfo)
+
+AND c.close( file ) BE
+$( LET scb = file!file.scb
+   outputfile( file )
+   deplete(TRUE)
+   freevec(file!file.buf)
+   freevec(file)
+   endstream( scb )
+   selectinput(0)
+   selectoutput(0)
+$)
+
+AND c.delete( name ) = VALOF
+$( LET bstr = VEC 40
+   CtoB(bstr,name)
+   RESULTIS deleteobj(bstr)
+$)
+
+AND c.input() = VALOF
+$( LET file = getvec(file.upb)
+
+   file!file.scb     := cis
+   file!file.buf     := getvec(BUFSIZ)
+   file!file.bufpos  := 0
+   file!file.len     := 0
+   file!file.buflen  := 0
+   RESULTIS file
+$)
+
+AND c.isinteractive( file ) = file!file.scb!scb.type < 0
+
+AND c.output() = VALOF
+$( LET file = getvec(file.upb)
+
+   file!file.scb     := cos
+   file!file.buf     := getvec(BUFSIZ)
+   file!file.bufpos  := 0
+   file!file.len     := 0
+   file!file.buflen  := 0
+   RESULTIS file
+$)
+
+AND flushend() BE
+$(
+   TEST ~get.binary(cof) THEN
+   $( IF cof!file.buflen = 0 & cof!file.lastchar >= bytesperword THEN RETURN
+      (cof!file.buf)%((cof!file.buflen)|3) := cof!file.buflen & 3
+ // Make sure something is written
+      IF cof!file.buflen = 0 THEN cof!file.buflen := 1
+   $)
+   ELSE
+      IF cof!file.buflen = 0 THEN RETURN
+
+   cof!file.buflen := (cof!file.buflen+3) & -4
+   file.write(cof!file.buf,cof!file.buflen>>2)
+$)
+
+AND file.read( addr, n) = VALOF
+$(
+   LET r = readwords(addr,n)
+   cif!file.actualpos := cif!file.actualpos+ABS(r)*bytesperword
+   RESULTIS r
+$)
+
+AND replenish(size) = VALOF
+$( LET nw,nb = ?,?
+
+   set.clean(cif)
+   nw := file.read(cif!file.buf, size)
+
+   nb := ABS(nw) << 2
+
+   IF nb = 0 THEN
+   $( cif!file.buflen := 0
+      cif!file.bufpos := 0
+      RESULTIS 0
+   $)
+
+   IF nw<0 THEN
+   $(
+      IF ~get.binary(cif) THEN
+      $(
+         LET l = (cif!file.buf)%(nb-1)
+         IF l < bytesperword THEN
+         nb := nb-bytesperword+l
+      $)
+   $)
+   cif!file.bufpos := 0
+   cif!file.buflen := nb
+   RESULTIS nb
+$)
+
+AND seekto(file,pos) BE
+$(
+   inputfile(file)
+   IF file!file.actualpos ~= (pos & ~3) THEN
+   $(
+/* I'm afraid the following is necessary due to a cock-up in the
+   filing system. Where it is not possible to point to the end of
+   a file where there is a multiple of 250 words in the file.
+*/
+      TEST (pos REM 1000) = 0 THEN
+      $( LET b = ?
+         pointword((pos>>2)-1)
+         readwords(@b,1)
+      $)
+      ELSE
+         pointword( pos>>2 )
+      file!file.actualpos := pos & ~3
+   $)
+$)
+
+AND file.write(addr,n) BE
+$(
+   writewords(addr,n)
+   cof!file.actualpos := cof!file.actualpos+n*bytesperword
+$)
+
+AND max(x,y) = x > y-> x,y
+
+AND deplete(closing) BE
+$( LET w = ?
+   LET wl = ?
+
+   IF ~dirty(cof)
+   $( cof!file.bufpos := 0
+      cof!file.buflen := 0
+
+      IF closing & extended(cof) THEN
+      $(
+         flushend()
+         set.extended(cof,0)
+      $)
+      RETURN
+   $)
+
+   seekto(cof,cof!file.pos - cof!file.buflen)
+
+   TEST (cof!file.buflen & (bytesperword-1)) ~= 0 THEN
+   $(
+      w  := cof!file.buf!0
+      wl := cof!file.buflen
+
+      replenish(1)
+
+      TEST cof!file.buflen ~= 0 THEN
+      $( seekto(cof,cof!file.pos)
+         FOR i = 0 TO wl-1 DO
+            (cof!file.buf)%i := (@w)%i
+         cof!file.buflen := max( wl, cof!file.buflen)
+         TEST cof!file.len-bytesperword <= cof!file.pos THEN
+                  // Overwriting last word in file
+         $( cof!file.lastchar := cof!file.buf%(cof!file.buflen-1)
+            flushend()
+         $)
+         ELSE  // Not last word in file (no problem)
+            file.write(cof!file.buf,1)
+      $)
+      ELSE  // Writing at end of file
+      $( cof!file.buflen := wl
+         cof!file.buf!0  := w
+         flushend()
+      $)
+   $)
+   ELSE
+   $( file.write(cof!file.buf,cof!file.buflen>>2)
+      cof!file.bufpos := 0
+      cof!file.buflen := 0
+   $)
+   cof!file.buf!0 := 0
+   set.clean(cof)
+$)
+
+AND file.rdch() = VALOF
+$( LET ch = ?
+
+   IF cif!file.bufpos = cif!file.buflen THEN
+      IF replenish(BUFSIZ) = 0 THEN RESULTIS endstreamch
+   cif!file.pos := cif!file.pos +1
+   ch := (cif!file.buf)%(cif!file.bufpos)
+   cif!file.bufpos := cif!file.bufpos +1
+   RESULTIS ch
+$)
+
+AND file.wrch(ch) BE
+$(
+   (cof!file.buf)%(cof!file.bufpos) := ch
+   cof!file.bufpos := cof!file.bufpos+1
+   cof!file.buflen := max(cof!file.buflen, cof!file.bufpos)
+   cof!file.pos := cof!file.pos + 1
+   set.dirty(cof)
+
+   IF cof!file.bufpos = (BUFSIZ << 2) THEN
+      deplete(FALSE)
+
+   IF cof!file.pos > cof!file.len THEN
+      cof!file.len := cof!file.pos
+$)
+
+AND c.read( file, buffer, size ) = VALOF
+$( LET readfunc = c.isinteractive(file)->rdch,file.rdch
+
+   inputfile(file)
+   FOR i = 0 TO size-1 DO
+   $( LET ch = readfunc()
+      IF ch = endstreamch THEN RESULTIS i
+      0%(buffer+i) := ch
+      IF c.isinteractive(file) & (ch = '*N') THEN
+         RESULTIS i+1
+   $)
+
+   RESULTIS size
+$)
+
+AND c.write( file, buffer, size ) = VALOF
+$(
+   outputfile(file)
+   TEST c.isinteractive( file ) THEN
+   $(
+      FOR i = 0 TO size-1 DO
+         wrch(0%(buffer+i))
+      IF cos!scb.pos ~= 0 THEN wrch('*E')  // Flush if not already done
+   $)
+   ELSE
+   $( LET n = (size&~(bytesperword-1)) - ((cof!file.bufpos)&(bytesperword-1))
+      LET prevsize = cof!file.len
+
+// n is the maximum number of bytes to complete a whole
+// number of longwords in the output buffer. It cannot be 0
+      TEST n<0 THEN
+         n := 0
+      ELSE
+      $( FOR i = 0 TO n-1 DO
+            file.wrch(0%(buffer+i))
+         deplete(FALSE)
+      $)
+      FOR i = n TO size-1 DO
+         file.wrch(0%(buffer+i))
+
+      IF cof!file.len > prevsize THEN
+         set.extended(cof,1)
+      IF cof!file.pos = cof!file.len THEN
+         cof!file.lastchar := 0%(buffer+size-1)
+   $)
+   RESULTIS size
+$)
+
+AND c.seek( file, pos, whence ) = VALOF
+$( LET r = file!file.pos
+   LET np = ?
+
+   inputfile(file)
+   outputfile(file)
+
+   SWITCHON whence INTO
+   $(
+   case -1:
+      np := pos
+      ENDCASE
+   case 0:
+      np := file!file.pos+pos
+      ENDCASE
+   case 1:
+      np := file!file.len+pos
+      ENDCASE
+   $)
+
+   IF np ~= r THEN
+   $(
+      deplete(TRUE)
+      file!file.pos := np
+      seekto(file,file!file.pos)
+      IF (np&(bytesperword-1))~= 0 THEN
+      $( replenish(1)
+         file!file.bufpos := file!file.pos & (bytesperword-1)
+      $)
+   $)
+   RESULTIS r
+$)
+
+AND c.datstamp(v) = VALOF
+$(
+   LET v1 = VEC 2
+   datstamp(v1)
+   FOR i = 0 TO 11 DO 0%(v+i) := v1%i
+   RESULTIS v
+$)
+
+AND inputfile(file) BE
+$(
+   cis := file!file.scb
+   cif := file
+$)
+
+AND outputfile(file) BE
+$(
+   cos := file!file.scb
+   cof := file
+$)
+
+AND c.input() = input()
+AND c.output() = output()
+
+AND c.alloc(n) = getvec(n>>2)<<2
+AND c.free(v)  = freevec(v>>2)
+
+AND cloadseg(cstring) = VALOF
+$( LET bstr = VEC 40
+
+   CtoB(bstr,cstring)
+
+   RESULTIS loadseg(bstr)
+$)
+
+AND c.rename(newfile, oldfile) = VALOF
+$(
+   LET bstr1 = VEC 40
+   LET bstr2 = VEC 40
+
+   CtoB(bstr1, newfile)
+   CtoB(bstr2, oldfile)
+
+   RESULTIS renameobj(bstr2, bstr1)
+$)

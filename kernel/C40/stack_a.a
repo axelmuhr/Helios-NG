@@ -1,0 +1,318 @@
+--
+-- stack_a.a : 	C Stack manipulation code, AMPP part
+--
+--   Copyright (c) 1992 Perihelion Software Ltd.
+--     All rights reserved.
+--
+-- Author :	N Clifton
+-- Version :	$Revision: 1.12 $
+-- Date :	$Date: 1994/03/31 12:54:33 $
+-- Id :		$Id: stack_a.a,v 1.12 1994/03/31 12:54:33 nickc Exp $
+--
+
+_include 'basic.m	-- get the basic AMPP macros
+_include 'c40.m		-- get the C40 specific mnemonics
+_include 'module.m	-- for the Function macro
+_include 'memory.m	-- for the Carrier structure
+
+-- constants
+
+_def 'STACK_GUARD	[PCS_STACKGUARD >> 2]
+
+-- (word) offsets of fields in the stack header structure
+
+_def 'S_NEXT		0
+_def 'S_PREV		1
+_def 'S_LR		2
+_def 'S_USE		3
+_def 'S_USP		4
+_def 'S_SIZE		5
+
+-- size of stack chunk structure
+
+_def 'StackChunkSize	6
+
+
+Function __stack_free
+--
+--	void	__stack_free( void );
+--
+-- Upon Entry:
+-- 	R_USP	points to end of stack chunk header
+-- 	R_FP	has already been reset to the caller's stack frame
+-- 	R_USE	end of current (to be freed) stack chunk
+--	R_LR	return address
+--
+-- Upon Exit
+--	no return value
+--
+-- Corrupts
+-- 	ST
+--
+-- Purpose
+-- 	This routine is called whenever we have finished using a stack chunk
+-- 	This routine DOES NOT conform to the normal HELIOS C calling conventions
+--
+
+-- Step 1. Recover Old Stack Pointers
+
+   SUBI3     R_BASE,	     R_USP,	R_T1 -- convert stack pointer to word offset
+   LDI	   *+R_USP( S_USE ), R_USE	     -- get hold of old stack end pointer
+   LDI	   *+R_USP( S_LR  ), R_LR	     -- get hold of return address
+   LDI 	   *+R_USP( S_USP ), R_USP	     -- get hold of old stack pointer
+   STI       R_LR,	 *\--R_USP(1)        -- save return address for later
+
+-- Step 2. Call C function to update pointers -
+-- NB/ Since we are now executing on the old (full)
+-- stack the C routines called MUST NOT do any
+-- stack checking.  This implies that they must
+-- be kernel routines.
+
+patchinstr( PATCHC40MASK24ADD, shift( -2, codestub( .StackFree ) ),
+   LAJ       0 )
+      STI    R_A1result, *\--R_USP(1)	        -- save result of function on stack
+      LSH3   2,	             R_T1,    R_A1	-- convert word offset to byte offset
+      NOP					-- padding
+
+-- Step 3. Restore registers
+
+   LDI	    *R_USP++(1),     R_A1		-- recover result register
+   LDI	    *R_USP++(1),     R_LR		-- recover return address
+         
+-- Step 4. Return
+   Bu	 R_LR
+
+--
+-- end of __stack_free
+--
+
+
+Function __stack_overflow
+--
+--	void	__stack_overflow( void );
+--
+-- Upon Entry:
+-- 	R_TMP1	number of words on pushed onto current stack as part of function entry process
+-- 	R_TMP2	minimum number of words required
+-- 	R_TMP3	return address OF the function that called us
+-- 	R_LR	return address TO the function that called us
+--
+-- Upon Exit
+--	no return value
+--
+-- Corrupts
+-- 	R_ATMP, R_TMP2, R_ADDR1, ST
+--
+-- Purpose
+-- 	This routine is called when we need a new stack chunk.
+-- 	This routine DOES NOT conform to the normal Helios C calling conventions.
+-- 	NO user stack space can be used by this function.
+--
+
+-- Step 1.  Save all registers that might be corrupted by calls to C routines
+
+   STI	  R_V1,		*-\-R_USP(1)
+   STI	  R_V2,		*-\-R_USP(1)
+   STI	  R_V3,		*-\-R_USP(1)
+   STI	  R_V4,		*-\-R_USP(1)
+   STI	  R_FV1,	*-\-R_USP(1)	-- we will only be performing integer operations
+   STI	  R_FV2,	*-\-R_USP(1)	-- so we do not need to save high part of FP values
+   STI	  R_A1,		*-\-R_USP(1)
+   STI	  R_A2,		*-\-R_USP(1)
+   STI	  R_A3,		*-\-R_USP(1)
+   STI	  R_A4,		*-\-R_USP(1)
+   STI	  R_LR,   	*-\-R_USP(1)
+   STI	  R_TMP1, 	*-\-R_USP(1)
+   STI	  R_TMP3,	*-\-R_USP(1)
+
+-- Step 2. Get a new stack chunk
+   
+   LDI	  R_TMP2,	   R_A1
+patchinstr( PATCHC40MASK24ADD, shift( -2, CODESTUB( .StackMalloc ) ),
+   LAJ	  0 )
+      NOP
+      NOP
+      NOP
+
+-- Step 3. Get hold of pointer to __stack_free routine and save in a spare register
+
+   ADDI	  .__stack_free,   R_LR
+   LDI	  R_LR,		   R_ADDR1
+
+-- Step 4. Convert return value (pointer to new stack chunk) into word address
+
+   LSH3	 -2,		   R_A1,	R_ATMP
+   ADDI	  R_BASE,	   R_ATMP
+
+-- Step 5. Restore registers from the stack
+
+   LDI	 *R_USP++(1),	   R_TMP3
+   LDI	 *R_USP++(1),	   R_TMP1
+   LDI	 *R_USP++(1),	   R_LR
+   LDI	 *R_USP++(1),	   R_A4
+   LDI	 *R_USP++(1),	   R_A3
+   LDI	 *R_USP++(1),	   R_A2
+   LDI	 *R_USP++(1),	   R_A1
+   LDI	 *R_USP++(1),	   R_FV2
+   LDI	 *R_USP++(1),	   R_FV1
+   LDI	 *R_USP++(1),	   R_V4
+   LDI	 *R_USP++(1),	   R_V3
+   LDI	 *R_USP++(1),	   R_V2
+   LDI	 *R_USP++(1),	   R_V1
+
+-- Step 6. Save registers into stack chunk header
+
+   ADDI3  R_TMP1,	   R_USP,    R_T1	-- When we restore the stack pointer,
+   STI	  R_T1,		 *+R_ATMP(S_USP)	-- ignore the words already placed on stack
+   STI	  R_USE,	 *+R_ATMP(S_USE)	
+   STI	  R_TMP3,	 *+R_ATMP(S_LR)
+
+-- Step 7. Install new values into these registers
+
+   SUBI3  R_TMP1,          R_ATMP,      R_USP   -- start new user stack below stack header
+   LDI	*+R_ATMP(S_SIZE),  R_TMP2		-- get size of stack chunk
+   SUBI3  R_TMP2,	   R_ATMP,	R_USE	-- start stack end pointer
+   ADDI	  STACK_GUARD,     R_USE		-- above end of stack
+
+-- Step 8. Return to C code (delayed)
+
+   BuD	  R_LR
+
+-- Step 9. Install new return address
+
+      LDI R_ADDR1,	   R_LR
+      NOP
+      NOP
+--
+-- end of _stack_overflow
+--
+
+
+Function _stack_size
+--
+--	unsigned long	_stack_size( void );
+--
+-- Upon Entry:
+-- 	R_LR	return address TO the function that called us
+--
+-- Upon Exit
+--	Number of free words left in current stack chunk
+--
+-- Corrupts
+-- 	ST
+--
+-- Purpose
+-- 	Returns the number of words left on the stack
+--
+	SUBI3	R_USE,	R_USP,	R_A1
+	Bu	R_LR
+--
+-- end of _stack_size
+--
+
+Function Accelerate
+--
+--	void Accelerate( Carrier * c, VoidFnPtr p, word args_size, ... );
+--
+-- Upon Entry:
+--	R_A1	C pointer to Carrier structure
+--	R_A2	Function pointer
+--	R_A3	Number of bytes of arguments to be passed to the function
+--	R_A4	First argument to the function
+--	R_USP	Remaining arguments to the function
+-- 	R_LR	return address 
+--
+-- Upon Exit
+--	No change
+--
+-- Corrupts
+-- 	ST
+--
+-- Purpose
+-- 	Creates a stack chunk in the block of RAM associated
+--	with the carrier structure, and then calls the indicated
+--	function.  Upon return from the function the stack is
+--	unwound and the function returns normally.
+--	Note that the stack_chunk pointer in the save area of the
+--	current thread is NOT updated.  Stack extensions will
+--	continue as normal, using the information in the old
+--	stack chunk, but saving the stack pointers of this new
+--	stack chunk !!!
+--
+-- Step 1.  Convert C pointers to word pointers
+
+	LSH3	-2,		R_A1,		R_ATMP		-- convert C byte offset to word offset
+	ADDI	R_BASE,		R_ATMP				-- convert word offset to word pointer
+	LDI	*+R_ATMP( Carrier.Addr ),	R_ADDR1		-- get address of start of block
+
+-- Step 2.  Build a stack chunk at the top end of the allocated memory
+
+	LDI	*+R_ATMP( Carrier.Size ),	R_A1		-- get the size of the block
+	SUBI	StackChunkSize,	R_A1				-- take of size of a StackChunk structure
+	ADDI3	R_A1,		R_ADDR1,	R_ATMP		-- point to start of StackChunk structure
+	STI	R_A1,		*+R_ATMP( S_SIZE )		-- save size of chunk
+	STI	R_LR,		*+R_ATMP( S_LR )		-- save return address
+	STI	R_USP,		*+R_ATMP( S_USP )		-- save old stack pointer
+	STI	R_USE,		*+R_ATMP( S_USE )		-- save old stack end pointer
+	STIK	0,		*+R_ATMP( S_PREV )		-- NULL prev pointer
+	STIK	0,		*+R_ATMP( S_NEXT )		-- NULL next pointer
+
+	LDI	R_A2,		R_T1				-- save address of function to be called
+	STI	R_V1,		*\--R_ATMP(1)			-- save variable register on new stack !
+
+-- Step 3.  Copy the function's arguments into the correct registers / positions
+
+	LSH3	-2,		R_A3,		R_V1		-- convert byte count to word count
+	Beq	ac_done						-- skip everything if there are no arguments
+	LDI	R_A4,		R_A1				-- move first argument
+	SUBI	1,		R_V1				-- decrement count
+	Beq	ac_done						-- skip rest of code if finished
+	LDI	*R_USP++(1),	R_A2				-- pop arg off stack into register
+	SUBI	1,		R_V1				-- decrement count
+	Beq	ac_done						-- have we finished ?
+	LDI	*R_USP++(1),	R_A3				-- pop arg off stack into register
+	SUBI	1,		R_V1				-- decrement count
+	Beq	ac_done						-- have we finished ?
+	LDI	*R_USP++(1),	R_A4				-- pop arg off stack into register
+	SUBI	1,		R_V1				-- decrement count
+	Beq	ac_done						-- have we finished ?
+	SUBI3	1, 		R_V1,		RC		-- load repeat count
+	ADDI	R_V1,		R_USP
+	RPTB	ac_loop1					-- loop until done
+	 LDI	*\--R_USP(1),	R_FT2			-- pop arg off stack into register
+ac_loop1:
+	 STI	R_FT2,		*\--R_ATMP(1)			-- and save on new stack
+
+-- Step 4.  Set up the new stack pointers
+
+ac_done:
+	LDI	R_ADDR1,	R_USE				-- set up new stack end pointer
+	ADDI	STACK_GUARD,	R_USE				-- don't forget the guard words
+	LDI	R_ATMP,		R_USP				-- set up new stack pointer
+
+-- Step 5.  Call the function
+
+	LAJu	R_T1						-- call function
+	   NOP
+	   NOP
+	   NOP
+
+-- Step 6.  We have returned from the function. Restore the stack to how it used to be and then return
+
+	ADDI      R_V1,		        R_USP			-- pop arguments off stack
+	LDI      *R_USP++( 1 ),		R_V1			-- recover variable register
+	LDI	*+R_USP( S_LR ),	R_LR			-- recover return address
+	LDI	*+R_USP( S_USE ),	R_USE			-- recover stack end pointer
+	LDI	*+R_USP( S_USP ),	R_USP			-- recover stack pointer
+
+-- Step 7.  Return
+
+	Bu	R_LR
+--
+-- end of Accelerate
+--
+
+--
+-- end of stack_a.a
+--
+

@@ -1,0 +1,224 @@
+head	1.2;
+access;
+symbols;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	91.10.10.07.37.52;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.06.04.13.38.20;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@rrd readdir() fn bug test program
+@
+
+
+1.2
+log
+@rrd test programs
+@
+text
+@/****************************************************************************
+
+Subject: RRD bug report (ABC ref. 10087)
+
+Paul, 
+      here's a bug report for a problem with the RRD I found.  You may
+have already received this, since I've already sent it to you once, but
+that was directly to 'perisl' and Brian informs me that there's something
+wrong with your modem which means that the message won't get through if
+we dial you; I'm sending this message via Acorn. 
+
+John.
+------
+
+                        ----------------
+                       | ABC BUG REPORT |
+                        ----------------
+
+____________________________________________________________
+
+Brief bug description:		Keywords: readdir unlink RRD
+
+Unlinking a file in the RRD invalidates an open directory stream
+attached to the directory containing the file.
+
+============================================================
+
+Detailed description
+
+See below for the source of the test program 'readirbug' which
+exhibits the bug reported here.
+
+The program readdirbug opens a stream to some directory stream
+specified by the macro TESTDIR and reads entries from it until
+NULL is obtained, when it exits.
+
+I set TESTDIR to '/ram/sys/testdir' and created this directory
+without any contents; the following output was obtained from readdirbug:
+
+  readdirbug: found entry '/ram/sys/testdir/.'
+  readdirbug: found entry '/ram/sys/testdir/..'
+  read NULL
+
+Then I created a file f0 in the testdir directory; the output was 
+as follows:
+
+ readdirbug: found entry '/ram/sys/testdir/.'
+ readdirbug: found entry '/ram/sys/testdir/..'
+ readdirbug: found entry '/ram/sys/testdir/f0'
+ readdirbug: unlinked file /ram/sys/testdir/f0
+ readdirbug: found entry '/ram/sys/testdir/.'
+ readdirbug: found entry '/ram/sys/testdir/..'
+ readdirbug: found entry '/ram/sys/testdir/f0'
+ readdirbug: failed to unlink file /ram/sys/testdir/f0
+ Read directory entry with 0-length name: 
+ name[0]= 0
+ name[1]= 0
+ name[2]= 0
+ name[3]= 0
+ name[4]= 0
+ readdirbug: found entry '/ram/sys/testdir/'
+ Read directory entry with 0-length name: 
+ name[0]= 0
+ name[1]= 0
+ name[2]= 0
+ name[3]= 0
+ name[4]= 0
+ readdirbug: found entry '/ram/sys/testdir/'
+ .
+ .
+ .
+ readdirbug: found entry '/ram/sys/testdir/'
+ readdirbug: found entry '/ram/sys/testdir/' (GARBAGE)
+ readdirbug: found entry '/ram/sys/testdir/'(GARBAGE)
+ readdirbug: found entry '/ram/sys/testdir/ (GARBAGE)'
+ readdirbug: found entry '/ram/sys/testdir/:'
+
+ .
+ .
+ (forever)
+ .
+ .
+
+
+The unlink seems to have corrupted the datastructure which the readdirbug 
+program's directory stream pointer points to.
+
+I recompiled the program with TESTDIR set to '/files/tmp/testdir' and
+created this directory with a single file 'f0' in it; when I ran the 
+program, the output was as follows:
+
+ readdirbug: found entry '/files/tmp/testdir/.'
+ readdirbug: found entry '/files/tmp/testdir/..'
+ readdirbug: found entry '/files/tmp/testdir/f0'
+ readdirbug: unlinked file /files/tmp/testdir/f0
+ read NULL
+
+This is the output I would expect, so it seems that the bug is associated
+with the ram server rather than being a bug in some other part of Helios.
+
+
+Source 'readdirbug.c' follows:
+
+*************************************************************************/
+
+/*----------------------------------------------------------------------*/
+/* readdirbug.c:                                                        */
+/*                                                                      */
+/* Program written with the intention of isolating a bug in Helios      */
+/* 'readdir' which there seems to be in Helios of 21/5/91; I think      */
+/* this function may get hold of each directory entry twice.            */
+/* JG, 22/5/91.                                                         */
+/*                                                                      */
+/*----------------------------------------------------------------------*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <dirent.h>
+#include <limits.h>
+#include <posix.h>
+#include <gsp.h>
+#include <string.h>
+
+#if 0
+#define TESTDIR "/ram/sys/testdir"
+#else
+#define TESTDIR "/files/tmp/testdir"
+#endif
+
+int main(int argc, char *argv[])
+{
+  DIR           *d;
+
+  if ( (d=opendir(TESTDIR)) == NULL )
+  { fprintf(stderr, "%s: failed to open directory '%s'\n", argv[0], TESTDIR);
+    exit(2);
+  }
+  
+  while (1)
+  { struct dirent  *entry;
+    char           subPathName[PATH_MAX];
+
+    if ( (entry = readdir(d)) == NULL )
+    { printf("read NULL\n");
+      if (errno !=0)
+	fprintf(stderr, "%s: error whilst reading from directory '%s'\n", 
+		argv[0], TESTDIR);
+      break;
+    }
+
+    sprintf(subPathName, "%s/%s", TESTDIR, entry->d_name);
+    if (strlen(subPathName)==(strlen(TESTDIR)+1))
+    { printf("Read directory entry with 0-length name: \n");
+      printf("name[0]=%2X\n", entry->d_name[0]);
+      printf("name[1]=%2X\n", entry->d_name[1]);
+      printf("name[2]=%2X\n", entry->d_name[2]);
+      printf("name[3]=%2X\n", entry->d_name[3]);
+      printf("name[4]=%2X\n", entry->d_name[4]);
+    }
+
+    printf("%s: found entry '%s'\n", argv[0], subPathName);
+
+    if ( entry->d_type == Type_File )
+    { if ( unlink(subPathName) == -1 )
+	printf("%s: failed to unlink file %s\n", argv[0], subPathName);
+      else
+	printf("%s: unlinked file %s\n", argv[0], subPathName);
+    }
+  }
+
+  if ( closedir(d) != 0 )
+  { fprintf(stderr, "%s: failed to close directory '%s'\n", argv[0], TESTDIR);
+    exit(2);
+  }
+
+  return 0;
+}
+
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d73 3
+a75 3
+ readdirbug: found entry '/ram/sys/testdir/hl<hHV#`$A74w3'
+ readdirbug: found entry '/ram/sys/testdir/('
+ readdirbug: found entry '/ram/sys/testdir/w
+d124 1
+a124 1
+#if 1
+@

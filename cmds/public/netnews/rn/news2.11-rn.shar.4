@@ -1,0 +1,7115 @@
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create the files:
+#	rn/ndir.c
+#	rn/ng.c
+#	rn/ngdata.c
+#	rn/ngsrch.c
+#	rn/ngstuff.c
+#	rn/only.c
+#	rn/rcln.c
+#	rn/rcstuff.c
+#	rn/respond.c
+#	rn/rn.c
+#	rn/search.c
+#	rn/sw.c
+#	rn/term.c
+#	rn/util.c
+# This archive created: Wed Mar  1 10:56:06 1989
+export PATH; PATH=/bin:$PATH
+echo shar: extracting "'ndir.c'" '(2166 characters)'
+if test -f 'ndir.c'
+then
+	echo shar: will not over-write existing file "'ndir.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'ndir.c'
+	X/* $Header: ndir.c,v 4.3.1.3 85/05/23 11:19:24 lwall Exp $
+	X *
+	X * $Log:	ndir.c,v $
+	X * Revision 4.3.1.3  85/05/23  11:19:24  lwall
+	X * Oops, shouldn't have included sys/types.h again.
+	X * 
+	X * Revision 4.3.1.2  85/05/15  14:46:00  lwall
+	X * Changed short to ino_t, which may be ushort on some systems.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:35:34  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:42:55  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "INTERN.h"
+	X#include "ndir.h"
+	X
+	X#ifdef USENDIR
+	X/*
+	X * support for Berkeley directory reading routine on a V7 file system
+	X */
+	X
+	X/*
+	X * open a directory.
+	X */
+	XDIR *
+	Xopendir(name)
+	Xchar *name;
+	X{
+	X	register DIR *dirp;
+	X	register int fd;
+	X	char *malloc();
+	X
+	X	if ((fd = open(name, 0)) == -1)
+	X		return NULL;
+	X	if ((dirp = (DIR *)malloc(sizeof(DIR))) == NULL) {
+	X		close (fd);
+	X		return NULL;
+	X	}
+	X	dirp->dd_fd = fd;
+	X	dirp->dd_loc = 0;
+	X	return dirp;
+	X}
+	X
+	X/*
+	X * read an old style directory entry and present it as a new one
+	X */
+	X#ifndef pyr
+	X#define	ODIRSIZ	14
+	X
+	Xstruct	olddirect {
+	X	ino_t	od_ino;
+	X	char	od_name[ODIRSIZ];
+	X};
+	X#else	an Pyramid in the ATT universe
+	X#define	ODIRSIZ	248
+	X
+	Xstruct	olddirect {
+	X	long	od_ino;
+	X	short	od_fill1, od_fill2;
+	X	char	od_name[ODIRSIZ];
+	X};
+	X#endif
+	X
+	X/*
+	X * get next entry in a directory.
+	X */
+	Xstruct direct *
+	Xreaddir(dirp)
+	Xregister DIR *dirp;
+	X{
+	X	register struct olddirect *dp;
+	X	static struct direct dir;
+	X
+	X	for (;;) {
+	X		if (dirp->dd_loc == 0) {
+	X			dirp->dd_size = read(dirp->dd_fd, dirp->dd_buf,
+	X			    DIRBLKSIZ);
+	X			if (dirp->dd_size <= 0)
+	X				return NULL;
+	X		}
+	X		if (dirp->dd_loc >= dirp->dd_size) {
+	X			dirp->dd_loc = 0;
+	X			continue;
+	X		}
+	X		dp = (struct olddirect *)(dirp->dd_buf + dirp->dd_loc);
+	X		dirp->dd_loc += sizeof(struct olddirect);
+	X		if (dp->od_ino == 0)
+	X			continue;
+	X		dir.d_ino = dp->od_ino;
+	X		strncpy(dir.d_name, dp->od_name, ODIRSIZ);
+	X		dir.d_name[ODIRSIZ] = '\0'; /* insure null termination */
+	X		dir.d_namlen = strlen(dir.d_name);
+	X		dir.d_reclen = DIRSIZ(&dir);
+	X		return (&dir);
+	X	}
+	X}
+	X
+	X/*
+	X * close a directory.
+	X */
+	Xvoid
+	Xclosedir(dirp)
+	Xregister DIR *dirp;
+	X{
+	X	close(dirp->dd_fd);
+	X	dirp->dd_fd = -1;
+	X	dirp->dd_loc = 0;
+	X	free(dirp);
+	X}
+	X#endif USENDIR
+SHAR_EOF
+if test 2166 -ne "`wc -c < 'ndir.c'`"
+then
+	echo shar: error transmitting "'ndir.c'" '(should have been 2166 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'ng.c'" '(22210 characters)'
+if test -f 'ng.c'
+then
+	echo shar: will not over-write existing file "'ng.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'ng.c'
+	X/* $Header: ng.c,v 4.3.1.6 85/09/10 11:03:42 lwall Exp $
+	X *
+	X * $Log:	ng.c,v $
+	X * Revision 4.3.1.6  85/09/10  11:03:42  lwall
+	X * Improved %m in in_char().
+	X * 
+	X * Revision 4.3.1.5  85/09/05  12:34:37  lwall
+	X * Catchup command could make unread article count too big.
+	X * 
+	X * Revision 4.3.1.4  85/07/23  18:19:46  lwall
+	X * Added MAILCALL environment variable.
+	X * 
+	X * Revision 4.3.1.3  85/05/16  16:48:09  lwall
+	X * Fixed unsubsubscribe.
+	X * 
+	X * Revision 4.3.1.2  85/05/13  09:29:28  lwall
+	X * Added CUSTOMLINES option.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:36:00  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:43:43  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "rn.h"
+	X#include "term.h"
+	X#include "final.h"
+	X#include "util.h"
+	X#include "artsrch.h"
+	X#include "cheat.h"
+	X#include "help.h"
+	X#include "kfile.h"
+	X#include "rcstuff.h"
+	X#include "head.h"
+	X#include "artstate.h"
+	X#include "bits.h"
+	X#include "art.h"
+	X#include "artio.h"
+	X#include "ngstuff.h"
+	X#include "intrp.h"
+	X#include "respond.h"
+	X#include "ngdata.h"
+	X#include "backpage.h"
+	X#include "rcln.h"
+	X#include "last.h"
+	X#include "search.h"
+	X#include "INTERN.h"
+	X#include "ng.h"
+	X#include "artstate.h"			/* somebody has to do it */
+	X
+	X/* art_switch() return values */
+	X
+	X#define AS_NORM 0
+	X#define AS_INP 1
+	X#define AS_ASK 2
+	X#define AS_CLEAN 3
+	X
+	XART_NUM recent_art = 0;		/* previous article # for '-' command */
+	XART_NUM curr_art = 0;                /* current article # */
+	Xint exit_code = NG_NORM;
+	X
+	Xvoid
+	Xng_init()
+	X{
+	X
+	X#ifdef KILLFILES
+	X    open_kfile(KF_GLOBAL);
+	X#endif
+	X#ifdef CUSTOMLINES
+	X    init_compex(&hide_compex);
+	X    init_compex(&page_compex);
+	X#endif
+	X}
+	X
+	X/* do newsgroup on line ng with name ngname */
+	X
+	X/* assumes that we are chdir'ed to SPOOL, and assures that that is
+	X * still true upon return, but chdirs to SPOOL/ngname in between
+	X *
+	X * If you can understand this routine, you understand most of the program.
+	X * The basic structure is:
+	X *	for each desired article
+	X *		for each desired page
+	X *			for each line on page
+	X *				if we need another line from file
+	X *					get it
+	X *					if it's a header line
+	X *						do special things
+	X *				for each column on page
+	X *					put out a character
+	X *				end loop
+	X *			end loop
+	X *		end loop
+	X *	end loop
+	X *
+	X *	(Actually, the pager is in another routine.)
+	X *
+	X * The chief problem is deciding what is meant by "desired".  Most of
+	X * the messiness of this routine is due to the fact that people want
+	X * to do unstructured things all the time.  I have used a few judicious
+	X * goto's where I thought it improved readability.  The rest of the messiness
+	X * arises from trying to be both space and time efficient.  Have fun.
+	X */
+	X
+	Xint
+	Xdo_newsgroup(start_command)
+	Xchar *start_command;			/* command to fake up first */
+	X{
+	X    char oldmode = mode;
+	X    register long i;			/* scratch */
+	X    int skipstate;			/* how many unavailable articles */
+	X					/*   have we skipped already? */
+	X    
+	X    char *whatnext = "%sWhat next? [%s]";
+	X
+	X#ifdef ARTSEARCH
+	X    srchahead = (scanon && ((ART_NUM)toread[ng]) >= scanon ? -1 : 0);
+	X					/* did they say -S? */
+	X#endif
+	X    
+	X    mode = 'a';
+	X    recent_art = curr_art = 0;
+	X    exit_code = NG_NORM;
+	X    if (eaccess(ngdir,5)) {		/* directory read protected? */
+	X	if (eaccess(ngdir,0)) {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("\nNewsgroup %s does not have a spool directory!\n",
+	X		    ngname) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("\nNo spool for %s!\n",ngname) FLUSH;
+	X#endif
+	X#ifdef CATCHUP
+	X	    catch_up(ng);
+	X#endif
+	X	    toread[ng] = TR_NONE;
+	X	}
+	X	else {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("\nNewsgroup %s is not currently accessible.\n",
+	X		    ngname) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("\n%s not readable.\n",ngname) FLUSH;
+	X#endif
+	X	    toread[ng] = TR_NONE;	/* make this newsgroup invisible */
+	X					/* (temporarily) */
+	X	}
+	X	mode = oldmode;
+	X	return -1;
+	X    }
+	X
+	X    /* chdir to newsgroup subdirectory */
+	X
+	X    if (chdir(ngdir)) {
+	X	printf(nocd,ngdir) FLUSH;
+	X	mode = oldmode;
+	X	return -1;
+	X    }
+	X
+	X#ifdef CACHESUBJ
+	X    subj_list = Null(char **);		/* no subject list till needed */
+	X#endif
+	X    
+	X    /* initialize control bitmap */
+	X
+	X    if (initctl()) {
+	X	mode = oldmode;
+	X	return -1;
+	X    }
+	X
+	X    /* FROM HERE ON, RETURN THRU CLEANUP OR WE ARE SCREWED */
+	X    
+	X    in_ng = TRUE;			/* tell the world we are here */
+	X    forcelast = TRUE;			/* if 0 unread, do not bomb out */
+	X    art=firstart;
+	X    
+	X    /* remember what newsgroup we were in for sake of posterity */
+	X
+	X    writelast();
+	X
+	X    /* see if there are any special searches to do */
+	X
+	X#ifdef KILLFILES
+	X    open_kfile(KF_LOCAL);
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	kill_unwanted(firstart,"Looking for articles to kill...\n\n",TRUE);
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	kill_unwanted(firstart,"Killing...\n\n",TRUE);
+	X#endif
+	X#endif
+	X    
+	X    /* do they want a special top line? */
+	X
+	X    firstline = getval("FIRSTLINE",Nullch);
+	X
+	X    /* custom line suppression, custom page ending */
+	X
+	X#ifdef CUSTOMLINES
+	X    if (hideline = getval("HIDELINE",Nullch))
+	X	compile(&hide_compex,hideline,TRUE,TRUE);
+	X    if (pagestop = getval("PAGESTOP",Nullch))
+	X	compile(&page_compex,pagestop,TRUE,TRUE);
+	X#endif
+	X
+	X    /* now read each unread article */
+	X
+	X    rc_changed = doing_ng = TRUE;	/* enter the twilight zone */
+	X    skipstate = 0;			/* we have not skipped anything (yet) */
+	X    checkcount = 0;			/* do not checkpoint for a while */
+	X    do_fseek = FALSE;			/* start 1st article at top */
+	X    if (art > lastart)
+	X	art=firstart;			/* init the for loop below */
+	X    for (; art<=lastart+1; ) {		/* for each article */
+	X
+	X	/* do we need to "grow" the newsgroup? */
+	X
+	X	if (art > lastart || forcegrow)
+	X	    grow_ctl();
+	X	check_first(art);		/* make sure firstart is still 1st */
+	X	if (start_command) {		/* fake up an initial command? */
+	X	    prompt = whatnext;
+	X	    strcpy(buf,start_command);
+	X	    free(start_command);
+	X	    start_command = Nullch;
+	X	    art = lastart+1;
+	X	    goto article_level;
+	X	}
+	X	if (art>lastart) {		/* are we off the end still? */
+	X	    ART_NUM ucount = 0;		/* count of unread articles left */
+	X
+	X	    for (i=firstart; i<=lastart; i++)
+	X		if (!(ctl_read(i)))
+	X		    ucount++;		/* count the unread articles */
+	X#ifdef DEBUGGING
+	X	    /*NOSTRICT*/
+	X	    if (debug && ((ART_NUM)toread[ng]) != ucount)
+	X		printf("(toread=%ld sb %ld)",(long)toread[ng],(long)ucount)
+	X		  FLUSH;
+	X#endif
+	X	    /*NOSTRICT*/
+	X	    toread[ng] = (ART_UNREAD)ucount;	/* this is perhaps pointless */
+	X	    art = lastart + 1;		/* keep bitmap references sane */
+	X	    if (art != curr_art) {
+	X		recent_art = curr_art;
+	X					/* remember last article # (for '-') */
+	X		curr_art = art;      /* remember this article # */
+	X	    }
+	X	    if (erase_screen)
+	X		clear();			/* clear the screen */
+	X	    else
+	X		fputs("\n\n",stdout) FLUSH;
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("End of newsgroup %s.",ngname);
+	X					/* print pseudo-article */
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("End of %s",ngname);
+	X#endif
+	X	    if (ucount) {
+	X		printf("  (%ld article%s still unread)",
+	X		    (long)ucount,ucount==1?nullstr:"s");
+	X	    }
+	X	    else {
+	X		if (!forcelast)
+	X		    goto cleanup;	/* actually exit newsgroup */
+	X	    }
+	X	    prompt = whatnext;
+	X#ifdef ARTSEARCH
+	X	    srchahead = 0;		/* no more subject search mode */
+	X#endif
+	X	    fputs("\n\n",stdout) FLUSH;
+	X	    skipstate = 0;		/* back to none skipped */
+	X	}
+	X	else if (!reread && was_read(art)) {
+	X					/* has this article been read? */
+	X	    art++;			/* then skip it */
+	X	    continue;
+	X	}
+	X	else if
+	X	  (!reread && !was_read(art)
+	X	    && artopen(art) == Nullfp) {	/* never read it, & cannot find it? */
+	X	    if (errno != ENOENT) {	/* has it not been deleted? */
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    printf("\n(Article %ld exists but is unreadable.)\n",
+	X			(long)art) FLUSH;
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    printf("\n(%ld unreadable.)\n",(long)art) FLUSH;
+	X#endif
+	X		skipstate = 0;
+	X		sleep(2);
+	X	    }
+	X	    switch(skipstate++) {
+	X	    case 0:
+	X		clear();
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("Skipping unavailable article",stdout);
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    fputs("Skipping",stdout);
+	X#endif
+	X		for (i = just_a_sec/3; i; --i)
+	X		    putchar(PC);
+	X		fflush(stdout);
+	X		sleep(1);
+	X		break;
+	X	    case 1:
+	X		fputs("..",stdout);
+	X		fflush(stdout);
+	X		break;
+	X	    default:
+	X		putchar('.');
+	X		fflush(stdout);
+	X#define READDIR
+	X#ifdef READDIR
+	X		{			/* fast skip patch */
+	X		    ART_NUM newart;
+	X		    
+	X		    if (! (newart=getngmin(".",art)))
+	X			newart = lastart+1;
+	X		    for (i=art; i<newart; i++)
+	X			oneless(i);
+	X		    art = newart - 1;
+	X		}
+	X#endif
+	X		break;
+	X	    }
+	X	    oneless(art);		/* mark deleted as read */
+	X	    art++;			/* try next article */
+	X	    continue;
+	X	}
+	X	else {				/* we have a real live article */
+	X	    skipstate = 0;		/* back to none skipped */
+	X	    if (art != curr_art) {
+	X		recent_art = curr_art;
+	X					/* remember last article # (for '-') */
+	X		curr_art = art;      /* remember this article # */
+	X	    }
+	X	    if (!do_fseek) {		/* starting at top of article? */
+	X		artline = 0;		/* start at the beginning */
+	X		topline = -1;		/* and remember top line of screen */
+	X					/*  (line # within article file) */
+	X	    }
+	X	    clear();			/* clear screen */
+	X	    artopen(art);		/* make sure article file is open */
+	X	    if (artfp == Nullfp) {	/* could not find article? */
+	X		printf("Article %ld of %s is not available.\n\n",
+	X		    (long)art,ngname) FLUSH;
+	X		prompt = whatnext;
+	X#ifdef ARTSEARCH
+	X		srchahead = 0;
+	X#endif
+	X	    }
+	X	    else {			/* found it, so print it */
+	X		switch (do_article()) {
+	X		case DA_CLEAN:		/* quit newsgroup */
+	X		    goto cleanup;
+	X		case DA_TOEND:		/* do not mark as read */
+	X		    goto reask_article; 
+	X		case DA_RAISE:		/* reparse command at end of art */
+	X		    goto article_level;
+	X		case DA_NORM:		/* normal end of article */
+	X		    break;
+	X		}
+	X	    }
+	X	    mark_as_read(art);		 /* mark current article as read */
+	X	    reread = FALSE;
+	X	    do_hiding = TRUE;
+	X#ifdef ROTATION
+	X	    rotate = FALSE;
+	X#endif
+	X	}
+	X
+	X/* if these gotos bother you, think of this as a little state machine */
+	X
+	Xreask_article:
+	X#ifdef MAILCALL
+	X	setmail();
+	X#endif
+	X	setdfltcmd();
+	X#ifdef CLEAREOL
+	X	if (erase_screen && can_home_clear)	/* PWP was here */
+	X	    clear_rest();
+	X#endif CLEAREOL
+	X	unflush_output();		/* disable any ^O in effect */
+	X	standout();			/* enter standout mode */
+	X	printf(prompt,mailcall,dfltcmd);/* print prompt, whatever it is */
+	X	un_standout();			/* leave standout mode */
+	X	putchar(' ');
+	X	fflush(stdout);
+	Xreinp_article:
+	X	eat_typeahead();
+	X#ifdef PENDING
+	X	look_ahead();			/* see what we can do in advance */
+	X	if (!input_pending())
+	X	    collect_subjects();		/* loads subject cache until */
+	X					/* input is pending */
+	X#endif
+	X	getcmd(buf);
+	X	if (errno || *buf == '\f') {
+	X	    if (LINES < 100 && !int_count)
+	X		*buf = '\f';		/* on CONT fake up refresh */
+	X	    else {
+	X		putchar('\n') FLUSH;		/* but only on a crt */
+	X		goto reask_article;
+	X	    }
+	X	}
+	Xarticle_level:
+	X
+	X	/* parse and process article level command */
+	X
+	X	switch (art_switch()) {
+	X	case AS_INP:			/* multichar command rubbed out */
+	X	    goto reinp_article;
+	X	case AS_ASK:			/* reprompt "End of article..." */
+	X	    goto reask_article;
+	X	case AS_CLEAN:			/* exit newsgroup */
+	X	    goto cleanup;
+	X	case AS_NORM:			/* display article art */
+	X	    break;
+	X	}
+	X    }					/* end of article selection loop */
+	X    
+	X/* shut down newsgroup */
+	X
+	Xcleanup:
+	X#ifdef KILLFILES
+	X    kill_unwanted(firstart,"\nCleaning up...\n\n",FALSE);
+	X					/* do cleanup from KILL file, if any */
+	X#endif
+	X    in_ng = FALSE;			/* leave newsgroup state */
+	X    if (artfp != Nullfp) {		/* article still open? */
+	X	fclose(artfp);			/* close it */
+	X	artfp = Nullfp;			/* and tell the world */
+	X	openart = 0;
+	X    }
+	X    putchar('\n') FLUSH;
+	X    yankback();				/* do a Y command */
+	X    restore_ng();			/* reconstitute .newsrc line */
+	X    doing_ng = FALSE;			/* tell sig_catcher to cool it */
+	X    free(ctlarea);			/* return the control area */
+	X#ifdef CACHESUBJ
+	X    if (subj_list) {
+	X	for (i=OFFSET(lastart); i>=0; --i)
+	X	    if (subj_list[i])
+	X		free(subj_list[i]);
+	X#ifndef lint
+	X	free((char*)subj_list);
+	X#endif lint
+	X    }
+	X#endif
+	X    write_rc();				/* and update .newsrc */
+	X    rc_changed = FALSE;			/* tell sig_catcher it is ok */
+	X    if (chdir(spool)) {
+	X	printf(nocd,spool) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X#ifdef KILLFILES
+	X    if (localkfp) {
+	X	fclose(localkfp);
+	X	localkfp = Nullfp;
+	X    }
+	X#endif
+	X    mode = oldmode;
+	X    return exit_code;
+	X}					/* Whew! */
+	X
+	X/* decide what to do at the end of an article */
+	X
+	Xint
+	Xart_switch()
+	X{
+	X    register ART_NUM i;
+	X      
+	X    setdef(buf,dfltcmd);
+	X#ifdef VERIFY
+	X    printcmd();
+	X#endif
+	X    switch (*buf) {
+	X    case 'p':			/* find previous unread article */
+	X	do {
+	X	    if (art <= firstart)
+	X		break;
+	X	    art--;
+	X	} while (was_read(art) || artopen(art) == Nullfp);
+	X#ifdef ARTSEARCH
+	X	srchahead = 0;
+	X#endif
+	X	return AS_NORM;
+	X    case 'P':			/* goto previous article */
+	X	if (art > absfirst)
+	X	    art--;
+	X	else {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		fputs("\n\
+	XThere are no articles prior to this one.\n\
+	X",stdout) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("\nNo previous articles\n",stdout) FLUSH;
+	X#endif
+	X	    return AS_ASK;
+	X	}
+	X	reread = TRUE;
+	X#ifdef ARTSEARCH
+	X	srchahead = 0;
+	X#endif
+	X	return AS_NORM;
+	X    case '-':
+	X	if (recent_art) {
+	X	    art = recent_art;
+	X	    reread = TRUE;
+	X#ifdef ARTSEARCH
+	X	    srchahead = -(srchahead != 0);
+	X#endif
+	X	    return AS_NORM;
+	X	}
+	X	else {
+	X	    exit_code = NG_MINUS;
+	X	    return AS_CLEAN;
+	X	}
+	X    case 'n':		/* find next unread article? */
+	X	if (art > lastart) {
+	X	    if (toread[ng])
+	X		art = firstart;
+	X	    else
+	X		return AS_CLEAN;
+	X	}
+	X#ifdef ARTSEARCH
+	X	else if (scanon && srchahead) {
+	X	    *buf = Ctl('n');
+	X	    goto normal_search;
+	X	}
+	X#endif
+	X	else
+	X	    art++;
+	X#ifdef ARTSEARCH
+	X	srchahead = 0;
+	X#endif
+	X	return AS_NORM;
+	X    case 'N':			/* goto next article */
+	X	if (art > lastart)
+	X	    art = absfirst;
+	X	else
+	X	    art++;
+	X	if (art <= lastart)
+	X	    reread = TRUE;
+	X#ifdef ARTSEARCH
+	X	srchahead = 0;
+	X#endif
+	X	return AS_NORM;
+	X    case '$':
+	X	art = lastart+1;
+	X	forcelast = TRUE;
+	X#ifdef ARTSEARCH
+	X	srchahead = 0;
+	X#endif
+	X	return AS_NORM;
+	X    case '1': case '2': case '3':	/* goto specified article */
+	X    case '4': case '5': case '6':	/* or do something with a range */
+	X    case '7': case '8': case '9': case '.':
+	X	forcelast = TRUE;
+	X	switch (numnum()) {
+	X	case NN_INP:
+	X	    return AS_INP;
+	X	case NN_ASK:
+	X	    return AS_ASK;
+	X	case NN_REREAD:
+	X	    reread = TRUE;
+	X#ifdef ARTSEARCH
+	X	    if (srchahead)
+	X		srchahead = -1;
+	X#endif
+	X	    break;
+	X	case NN_NORM:
+	X	    if (was_read(art)) {
+	X		art = firstart;
+	X		pad(just_a_sec/3);
+	X	    }
+	X	    else
+	X		return AS_ASK;
+	X	    break;
+	X	}
+	X	return AS_NORM;
+	X    case Ctl('k'):
+	X	edit_kfile();
+	X	return AS_ASK;
+	X    case 'K':
+	X    case 'k':
+	X    case Ctl('n'): case Ctl('p'):
+	X    case '/': case '?':
+	X#ifdef ARTSEARCH
+	Xnormal_search:
+	X    {		/* search for article by pattern */
+	X	char cmd = *buf;
+	X	
+	X	reread = TRUE;		/* assume this */
+	X	switch (art_search(buf, (sizeof buf), TRUE)) {
+	X	case SRCH_ERROR:
+	X	    return AS_ASK;
+	X	case SRCH_ABORT:
+	X	    return AS_INP;
+	X	case SRCH_INTR:
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("\n(Interrupted at article %ld)\n",(long)art) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("\n(Intr at %ld)\n",(long)art) FLUSH;
+	X#endif
+	X	    art = curr_art;
+	X			    /* restore to current article */
+	X	    return AS_ASK;
+	X	case SRCH_DONE:
+	X	    fputs("done\n",stdout) FLUSH;
+	X	    pad(just_a_sec/3);	/* 1/3 second */
+	X	    if (srchahead)
+	X		art = firstart;
+	X	    else
+	X		art = curr_art;
+	X	    reread = FALSE;
+	X	    return AS_NORM;
+	X	case SRCH_SUBJDONE:
+	X#ifdef UNDEF
+	X	    fputs("\n\n\n\nSubject not found.\n",stdout) FLUSH;
+	X	    pad(just_a_sec/3);	/* 1/3 second */
+	X#endif
+	X	    art = firstart;
+	X	    reread = FALSE;
+	X	    return AS_NORM;
+	X	case SRCH_NOTFOUND:
+	X	    fputs("\n\n\n\nNot found.\n",stdout) FLUSH;
+	X	    art = curr_art;  /* restore to current article */
+	X	    return AS_ASK;
+	X	case SRCH_FOUND:
+	X	    if (cmd == Ctl('n') || cmd == Ctl('p'))
+	X		oldsubject = TRUE;
+	X	    break;
+	X	}
+	X	return AS_NORM;
+	X    }
+	X#else
+	X    buf[1] = '\0';
+	X    notincl(buf);
+	X    return AS_ASK;
+	X#endif
+	X    case 'u':			/* unsubscribe from this newsgroup? */
+	X	rcchar[ng] = NEGCHAR;
+	X	return AS_CLEAN;
+	X    case 'M':
+	X#ifdef DELAYMARK
+	X	if (art <= lastart) {
+	X	    delay_unmark(art);
+	X	    printf("\nArticle %ld will return.\n",(long)art) FLUSH;
+	X	}
+	X#else
+	X	notincl("M");
+	X#endif
+	X	return AS_ASK;
+	X    case 'm':
+	X	if (art <= lastart) {
+	X	    unmark_as_read(art);
+	X	    printf("\nArticle %ld marked as still unread.\n",(long)art) FLUSH;
+	X	}
+	X	return AS_ASK;
+	X    case 'c':			/* catch up */
+	X      reask_catchup:
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    in_char("\nDo you really want to mark everything as read? [yn] ",
+	X		'C');
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    in_char("\nReally? [ynh] ", 'C');
+	X#endif
+	X	putchar('\n') FLUSH;
+	X	setdef(buf,"y");
+	X#ifdef VERIFY
+	X	printcmd();
+	X#endif
+	X	if (*buf == 'h') {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		fputs("\
+	XType y or SP to mark all articles as read.\n\
+	XType n to leave articles marked as they are.\n\
+	XType u to mark everything read and unsubscribe.\n\
+	X",stdout) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("\
+	Xy or SP to mark all read.\n\
+	Xn to forget it.\n\
+	Xu to mark all and unsubscribe.\n\
+	X",stdout) FLUSH;
+	X#endif
+	X	    goto reask_catchup;
+	X	}
+	X	else if (*buf == 'n' || *buf == 'q') {
+	X	    return AS_ASK;
+	X	}
+	X	else if (*buf != 'y' && *buf != 'u') {
+	X	    fputs(hforhelp,stdout) FLUSH;
+	X	    settle_down();
+	X	    goto reask_catchup;
+	X	}
+	X	for (i = firstart; i <= lastart; i++) {
+	X	    oneless(i);		/* mark as read */
+	X	}
+	X#ifdef DELAYMARK
+	X	if (dmfp)
+	X	    yankback();
+	X#endif
+	X	if (*buf == 'u') {
+	X	    rcchar[ng] = NEGCHAR;
+	X	    return AS_CLEAN;
+	X	}
+	X	art = lastart+1;
+	X	forcelast = FALSE;
+	X	return AS_NORM;
+	X    case 'Q':
+	X	exit_code = NG_ASK;
+	X	/* FALL THROUGH */
+	X    case 'q':			/* go back up to newsgroup level? */
+	X	return AS_CLEAN;
+	X    case 'j':
+	X	putchar('\n') FLUSH;
+	X	if (art <= lastart)
+	X	    mark_as_read(art);
+	X	return AS_ASK;
+	X    case 'h': {			/* help? */
+	X	int cmd;
+	X
+	X	if ((cmd = help_art()) > 0)
+	X	    pushchar(cmd);
+	X	return AS_ASK;
+	X    }
+	X    case '&':
+	X	if (switcheroo()) /* get rest of command */
+	X	    return AS_INP;	/* if rubbed out, try something else */
+	X	return AS_ASK;
+	X    case '#':
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    printf("\nThe last article is %ld.\n",(long)lastart) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    printf("\n%ld\n",(long)lastart) FLUSH;
+	X#endif
+	X	return AS_ASK;
+	X    case '=': {
+	X	char tmpbuf[256];
+	X	ART_NUM oldart = art;
+	X	int cmd;
+	X	char *subjline = getval("SUBJLINE",Nullch);
+	X#ifndef CACHESUBJ
+	X	char *s;
+	X#endif
+	X	
+	X	page_init();
+	X#ifdef CACHESUBJ
+	X	if (!subj_list)
+	X	    fetchsubj(art,TRUE,FALSE);
+	X#endif
+	X	for (i=firstart; i<=lastart && !int_count; i++) {
+	X#ifdef CACHESUBJ
+	X	    if (!was_read(i) &&
+	X	      (subj_list[OFFSET(i)] != Nullch || fetchsubj(i,FALSE,FALSE)) &&
+	X	      *subj_list[OFFSET(i)] ) {
+	X		sprintf(tmpbuf,"%5ld ", i);
+	X		if (subjline) {
+	X		    art = i;
+	X		    interp(tmpbuf + 6, (sizeof tmpbuf) - 6, subjline);
+	X		}
+	X		else
+	X		    safecpy(tmpbuf + 6, subj_list[OFFSET(i)],
+	X			(sizeof tmpbuf) - 6);
+	X		if (cmd = print_lines(tmpbuf,NOMARKING)) {
+	X		    if (cmd > 0)
+	X			pushchar(cmd);
+	X		    break;
+	X		}
+	X	    }
+	X#else
+	X	    if (!was_read(i) && (s = fetchsubj(i,FALSE,FALSE)) && *s) {
+	X		sprintf(tmpbuf,"%5ld ", i);
+	X		if (subjline) {	/* probably fetches it again! */
+	X		    art = i;
+	X		    interp(tmpbuf + 6, (sizeof tmpbuf) - 6, subjline);
+	X		}
+	X		else
+	X		    safecpy(tmpbuf + 6, s, (sizeof tmpbuf) - 6);
+	X		if (cmd = print_lines(tmpbuf,NOMARKING)) {
+	X		    if (cmd > 0)
+	X			pushchar(cmd);
+	X		    break;
+	X		}
+	X	    }
+	X#endif
+	X	}
+	X	int_count = 0;
+	X	art = oldart;
+	X	return AS_ASK;
+	X    }
+	X    case '^':
+	X	art = firstart;
+	X#ifdef ARTSEARCH
+	X	srchahead = 0;
+	X#endif
+	X	return AS_NORM;
+	X#if defined(CACHESUBJ) && defined(DEBUGGING)
+	X    case 'D':
+	X	printf("\nFirst article: %ld\n",(long)firstart) FLUSH;
+	X	if (!subj_list)
+	X	    fetchsubj(art,TRUE,FALSE);
+	X	if (subj_list != Null(char **)) {
+	X	    for (i=1; i<=lastart && !int_count; i++) {
+	X		if (subj_list[OFFSET(i)])
+	X		    printf("%5ld %c %s\n",
+	X			i, (was_read(i)?'y':'n'), subj_list[OFFSET(i)]) FLUSH;
+	X	    }
+	X	}
+	X	int_count = 0;
+	X	return AS_ASK;
+	X#endif
+	X    case 'v':
+	X	if (art <= lastart) {
+	X	    reread = TRUE;
+	X	    do_hiding = FALSE;
+	X	}
+	X	return AS_NORM;
+	X#ifdef ROTATION
+	X    case Ctl('x'):
+	X#endif
+	X    case Ctl('r'):
+	X#ifdef ROTATION
+	X	rotate = (*buf==Ctl('x'));
+	X#endif
+	X	if (art <= lastart)
+	X	    reread = TRUE;
+	X	return AS_NORM;
+	X#ifdef ROTATION
+	X    case 'X':
+	X	rotate = !rotate;
+	X	/* FALL THROUGH */
+	X#else
+	X    case Ctl('x'):
+	X    case 'x':
+	X    case 'X':
+	X	notincl("x");
+	X	return AS_ASK;
+	X#endif
+	X    case 'l': case Ctl('l'):		/* refresh screen */
+	X	if (art <= lastart) {
+	X	    reread = TRUE;
+	X	    clear();
+	X	    do_fseek = TRUE;
+	X	    artline = topline;
+	X	    if (artline < 0)
+	X		artline = 0;
+	X	}
+	X	return AS_NORM;
+	X    case 'b': case Ctl('b'):		/* back up a page */
+	X	if (art <= lastart) {
+	X	    ART_LINE target;
+	X
+	X	    reread = TRUE;
+	X	    clear();
+	X	    do_fseek = TRUE;
+	X	    target = topline - (LINES - 2);
+	X	    artline = topline;
+	X	    do {
+	X		artline--;
+	X	    } while (artline >= 0 && artline > target &&
+	X		vrdary(artline-1) >= 0);
+	X	    topline = artline;
+	X	    if (artline < 0)
+	X		artline = 0;
+	X	}
+	X	return AS_NORM;
+	X    case '!':			/* shell escape */
+	X	if (escapade())
+	X	    return AS_INP;
+	X	return AS_ASK;
+	X    case 'C': {
+	X	cancel_article();
+	X	return AS_ASK;
+	X    }
+	X    case 'R':
+	X    case 'r': {			/* reply? */
+	X	reply();
+	X	return AS_ASK;
+	X    }
+	X    case 'F':
+	X    case 'f': {			/* followup command */
+	X	followup();
+	X	forcegrow = TRUE;		/* recalculate lastart */
+	X	return AS_ASK;
+	X    }
+	X    case '|':
+	X    case 'w': case 'W':
+	X    case 's': case 'S':		/* save command */
+	X	if (save_article() == SAVE_ABORT)
+	X	    return AS_INP;
+	X	return AS_ASK;
+	X#ifdef DELAYMARK
+	X    case 'Y':				/* yank back M articles */
+	X	yankback();
+	X	art = firstart;			/* from the beginning */
+	X	return AS_NORM;			/* pretend nothing happened */
+	X#endif
+	X#ifdef STRICTCR
+	X    case '\n':
+	X	fputs(badcr,stdout) FLUSH;
+	X	return AS_ASK;
+	X#endif
+	X    default:
+	X	printf("\n%s",hforhelp) FLUSH;
+	X	settle_down();
+	X	return AS_ASK;
+	X    }
+	X}
+	X
+	X#ifdef MAILCALL
+	X/* see if there is any mail */
+	X
+	Xvoid
+	Xsetmail()
+	X{
+	X    if (! (mailcount++)) {
+	X	char *mailfile = filexp(getval("MAILFILE",MAILFILE));
+	X	
+	X	if (stat(mailfile,&filestat) < 0 || !filestat.st_size
+	X	    || filestat.st_atime > filestat.st_mtime)
+	X	    mailcall = nullstr;
+	X	else
+	X	    mailcall = getval("MAILCALL","(Mail) ");
+	X    }
+	X    mailcount %= 10;			/* check every 10 articles */
+	X}
+	X#endif
+	X
+	Xvoid
+	Xsetdfltcmd()
+	X{
+	X    if (toread[ng]) {
+	X#ifdef ARTSEARCH
+	X	if (srchahead)
+	X	    dfltcmd = "^Nnpq";
+	X	else
+	X#endif
+	X	    dfltcmd = "npq";
+	X    }
+	X    else {
+	X	if (art > lastart)
+	X	    dfltcmd = "qnp";
+	X	else
+	X	    dfltcmd = "npq";
+	X    }
+	X}
+	X
+SHAR_EOF
+if test 22210 -ne "`wc -c < 'ng.c'`"
+then
+	echo shar: error transmitting "'ng.c'" '(should have been 22210 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'ngdata.c'" '(4515 characters)'
+if test -f 'ngdata.c'
+then
+	echo shar: will not over-write existing file "'ngdata.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'ngdata.c'
+	X/* $Header: ngdata.c,v 4.3 85/05/01 11:44:38 lwall Exp $
+	X *
+	X * $Log:	ngdata.c,v $
+	X * Revision 4.3  85/05/01  11:44:38  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "ndir.h"
+	X#include "rcstuff.h"
+	X#include "rn.h"
+	X#include "intrp.h"
+	X#include "final.h"
+	X#include "rcln.h"
+	X#include "util.h"
+	X#include "INTERN.h"
+	X#include "ngdata.h"
+	X
+	Xvoid
+	Xngdata_init()
+	X{
+	X/* The following is only for systems that do not zero globals properly */
+	X#ifdef ZEROGLOB
+	X# ifdef CACHEFIRST
+	X    for (i=0; i<MAXRCLINE; i++)
+	X	abs1st[i] = 0;
+	X# endif
+	X#endif	/* ZEROGLOB */
+	X
+	X    /* open the active file */
+	X
+	X    actfp = fopen(filexp(ACTIVE),"r");
+	X    if (actfp == Nullfp) {
+	X	printf(cantopen,filexp(ACTIVE)) FLUSH;
+	X	finalize(1);
+	X    }
+	X}
+	X
+	X/* find the maximum article number of a newsgroup */
+	X
+	XART_NUM
+	Xgetngsize(num)
+	Xregister NG_NUM num;
+	X{
+	X    register int len;
+	X    register char *nam;
+	X    char tmpbuf[80];
+	X    ART_POS oldsoft;
+	X
+	X    nam = rcline[num];
+	X    len = rcnums[num] - 1;
+	X    softtries++;
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_SOFT_POINTERS)
+	X	printf("Softptr = %ld\n",(long)softptr[num]) FLUSH;
+	X#endif
+	X    oldsoft = softptr[num];
+	X    if ((softptr[num] = findact(tmpbuf, nam, len, (long)oldsoft)) >= 0) {
+	X	if (softptr[num] != oldsoft) {
+	X	    softmisses++;
+	X	    writesoft = TRUE;
+	X	}
+	X    }
+	X    else {
+	X	softptr[num] = 0;
+	X	if (rcchar[num] == ':')		/* unsubscribe quietly */
+	X	    rcchar[num] = NEGCHAR;
+	X	return TR_BOGUS;		/* well, not so quietly, actually */
+	X    }
+	X	
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_SOFT_POINTERS) {
+	X	printf("Should be %ld\n",(long)softptr[num]) FLUSH;
+	X    }
+	X#endif
+	X#ifdef MININACT
+	X    {
+	X	register char *s;
+	X	ART_NUM tmp;
+	X
+	X	for (s=tmpbuf+len+1; isdigit(*s); s++) ;
+	X	if (tmp = atol(s))
+	X#ifdef CACHEFIRST
+	X	    abs1st[num] = tmp;
+	X#else
+	X	    abs1st = tmp;
+	X#endif
+	X	if (!in_ng) {
+	X	    for (s++; isdigit(*s); s++) ;
+	X	    while (isspace(*s)) s++;
+	X	    moderated = (!*s || *s == 'y'
+	X		? nullstr
+	X		: getval("MODSTRING"," (moderated)") );
+	X	}
+	X    }
+	X#endif
+	X    return atol(tmpbuf+len+1);
+	X}
+	X
+	XACT_POS
+	Xfindact(outbuf,nam,len,suggestion)
+	Xchar *outbuf;
+	Xchar *nam;
+	Xint len;
+	Xlong suggestion;
+	X{
+	X    ACT_POS retval;
+	X
+	X    fseek(actfp,100000L,1);	/* hopefully this forces a reread */
+	X    if (suggestion == 0L || fseek(actfp,suggestion,0) < 0 ||
+	X      fgets(outbuf,80,actfp) == Nullch ||
+	X      outbuf[len] != ' ' ||
+	X      strnNE(outbuf,nam,len)) {
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_SOFT_POINTERS)
+	X	    printf("Missed, looking for %s in %sLen = %d\n",nam,outbuf,len)
+	X	      FLUSH;
+	X#endif
+	X	fseek(actfp,0L,0);
+	X#ifndef lint
+	X	retval = (ACT_POS)ftell(actfp);
+	X#else
+	X	retval = Null(ACT_POS);
+	X#endif lint
+	X	while (fgets(outbuf,80,actfp) != Nullch) {
+	X	    if (outbuf[len] == ' ' && strnEQ(outbuf,nam,len))
+	X		return retval;
+	X#ifndef lint
+	X	    retval = (ACT_POS) ftell(actfp);
+	X#endif lint
+	X	}
+	X	return (ACT_POS) -1;		/* well, not so quietly, actually */
+	X    }
+	X    else
+	X#ifndef lint
+	X	return (ACT_POS) suggestion;
+	X#else
+	X	return retval;
+	X#endif lint
+	X    /*NOTREACHED*/
+	X}
+	X
+	X/* determine the absolutely first existing article number */
+	X
+	XART_NUM
+	Xgetabsfirst(ngnum,ngsize)
+	Xregister NG_NUM ngnum;
+	XART_NUM ngsize;
+	X{
+	X    register ART_NUM a1st;
+	X#ifndef MININACT
+	X    char dirname[MAXFILENAME];
+	X#endif
+	X
+	X#ifdef CACHEFIRST
+	X    if (a1st = abs1st[ngnum])
+	X	return a1st;
+	X#endif
+	X#ifdef MININACT
+	X    getngsize(ngnum);
+	X# ifdef CACHEFIRST
+	X    return abs1st[ngnum];
+	X# else
+	X    return abs1st;
+	X# endif
+	X#else not MININACT
+	X    sprintf(dirname,"%s/%s",spool,getngdir(rcline[ngnum]));
+	X    a1st = getngmin(dirname,0L);
+	X    if (!a1st)				/* nothing there at all? */
+	X	a1st = ngsize+1;		/* aim them at end of newsgroup */
+	X# ifdef CACHEFIRST
+	X    abs1st[ngnum] = a1st;
+	X# endif
+	X    return a1st;
+	X#endif MININACT
+	X}
+	X
+	X/* scan a directory for minimum article number greater than floor */
+	X
+	XART_NUM
+	Xgetngmin(dirname,floor)
+	Xchar *dirname;
+	XART_NUM floor;
+	X{
+	X    register DIR *dirp;
+	X    register struct direct *dp;
+	X    register ART_NUM min = 1000000;
+	X    register ART_NUM maybe;
+	X    register char *p;
+	X    char tmpbuf[128];
+	X    
+	X    dirp = opendir(dirname);
+	X    if (!dirp)
+	X	return 0;
+	X    while ((dp = readdir(dirp)) != Null(struct direct *)) {
+	X	if ((maybe = atol(dp->d_name)) < min && maybe > floor) {
+	X	    for (p = dp->d_name; *p; p++)
+	X		if (!isdigit(*p))
+	X		    goto nope;
+	X	    if (*dirname == '.' && !dirname[1])
+	X		stat(dp->d_name, &filestat);
+	X	    else {
+	X		sprintf(tmpbuf,"%s/%s",dirname,dp->d_name);
+	X		stat(tmpbuf, &filestat);
+	X	    }
+	X	    if (! (filestat.st_mode & S_IFDIR))
+	X		min = maybe;
+	X	}
+	X      nope:
+	X	;
+	X    }
+	X    closedir(dirp);
+	X    return min==1000000 ? 0 : min;
+	X}
+	X
+SHAR_EOF
+if test 4515 -ne "`wc -c < 'ngdata.c'`"
+then
+	echo shar: error transmitting "'ngdata.c'" '(should have been 4515 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'ngsrch.c'" '(2770 characters)'
+if test -f 'ngsrch.c'
+then
+	echo shar: will not over-write existing file "'ngsrch.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'ngsrch.c'
+	X/* $Header: ngsrch.c,v 4.3 85/05/01 11:44:51 lwall Exp $
+	X *
+	X * $Log:	ngsrch.c,v $
+	X * Revision 4.3  85/05/01  11:44:51  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "rcstuff.h"
+	X#include "final.h"
+	X#include "search.h"
+	X#include "rn.h"
+	X#include "util.h"
+	X#include "term.h"
+	X#include "rcln.h"
+	X#include "INTERN.h"
+	X#include "ngsrch.h"
+	X
+	X#ifdef NGSORONLY
+	X    COMPEX ngcompex;
+	X#endif
+	X
+	Xvoid
+	Xngsrch_init()
+	X{
+	X#ifdef ZEROGLOB
+	X    init_compex(&ngcompex);
+	X#endif	/* ZEROGLOB */
+	X    ;
+	X}
+	X
+	X#ifdef NGSEARCH
+	Xint
+	Xng_search(patbuf,get_cmd)
+	Xchar *patbuf;				/* if patbuf != buf, get_cmd must */
+	Xint get_cmd;				/*   be set to FALSE!!! */
+	X{
+	X    char *pattern;			/* unparsed pattern */
+	X    register char cmdchr = *patbuf;	/* what kind of search? */
+	X    register char *s;
+	X    bool backward = cmdchr == '?';	/* direction of search */
+	X
+	X    int_count = 0;
+	X    if (get_cmd && buf == patbuf)
+	X	if (!finish_command(FALSE))		/* get rest of command */
+	X	    return NGS_ABORT;
+	X    for (pattern = patbuf+1; *pattern == ' '; pattern++) ;
+	X    if (*pattern) {
+	X	ng_doread = FALSE;
+	X    }
+	X    s = rindex(pattern,cmdchr);
+	X    if (s != Nullch && *(s-1) != '\\') {
+	X	*s++ = '\0';
+	X	if (index(s,'r') != Nullch)
+	X	    ng_doread = TRUE;
+	X    }
+	X    if ((s = ng_comp(&ngcompex,pattern,TRUE,TRUE)) != Nullch) {
+	X					/* compile regular expression */
+	X	printf("\n%s\n",s) FLUSH;
+	X	return NGS_ABORT;
+	X    }
+	X    fputs("\nSearching...",stdout) FLUSH;	/* give them something to read */
+	X    fflush(stdout);
+	X    for (;;) {
+	X	if (int_count) {
+	X	    int_count = 0;
+	X	    return NGS_INTR;
+	X	}
+	X	if (backward) {
+	X	    if (ng > 0)
+	X		--ng;
+	X	    else
+	X		ng = nextrcline;
+	X	}
+	X	else {
+	X	    if (ng >= nextrcline)
+	X		ng = 0;
+	X	    else
+	X		++ng;
+	X	}
+	X	if (ng == current_ng)
+	X	    return NGS_NOTFOUND;
+	X	if (ng == nextrcline || toread[ng] < TR_NONE || !ng_wanted())
+	X	    continue;
+	X	if (toread[ng] == TR_NONE)
+	X	    set_toread(ng);
+	X	
+	X	if (toread[ng] > TR_NONE)
+	X	    return NGS_FOUND;
+	X	else if (toread[ng] == TR_NONE)
+	X	    if (ng_doread)
+	X		return NGS_FOUND;
+	X	    else
+	X		printf("\n[0 unread in %s--skipping]",rcline[ng]) FLUSH;
+	X    }
+	X}
+	X
+	Xbool
+	Xng_wanted()
+	X{
+	X    return execute(&ngcompex,rcline[ng]) != Nullch;
+	X}
+	X#endif
+	X
+	X#ifdef NGSORONLY
+	Xchar *
+	Xng_comp(compex,pattern,RE,fold)
+	XCOMPEX *compex;
+	Xchar *pattern;
+	Xbool RE;
+	Xbool fold;
+	X{
+	X    char ng_pattern[128];
+	X    register char *s = pattern, *d = ng_pattern;
+	X
+	X    if (!*s)
+	X	return Nullch;			/* reuse old pattern */
+	X    for (; *s; s++) {
+	X	if (*s == '.') {
+	X	    *d++ = '\\';
+	X	    *d++ = *s;
+	X	}
+	X	else if (*s == '?') {
+	X	    *d++ = '.';
+	X	}
+	X	else if (*s == '*') {
+	X	    *d++ = '.';
+	X	    *d++ = *s;
+	X	}
+	X	else if (strnEQ(s,"all",3)) {
+	X	    *d++ = '.';
+	X	    *d++ = '*';
+	X	    s += 2;
+	X	}
+	X	else
+	X	    *d++ = *s;
+	X    }
+	X    *d = '\0';
+	X    return compile(compex,ng_pattern,RE,fold);
+	X}
+	X#endif
+	X
+SHAR_EOF
+if test 2770 -ne "`wc -c < 'ngsrch.c'`"
+then
+	echo shar: error transmitting "'ngsrch.c'" '(should have been 2770 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'ngstuff.c'" '(6186 characters)'
+if test -f 'ngstuff.c'
+then
+	echo shar: will not over-write existing file "'ngstuff.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'ngstuff.c'
+	X/* $Header: ngstuff.c,v 4.3.1.2 85/05/10 14:31:52 lwall Exp $
+	X *
+	X * $Log:	ngstuff.c,v $
+	X * Revision 4.3.1.2  85/05/10  14:31:52  lwall
+	X * Prevented "Junked" or "Marked unread" when no state change.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:36:45  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:45:03  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "term.h"
+	X#include "util.h"
+	X#include "ng.h"
+	X#include "bits.h"
+	X#include "intrp.h"
+	X#include "cheat.h"
+	X#include "head.h"
+	X#include "final.h"
+	X#include "sw.h"
+	X#include "INTERN.h"
+	X#include "ngstuff.h"
+	X
+	Xvoid
+	Xngstuff_init()
+	X{
+	X    ;
+	X}
+	X
+	X/* do a shell escape */
+	X
+	Xint
+	Xescapade()
+	X{
+	X    register char *s;
+	X    bool interactive = (buf[1] == FINISHCMD);
+	X    bool docd;
+	X    char whereiam[256];
+	X
+	X    if (!finish_command(interactive))	/* get remainder of command */
+	X	return -1;
+	X    s = buf+1;
+	X    docd = *s != '!';
+	X    if (!docd) {
+	X	s++;
+	X    }
+	X    else {
+	X	getwd(whereiam);
+	X	if (chdir(cwd)) {
+	X	    printf(nocd,cwd) FLUSH;
+	X	    sig_catcher(0);
+	X	}
+	X    }
+	X    while (*s == ' ') s++;
+	X					/* skip leading spaces */
+	X    interp(cmd_buf, (sizeof cmd_buf), s);/* interpret any % escapes */
+	X    resetty();				/* make sure tty is friendly */
+	X    doshell(Nullch,cmd_buf);	/* invoke the shell */
+	X    noecho();				/* and make terminal */
+	X    crmode();				/*   unfriendly again */
+	X    if (docd) {
+	X	if (chdir(whereiam)) {
+	X	    printf(nocd,whereiam) FLUSH;
+	X	    sig_catcher(0);
+	X	}
+	X    }
+	X#ifdef MAILCALL;
+	X    mailcount = 0;			/* force recheck */
+	X#endif
+	X    return 0;
+	X}
+	X
+	X/* process & command */
+	X
+	Xint
+	Xswitcheroo()
+	X{
+	X    if (!finish_command(TRUE)) /* get rest of command */
+	X	return -1;	/* if rubbed out, try something else */
+	X    if (!buf[1])
+	X	pr_switches();
+	X#ifdef PUSHBACK
+	X    else if (buf[1] == '&') {
+	X	if (!buf[2]) {
+	X	    page_init();
+	X	    show_macros();
+	X	}
+	X	else {
+	X	    char tmpbuf[LBUFLEN];
+	X	    register char *s;
+	X
+	X	    for (s=buf+2; isspace(*s); s++);
+	X	    mac_line(s,tmpbuf,(sizeof tmpbuf));
+	X	}
+	X    }
+	X#endif
+	X    else {
+	X	bool docd = (instr(buf,"-d") != Nullch);
+	X 	char whereami[256];
+	X 
+	X	if (docd)
+	X	    getwd(whereami);
+	X	sw_list(buf+1);
+	X	if (docd) {
+	X	    cwd_check();
+	X	    if (chdir(whereami)) {		/* -d does chdirs */
+	X		printf(nocd,whereami) FLUSH;
+	X		sig_catcher(0);
+	X	    }
+	X	}
+	X    }
+	X    return 0;
+	X}
+	X
+	X/* process range commands */
+	X
+	Xint
+	Xnumnum()
+	X{
+	X    ART_NUM min, max;
+	X    char *cmdlst = Nullch;
+	X    register char *s, *c;
+	X    ART_NUM oldart = art;
+	X    char tmpbuf[LBUFLEN];
+	X    bool justone = TRUE;		/* assume only one article */
+	X
+	X    if (!finish_command(TRUE))	/* get rest of command */
+	X	return NN_INP;
+	X	if (lastart < 1) {
+	X	    fputs("\nNo articles\n",stdout) FLUSH;
+	X	    return NN_ASK;
+	X	}
+	X#ifdef ARTSRCH
+	X    if (srchahead)
+	X	srchahead = -1;
+	X#endif
+	X    for (s=buf; *s && (isdigit(*s) || index(" ,-.$",*s)); s++)
+	X	if (!isdigit(*s))
+	X	    justone = FALSE;
+	X    if (*s) {
+	X	cmdlst = savestr(s);
+	X	justone = FALSE;
+	X    }
+	X    else if (!justone)
+	X	cmdlst = savestr("m");
+	X    *s++ = ',';
+	X    *s = '\0';
+	X    safecpy(tmpbuf,buf,LBUFLEN);
+	X    for (s = tmpbuf; c = index(s,','); s = ++c) {
+	X	*c = '\0';
+	X	if (*s == '.')
+	X	    min = oldart;
+	X	else
+	X	    min = atol(s);
+	X	if (min<absfirst) {		/* make sure it is reasonable */
+	X	    min = absfirst;
+	X	    printf("(First article is %ld)\n",(long)absfirst) FLUSH;
+	X	    pad(just_a_sec/3);
+	X	}
+	X	if ((s=index(s,'-')) != Nullch) {
+	X	    s++;
+	X	    if (*s == '$')
+	X		max = lastart;
+	X	    else if (*s == '.')
+	X		max = oldart;
+	X	    else
+	X		max = atol(s);
+	X	}
+	X	else
+	X	    max = min;
+	X	if (max>lastart) {
+	X	    max = lastart;
+	X	    if (min > max)
+	X		min = max;
+	X	    printf("(Last article is %ld)\n",(long)lastart) FLUSH;
+	X	    pad(just_a_sec/3);
+	X	}
+	X	if (max < min) {
+	X	    fputs("\nBad range\n",stdout) FLUSH;
+	X	    if (cmdlst)
+	X		free(cmdlst);
+	X	    return NN_ASK;
+	X	}
+	X	if (justone) {
+	X	    art = min;
+	X	    return NN_REREAD;
+	X	}
+	X	check_first(min);
+	X	for (art=min; art<=max; art++) {
+	X	    if (perform(cmdlst,TRUE)) {
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    printf("\n(Interrupted at article %ld)\n",(long)art)
+	X		      FLUSH;
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    printf("\n(Intr at %ld)\n",(long)art) FLUSH;
+	X#endif
+	X		if (cmdlst)
+	X		    free(cmdlst);
+	X		return NN_ASK;
+	X	    }
+	X	}
+	X    }
+	X    art = oldart;
+	X    if (cmdlst)
+	X	free(cmdlst);
+	X    return NN_NORM;
+	X}
+	X
+	Xint
+	Xperform(cmdlst,toplevel)
+	Xregister char *cmdlst;
+	Xint toplevel;
+	X{
+	X    register int ch;
+	X    
+	X    if (toplevel) {
+	X	printf("%-6ld",art);
+	X	fflush(stdout);
+	X    }
+	X    for (; ch = *cmdlst; cmdlst++) {
+	X	if (isspace(ch) || ch == ':')
+	X	    continue;
+	X	if (ch == 'j') {
+	X	    if (!was_read(art)) {
+	X		mark_as_read(art);
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\tJunked",stdout);
+	X#endif
+	X	    }
+	X	}
+	X	else if (ch == 'm') {
+	X	    if (was_read(art)) {
+	X		unmark_as_read(art);
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\tMarked unread",stdout);
+	X#endif
+	X	    }
+	X	}
+	X	else if (ch == 'M') {
+	X#ifdef DELAYMARK
+	X	    delay_unmark(art);
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\tWill return",stdout);
+	X#endif
+	X#else
+	X	    notincl("M");
+	X	    return -1;
+	X#endif
+	X	}
+	X	else if (ch == '=') {
+	X	    printf("\t%s",fetchsubj(art,FALSE,FALSE));
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		;
+	X	    ELSE
+	X#endif
+	X		putchar('\n') FLUSH;		/* ghad! */
+	X	}
+	X	else if (ch == 'C') {
+	X#ifdef ASYNC_PARSE
+	X	    printf("\t%sancelled",(cancel_article() ? "Not c" : "C"));
+	X#else
+	X	    notincl("C");
+	X	    return -1;
+	X#endif
+	X	}
+	X	else if (ch == '%') {
+	X#ifdef ASYNC_PARSE
+	X	    char tmpbuf[512];
+	X
+	X	    cmdlst = dointerp(tmpbuf, (sizeof tmpbuf), cmdlst,":");
+	X	    if (*cmdlst != ':')
+	X		--cmdlst;
+	X	    if (perform(tmpbuf,FALSE))
+	X		return -1;
+	X#else
+	X	    notincl("%");
+	X	    return -1;
+	X#endif
+	X	}
+	X	else if (index("!&sSwW|",ch)) {
+	X	    cmdlst = cpytill(buf,cmdlst,':') - 1;
+	X	    /* we now have the command in buf */
+	X	    if (ch == '!') {
+	X		escapade();
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\tShell escaped",stdout);
+	X#endif
+	X	    }
+	X	    else if (ch == '&') {
+	X		switcheroo();
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\tSwitched",stdout);
+	X#endif
+	X	    }
+	X	    else {
+	X		putchar('\t');
+	X		save_article();
+	X	    }
+	X	}
+	X	else {
+	X	    printf("\t???%s\n",cmdlst);
+	X	    return -1;
+	X	}
+	X#ifdef VERBOSE
+	X	fflush(stdout);
+	X#endif
+	X    }
+	X    if (toplevel) {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    putchar('\n') FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    putchar(' ');
+	X#endif
+	X    }
+	X    return 0;
+	X}
+	X
+SHAR_EOF
+if test 6186 -ne "`wc -c < 'ngstuff.c'`"
+then
+	echo shar: error transmitting "'ngstuff.c'" '(should have been 6186 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'only.c'" '(2268 characters)'
+if test -f 'only.c'
+then
+	echo shar: will not over-write existing file "'only.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'only.c'
+	X/* $Header: only.c,v 4.3 85/05/01 11:45:21 lwall Exp $
+	X *
+	X * $Log:	only.c,v $
+	X * Revision 4.3  85/05/01  11:45:21  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "search.h"
+	X#include "util.h"
+	X#include "final.h"
+	X#include "ngsrch.h"
+	X#include "INTERN.h"
+	X#include "only.h"
+	X
+	Xvoid
+	Xonly_init()
+	X{
+	X    ;
+	X}
+	X
+	Xvoid
+	Xsetngtodo(pat)
+	Xchar *pat;
+	X{
+	X    char *s;
+	X
+	X#ifdef ONLY
+	X    if (!*pat)
+	X	return;
+	X    if (maxngtodo < NGMAX) {
+	X	ngtodo[maxngtodo] = savestr(pat);
+	X#ifdef SPEEDOVERMEM
+	X#ifndef lint
+	X	compextodo[maxngtodo] = (COMPEX*)safemalloc(sizeof(COMPEX));
+	X#endif lint
+	X	init_compex(compextodo[maxngtodo]);
+	X	compile(compextodo[maxngtodo],pat,TRUE,TRUE);
+	X	if ((s = ng_comp(compextodo[maxngtodo],pat,TRUE,TRUE)) != Nullch) {
+	X					    /* compile regular expression */
+	X	    printf("\n%s\n",s) FLUSH;
+	X	    finalize(1);
+	X	}
+	X#endif
+	X	maxngtodo++;
+	X    }
+	X#else
+	X    notincl("o");
+	X#endif
+	X}
+	X
+	X/* if command line list is non-null, is this newsgroup wanted? */
+	X
+	Xbool
+	Xinlist(ngnam)
+	Xchar *ngnam;
+	X{
+	X#ifdef ONLY
+	X    register int i;
+	X#ifdef SPEEDOVERMEM
+	X
+	X    if (maxngtodo == 0)
+	X	return TRUE;
+	X    for (i=0; i<maxngtodo; i++) {
+	X	if (execute(compextodo[i],ngnam))
+	X	    return TRUE;
+	X    }
+	X    return FALSE;
+	X#else
+	X    COMPEX ilcompex;
+	X    char *s;
+	X
+	X    if (maxngtodo == 0)
+	X	return TRUE;
+	X    init_compex(&ilcompex);
+	X    for (i=0; i<maxngtodo; i++) {
+	X	if ((s = ng_comp(&ilcompex,ngtodo[i],TRUE,TRUE)) != Nullch) {
+	X					    /* compile regular expression */
+	X	    printf("\n%s\n",s) FLUSH;
+	X	    finalize(1);
+	X	}
+	X	
+	X	if (execute(&ilcompex,ngnam) != Nullch) {
+	X	    free_compex(&ilcompex);
+	X	    return TRUE;
+	X	}
+	X    }
+	X    free_compex(&ilcompex);
+	X    return FALSE;
+	X#endif
+	X#else
+	X    return TRUE;
+	X#endif
+	X}
+	X
+	X#ifdef ONLY
+	Xvoid
+	Xend_only()
+	X{
+	X    if (maxngtodo) {			/* did they specify newsgroup(s) */
+	X	int whicharg;
+	X
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    printf("\nRestriction %s%s removed.\n",ngtodo[0],
+	X		maxngtodo > 1 ? ", etc." : nullstr) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs("\nExiting \"only\".\n",stdout) FLUSH;
+	X#endif
+	X	for (whicharg = 0; whicharg < maxngtodo; whicharg++) {
+	X	    free(ngtodo[whicharg]);
+	X#ifdef SPEEDOVERMEM
+	X	    free_compex(compextodo[whicharg]);
+	X#ifndef lint
+	X	    free((char*)compextodo[whicharg]);
+	X#endif lint
+	X#endif
+	X	}
+	X	maxngtodo = 0;
+	X    }
+	X}
+	X#endif
+SHAR_EOF
+if test 2268 -ne "`wc -c < 'only.c'`"
+then
+	echo shar: error transmitting "'only.c'" '(should have been 2268 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'rcln.c'" '(11985 characters)'
+if test -f 'rcln.c'
+then
+	echo shar: will not over-write existing file "'rcln.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'rcln.c'
+	X/* $Header: rcln.c,v 4.3.1.3 86/11/04 15:57:03 lwall Exp $
+	X *
+	X * $Log:	rcln.c,v $
+	X * Revision 4.3.1.3  86/11/04  15:57:03  lwall
+	X * realloc attempted on unalloced area.
+	X * 
+	X * Revision 4.3.1.2  85/07/23  17:39:08  lwall
+	X * Oops, was freeing a static buf on -c in checkexpired.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:37:08  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:45:36  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "rcstuff.h"
+	X#include "ngdata.h"
+	X#include "INTERN.h"
+	X#include "rcln.h"
+	X
+	Xvoid
+	Xrcln_init()
+	X{
+	X    ;
+	X}
+	X
+	X#ifdef CATCHUP
+	Xvoid
+	Xcatch_up(ngx)
+	XNG_NUM ngx;
+	X{
+	X    char tmpbuf[128];
+	X    
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	printf("\nMarking %s as all read.\n",rcline[ngx]) FLUSH;
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	fputs("\nMarked read\n",stdout) FLUSH;
+	X#endif
+	X    sprintf(tmpbuf,"%s: 1-%ld", rcline[ngx],(long)getngsize(ngx));
+	X    free(rcline[ngx]);
+	X    rcline[ngx] = savestr(tmpbuf);
+	X    *(rcline[ngx] + rcnums[ngx] - 1) = '\0';
+	X    write_rc();
+	X}
+	X#endif
+	X
+	X/* add an article number to a newsgroup, if it isn't already read */
+	X
+	Xint
+	Xaddartnum(artnum,ngnam)
+	XART_NUM artnum;
+	Xchar *ngnam;
+	X{
+	X    register NG_NUM ngnum = find_ng(ngnam);
+	X    register char *s, *t, *maxt = Nullch;
+	X    ART_NUM min = 0, max = -1, lastnum = 0;
+	X    char *mbuf;
+	X    bool morenum;
+	X
+	X    if (!artnum)
+	X	return 0;
+	X    if (ngnum == nextrcline || !rcnums[ngnum])
+	X					/* not found in newsrc? */
+	X	return 0;
+	X#ifdef CACHEFIRST
+	X    if (!abs1st[ngnum])
+	X#else
+	X    if (!toread[ngnum])
+	X#endif
+	X					/* now is a good time to trim down */
+	X	set_toread(ngnum);		/* the list due to expires if we */
+	X					/* have not yet. */
+	X#ifdef DEBUGGING
+	X    if (artnum > ngmax[ngnum] + 10	/* allow for incoming articles */
+	X       ) {
+	X	printf("\nCorrupt Xref line!!!  %ld --> %s(1..%ld)\n",
+	X	    artnum,ngnam,
+	X	    ngmax[ngnum]) FLUSH;
+	X	paranoid = TRUE;		/* paranoia reigns supreme */
+	X	return -1;			/* hope this was the first newsgroup */
+	X    }
+	X#endif
+	X
+	X    if (toread[ngnum] == TR_BOGUS)
+	X	return 0;
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_XREF_MARKER) {
+	X	printf("%ld->\n%s%c%s\n",(long)artnum,rcline[ngnum],rcchar[ngnum],
+	X	  rcline[ngnum] + rcnums[ngnum]) FLUSH;
+	X    }
+	X#endif
+	X    s = rcline[ngnum] + rcnums[ngnum];
+	X    while (*s == ' ') s++;		/* skip spaces */
+	X    t = s;
+	X    while (isdigit(*s) && artnum >= (min = atol(s))) {
+	X					/* while it might have been read */
+	X	for (t = s; isdigit(*t); t++) ;	/* skip number */
+	X	if (*t == '-') {		/* is it a range? */
+	X	    t++;			/* skip to next number */
+	X	    if (artnum <= (max = atol(t)))
+	X		return 0;		/* it is in range => already read */
+	X	    lastnum = max;		/* remember it */
+	X	    maxt = t;			/* remember position in case we */
+	X					/* want to overwrite the max */
+	X	    while (isdigit(*t)) t++;	/* skip second number */
+	X	}
+	X	else {
+	X	    if (artnum == min)		/* explicitly a read article? */
+	X		return 0;
+	X	    lastnum = min;		/* remember what the number was */
+	X	    maxt = Nullch;		/* last one was not a range */
+	X	}
+	X	while (*t && !isdigit(*t)) t++;	/* skip comma and any spaces */
+	X	s = t;
+	X    }
+	X    
+	X    /* we have not read it, so insert the article number before s */
+	X    
+	X    morenum = isdigit(*s);		/* will it need a comma after? */
+	X    *(rcline[ngnum] + rcnums[ngnum] - 1) = rcchar[ngnum];
+	X    mbuf = safemalloc((MEM_SIZE)(strlen(s) + (s-rcline[ngnum]) + 8));
+	X    strcpy(mbuf,rcline[ngnum]);		/* make new rc line */
+	X    if (maxt && lastnum && artnum == lastnum+1)
+	X    					/* can we just extend last range? */
+	X	t = mbuf + (maxt-rcline[ngnum]);/* then overwrite previous max */
+	X    else {
+	X	t = mbuf + (t-rcline[ngnum]);	/* point t into new line instead */
+	X	if (lastnum) {			/* have we parsed any line? */
+	X	    if (!morenum)		/* are we adding to the tail? */
+	X		*t++ = ',';		/* supply comma before */
+	X	    if (!maxt && artnum == lastnum+1 && *(t-1) == ',')
+	X					/* adjacent singletons? */
+	X		*(t-1) = '-';		/* turn them into a range */
+	X	}
+	X    }
+	X    if (morenum) {			/* is there more to life? */
+	X	if (min == artnum+1) {		/* can we consolidate further? */
+	X	    bool range_before = (*(t-1) == '-');
+	X	    bool range_after;
+	X	    char *nextmax;
+	X
+	X	    for (nextmax = s; isdigit(*nextmax); nextmax++) ;
+	X	    range_after = *nextmax++ == '-';
+	X	    
+	X	    if (range_before)
+	X		*t = '\0';		/* artnum is redundant */
+	X	    else
+	X		sprintf(t,"%ld-",(long)artnum);/* artnum will be new min */
+	X	    
+	X	    if (range_after)
+	X		s = nextmax;		/* *s is redundant */
+	X	/*  else
+	X		s = s */		/* *s is new max */
+	X	}
+	X	else
+	X	    sprintf(t,"%ld,",(long)artnum);	/* put the number and comma */
+	X    }
+	X    else
+	X	sprintf(t,"%ld",(long)artnum);	/* put the number there (wherever) */
+	X    strcat(t,s);			/* copy remainder of line */
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_XREF_MARKER) {
+	X	printf("%s\n",mbuf) FLUSH;
+	X    }
+	X#endif
+	X    free(rcline[ngnum]);
+	X    rcline[ngnum] = mbuf;		/* pull the switcheroo */
+	X    *(rcline[ngnum] + rcnums[ngnum] - 1) = '\0';
+	X					/* wipe out : or ! */
+	X    if (toread[ngnum] > TR_NONE)	/* lest we turn unsub into bogus */
+	X	--toread[ngnum];
+	X    return 0;
+	X}
+	X
+	X#ifdef MCHASE
+	X/* delete an article number from a newsgroup, if it is there */
+	X
+	Xvoid
+	Xsubartnum(artnum,ngnam)
+	Xregister ART_NUM artnum;
+	Xchar *ngnam;
+	X{
+	X    register NG_NUM ngnum = find_ng(ngnam);
+	X    register char *s, *t;
+	X    register ART_NUM min, max;
+	X    char *mbuf;
+	X    int curlen;
+	X
+	X    if (!artnum)
+	X	return;
+	X    if (ngnum == nextrcline || !rcnums[ngnum])
+	X	return;				/* not found in newsrc? */
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_XREF_MARKER) {
+	X	printf("%ld<-\n%s%c%s\n",(long)artnum,rcline[ngnum],rcchar[ngnum],
+	X	  rcline[ngnum] + rcnums[ngnum]) FLUSH;
+	X    }
+	X#endif
+	X    s = rcline[ngnum] + rcnums[ngnum];
+	X    while (*s == ' ') s++;		/* skip spaces */
+	X    
+	X    /* a little optimization, since it is almost always the last number */
+	X    
+	X    for (t=s; *t; t++) ;		/* find end of string */
+	X    curlen = t-rcline[ngnum];
+	X    for (t--; isdigit(*t); t--) ;	/* find previous delim */
+	X    if (*t == ',' && atol(t+1) == artnum) {
+	X	*t = '\0';
+	X	if (toread[ngnum] >= TR_NONE)
+	X	    ++toread[ngnum];
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_XREF_MARKER)
+	X	    printf("%s%c %s\n",rcline[ngnum],rcchar[ngnum],s) FLUSH;
+	X#endif
+	X	return;
+	X    }
+	X
+	X    /* not the last number, oh well, we may need the length anyway */
+	X
+	X    while (isdigit(*s) && artnum >= (min = atol(s))) {
+	X					/* while it might have been read */
+	X	for (t = s; isdigit(*t); t++) ;	/* skip number */
+	X	if (*t == '-') {		/* is it a range? */
+	X	    t++;			/* skip to next number */
+	X	    max = atol(t);
+	X	    while (isdigit(*t)) t++;	/* skip second number */
+	X	    if (artnum <= max) {
+	X					/* it is in range => already read */
+	X		if (artnum == min) {
+	X		    min++;
+	X		    artnum = 0;
+	X		}
+	X		else if (artnum == max) {
+	X		    max--;
+	X		    artnum = 0;
+	X		}
+	X		*(rcline[ngnum] + rcnums[ngnum] - 1) = rcchar[ngnum];
+	X		mbuf = safemalloc((MEM_SIZE)(curlen + (artnum?15:2)));
+	X		*s = '\0';
+	X		strcpy(mbuf,rcline[ngnum]);	/* make new rc line */
+	X		s = mbuf + (s-rcline[ngnum]);
+	X					/* point s into mbuf now */
+	X		if (artnum) {		/* split into two ranges? */
+	X		    prange(s,min,artnum-1);
+	X		    s += strlen(s);
+	X		    *s++ = ',';
+	X		    prange(s,artnum+1,max);
+	X		}
+	X		else			/* only one range */
+	X		    prange(s,min,max);
+	X		s += strlen(s);
+	X		strcpy(s,t);		/* copy remainder over */
+	X#ifdef DEBUGGING
+	X		if (debug & DEB_XREF_MARKER) {
+	X		    printf("%s\n",mbuf) FLUSH;
+	X		}
+	X#endif
+	X		free(rcline[ngnum]);
+	X		rcline[ngnum] = mbuf;	/* pull the switcheroo */
+	X		*(rcline[ngnum] + rcnums[ngnum] - 1) = '\0';
+	X					/* wipe out : or ! */
+	X		if (toread[ngnum] >= TR_NONE)
+	X		    ++toread[ngnum];
+	X		return;
+	X	    }
+	X	}
+	X	else {
+	X	    if (artnum == min) {	/* explicitly a read article? */
+	X		if (*t == ',')		/* pick a comma, any comma */
+	X		    t++;
+	X		else if (s[-1] == ',')
+	X		    s--;
+	X		else if (s[-2] == ',')	/* (in case of space) */
+	X		    s -= 2;
+	X		strcpy(s,t);		/* no need to realloc */
+	X		if (toread[ngnum] >= TR_NONE)
+	X		    ++toread[ngnum];
+	X#ifdef DEBUGGING
+	X		if (debug & DEB_XREF_MARKER) {
+	X		    printf("%s%c%s\n",rcline[ngnum],rcchar[ngnum],
+	X		      rcline[ngnum] + rcnums[ngnum]) FLUSH;
+	X		}
+	X#endif
+	X		return;
+	X	    }
+	X	}
+	X	while (*t && !isdigit(*t)) t++;	/* skip comma and any spaces */
+	X	s = t;
+	X    }
+	X}
+	X
+	Xvoid
+	Xprange(where,min,max)
+	Xchar *where;
+	XART_NUM min,max;
+	X{
+	X    if (min == max)
+	X	sprintf(where,"%ld",(long)min);
+	X    else
+	X	sprintf(where,"%ld-%ld",(long)min,(long)max);
+	X}
+	X#endif
+	X
+	X/* calculate the number of unread articles for a newsgroup */
+	X
+	Xvoid
+	Xset_toread(ngnum)
+	Xregister NG_NUM ngnum;
+	X{
+	X    register char *s, *c, *h;
+	X    char tmpbuf[64], *mybuf = tmpbuf;
+	X    char *nums;
+	X    int length;
+	X#ifdef CACHEFIRST
+	X    bool virgin_ng = (!abs1st[ngnum]);
+	X#endif
+	X    ART_NUM ngsize = getngsize(ngnum);
+	X    ART_NUM unread = ngsize;
+	X    ART_NUM newmax;
+	X
+	X#ifdef DEBUGGING
+	X    ngmax[ngnum] = ngsize;		/* for checking out-of-range Xrefs */
+	X#endif
+	X    if (ngsize == TR_BOGUS) {
+	X	printf("Warning!  Bogus newsgroup: %s\n",rcline[ngnum]) FLUSH;
+	X	paranoid = TRUE;
+	X	toread[ngnum] = TR_BOGUS;
+	X	return;
+	X    }
+	X#ifdef CACHEFIRST
+	X    if (virgin_ng)
+	X#else
+	X    if (!toread[ngnum])
+	X#endif
+	X    {
+	X	sprintf(tmpbuf," 1-%ld",(long)ngsize);
+	X	if (strNE(tmpbuf,rcline[ngnum]+rcnums[ngnum]))
+	X	    checkexpired(ngnum,ngsize);	/* this might realloc rcline */
+	X    }
+	X    nums = rcline[ngnum]+rcnums[ngnum];
+	X    length = strlen(nums);
+	X    if (length >= 60)
+	X	mybuf = safemalloc((MEM_SIZE)(length+5));
+	X    strcpy(mybuf,nums);
+	X    mybuf[length++] = ',';
+	X    mybuf[length] = '\0';
+	X    for (s = mybuf; isspace(*s); s++)
+	X	    ;
+	X    for ( ; (c = index(s,',')) != Nullch ; s = ++c) {
+	X				    /* for each range */
+	X	*c = '\0';			/* keep index from running off */
+	X	if ((h = index(s,'-')) != Nullch)	/* find - in range, if any */
+	X	    unread -= (newmax = atol(h+1)) - atol(s) + 1;
+	X	else if (newmax = atol(s))
+	X	    unread--;		/* recalculate length */
+	X	if (newmax > ngsize) {	/* paranoia check */
+	X	    unread = -1;
+	X	    break;
+	X	}
+	X    }
+	X    if (unread >= 0)		/* reasonable number? */
+	X	toread[ngnum] = (ART_UNREAD)unread;
+	X					/* remember how many are left */
+	X    else {				/* SOMEONE RESET THE NEWSGROUP!!! */
+	X	toread[ngnum] = (ART_UNREAD)ngsize;
+	X					/* assume nothing carried over */
+	X	printf("Warning!  Somebody reset %s--assuming nothing read.\n",
+	X	    rcline[ngnum]) FLUSH;
+	X	*(rcline[ngnum] + rcnums[ngnum]) = '\0';
+	X	paranoid = TRUE;		/* enough to make a guy paranoid */
+	X    }
+	X    if (mybuf != tmpbuf)
+	X	free(mybuf);
+	X    if (rcchar[ngnum] == NEGCHAR)
+	X	toread[ngnum] = TR_UNSUB;
+	X}
+	X
+	X/* make sure expired articles are marked as read */
+	X
+	Xvoid
+	Xcheckexpired(ngnum,ngsize)
+	Xregister NG_NUM ngnum;
+	XART_NUM ngsize;
+	X{
+	X    register ART_NUM a1st = getabsfirst(ngnum,ngsize);
+	X    register char *s, *t;
+	X    register ART_NUM num, lastnum = 0;
+	X    char *mbuf, *newnum;
+	X
+	X    if (a1st<=1)
+	X	return;
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_XREF_MARKER) {
+	X	printf("1-%ld->\n%s%c%s\n",(long)(a1st-1),rcline[ngnum],rcchar[ngnum],
+	X	  rcline[ngnum] + rcnums[ngnum]) FLUSH;
+	X    }
+	X#endif
+	X    for (s = rcline[ngnum] + rcnums[ngnum]; isspace(*s); s++);
+	X    while (*s && (num = atol(s)) <= a1st) {
+	X	while (isdigit(*s)) s++;
+	X	while (*s && !isdigit(*s)) s++;
+	X	lastnum = num;
+	X    }
+	X    if (*s) {
+	X	if (s[-1] == '-') {			/* landed in a range? */
+	X	    if (lastnum != 1)
+	X		sprintf(rcline[ngnum]+rcnums[ngnum]," 1-%s",s);
+	X	    goto ret;
+	X	}
+	X    }
+	X    /* s now points to what should follow first range */
+	X    if (s - rcline[ngnum] > rcnums[ngnum] + 10) 
+	X	mbuf = rcline[ngnum];
+	X    else {
+	X	mbuf = safemalloc((MEM_SIZE)(rcnums[ngnum] + strlen(s) + 10));
+	X	strcpy(mbuf,rcline[ngnum]);
+	X    }
+	X    newnum = t = mbuf+rcnums[ngnum];
+	X    sprintf(t," 1-%ld",(long)(a1st - (lastnum != a1st)));
+	X    if (*s) {
+	X	t += strlen(t);
+	X	*t++ = ',';
+	X	strcpy(t,s);
+	X    }
+	X    if (!checkflag && mbuf == rcline[ngnum]) {
+	X	rcline[ngnum] = saferealloc(rcline[ngnum],
+	X	    (MEM_SIZE)(rcnums[ngnum] + strlen(newnum) + 1));
+	X    }
+	X    else {
+	X	if (!checkflag)
+	X	    free(rcline[ngnum]);
+	X	rcline[ngnum] = mbuf;
+	X    }
+	X
+	Xret:;		/* semicolon in case DEBUGGING undefined */
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_XREF_MARKER) {
+	X	printf("%s%c%s\n",rcline[ngnum],rcchar[ngnum],
+	X	  rcline[ngnum] + rcnums[ngnum]) FLUSH;
+	X    }
+	X#endif
+	X}
+	X
+SHAR_EOF
+if test 11985 -ne "`wc -c < 'rcln.c'`"
+then
+	echo shar: error transmitting "'rcln.c'" '(should have been 11985 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'rcstuff.c'" '(20769 characters)'
+if test -f 'rcstuff.c'
+then
+	echo shar: will not over-write existing file "'rcstuff.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'rcstuff.c'
+	X/* $Header: rcstuff.c,v 4.3.1.5 86/07/24 14:09:10 lwall Exp $
+	X *
+	X * $Log:	rcstuff.c,v $
+	X * Revision 4.3.1.5  86/07/24  14:09:10  lwall
+	X * Removed check for spool directory existence in get_ng.
+	X * 
+	X * Revision 4.3.1.4  85/09/10  11:04:44  lwall
+	X * Improved %m in in_char().
+	X * 
+	X * Revision 4.3.1.3  85/05/29  09:13:25  lwall
+	X * %d that should be %ld.
+	X * 
+	X * Revision 4.3.1.2  85/05/17  11:40:08  lwall
+	X * Sped up "rn -c" by not mallocing unnecessarily.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:37:18  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:45:56  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "ngdata.h"
+	X#include "term.h"
+	X#include "final.h"
+	X#include "rn.h"
+	X#include "intrp.h"
+	X#include "only.h"
+	X#include "rcln.h"
+	X#include "INTERN.h"
+	X#include "rcstuff.h"
+	X
+	Xchar *rcname INIT(Nullch);		/* path name of .newsrc file */
+	Xchar *rctname INIT(Nullch);		/* path name of temp .newsrc file */
+	Xchar *rcbname INIT(Nullch);		/* path name of backup .newsrc file */
+	Xchar *softname INIT(Nullch);		/* path name of .rnsoft file */
+	XFILE *rcfp INIT(Nullfp);			/* .newsrc file pointer */
+	X
+	X#ifdef HASHNG
+	X    short hashtbl[HASHSIZ];
+	X#endif
+	X
+	Xbool
+	Xrcstuff_init()
+	X{
+	X    register NG_NUM newng;
+	X    register char *s;
+	X    register int i;
+	X    register bool foundany = FALSE;
+	X    char *some_buf;
+	X    long length;
+	X
+	X#ifdef HASHNG
+	X    for (i=0; i<HASHSIZ; i++)
+	X	hashtbl[i] = -1;
+	X#endif
+	X
+	X    /* make filenames */
+	X
+	X    rcname = savestr(filexp(RCNAME));
+	X    rctname = savestr(filexp(RCTNAME));
+	X    rcbname = savestr(filexp(RCBNAME));
+	X    softname = savestr(filexp(SOFTNAME));
+	X    
+	X    /* make sure the .newsrc file exists */
+	X
+	X    newsrc_check();
+	X
+	X    /* open .rnsoft file containing soft ptrs to active file */
+	X
+	X    tmpfp = fopen(softname,"r");
+	X    if (tmpfp == Nullfp)
+	X	writesoft = TRUE;
+	X
+	X    /* read in the .newsrc file */
+	X
+	X    for (nextrcline = 0;
+	X	(some_buf = get_a_line(buf,LBUFLEN,rcfp)) != Nullch;
+	X	nextrcline++) {
+	X					/* for each line in .newsrc */
+	X	char tmpbuf[10];
+	X
+	X	newng = nextrcline;		/* get it into a register */
+	X	length = len_last_line_got;	/* side effect of get_a_line */
+	X	if (length <= 1) {		/* only a newline??? */
+	X	    nextrcline--;		/* compensate for loop increment */
+	X	    continue;
+	X	}
+	X	if (newng >= MAXRCLINE) {	/* check for overflow */
+	X	    fputs("Too many lines in .newsrc\n",stdout) FLUSH;
+	X	    finalize(1);
+	X	}
+	X	if (tmpfp != Nullfp && fgets(tmpbuf,10,tmpfp) != Nullch)
+	X	    softptr[newng] = atoi(tmpbuf);
+	X	else
+	X	    softptr[newng] = 0;
+	X	some_buf[--length] = '\0';	/* wipe out newline */
+	X	if (checkflag)			/* no extra mallocs for -c */
+	X	    rcline[newng] = some_buf;
+	X	else if (some_buf == buf) {
+	X	    rcline[newng] = savestr(some_buf);
+	X					/* make a semipermanent copy */
+	X	}
+	X	else {
+	X	    /*NOSTRICT*/
+	X#ifndef lint
+	X	    some_buf = saferealloc(some_buf,(MEM_SIZE)(length+1));
+	X#endif lint
+	X	    rcline[newng] = some_buf;
+	X	}
+	X#ifdef NOTDEF
+	X	if (strnEQ(some_buf,"to.",3)) {	/* is this a non-newsgroup? */
+	X	    nextrcline--;		/* destroy this line */
+	X	    continue;
+	X	}
+	X#endif
+	X	if (*some_buf == ' ' ||
+	X	  *some_buf == '\t' ||
+	X	  strnEQ(some_buf,"options",7)) {		/* non-useful line? */
+	X	    toread[newng] = TR_JUNK;
+	X	    rcchar[newng] = ' ';
+	X	    rcnums[newng] = 0;
+	X	    continue;
+	X	}
+	X	for (s = rcline[newng]; *s && *s != ':' && *s != NEGCHAR; s++) ;
+	X	if (!*s && !checkflag) {
+	X#ifndef lint
+	X	    rcline[newng] = saferealloc(rcline[newng],(MEM_SIZE)length+2);
+	X#endif lint
+	X	    s = rcline[newng] + length;
+	X	    *s = ':';
+	X	    *(s+1) = '\0';
+	X	}
+	X	rcchar[newng] = *s;		/* salt away the : or ! */
+	X	rcnums[newng] = (char)(s - rcline[newng]); 
+	X	rcnums[newng]++;		/* remember where it was */
+	X	*s = '\0';			/* null terminate newsgroup name */
+	X#ifdef HASHNG
+	X	if (!checkflag)
+	X	    sethash(newng);
+	X#endif
+	X	if (rcchar[newng] == NEGCHAR) {
+	X	    toread[newng] = TR_UNSUB;
+	X	    continue;
+	X	}
+	X
+	X	/* now find out how much there is to read */
+	X
+	X	if (!inlist(buf) || (suppress_cn && foundany && !paranoid))
+	X	    toread[newng] = TR_NONE;	/* no need to calculate now */
+	X	else
+	X	    set_toread(newng);
+	X#ifdef VERBOSE
+	X	if (!checkflag && softmisses == 1) {
+	X	    softmisses++;		/* lie a little */
+	X	    fputs("(Revising soft pointers--be patient.)\n",stdout) FLUSH;
+	X	}
+	X#endif
+	X	if (toread[newng] > TR_NONE) {	/* anything unread? */
+	X	    if (!foundany) {
+	X		starthere = newng;
+	X		foundany = TRUE;	/* remember that fact*/
+	X	    }
+	X	    if (suppress_cn) {		/* if no listing desired */
+	X		if (checkflag) {	/* if that is all they wanted */
+	X		    finalize(1);	/* then bomb out */
+	X		}
+	X	    }
+	X	    else {
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    printf("Unread news in %-20s %5ld article%s\n",
+	X			rcline[newng],(long)toread[newng],
+	X			toread[newng]==TR_ONE ? nullstr : "s") FLUSH;
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    printf("%s: %ld article%s\n",
+	X			rcline[newng],(long)toread[newng],
+	X			toread[newng]==TR_ONE ? nullstr : "s") FLUSH;
+	X#endif
+	X		if (int_count) {
+	X		    countdown = 1;
+	X		    int_count = 0;
+	X		}
+	X		if (countdown) {
+	X		    if (! --countdown) {
+	X			fputs("etc.\n",stdout) FLUSH;
+	X			if (checkflag)
+	X			    finalize(1);
+	X			suppress_cn = TRUE;
+	X		    }
+	X		}
+	X	    }
+	X	}
+	X    }
+	X    fclose(rcfp);			/* close .newsrc */
+	X    if (tmpfp != Nullfp)
+	X	fclose(tmpfp);			/* close .rnsoft */
+	X    if (checkflag) {			/* were we just checking? */
+	X	finalize(foundany);		/* tell them what we found */
+	X    }
+	X    if (paranoid)
+	X	cleanup_rc();
+	X
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_HASH) {
+	X	page_init();
+	X	for (i=0; i<HASHSIZ; i++) {
+	X	    sprintf(buf,"%d	%d",i,hashtbl[i]);
+	X	    print_lines(buf,NOMARKING);
+	X	}
+	X    }
+	X#endif
+	X
+	X    return foundany;
+	X}
+	X
+	X/* try to find or add an explicitly specified newsgroup */
+	X/* returns TRUE if found or added, FALSE if not. */
+	X/* assumes that we are chdir'ed to SPOOL */
+	X
+	Xbool
+	Xget_ng(what,do_reloc)
+	Xchar *what;
+	Xbool do_reloc;
+	X{
+	X    char *ntoforget;
+	X    char promptbuf[128];
+	X
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	ntoforget = "Type n to forget about this newsgroup.\n";
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	ntoforget = "n to forget it.\n";
+	X#endif
+	X    if (index(what,'/')) {
+	X	dingaling();
+	X	printf("\nBad newsgroup name.\n") FLUSH;
+	X	return FALSE;
+	X    }
+	X    set_ngname(what);
+	X    ng = find_ng(ngname);
+	X    if (ng == nextrcline) {		/* not in .newsrc? */
+	X	if ((softptr[ng] = findact(buf,ngname,strlen(ngname),0L)) < 0 ) {
+	X	    dingaling();
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("\nNewsgroup %s does not exist!\n",ngname) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("\nNo %s!\n",ngname) FLUSH;
+	X#endif
+	X	    sleep(2);
+	X	    return FALSE;
+	X	}
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    sprintf(promptbuf,"\nNewsgroup %s not in .newsrc--add? [yn] ",ngname);
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    sprintf(promptbuf,"\nAdd %s? [yn] ",ngname);
+	X#endif
+	Xreask_add:
+	X	in_char(promptbuf,'A');
+	X	putchar('\n') FLUSH;
+	X	setdef(buf,"y");
+	X#ifdef VERIFY
+	X	printcmd();
+	X#endif
+	X	if (*buf == 'h') {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("Type y or SP to add %s to your .newsrc.\n", ngname)
+	X		  FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("y or SP to add\n",stdout) FLUSH;
+	X#endif
+	X	    fputs(ntoforget,stdout) FLUSH;
+	X	    goto reask_add;
+	X	}
+	X	else if (*buf == 'n' || *buf == 'q') {
+	X	    return FALSE;
+	X	}
+	X	else if (*buf == 'y') {
+	X	    ng = add_newsgroup(ngname);
+	X	    do_reloc = FALSE;
+	X	}
+	X	else {
+	X	    fputs(hforhelp,stdout) FLUSH;
+	X	    settle_down();
+	X	    goto reask_add;
+	X	}
+	X    }
+	X    else if (rcchar[ng] == NEGCHAR) {	/* unsubscribed? */
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    sprintf(promptbuf,
+	X"\nNewsgroup %s is currently unsubscribed to--resubscribe? [yn] ",ngname)
+	X  FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    sprintf(promptbuf,"\n%s unsubscribed--resubscribe? [yn] ",ngname)
+	X	      FLUSH;
+	X#endif
+	Xreask_unsub:
+	X	in_char(promptbuf,'R');
+	X	putchar('\n') FLUSH;
+	X	setdef(buf,"y");
+	X#ifdef VERIFY
+	X	printcmd();
+	X#endif
+	X	if (*buf == 'h') {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("Type y or SP to resubscribe to %s.\n", ngname) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("y or SP to resubscribe.\n",stdout) FLUSH;
+	X#endif
+	X	    fputs(ntoforget,stdout) FLUSH;
+	X	    goto reask_unsub;
+	X	}
+	X	else if (*buf == 'n' || *buf == 'q') {
+	X	    return FALSE;
+	X	}
+	X	else if (*buf == 'y') {
+	X	    rcchar[ng] = ':';
+	X	}
+	X	else {
+	X	    fputs(hforhelp,stdout) FLUSH;
+	X	    settle_down();
+	X	    goto reask_unsub;
+	X	}
+	X    }
+	X
+	X    /* now calculate how many unread articles in newsgroup */
+	X
+	X    set_toread(ng);
+	X#ifdef RELOCATE
+	X    if (do_reloc)
+	X	ng = relocate_newsgroup(ng,-1);
+	X#endif
+	X    return toread[ng] >= TR_NONE;
+	X}
+	X
+	X/* add a newsgroup to the .newsrc file (eventually) */
+	X
+	XNG_NUM
+	Xadd_newsgroup(ngn)
+	Xchar *ngn;
+	X{
+	X    register NG_NUM newng = nextrcline++;
+	X					/* increment max rcline index */
+	X    
+	X    rcnums[newng] = strlen(ngn) + 1;
+	X    rcline[newng] = safemalloc((MEM_SIZE)(rcnums[newng] + 1));
+	X    strcpy(rcline[newng],ngn);		/* and copy over the name */
+	X    *(rcline[newng] + rcnums[newng]) = '\0';
+	X    rcchar[newng] = ':';		/* call it subscribed */
+	X    toread[newng] = TR_NONE;	/* just for prettiness */
+	X#ifdef HASHNG
+	X    sethash(newng);			/* so we can find it again */
+	X#endif
+	X#ifdef RELOCATE
+	X    return relocate_newsgroup(newng,-1);
+	X#else
+	X    return newng;
+	X#endif
+	X}
+	X
+	X#ifdef RELOCATE
+	XNG_NUM
+	Xrelocate_newsgroup(ngx,newng)
+	XNG_NUM ngx;
+	XNG_NUM newng;
+	X{
+	X    char *dflt = (ngx!=current_ng ? "$^.L" : "$^L");
+	X    char *tmprcline;
+	X    ART_UNREAD tmptoread;
+	X    char tmprcchar;
+	X    char tmprcnums;
+	X    ACT_POS tmpsoftptr;
+	X    register NG_NUM i;
+	X#ifdef DEBUGGING
+	X    ART_NUM tmpngmax;
+	X#endif
+	X#ifdef CACHEFIRST
+	X    ART_NUM tmpabs1st;
+	X#endif
+	X    
+	X    starthere = 0;                      /* Disable this optimization */
+	X    writesoft = TRUE;			/* Update soft pointer file */
+	X    if (ngx < nextrcline-1) {
+	X#ifdef HASHNG
+	X	for (i=0; i<HASHSIZ; i++) {
+	X	    if (hashtbl[i] > ngx)
+	X		--hashtbl[i];
+	X	    else if (hashtbl[i] == ngx)
+	X		hashtbl[i] = nextrcline-1;
+	X	}
+	X#endif
+	X	tmprcline = rcline[ngx];
+	X	tmptoread = toread[ngx];
+	X	tmprcchar = rcchar[ngx];
+	X	tmprcnums = rcnums[ngx];
+	X	tmpsoftptr = softptr[ngx];
+	X#ifdef DEBUGGING
+	X	tmpngmax = ngmax[ngx];
+	X#endif
+	X#ifdef CACHEFIRST
+	X	tmpabs1st = abs1st[ngx];
+	X#endif
+	X	for (i=ngx+1; i<nextrcline; i++) {
+	X	    rcline[i-1] = rcline[i];
+	X	    toread[i-1] = toread[i];
+	X	    rcchar[i-1] = rcchar[i];
+	X	    rcnums[i-1] = rcnums[i];
+	X	    softptr[i-1] = softptr[i];
+	X#ifdef DEBUGGING
+	X	    ngmax[i-1] = ngmax[i];
+	X#endif
+	X#ifdef CACHEFIRST
+	X	    abs1st[i-1] = abs1st[i];
+	X#endif
+	X	}
+	X	rcline[nextrcline-1] = tmprcline;
+	X	toread[nextrcline-1] = tmptoread;
+	X	rcchar[nextrcline-1] = tmprcchar;
+	X	rcnums[nextrcline-1] = tmprcnums;
+	X	softptr[nextrcline-1] = tmpsoftptr;
+	X#ifdef DEBUGGING
+	X	ngmax[nextrcline-1] = tmpngmax;
+	X#endif
+	X#ifdef CACHEFIRST
+	X	abs1st[nextrcline-1] = tmpabs1st;
+	X#endif
+	X    }
+	X    if (current_ng > ngx)
+	X	current_ng--;
+	X    if (newng < 0) {
+	X      reask_reloc:
+	X	unflush_output();		/* disable any ^O in effect */
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    printf("\nPut newsgroup where? [%s] ", dflt);
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    printf("\nPut where? [%s] ", dflt);
+	X#endif
+	X	fflush(stdout);
+	X      reinp_reloc:
+	X	eat_typeahead();
+	X	getcmd(buf);
+	X	if (errno || *buf == '\f') {
+	X			    /* if return from stop signal */
+	X	    goto reask_reloc;	/* give them a prompt again */
+	X	}
+	X	setdef(buf,dflt);
+	X#ifdef VERIFY
+	X	printcmd();
+	X#endif
+	X	if (*buf == 'h') {
+	X#ifdef VERBOSE
+	X	    IF(verbose) {
+	X		printf("\n\n\
+	XType ^ to put the newsgroup first (position 0).\n\
+	XType $ to put the newsgroup last (position %d).\n", nextrcline-1);
+	X		printf("\
+	XType . to put it before the current newsgroup (position %d).\n", current_ng);
+	X		printf("\
+	XType -newsgroup name to put it before that newsgroup.\n\
+	XType +newsgroup name to put it after that newsgroup.\n\
+	XType a number between 0 and %d to put it at that position.\n", nextrcline-1);
+	X		printf("\
+	XType L for a listing of newsgroups and their positions.\n") FLUSH;
+	X	    }
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    {
+	X		printf("\n\n\
+	X^ to put newsgroup first (pos 0).\n\
+	X$ to put last (pos %d).\n", nextrcline-1);
+	X		printf("\
+	X. to put before current newsgroup (pos %d).\n", current_ng);
+	X		printf("\
+	X-newsgroup to put before newsgroup.\n\
+	X+newsgroup to put after.\n\
+	Xnumber in 0-%d to put at that pos.\n", nextrcline-1);
+	X		printf("\
+	XL for list of .newsrc.\n") FLUSH;
+	X	    }
+	X#endif
+	X	    goto reask_reloc;
+	X	}
+	X	else if (*buf == 'L') {
+	X	    putchar('\n') FLUSH;
+	X	    list_newsgroups();
+	X	    goto reask_reloc;
+	X	}
+	X	else if (isdigit(*buf)) {
+	X	    if (!finish_command(TRUE))	/* get rest of command */
+	X		goto reinp_reloc;
+	X	    newng = atoi(buf);
+	X	    if (newng < 0)
+	X		newng = 0;
+	X	    if (newng >= nextrcline)
+	X		return nextrcline-1;
+	X	}
+	X	else if (*buf == '^') {
+	X	    putchar('\n') FLUSH;
+	X	    newng = 0;
+	X	}
+	X	else if (*buf == '$') {
+	X	    putchar('\n') FLUSH;
+	X	    return nextrcline-1;
+	X	}
+	X	else if (*buf == '.') {
+	X	    putchar('\n') FLUSH;
+	X	    newng = current_ng;
+	X	}
+	X	else if (*buf == '-' || *buf == '+') {
+	X	    if (!finish_command(TRUE))	/* get rest of command */
+	X		goto reinp_reloc;
+	X	    newng = find_ng(buf+1);
+	X	    if (newng == nextrcline) {
+	X		fputs("Not found.",stdout) FLUSH;
+	X		goto reask_reloc;
+	X	    }
+	X	    if (*buf == '+')
+	X		newng++;
+	X	}
+	X	else {
+	X	    printf("\n%s",hforhelp) FLUSH;
+	X	    settle_down();
+	X	    goto reask_reloc;
+	X	}
+	X    }
+	X    if (newng < nextrcline-1) {
+	X#ifdef HASHNG
+	X	for (i=0; i<HASHSIZ; i++) {
+	X	    if (hashtbl[i] == nextrcline-1)
+	X		hashtbl[i] = newng;
+	X	    else if (hashtbl[i] >= newng)
+	X		++hashtbl[i];
+	X	}
+	X#endif
+	X	tmprcline = rcline[nextrcline-1];
+	X	tmptoread = toread[nextrcline-1];
+	X	tmprcchar = rcchar[nextrcline-1];
+	X	tmprcnums = rcnums[nextrcline-1];
+	X	tmpsoftptr = softptr[nextrcline-1];
+	X#ifdef DEBUGGING
+	X	tmpngmax = ngmax[nextrcline-1];
+	X#endif
+	X#ifdef CACHEFIRST
+	X	tmpabs1st = abs1st[nextrcline-1];
+	X#endif
+	X	for (i=nextrcline-2; i>=newng; i--) {
+	X	    rcline[i+1] = rcline[i];
+	X	    toread[i+1] = toread[i];
+	X	    rcchar[i+1] = rcchar[i];
+	X	    rcnums[i+1] = rcnums[i];
+	X	    softptr[i+1] = softptr[i];
+	X#ifdef DEBUGGING
+	X	    ngmax[i+1] = ngmax[i];
+	X#endif
+	X#ifdef CACHEFIRST
+	X	    abs1st[i+1] = abs1st[i];
+	X#endif
+	X	}
+	X	rcline[newng] = tmprcline;
+	X	toread[newng] = tmptoread;
+	X	rcchar[newng] = tmprcchar;
+	X	rcnums[newng] = tmprcnums;
+	X	softptr[newng] = tmpsoftptr;
+	X#ifdef DEBUGGING
+	X	ngmax[newng] = tmpngmax;
+	X#endif
+	X#ifdef CACHEFIRST
+	X	abs1st[newng] = tmpabs1st;
+	X#endif
+	X    }
+	X    if (current_ng >= newng)
+	X	current_ng++;
+	X    return newng;
+	X}
+	X#endif
+	X
+	X/* List out the newsrc with annotations */
+	X
+	Xvoid
+	Xlist_newsgroups()
+	X{
+	X    register NG_NUM i;
+	X    char tmpbuf[2048];
+	X    static char *status[] = {"(READ)","(UNSUB)","(BOGUS)","(JUNK)"};
+	X    int cmd;
+	X
+	X    page_init();
+	X    print_lines("\
+	X  #  Status  Newsgroup\n\
+	X",STANDOUT);
+	X    for (i=0; i<nextrcline && !int_count; i++) {
+	X	if (toread[i] >= 0)
+	X	    set_toread(i);
+	X	*(rcline[i] + rcnums[i] - 1) = rcchar[i];
+	X	if (toread[i] > 0)
+	X	    sprintf(tmpbuf,"%3d %6ld   ",i,(long)toread[i]);
+	X	else
+	X	    sprintf(tmpbuf,"%3d %7s  ",i,status[-toread[i]]);
+	X	safecpy(tmpbuf+13,rcline[i],2034);
+	X	*(rcline[i] + rcnums[i] - 1) = '\0';
+	X	if (cmd = print_lines(tmpbuf,NOMARKING)) {
+	X	    if (cmd > 0)
+	X		pushchar(cmd);
+	X	    break;
+	X	}
+	X    }
+	X    int_count = 0;
+	X}
+	X
+	X/* find a newsgroup in .newsrc */
+	X
+	XNG_NUM
+	Xfind_ng(ngnam)
+	Xchar *ngnam;
+	X{
+	X    register NG_NUM ngnum;
+	X#ifdef HASHNG
+	X    register int hashix = hash(ngnam);
+	X    register int incr = 1;
+	X
+	X    while ((ngnum = hashtbl[hashix]) >= 0) {
+	X	if (strEQ(rcline[ngnum], ngnam) && toread[ngnum] >= TR_UNSUB)
+	X	    return ngnum;
+	X	hashix = (hashix + incr) % HASHSIZ;
+	X	incr += 2;			/* offsets from original are in n*2 */
+	X    }
+	X    return nextrcline;			/* = notfound */
+	X
+	X#else /* just do linear search */
+	X
+	X    for (ngnum = 0; ngnum < nextrcline; ngnum++) {
+	X	if (strEQ(rcline[ngnum],ngnam))
+	X	    break;
+	X    }
+	X    return ngnum;
+	X#endif
+	X}
+	X
+	Xvoid
+	Xcleanup_rc()
+	X{
+	X    register NG_NUM ngx;
+	X    register NG_NUM bogosity = 0;
+	X
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	fputs("Checking out your .newsrc--hang on a second...\n",stdout)
+	X	  FLUSH;
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	fputs("Checking .newsrc--hang on...\n",stdout) FLUSH;
+	X#endif
+	X    for (ngx = 0; ngx < nextrcline; ngx++) {
+	X	if (toread[ngx] >= TR_UNSUB) {
+	X	    set_toread(ngx);		/* this may reset newsgroup */
+	X					/* or declare it bogus */
+	X	}
+	X	if (toread[ngx] == TR_BOGUS)
+	X	    bogosity++;
+	X    }
+	X    for (ngx = nextrcline-1; ngx >= 0 && toread[ngx] == TR_BOGUS; ngx--)
+	X	bogosity--;			/* discount already moved ones */
+	X    if (nextrcline > 5 && bogosity > nextrcline / 2) {
+	X	fputs(
+	X"It looks like the active file is messed up.  Contact your news administrator,\n\
+	X",stdout);
+	X	fputs(
+	X"leave the \"bogus\" groups alone, and they may come back to normal.  Maybe.\n\
+	X",stdout) FLUSH;
+	X    }
+	X#ifdef RELOCATE
+	X    else if (bogosity) {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    fputs("Moving bogus newsgroups to the end of your .newsrc.\n",
+	X		stdout) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs("Moving boguses to the end.\n",stdout) FLUSH;
+	X#endif
+	X	for (; ngx >= 0; ngx--) {
+	X	    if (toread[ngx] == TR_BOGUS)
+	X		relocate_newsgroup(ngx,nextrcline-1);
+	X	}
+	X#ifdef DELBOGUS
+	Xreask_bogus:
+	X	in_char("Delete bogus newsgroups? [ny] ", 'D');
+	X	putchar('\n') FLUSH;
+	X	setdef(buf,"n");
+	X#ifdef VERIFY
+	X	printcmd();
+	X#endif
+	X	if (*buf == 'h') {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		fputs("\
+	XType y to delete bogus newsgroups.\n\
+	XType n or SP to leave them at the end in case they return.\n\
+	X",stdout) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("y to delete, n to keep\n",stdout) FLUSH;
+	X#endif
+	X	    goto reask_bogus;
+	X	}
+	X	else if (*buf == 'n' || *buf == 'q')
+	X	    ;
+	X	else if (*buf == 'y') {
+	X	    while (toread[nextrcline-1] == TR_BOGUS && nextrcline > 0)
+	X		--nextrcline;		/* real tough, huh? */
+	X	}
+	X	else {
+	X	    fputs(hforhelp,stdout) FLUSH;
+	X	    settle_down();
+	X	    goto reask_bogus;
+	X	}
+	X#endif
+	X    }
+	X#else
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	fputs("You should edit bogus newsgroups out of your .newsrc.\n",
+	X	    stdout) FLUSH;
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	fputs("Edit boguses from .newsrc.\n",stdout) FLUSH;
+	X#endif
+	X#endif
+	X    paranoid = FALSE;
+	X}
+	X
+	X#ifdef HASHNG
+	X/* make an entry in the hash table for the current newsgroup */
+	X
+	Xvoid
+	Xsethash(thisng)
+	XNG_NUM thisng;
+	X{
+	X    register int hashix = hash(rcline[thisng]);
+	X    register int incr = 1;
+	X#ifdef DEBUGGING
+	X    static int hashhits = 0, hashtries = 0;
+	X#endif
+	X
+	X#ifdef DEBUGGING
+	X    hashtries++;
+	X#endif
+	X    while (hashtbl[hashix] >= 0) {
+	X#ifdef DEBUGGING
+	X	hashhits++;
+	X	if (debug & DEB_HASH) {
+	X	    printf("  Hash hits: %d / %d\n",hashhits, hashtries) FLUSH;
+	X	}
+	X	hashtries++;
+	X#endif
+	X	hashix = (hashix + incr) % HASHSIZ;
+	X	incr += 2;			/* offsets from original are in n*2 */
+	X    }
+	X    hashtbl[hashix] = thisng;
+	X}
+	X
+	Xshort prime[] = {1,2,-3,-5,7,11,-13,-17,19,23,-29,-31,37,41,-43,-47,53,57,-59,
+	X    -61,67,71,-73,-79,83,89,-97,-101,1,1,1,1,1,1,1,1,1,1,1,1};
+	X
+	Xint
+	Xhash(ngnam)
+	Xregister char *ngnam;
+	X{
+	X    register int i = 0;
+	X    register int ch;
+	X    register int sum = 0;
+	X#ifdef DEBUGGING
+	X    char *ngn = ngnam;
+	X#endif
+	X
+	X    while (ch = *ngnam++) {
+	X	sum += (ch + i) * prime[i];   /* gives ~ 10% hits at 25% full */
+	X	i++;
+	X    }
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_HASH)
+	X	printf("hash(%s) => %d => %d\n",ngn, sum, (sum<0?-sum:sum)%HASHSIZ)
+	X	  FLUSH;
+	X#endif
+	X    if (sum < 0)
+	X	sum = -sum;
+	X    return sum % HASHSIZ;
+	X}
+	X
+	X#endif
+	X
+	Xvoid
+	Xnewsrc_check()
+	X{
+	X    rcfp = fopen(rcname,"r");		/* open it */
+	X    if (rcfp == Nullfp) {			/* not there? */
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    fputs("\
+	XTrying to set up a .newsrc file--running newsetup...\n\n\
+	X",stdout) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs("Setting up .newsrc...\n",stdout) FLUSH;
+	X#endif
+	X	if (doshell(sh,filexp(NEWSETUP)) ||
+	X	    (rcfp = fopen(rcname,"r")) == Nullfp) {
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		fputs("\
+	XCan't create a .newsrc--you must do it yourself.\n\
+	X",stdout) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("(Fatal)\n",stdout) FLUSH;
+	X#endif
+	X	    finalize(1);
+	X	}
+	X    }
+	X    else {
+	X	UNLINK(rcbname);		/* unlink backup file name */
+	X	link(rcname,rcbname);		/* and backup current name */
+	X    }
+	X}
+	X
+	X/* write out the (presumably) revised .newsrc */
+	X
+	Xvoid
+	Xwrite_rc()
+	X{
+	X    register NG_NUM tmpng;
+	X    register char *delim;
+	X
+	X    rcfp = fopen(rctname, "w");		/* open .newsrc */
+	X    if (rcfp == Nullfp) {
+	X	printf("Can't recreate .newsrc\n") FLUSH;
+	X	finalize(1);
+	X    }
+	X
+	X    /* write out each line*/
+	X
+	X    for (tmpng = 0; tmpng < nextrcline; tmpng++) {
+	X	if (rcnums[tmpng]) {
+	X	    delim = rcline[tmpng] + rcnums[tmpng] - 1;
+	X	    *delim = rcchar[tmpng];
+	X	}
+	X	else
+	X	    delim = Nullch;
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_NEWSRC_LINE)
+	X	    printf("%s\n",rcline[tmpng]) FLUSH;
+	X#endif
+	X	fprintf(rcfp,"%s\n",rcline[tmpng]);
+	X	if (delim)
+	X	    *delim = '\0';		/* might still need this line */
+	X    }
+	X
+	X    fclose(rcfp);			/* close .newsrc */
+	X    UNLINK(rcname);
+	X    link(rctname,rcname);
+	X    UNLINK(rctname);
+	X
+	X    if (writesoft) {
+	X	tmpfp = fopen(filexp(softname), "w");	/* open .rnsoft */
+	X	if (tmpfp == Nullfp) {
+	X	    printf(cantcreate,filexp(softname)) FLUSH;
+	X	    return;
+	X	}
+	X	for (tmpng = 0; tmpng < nextrcline; tmpng++) {
+	X	    fprintf(tmpfp,"%ld\n",(long)softptr[tmpng]);
+	X	}
+	X	fclose(tmpfp);
+	X    }
+	X}
+	X
+	Xvoid
+	Xget_old_rc()
+	X{
+	X    UNLINK(rctname);
+	X    link(rcname,rctname);
+	X    UNLINK(rcname);
+	X    link(rcbname,rcname);
+	X    UNLINK(rcbname);
+	X}
+SHAR_EOF
+if test 20769 -ne "`wc -c < 'rcstuff.c'`"
+then
+	echo shar: error transmitting "'rcstuff.c'" '(should have been 20769 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'respond.c'" '(9764 characters)'
+if test -f 'respond.c'
+then
+	echo shar: will not over-write existing file "'respond.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'respond.c'
+	X/* $Header: respond.c,v 4.3.1.5 85/09/10 11:05:00 lwall Exp $
+	X *
+	X * $Log:	respond.c,v $
+	X * Revision 4.3.1.5  85/09/10  11:05:00  lwall
+	X * Improved %m in in_char().
+	X * 
+	X * Revision 4.3.1.4  85/05/23  17:24:49  lwall
+	X * Now allows 'r' and 'f' on null articles.
+	X * 
+	X * Revision 4.3.1.3  85/05/15  14:42:32  lwall
+	X * Removed duplicate include of intrp.h.
+	X * 
+	X * Revision 4.3.1.2  85/05/14  08:55:15  lwall
+	X * Default for normal/mailbox question was applied to wrong buffer.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:37:33  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:47:04  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "intrp.h"
+	X#include "head.h"
+	X#include "term.h"
+	X#include "ng.h"
+	X#include "util.h"
+	X#include "rn.h"
+	X#include "artio.h"
+	X#include "final.h"
+	X#include "INTERN.h"
+	X#include "respond.h"
+	X
+	Xstatic char nullart[] = "\nNull article\n";
+	X
+	Xvoid
+	Xrespond_init()
+	X{
+	X    ;
+	X}
+	X
+	Xint
+	Xsave_article()
+	X{
+	X    bool use_pref;
+	X    register char *s, *c;
+	X    char altbuf[CBUFLEN];
+	X    int iter;
+	X    bool interactive = (buf[1] == FINISHCMD);
+	X    
+	X    if (!finish_command(interactive))	/* get rest of command */
+	X	return SAVE_ABORT;
+	X    use_pref = isupper(*buf);
+	X#ifdef ASYNC_PARSE
+	X    parse_maybe(art);
+	X#endif
+	X    savefrom = (*buf=='w' || *buf=='W' ? htype[PAST_HEADER].ht_minpos : 0);
+	X    if (artopen(art) == Nullfp) {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    fputs("\n\
+	XSaving null articles is not very productive!  :-)\n\
+	X",stdout) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs(nullart,stdout) FLUSH;
+	X#endif
+	X	return SAVE_DONE;
+	X    }
+	X    if (chdir(cwd)) {
+	X	printf(nocd,cwd) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X    if (savedest)
+	X	free(savedest);
+	X    if ((s = index(buf,'|')) != Nullch) {
+	X				/* is it a pipe command? */
+	X	s++;			/* skip the | */
+	X	while (*s == ' ') s++;
+	X	safecpy(altbuf,filexp(s),sizeof altbuf);
+	X	savedest = altbuf;
+	X	interp(cmd_buf, (sizeof cmd_buf), getval("PIPESAVER",PIPESAVER));
+	X				/* then set up for command */
+	X	resetty();		/* restore tty state */
+	X	if (use_pref)		/* use preferred shell? */
+	X	    doshell(Nullch,cmd_buf);
+	X				/* do command with it */
+	X	else
+	X	    doshell(sh,cmd_buf);	/* do command with sh */
+	X	noecho();		/* and stop echoing */
+	X	crmode();		/* and start cbreaking */
+	X	savedest = savestr(savedest);
+	X    }
+	X    else {			/* normal save */
+	X	bool there, mailbox;
+	X	char *savename = getval("SAVENAME",SAVENAME);
+	X
+	X	s = buf+1;		/* skip s or S */
+	X	if (*s == '-') {	/* if they are confused, skip - also */
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		fputs("Warning: '-' ignored.  This isn't readnews.\n",stdout)
+	X		  FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("'-' ignored.\n",stdout) FLUSH;
+	X#endif
+	X	    s++;
+	X	}
+	X	for (; *s == ' '; s++);	/* skip spaces */
+	X	safecpy(altbuf,filexp(s),sizeof altbuf);
+	X	s = altbuf;
+	X	if (! index(s,'/')) {
+	X	    interp(buf, (sizeof buf), getval("SAVEDIR",SAVEDIR));
+	X	    if (makedir(buf,MD_DIR))	/* ensure directory exists */
+	X		strcpy(buf,cwd);
+	X	    if (*s) {
+	X		for (c = buf; *c; c++) ;
+	X		*c++ = '/';
+	X		strcpy(c,s);		/* add filename */
+	X	    }
+	X	    s = buf;
+	X	}
+	X	for (iter = 0;
+	X	    (there = stat(s,&filestat) >= 0) &&
+	X	    (filestat.st_mode & S_IFDIR);
+	X	    iter++) {			/* is it a directory? */
+	X
+	X	    c = (s+strlen(s));
+	X	    *c++ = '/';			/* put a slash before filename */
+	X	    interp(c, s==buf?(sizeof buf):(sizeof altbuf),
+	X		iter ? "News" : savename );
+	X				/* generate a default name somehow or other */
+	X	    if (index(c,'/')) {		/* yikes, a '/' in the filename */
+	X		makedir(s,MD_FILE);
+	X	    }
+	X	}
+	X	if (*s != '/') {		/* relative path? */
+	X	    c = (s==buf ? altbuf : buf);
+	X	    sprintf(c, "%s/%s", cwd, s);
+	X	    s = c;			/* absolutize it */
+	X	}
+	X	s = savedest = savestr(s);	/* doesn't move any more */
+	X					/* make it handy for %b */
+	X	if (!there) {
+	X	    if (mbox_always)
+	X		mailbox = TRUE;
+	X	    else if (norm_always)
+	X		mailbox = FALSE;
+	X	    else {
+	X		char *dflt = (instr(savename,"%a") ? "nyq" : "ynq");
+	X		
+	X		sprintf(cmd_buf,
+	X		"\nFile %s doesn't exist--\n	use mailbox format? [%s] ",
+	X		  s,dflt);
+	X	      reask_save:
+	X		in_char(cmd_buf, 'M');
+	X		putchar('\n') FLUSH;
+	X		setdef(buf,dflt);
+	X#ifdef VERIFY
+	X		printcmd();
+	X#endif
+	X		if (*buf == 'h') {
+	X#ifdef VERBOSE
+	X		    IF(verbose)
+	X			printf("\n\
+	XType y to create %s as a mailbox.\n\
+	XType n to create it as a normal file.\n\
+	XType q to abort the save.\n\
+	X",s) FLUSH;
+	X		    ELSE
+	X#endif
+	X#ifdef TERSE
+	X			fputs("\n\
+	Xy to create mailbox.\n\
+	Xn to create normal file.\n\
+	Xq to abort.\n\
+	X",stdout) FLUSH;
+	X#endif
+	X		    goto reask_save;
+	X		}
+	X		else if (*buf == 'n') {
+	X		    mailbox = FALSE;
+	X		}
+	X		else if (*buf == 'y') {
+	X		    mailbox = TRUE;
+	X		}
+	X		else if (*buf == 'q') {
+	X		    goto s_bomb;
+	X		}
+	X		else {
+	X		    fputs(hforhelp,stdout) FLUSH;
+	X		    settle_down();
+	X		    goto reask_save;
+	X		}
+	X	    }
+	X	}
+	X	else if (filestat.st_mode & S_IFCHR)
+	X	    mailbox = FALSE;
+	X	else {
+	X	    int tmpfd;
+	X	    
+	X	    tmpfd = open(s,0);
+	X	    if (tmpfd == -1)
+	X		mailbox = FALSE;
+	X	    else {
+	X		read(tmpfd,buf,LBUFLEN);
+	X		c = buf;
+	X		if (!isspace(MBOXCHAR))
+	X		    while (isspace(*c))
+	X			c++;
+	X		mailbox = (*c == MBOXCHAR);
+	X		close(tmpfd);
+	X	    }
+	X	}
+	X
+	X	safecpy(cmd_buf, filexp(mailbox ?
+	X	    getval("MBOXSAVER",MBOXSAVER) :
+	X	    getval("NORMSAVER",NORMSAVER) ), sizeof cmd_buf);
+	X				/* format the command */
+	X	resetty();		/* make terminal behave */
+	X	if (doshell(use_pref?Nullch:SH,cmd_buf))
+	X	    fputs("Not saved",stdout);
+	X	else
+	X	    printf("%s to %s %s",
+	X	      there?"Appended":"Saved",
+	X	      mailbox?"mailbox":"file",
+	X	      s);
+	X	if (interactive)
+	X	    putchar('\n') FLUSH;
+	X	noecho();		/* make terminal do what we want */
+	X	crmode();
+	X    }
+	Xs_bomb:
+	X    if (chdir(spool) || chdir(ngdir)) {
+	X	printf(nocd,ngdir) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X    return SAVE_DONE;
+	X}
+	X
+	Xint
+	Xcancel_article()
+	X{
+	X    char *artid_buf;
+	X    char *ngs_buf;
+	X    char *from_buf;
+	X    char *reply_buf;
+	X    int myuid = getuid();
+	X    int r = -1;
+	X
+	X    if (artopen(art) == Nullfp) {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    fputs("\n\
+	XCancelling null articles is your idea of fun?  :-)\n\
+	X",stdout) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs(nullart,stdout) FLUSH;
+	X#endif
+	X	return r;
+	X    }
+	X    reply_buf = fetchlines(art,REPLY_LINE);
+	X    from_buf = fetchlines(art,FROM_LINE);
+	X    artid_buf = fetchlines(art,ARTID_LINE);
+	X    ngs_buf = fetchlines(art,NGS_LINE);
+	X    if (!instr(from_buf,sitename) ||
+	X	(!instr(from_buf,logname) &&
+	X	 !instr(reply_buf,logname) &&
+	X#ifdef NEWSADMIN
+	X	 myuid != newsuid &&
+	X#endif
+	X	 myuid != ROOTID ) )
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		fputs("You can't cancel someone else's article\n",stdout)
+	X		  FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("Not your article\n",stdout) FLUSH;
+	X#endif
+	X    else {
+	X	tmpfp = fopen(headname,"w");	/* open header file */
+	X	if (tmpfp == Nullfp) {
+	X	    printf(cantcreate,headname) FLUSH;
+	X	    goto no_cancel;
+	X	}
+	X	interp(buf, (sizeof buf), getval("CANCELHEADER",CANCELHEADER));
+	X	fputs(buf,tmpfp);
+	X	fclose(tmpfp);
+	X	r = doshell(sh,filexp(getval("CANCEL",CANCEL)));
+	X    }
+	Xno_cancel:
+	X    free(artid_buf);
+	X    free(ngs_buf);
+	X    free(from_buf);
+	X    free(reply_buf);
+	X    return r;
+	X}
+	X
+	Xvoid
+	Xreply()
+	X{
+	X    bool incl_body = (*buf == 'R');
+	X    char *maildoer = savestr(filexp(getval("MAILPOSTER",MAILPOSTER)));
+	X
+	X    artopen(art);
+	X    tmpfp = fopen(headname,"w");	/* open header file */
+	X    if (tmpfp == Nullfp) {
+	X	printf(cantcreate,headname) FLUSH;
+	X	goto no_reply;
+	X    }
+	X    interp(buf, (sizeof buf), getval("MAILHEADER",MAILHEADER));
+	X    fputs(buf,tmpfp);
+	X    if (!instr(maildoer,"%h"))
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    printf("\n%s\n(Above lines saved in file %s)\n",buf,headname)
+	X	      FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    printf("\n%s\n(Header in %s)\n",buf,headname) FLUSH;
+	X#endif
+	X    if (incl_body && artfp != Nullfp) {
+	X	interp(buf, (sizeof buf), getval("YOUSAID",YOUSAID));
+	X	fprintf(tmpfp,"%s\n",buf);
+	X#ifdef ASYNC_PARSE
+	X	parse_maybe(art);
+	X#endif
+	X	fseek(artfp,(long)htype[PAST_HEADER].ht_minpos,0);
+	X	while (fgets(buf,LBUFLEN,artfp) != Nullch) {
+	X	    fprintf(tmpfp,"%s%s",indstr,buf);
+	X	}
+	X	fprintf(tmpfp,"\n");
+	X    }
+	X    fclose(tmpfp);
+	X    interp(cmd_buf, (sizeof cmd_buf), maildoer);
+	X    invoke(cmd_buf,origdir);
+	X    UNLINK(headname);		/* kill the header file */
+	Xno_reply:
+	X    free(maildoer);
+	X}
+	X
+	Xvoid
+	Xfollowup()
+	X{
+	X    bool incl_body = (*buf == 'F');
+	X
+	X    artopen(art);
+	X    tmpfp = fopen(headname,"w");
+	X    if (tmpfp == Nullfp) {
+	X	printf(cantcreate,headname) FLUSH;
+	X	return;
+	X    }
+	X    interp(buf, (sizeof buf), getval("NEWSHEADER",NEWSHEADER));
+	X    fprintf(tmpfp,"%s",buf);
+	X    if (incl_body && artfp != Nullfp) {
+	X#ifdef VERBOSE
+	X	if (verbose)
+	X	    fputs("\n\
+	X(Be sure to double-check the attribution against the signature, and\n\
+	Xtrim the quoted article down as much as possible.)\n\
+	X",stdout) FLUSH;
+	X#endif
+	X	interp(buf, (sizeof buf), getval("ATTRIBUTION",ATTRIBUTION));
+	X	fprintf(tmpfp,"%s\n",buf);
+	X#ifdef ASYNC_PARSE
+	X	parse_maybe(art);
+	X#endif
+	X	fseek(artfp,(long)htype[PAST_HEADER].ht_minpos,0);
+	X	while (fgets(buf,LBUFLEN,artfp) != Nullch) {
+	X	    fprintf(tmpfp,"%s%s",indstr,buf);
+	X	}
+	X	fprintf(tmpfp,"\n");
+	X    }
+	X    fclose(tmpfp);
+	X    safecpy(cmd_buf,filexp(getval("NEWSPOSTER",NEWSPOSTER)),sizeof cmd_buf);
+	X    invoke(cmd_buf,origdir);
+	X    UNLINK(headname);
+	X}
+	X
+	Xvoid
+	Xinvoke(cmd,dir)
+	Xchar *cmd,*dir;
+	X{
+	X    if (chdir(dir)) {
+	X	printf(nocd,dir) FLUSH;
+	X	return;
+	X    }
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	printf("\n(leaving cbreak mode; cwd=%s)\nInvoking command: %s\n\n",
+	X	    dir,cmd) FLUSH;
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	printf("\n(-cbreak; cwd=%s)\nInvoking: %s\n\n",dir,cmd) FLUSH;
+	X#endif
+	X    resetty();			/* make terminal well-behaved */
+	X    doshell(sh,cmd);		/* do the command */
+	X    noecho();			/* set no echo */
+	X    crmode();			/* and cbreak mode */
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	fputs("\n(re-entering cbreak mode)\n",stdout) FLUSH;
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	fputs("\n(+cbreak)\n",stdout) FLUSH;
+	X#endif
+	X    if (chdir(spool) || chdir(ngdir)) {
+	X	printf(nocd,ngdir) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X}
+	X
+SHAR_EOF
+if test 9764 -ne "`wc -c < 'respond.c'`"
+then
+	echo shar: error transmitting "'respond.c'" '(should have been 9764 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'rn.c'" '(12623 characters)'
+if test -f 'rn.c'
+then
+	echo shar: will not over-write existing file "'rn.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'rn.c'
+	X/*  rn -- new readnews program
+	X *
+	X *  From: lwall@sdcrdcf.UUCP (Larry Wall)
+	X *  Organization: System Development Corporation, Santa Monica
+	X *
+	X *  begun:   01/14/83
+	X *	1.0: 04/08/83
+	X *      2.0: 09/01/83
+	X */
+	X
+	Xstatic char rnid[] = "@(#)$Header: rn.c,v 4.3.1.4 85/09/10 11:05:13 lwall Exp $";
+	X
+	X/* $Log:	rn.c,v $
+	X * Revision 4.3.1.4  85/09/10  11:05:13  lwall
+	X * Improved %m in in_char().
+	X * 
+	X * Revision 4.3.1.3  85/05/16  16:47:10  lwall
+	X * Catchup confirmation didn't grok -t.
+	X * 
+	X * Revision 4.3.1.2  85/05/13  09:34:53  lwall
+	X * Fixed default after do_newsgroup() returns from Q command.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:38:08  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:47:56  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "INTERN.h"
+	X#include "common.h"
+	X#include "rn.h"
+	X#include "EXTERN.h"
+	X#include "rcstuff.h"
+	X#include "term.h"
+	X#include "final.h"
+	X#include "ngdata.h"
+	X#include "util.h"
+	X#include "only.h"
+	X#include "ngsrch.h"
+	X#include "help.h"
+	X#include "last.h"
+	X#include "init.h"
+	X#include "intrp.h"
+	X#include "rcln.h"
+	X#include "sw.h"
+	X#include "addng.h"
+	X#include "ng.h"
+	X#include "INTERN.h"
+	X
+	Xvoid
+	Xrn_init()
+	X{
+	X    ;
+	X}
+	X
+	Xvoid
+	Xmain(argc,argv)
+	Xint argc;
+	Xchar *argv[];
+	X{
+	X    bool foundany = initialize(argc,argv);
+	X    register char *s;
+	X    bool oh_for_the_good_old_days = FALSE;
+	X    
+	X    if (maxngtodo)
+	X	starthere = 0;
+	X    else if (!foundany) {		/* nothing to do? */
+	X#ifdef VERBOSE
+	X	if (verbose)
+	X	    fputs("\
+	XNo unread news in subscribed-to newsgroups.  To subscribe to a new\n\
+	Xnewsgroup use the g<newsgroup> command.\n\
+	X",stdout) FLUSH;
+	X#endif
+	X	starthere = nextrcline;
+	X    }
+	X
+	X    /* loop through all unread news */
+	X
+	X    {
+	X	char promptbuf[80];
+	X	bool special = FALSE;		/* temporarily allow newsgroup */
+	X					/*   with no unread news? */
+	X	bool retry;			/* cycle back to top of list? */
+	X	NG_NUM recent_ng = 0;
+	X	
+	X	current_ng = 0;
+	X	do {
+	X	    retry = FALSE;
+	X	    if (findlast) {
+	X		findlast = FALSE;
+	X		starthere = 0;
+	X		if (*lastngname) {
+	X		    if ((ng = find_ng(lastngname)) == nextrcline)
+	X			ng = 0;
+	X		    else {
+	X			set_ngname(lastngname);
+	X		    	set_toread(ng);
+	X			if (toread[ng] <= TR_NONE)
+	X			    ng = 0;
+	X		    }
+	X		}
+	X	    }
+	X	    else {
+	X		ng = starthere;
+	X		starthere = 0;
+	X	    }
+	X	    while (ng <= nextrcline) {	/* for each newsgroup */
+	X		mode = 'n';
+	X		if (ng >= nextrcline) {	/* after the last newsgroup? */
+	X		    ng = nextrcline;	/* force it to 1 after */
+	X#ifdef ONLY
+	X		    if (maxngtodo) {
+	X			if (retry)
+	X#ifdef VERBOSE
+	X			    IF(verbose)
+	X				printf("\nRestriction %s%s still in effect.\n",
+	X				    ngtodo[0],
+	X				    maxngtodo > 1 ? ", etc." : nullstr) FLUSH;
+	X			    ELSE
+	X#endif
+	X#ifdef TERSE
+	X				fputs("\n(\"Only\" mode.)\n",stdout) FLUSH;
+	X#endif
+	X			else {
+	X#ifdef VERBOSE
+	X			    IF(verbose)
+	X				fputs("\nNo articles under restriction.",
+	X				  stdout) FLUSH;
+	X			    ELSE
+	X#endif
+	X#ifdef TERSE
+	X				fputs("\nNo \"only\" articles.",stdout) FLUSH;
+	X#endif
+	X			    end_only();	/* release the restriction */
+	X			    retry = TRUE;
+	X			}
+	X		    }
+	X#endif
+	X		    dfltcmd = (retry ? "npq" : "qnp");
+	X#ifdef VERBOSE
+	X		    IF(verbose)
+	X			sprintf(promptbuf,
+	X			    "\n******** End of newsgroups--what next? [%s] ",
+	X			    dfltcmd);
+	X		    ELSE
+	X#endif
+	X#ifdef TERSE
+	X			sprintf(promptbuf,
+	X			    "\n**** End--next? [%s] ", dfltcmd);
+	X#endif
+	X		}
+	X		else {
+	X		    bool shoe_fits;	/* newsgroup matches restriction? */
+	X
+	X		    if (toread[ng] >= TR_NONE) {	/* recalc toread? */
+	X			set_ngname(rcline[ng]);
+	X			if (shoe_fits = (special || inlist(ngname)))
+	X			    set_toread(ng);
+	X			if (paranoid) {
+	X			    recent_ng = current_ng;
+	X			    current_ng = ng;
+	X			    cleanup_rc();
+	X					/* this may move newsgroups around */
+	X			    ng = current_ng;
+	X			    set_ngname(rcline[ng]);
+	X			}
+	X		    }
+	X		    if (toread[ng] < (maxngtodo||special ? TR_NONE : TR_ONE) || !shoe_fits) {
+	X					/* unwanted newsgroup? */
+	X			ng++;		/* then skip it */
+	X			continue;
+	X		    }
+	X		    dfltcmd = "ynq";
+	X#ifdef VERBOSE
+	X		    IF(verbose)
+	X			sprintf(promptbuf,
+	X			    "\n******** %3ld unread article%c in %s--read now? [%s] ",
+	X			    (long)toread[ng], (toread[ng]==TR_ONE ? ' ' : 's'),
+	X			    ngname, dfltcmd);	/* format prompt string */
+	X		    ELSE
+	X#endif
+	X#ifdef TERSE
+	X			sprintf(promptbuf,
+	X			    "\n**** %3ld in %s--read? [%s] ",
+	X			    (long)toread[ng],
+	X			    ngname,dfltcmd);	/* format prompt string */
+	X#endif
+	X		}
+	X		special = FALSE;	/* go back to normal mode */
+	X		if (ng != current_ng) {
+	X		    recent_ng = current_ng;
+	X					/* remember previous newsgroup */
+	X		    current_ng = ng;	/* remember current newsgroup */
+	X		}
+	X    reask_newsgroup:
+	X		unflush_output();	/* disable any ^O in effect */
+	X		fputs(promptbuf,stdout) FLUSH;/* print prompt */
+	X		fflush(stdout);
+	X    reinp_newsgroup:
+	X		eat_typeahead();
+	X		getcmd(buf);
+	X		if (errno || *buf == '\f') {
+	X		    putchar('\n') FLUSH; /* if return from stop signal */
+	X		    goto reask_newsgroup;	/* give them a prompt again */
+	X		}
+	X		setdef(buf,dfltcmd);
+	X#ifdef VERIFY
+	X		printcmd();
+	X#endif
+	X		switch (*buf) {
+	X		case 'p':		/* find previous unread newsgroup */
+	X		    do {
+	X			if (ng <= 0)
+	X			    break;
+	X			ng--;
+	X			if (toread[ng] == TR_NONE)
+	X			    set_toread(ng);
+	X		    } while (toread[ng] <= TR_NONE);
+	X		    break;
+	X		case 'P':		/* goto previous newsgroup */
+	X		    do {
+	X			if (ng <= 0)
+	X			    break;
+	X			ng--;
+	X		    } while (toread[ng] < TR_NONE);
+	X		    special = TRUE;	/* don't skip it if toread==0 */
+	X		    break;
+	X		case '-':
+	X		    ng = recent_ng;	/* recall previous newsgroup */
+	X		    special = TRUE;	/* don't skip it if toread==0 */
+	X		    break;
+	X		case 'q': case 'Q': case 'x':	/* quit? */
+	X		    oh_for_the_good_old_days = (*buf == 'x');
+	X		    putchar('\n') FLUSH;
+	X		    ng = nextrcline+1;	/* satisfy */
+	X		    retry = FALSE;	/*   loop conditions */
+	X		    break;
+	X		case '^':
+	X		    putchar('\n') FLUSH;
+	X		    ng = 0;
+	X		    break;
+	X		case 'n': case '+':	/* find next unread newsgroup */
+	X		    if (ng == nextrcline) {
+	X			putchar('\n') FLUSH;
+	X			retry = TRUE;
+	X		    }
+	X		    else if (toread[ng] > TR_NONE)
+	X			retry = TRUE;
+	X		    ng++;
+	X		    break;
+	X		case 'N':		/* goto next newsgroup */
+	X		    ng++;
+	X		    special = TRUE;	/* and don't skip it if toread==0 */
+	X		    break;
+	X		case '1':		/* goto 1st newsgroup */
+	X		    ng = 0;
+	X		    special = TRUE;	/* and don't skip it if toread==0 */
+	X		    break;
+	X		case '$':
+	X		    ng = nextrcline;	/* goto last newsgroup */
+	X		    retry = TRUE;
+	X		    break;
+	X		case 'L':
+	X		    list_newsgroups();
+	X		    goto reask_newsgroup;
+	X		case '/': case '?':	/* scan for newsgroup pattern */
+	X#ifdef NGSEARCH
+	X		    switch (ng_search(buf,TRUE)) {
+	X		    case NGS_ABORT:
+	X			goto reinp_newsgroup;
+	X		    case NGS_INTR:
+	X#ifdef VERBOSE
+	X			IF(verbose)
+	X			    fputs("\n(Interrupted)\n",stdout) FLUSH;
+	X			ELSE
+	X#endif
+	X#ifdef TERSE
+	X			    fputs("\n(Intr)\n",stdout) FLUSH;
+	X#endif
+	X			ng = current_ng;
+	X			goto reask_newsgroup;
+	X		    case NGS_FOUND:
+	X			special = TRUE;	/* don't skip it if toread==0 */
+	X			break;
+	X		    case NGS_NOTFOUND:
+	X#ifdef VERBOSE
+	X			IF(verbose)
+	X			    fputs("\n\nNot found--use g to add newsgroups\n",
+	X				stdout) FLUSH;
+	X			ELSE
+	X#endif
+	X#ifdef TERSE
+	X			    fputs("\n\nNot found\n",stdout) FLUSH;
+	X#endif
+	X			goto reask_newsgroup;
+	X		    }
+	X#else
+	X		    notincl("/");
+	X#endif
+	X		    break;
+	X		case 'm':
+	X#ifndef RELOCATE
+	X		    notincl("m");
+	X		    break;
+	X#endif		    
+	X		case 'g':	/* goto named newsgroup */
+	X		    if (!finish_command(FALSE))
+	X					/* if they didn't finish command */
+	X			goto reinp_newsgroup;	/* go try something else */
+	X		    for (s = buf+1; *s == ' '; s++);
+	X					/* skip leading spaces */
+	X		    if (!*s)
+	X			strcpy(s,ngname);
+	X#ifdef RELOCATE
+	X		    if (!get_ng(s,*buf=='m'))	/* try to find newsgroup */
+	X#else
+	X		    if (!get_ng(s,FALSE))	/* try to find newsgroup */
+	X#endif
+	X			ng = current_ng;/* if not found, go nowhere */
+	X		    special = TRUE;	/* don't skip it if toread==0 */
+	X		    break;
+	X#ifdef DEBUGGING
+	X		case 'D':
+	X		    printf("\nTries: %d Hits: %d\n",
+	X			softtries,softtries-softmisses) FLUSH;
+	X		    goto reask_newsgroup;
+	X#endif
+	X		case '!':		/* shell escape */
+	X		    if (escapade())	 /* do command */
+	X			goto reinp_newsgroup;
+	X					/* if rubbed out, re input */
+	X		    goto reask_newsgroup;
+	X		case Ctl('k'):		/* edit global KILL file */
+	X		    edit_kfile();
+	X		    goto reask_newsgroup;
+	X		case 'c':		/* catch up */
+	X#ifdef CATCHUP
+	Xreask_catchup:
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    in_char("\nDo you really want to mark everything as read? [yn] ", 'C');
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    in_char("\nReally? [ynh] ", 'C');
+	X#endif
+	X		    putchar('\n') FLUSH;
+	X		    setdef(buf,"y");
+	X		    if (*buf == 'h') {
+	X#ifdef VERBOSE
+	X		    printf("Type y or SP to mark all articles as read.\n");
+	X		    printf("Type n to leave articles marked as they are.\n");
+	X#else
+	X		    printf("y or SP to mark all read.\n");
+	X		    printf("n to forget it.\n");
+	X#endif
+	X			goto reask_catchup;
+	X		    }
+	X		    else if (*buf!=' ' && *buf!='y' && *buf!='n' && *buf!='q') {
+	X			printf(hforhelp);
+	X			settle_down();
+	X			goto reask_catchup;
+	X		    } else if ( (*buf == ' ' || *buf == 'y') && ng<nextrcline )
+	X			catch_up(ng);
+	X		    else
+	X			retry = TRUE;
+	X		    ng++;
+	X#else
+	X		    notincl("c");
+	X#endif
+	X		    break;
+	X		case 'u':		/* unsubscribe */
+	X		    if (ng < nextrcline && toread[ng] >= TR_NONE) {
+	X					/* unsubscribable? */
+	X			printf(unsubto,rcline[ng]) FLUSH;
+	X			rcchar[ng] = NEGCHAR;
+	X					/* unsubscribe to (from?) it */
+	X			toread[ng] = TR_UNSUB;
+	X					/* and make line invisible */
+	X			ng++;		/* do an automatic 'n' */
+	X		    }
+	X		    break;
+	X		case 'h': {		/* help */
+	X		    int cmd;
+	X
+	X		    if ((cmd = help_ng()) > 0)
+	X			pushchar(cmd);
+	X		    goto reask_newsgroup;
+	X		}
+	X		case 'a':
+	X#ifndef FINDNEWNG
+	X		    notincl("a");
+	X		    goto reask_newsgroup;
+	X#else
+	X		    /* FALL THROUGH */
+	X#endif
+	X		case 'o':
+	X#ifdef ONLY
+	X		{
+	X#ifdef FINDNEWNG
+	X		    bool doscan = (*buf == 'a');
+	X#endif
+	X
+	X		    if (!finish_command(TRUE)) /* get rest of command */
+	X			goto reinp_newsgroup;	/* if rubbed out, try something else */
+	X		    end_only();
+	X		    if (buf[1]) {
+	X			bool minusd = instr(buf+1,"-d") != Nullch;
+	X
+	X			sw_list(buf+1);
+	X			if (minusd)
+	X			    cwd_check();
+	X			putchar('\n') FLUSH;
+	X#ifdef FINDNEWNG
+	X			if (doscan && maxngtodo)
+	X			    scanactive();
+	X#endif
+	X		    }
+	X		    ng = 0;		/* simulate ^ */
+	X		    retry = FALSE;
+	X		    break;
+	X		}
+	X#else
+	X		    notincl("o");
+	X		    goto reask_newsgroup;
+	X#endif
+	X		case '&':
+	X		    if (switcheroo()) /* get rest of command */
+	X			goto reinp_newsgroup;	/* if rubbed out, try something else */
+	X		    goto reask_newsgroup;
+	X		case 'l': {		/* list other newsgroups */
+	X		    if (!finish_command(TRUE)) /* get rest of command */
+	X			goto reinp_newsgroup;	/* if rubbed out, try something else */
+	X		    for (s = buf+1; *s == ' '; s++);
+	X		    			/* skip leading spaces */
+	X		    sprintf(cmd_buf,"%s '%s'",filexp(NEWSGROUPS),s);
+	X		    resetty();
+	X		    if (doshell(sh,cmd_buf))
+	X#ifdef VERBOSE
+	X			IF(verbose)
+	X			    fputs("    (Error from newsgroups program)\n",
+	X				stdout) FLUSH;
+	X			ELSE
+	X#endif
+	X#ifdef TERSE
+	X			    fputs("(Error)\n",stdout) FLUSH;
+	X#endif
+	X		    noecho();
+	X		    crmode();
+	X		    goto reask_newsgroup;
+	X		}
+	X		case '.': case '=':
+	X		case 'y': case 'Y': /* do normal thing */
+	X		    if (ng >= nextrcline) {
+	X			fputs("\nNot on a newsgroup.",stdout) FLUSH;
+	X			goto reask_newsgroup;
+	X		    }
+	X		    if (*buf == '=')
+	X			s = savestr("=");
+	X		    else if (*buf == '.') {	/* start command? */
+	X			if (!finish_command(FALSE)) /* get rest of command */
+	X			    goto reinp_newsgroup;
+	X			s = savestr(buf+1);
+	X					/* do_newsgroup will free it */
+	X		    }
+	X		    else
+	X			s = Nullch;
+	X		    if (toread[ng])
+	X			retry = TRUE;
+	X		    switch (do_newsgroup(s)) {
+	X		    case NG_ERROR:
+	X		    case NG_NORM:
+	X			ng++;
+	X			break;
+	X		    case NG_ASK:
+	X			dfltcmd = "ynq";
+	X			goto reask_newsgroup;
+	X		    case NG_MINUS:
+	X			ng = recent_ng;	/* recall previous newsgroup */
+	X			special = TRUE;	/* don't skip it if toread==0 */
+	X			break;
+	X		    }
+	X		    break;
+	X#ifdef STRICTCR
+	X		case '\n':
+	X		    fputs(badcr,stdout) FLUSH;
+	X		    goto reask_newsgroup;
+	X#endif
+	X		case 'v':
+	X		    printf("\n%s\n",rnid) FLUSH;
+	X		    goto reask_newsgroup;
+	X		default:
+	X		    printf("\n%s",hforhelp) FLUSH;
+	X		    settle_down();
+	X		    goto reask_newsgroup;
+	X		}
+	X	    }
+	X	} while (retry);
+	X    }
+	X
+	X    /* now write .newsrc back out */
+	X
+	X    write_rc();
+	X
+	X    if (oh_for_the_good_old_days)
+	X	get_old_rc();
+	X
+	X    finalize(0);			/* and exit */
+	X}
+	X
+	X/* set current newsgroup */
+	X
+	Xvoid
+	Xset_ngname(what)
+	Xchar *what;
+	X{
+	X    int len = strlen(what)+1;
+	X
+	X    growstr(&ngname,&ngnlen,len);
+	X    strcpy(ngname,what);
+	X    growstr(&ngdir,&ngdlen,len);
+	X    strcpy(ngdir,getngdir(ngname));
+	X}
+	X
+	Xstatic char *myngdir;
+	Xstatic int ngdirlen = 0;
+	X
+	Xchar *
+	Xgetngdir(ngnam)
+	Xchar *ngnam;
+	X{
+	X    register char *s;
+	X
+	X    growstr(&myngdir,&ngdirlen,strlen(ngnam)+1);
+	X    strcpy(myngdir,ngnam);
+	X    for (s = myngdir; *s; s++)
+	X	if (*s == '.')
+	X	    *s = '/';
+	X    return myngdir;
+	X}
+	X
+SHAR_EOF
+if test 12623 -ne "`wc -c < 'rn.c'`"
+then
+	echo shar: error transmitting "'rn.c'" '(should have been 12623 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'search.c'" '(13176 characters)'
+if test -f 'search.c'
+then
+	echo shar: will not over-write existing file "'search.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'search.c'
+	X/* $Header: search.c,v 4.3 85/05/01 11:50:16 lwall Exp $
+	X *
+	X * $Log:	search.c,v $
+	X * Revision 4.3  85/05/01  11:50:16  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X/* string search routines */
+	X 
+	X/*		Copyright (c) 1981,1980 James Gosling		*/
+	X 
+	X/* Modified Aug. 12, 1981 by Tom London to include regular expressions
+	X   as in ed.  RE stuff hacked over by jag to correct a few major problems,
+	X   mainly dealing with searching within the buffer rather than copying
+	X   each line to a separate array.  Newlines can now appear in RE's */
+	X
+	X/* Ripped to shreds and glued back together to make a search package,
+	X * July 6, 1984, by Larry Wall. (If it doesn't work, it's probably my fault.)
+	X * Changes include:
+	X *	Buffer, window, and mlisp stuff gone.
+	X *	Translation tables reduced to 1 table.
+	X *	Expression buffer is now dynamically allocated.
+	X *	Character classes now implemented with a bitmap.
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "INTERN.h"
+	X#include "search.h"
+	X
+	X#ifndef BITSPERBYTE
+	X#define BITSPERBYTE 8
+	X#endif
+	X
+	X#define BMAPSIZ (127 / BITSPERBYTE + 1)
+	X
+	X/* meta characters in the "compiled" form of a regular expression */
+	X#define	CBRA	2		/* \( -- begin bracket */
+	X#define	CCHR	4		/* a vanilla character */
+	X#define	CDOT	6		/* . -- match anything except a newline */
+	X#define	CCL	8		/* [...] -- character class */
+	X#define	NCCL	10		/* [^...] -- negated character class */
+	X#define	CDOL	12		/* $ -- matches the end of a line */
+	X#define	CEND	14		/* The end of the pattern */
+	X#define	CKET	16		/* \) -- close bracket */
+	X#define	CBACK	18		/* \N -- backreference to the Nth bracketed
+	X				   string */
+	X#define CIRC	20		/* ^ matches the beginning of a line */
+	X
+	X#define WORD	32		/* matches word character \w */
+	X#define NWORD	34		/* matches non-word characer \W */
+	X#define WBOUND	36		/* matches word boundary \b */
+	X#define NWBOUND	38		/* matches non-(word boundary) \B */
+	X 
+	X#define	STAR	01		/* * -- Kleene star, repeats the previous
+	X				   REas many times as possible; the value
+	X				   ORs with the other operator types */
+	X 
+	X#define ASCSIZ 0200
+	Xtypedef char	TRANSTABLE[ASCSIZ];
+	X
+	Xstatic	TRANSTABLE trans = {
+	X0000,0001,0002,0003,0004,0005,0006,0007,
+	X0010,0011,0012,0013,0014,0015,0016,0017,
+	X0020,0021,0022,0023,0024,0025,0026,0027,
+	X0030,0031,0032,0033,0034,0035,0036,0037,
+	X0040,0041,0042,0043,0044,0045,0046,0047,
+	X0050,0051,0052,0053,0054,0055,0056,0057,
+	X0060,0061,0062,0063,0064,0065,0066,0067,
+	X0070,0071,0072,0073,0074,0075,0076,0077,
+	X0100,0101,0102,0103,0104,0105,0106,0107,
+	X0110,0111,0112,0113,0114,0115,0116,0117,
+	X0120,0121,0122,0123,0124,0125,0126,0127,
+	X0130,0131,0132,0133,0134,0135,0136,0137,
+	X0140,0141,0142,0143,0144,0145,0146,0147,
+	X0150,0151,0152,0153,0154,0155,0156,0157,
+	X0160,0161,0162,0163,0164,0165,0166,0167,
+	X0170,0171,0172,0173,0174,0175,0176,0177,
+	X};
+	Xstatic bool folding = FALSE;
+	X
+	Xstatic int err;
+	Xstatic char *FirstCharacter;
+	X
+	Xvoid
+	Xsearch_init()
+	X{
+	X#ifdef UNDEF
+	X    register int    i;
+	X    
+	X    for (i = 0; i < ASCSIZ; i++)
+	X	trans[i] = i;
+	X#else
+	X    ;
+	X#endif
+	X}
+	X
+	Xvoid
+	Xinit_compex(compex)
+	Xregister COMPEX *compex;
+	X{
+	X    /* the following must start off zeroed */
+	X
+	X    compex->eblen = 0;
+	X    compex->brastr = Nullch;
+	X}
+	X
+	Xvoid
+	Xfree_compex(compex)
+	Xregister COMPEX *compex;
+	X{
+	X    if (compex->eblen) {
+	X	free(compex->expbuf);
+	X	compex->eblen = 0;
+	X    }
+	X    if (compex->brastr) {
+	X	free(compex->brastr);
+	X	compex->brastr = Nullch;
+	X    }
+	X}
+	X
+	Xstatic char *gbr_str = Nullch;
+	Xstatic int gbr_siz = 0;
+	X
+	Xchar *
+	Xgetbracket(compex,n)
+	Xregister COMPEX *compex;
+	Xint n;
+	X{
+	X    int length = compex->braelist[n] - compex->braslist[n];
+	X
+	X    if (!compex->nbra || n > compex->nbra || !compex->braelist[n] || length<0)
+	X	return nullstr;
+	X    growstr(&gbr_str, &gbr_siz, length+1);
+	X    safecpy(gbr_str, compex->braslist[n], length+1);
+	X    return gbr_str;
+	X}
+	X
+	Xvoid
+	Xcase_fold(which)
+	Xint which;
+	X{
+	X    register int i;
+	X
+	X    if (which != folding) {
+	X	if (which) {
+	X	    for (i = 'A'; i <= 'Z'; i++)
+	X		trans[i] = tolower(i);
+	X	}
+	X	else {
+	X	    for (i = 'A'; i <= 'Z'; i++)
+	X		trans[i] = i;
+	X	}
+	X	folding = which;
+	X    }
+	X}
+	X
+	X/* Compile the given regular expression into a [secret] internal format */
+	X
+	Xchar *
+	Xcompile (compex, strp, RE, fold)
+	Xregister COMPEX *compex;
+	Xregister char   *strp;
+	Xint RE;
+	Xint fold;
+	X{
+	X    register int c;
+	X    register char  *ep;
+	X    char   *lastep;
+	X    char    bracket[NBRA],
+	X	   *bracketp;
+	X    char **alt = compex->alternatives;
+	X    char *retmes = "Badly formed search string";
+	X 
+	X    case_fold(compex->do_folding = fold);
+	X    if (!compex->eblen) {
+	X	compex->expbuf = safemalloc(84);
+	X	compex->eblen = 80;
+	X    }
+	X    ep = compex->expbuf;		/* point at expression buffer */
+	X    *alt++ = ep;			/* first alternative starts here */
+	X    bracketp = bracket;			/* first bracket goes here */
+	X    if (*strp == 0) {			/* nothing to compile? */
+	X	if (*ep == 0)			/* nothing there yet? */
+	X	    return "Null search string";
+	X	return Nullch;			/* just keep old expression */
+	X    }
+	X    compex->nbra = 0;			/* no brackets yet */
+	X    lastep = 0;
+	X    for (;;) {
+	X	if (ep - compex->expbuf >= compex->eblen)
+	X	    grow_eb(compex);
+	X	c = *strp++;			/* fetch next char of pattern */
+	X	if (c == 0) {			/* end of pattern? */
+	X	    if (bracketp != bracket) {	/* balanced brackets? */
+	X#ifdef VERBOSE
+	X		retmes = "Unbalanced parens";
+	X#endif
+	X		goto cerror;
+	X	    }
+	X	    *ep++ = CEND;		/* terminate expression */
+	X	    *alt++ = 0;			/* terminal alternative list */
+	X	    /*
+	X	    compex->eblen = ep - compex->expbuf + 1;
+	X	    compex->expbuf = saferealloc(compex->expbuf,compex->eblen+4); */
+	X	    return Nullch;		/* return success */
+	X	}
+	X	if (c != '*')
+	X	    lastep = ep;
+	X	if (!RE) {			/* just a normal search string? */
+	X	    *ep++ = CCHR;		/* everything is a normal char */
+	X	    *ep++ = c;
+	X	}
+	X	else				/* it is a regular expression */
+	X	    switch (c) {
+	X 
+	X		case '\\':		/* meta something */
+	X		    switch (c = *strp++) {
+	X		    case '(':
+	X			if (compex->nbra >= NBRA) {
+	X#ifdef VERBOSE
+	X			    retmes = "Too many parens";
+	X#endif
+	X			    goto cerror;
+	X			}
+	X			*bracketp++ = ++compex->nbra;
+	X			*ep++ = CBRA;
+	X			*ep++ = compex->nbra;
+	X			break;
+	X		    case '|':
+	X			if (bracketp>bracket) {
+	X#ifdef VERBOSE
+	X			    retmes = "No \\| in parens";	/* Alas! */
+	X#endif
+	X			    goto cerror;
+	X			}
+	X			*ep++ = CEND;
+	X			*alt++ = ep;
+	X			break;
+	X		    case ')':
+	X			if (bracketp <= bracket) {
+	X#ifdef VERBOSE
+	X			    retmes = "Unmatched right paren";
+	X#endif
+	X			    goto cerror;
+	X			}
+	X			*ep++ = CKET;
+	X			*ep++ = *--bracketp;
+	X			break;
+	X		    case 'w':
+	X			*ep++ = WORD;
+	X			break;
+	X		    case 'W':
+	X			*ep++ = NWORD;
+	X			break;
+	X		    case 'b':
+	X			*ep++ = WBOUND;
+	X			break;
+	X		    case 'B':
+	X			*ep++ = NWBOUND;
+	X			break;
+	X		    case '0': case '1': case '2': case '3': case '4':
+	X		    case '5': case '6': case '7': case '8': case '9':
+	X			*ep++ = CBACK;
+	X			*ep++ = c - '0';
+	X			break;
+	X		    default:
+	X			*ep++ = CCHR;
+	X			if (c == '\0')
+	X			    goto cerror;
+	X			*ep++ = c;
+	X			break;
+	X		    }
+	X		    break;
+	X		case '.':
+	X		    *ep++ = CDOT;
+	X		    continue;
+	X 
+	X		case '*':
+	X		    if (lastep == 0 || *lastep == CBRA || *lastep == CKET
+	X			|| *lastep == CIRC
+	X			|| (*lastep&STAR)|| *lastep>NWORD)
+	X			goto defchar;
+	X		    *lastep |= STAR;
+	X		    continue;
+	X 
+	X		case '^':
+	X		    if (ep != compex->expbuf && ep[-1] != CEND)
+	X			goto defchar;
+	X		    *ep++ = CIRC;
+	X		    continue;
+	X 
+	X		case '$':
+	X		    if (*strp != 0 && (*strp != '\\' || strp[1] != '|'))
+	X			goto defchar;
+	X		    *ep++ = CDOL;
+	X		    continue;
+	X 
+	X		case '[': {		/* character class */
+	X		    register int i;
+	X		    
+	X		    if (ep - compex->expbuf >= compex->eblen - BMAPSIZ)
+	X			grow_eb(compex);	/* reserve bitmap */
+	X		    for (i = BMAPSIZ; i; --i)
+	X			ep[i] = 0;
+	X		    
+	X		    if ((c = *strp++) == '^') {
+	X			c = *strp++;
+	X			*ep++ = NCCL;	/* negated */
+	X		    }
+	X		    else
+	X			*ep++ = CCL;	/* normal */
+	X		    
+	X		    i = 0;		/* remember oldchar */
+	X		    do {
+	X			if (c == '\0') {
+	X#ifdef VERBOSE
+	X			    retmes = "Missing ]";
+	X#endif
+	X			    goto cerror;
+	X			}
+	X			if (*strp == '-' && *(++strp))
+	X			    i = *strp++;
+	X			else
+	X			    i = c;
+	X			while (c <= i) {
+	X			    ep[c / BITSPERBYTE] |= 1 << (c % BITSPERBYTE);
+	X			    if (fold && isalpha(c))
+	X				ep[(c ^ 32) / BITSPERBYTE] |=
+	X				    1 << ((c ^ 32) % BITSPERBYTE);
+	X					/* set the other bit too */
+	X			    c++;
+	X			}
+	X		    } while ((c = *strp++) != ']');
+	X		    ep += BMAPSIZ;
+	X		    continue;
+	X		}
+	X 
+	X	    defchar:
+	X		default:
+	X		    *ep++ = CCHR;
+	X		    *ep++ = c;
+	X	    }
+	X    }
+	Xcerror:
+	X    compex->expbuf[0] = 0;
+	X    compex->nbra = 0;
+	X    return retmes;
+	X}
+	X
+	Xvoid
+	Xgrow_eb(compex)
+	Xregister COMPEX *compex;
+	X{
+	X    compex->eblen += 80;
+	X    compex->expbuf = saferealloc(compex->expbuf, (MEM_SIZE)compex->eblen + 4);
+	X}
+	X
+	Xchar *
+	Xexecute (compex, addr)
+	Xregister COMPEX *compex;
+	Xchar *addr;
+	X{
+	X    register char *p1 = addr;
+	X    register char *trt = trans;
+	X    register int c;
+	X 
+	X    if (addr == Nullch)
+	X	return Nullch;
+	X    if (compex->nbra) {			/* any brackets? */
+	X	for (c = 0; c <= compex->nbra; c++)
+	X	    compex->braslist[c] = compex->braelist[c] = Nullch;
+	X	if (compex->brastr)
+	X	    free(compex->brastr);
+	X	compex->brastr = savestr(p1);	/* in case p1 is not static */
+	X	p1 = compex->brastr;		/* ! */
+	X    }
+	X    case_fold(compex->do_folding);	/* make sure table is correct */
+	X    FirstCharacter = p1;		/* for ^ tests */
+	X    if (compex->expbuf[0] == CCHR && !compex->alternatives[1]) {
+	X	c = trt[compex->expbuf[1]];	/* fast check for first character */
+	X	do {
+	X	    if (trt[*p1] == c && advance (compex, p1, compex->expbuf))
+	X		return p1;
+	X	    p1++;
+	X	} while (*p1 && !err);
+	X	return Nullch;
+	X    }
+	X    else {			/* regular algorithm */
+	X	do {
+	X	    register char **alt = compex->alternatives;
+	X	    while (*alt) {
+	X		if (advance (compex, p1, *alt++))
+	X		    return p1;
+	X	    }
+	X	    p1++;
+	X	} while (*p1 && !err);
+	X	return Nullch;
+	X    }
+	X}
+	X 
+	X/* advance the match of the regular expression starting at ep along the
+	X   string lp, simulates an NDFSA */
+	Xbool
+	Xadvance (compex, lp, ep)
+	Xregister COMPEX *compex;
+	Xregister char *ep;
+	Xregister char *lp;
+	X{
+	X    register char *curlp;
+	X    register char *trt = trans;
+	X    register int i;
+	X 
+	X    while ((*ep & STAR) || *lp || *ep == CIRC || *ep == CKET)
+	X	switch (*ep++) {
+	X 
+	X	    case CCHR:
+	X		if (trt[*ep++] != trt[*lp]) return FALSE;
+	X		lp++;
+	X		continue;
+	X 
+	X	    case CDOT:
+	X		if (*lp == '\n') return FALSE;
+	X		lp++;
+	X		continue;
+	X 
+	X	    case CDOL:
+	X		if (!*lp || *lp == '\n')
+	X		    continue;
+	X		return FALSE;
+	X 
+	X	    case CIRC:
+	X		if (lp == FirstCharacter || lp[-1]=='\n')
+	X		    continue;
+	X		return FALSE;
+	X 
+	X	    case WORD:
+	X		if (isalnum(*lp)) {
+	X		    lp++;
+	X		    continue;
+	X		}
+	X		return FALSE;
+	X 
+	X	    case NWORD:
+	X		if (!isalnum(*lp)) {
+	X		    lp++;
+	X		    continue;
+	X		}
+	X		return FALSE;
+	X 
+	X	    case WBOUND:
+	X		if ((lp == FirstCharacter || !isalnum(lp[-1])) !=
+	X			(!*lp || !isalnum(*lp)) )
+	X		    continue;
+	X		return FALSE;
+	X 
+	X	    case NWBOUND:
+	X		if ((lp == FirstCharacter || !isalnum(lp[-1])) ==
+	X			(!*lp || !isalnum(*lp)))
+	X		    continue;
+	X		return FALSE;
+	X 
+	X	    case CEND:
+	X		return TRUE;
+	X 
+	X	    case CCL:
+	X		if (cclass (ep, *lp, 1)) {
+	X		    ep += BMAPSIZ;
+	X		    lp++;
+	X		    continue;
+	X		}
+	X		return FALSE;
+	X 
+	X	    case NCCL:
+	X		if (cclass (ep, *lp, 0)) {
+	X		    ep += BMAPSIZ;
+	X		    lp++;
+	X		    continue;
+	X		}
+	X		return FALSE;
+	X 
+	X	    case CBRA:
+	X		compex->braslist[*ep++] = lp;
+	X		continue;
+	X 
+	X	    case CKET:
+	X		i = *ep++;
+	X		compex->braelist[i] = lp;
+	X		compex->braelist[0] = lp;
+	X		compex->braslist[0] = compex->braslist[i];
+	X		continue;
+	X 
+	X	    case CBACK:
+	X		if (compex->braelist[i = *ep++] == 0) {
+	X		    fputs("bad braces\n",stdout) FLUSH;
+	X		    err = TRUE;
+	X		    return FALSE;
+	X		}
+	X		if (backref (compex, i, lp)) {
+	X		    lp += compex->braelist[i] - compex->braslist[i];
+	X		    continue;
+	X		}
+	X		return FALSE;
+	X 
+	X	    case CBACK | STAR:
+	X		if (compex->braelist[i = *ep++] == 0) {
+	X		    fputs("bad braces\n",stdout) FLUSH;
+	X		    err = TRUE;
+	X		    return FALSE;
+	X		}
+	X		curlp = lp;
+	X		while (backref (compex, i, lp)) {
+	X		    lp += compex->braelist[i] - compex->braslist[i];
+	X		}
+	X		while (lp >= curlp) {
+	X		    if (advance (compex, lp, ep))
+	X			return TRUE;
+	X		    lp -= compex->braelist[i] - compex->braslist[i];
+	X		}
+	X		continue;
+	X 
+	X	    case CDOT | STAR:
+	X		curlp = lp;
+	X		while (*lp++ && lp[-1] != '\n');
+	X		goto star;
+	X 
+	X	    case WORD | STAR:
+	X		curlp = lp;
+	X		while (*lp++ && isalnum(lp[-1]));
+	X		goto star;
+	X 
+	X	    case NWORD | STAR:
+	X		curlp = lp;
+	X		while (*lp++ && !isalnum(lp[-1]));
+	X		goto star;
+	X 
+	X	    case CCHR | STAR:
+	X		curlp = lp;
+	X		while (*lp++ && trt[lp[-1]] == trt[*ep]);
+	X		ep++;
+	X		goto star;
+	X 
+	X	    case CCL | STAR:
+	X	    case NCCL | STAR:
+	X		curlp = lp;
+	X		while (*lp++ && cclass (ep, lp[-1], ep[-1] == (CCL | STAR)));
+	X		ep += BMAPSIZ;
+	X		goto star;
+	X 
+	X	star:
+	X		do {
+	X		    lp--;
+	X		    if (advance (compex, lp, ep))
+	X			return TRUE;
+	X		} while (lp > curlp);
+	X		return FALSE;
+	X 
+	X	    default:
+	X		fputs("Badly compiled pattern\n",stdout) FLUSH;
+	X		err = TRUE;
+	X		return -1;
+	X	}
+	X	if (*ep == CEND || *ep == CDOL) {
+	X	    return TRUE;
+	X    }
+	X    return FALSE;
+	X}
+	X 
+	Xbool
+	Xbackref (compex, i, lp)
+	Xregister COMPEX *compex;
+	Xregister int i;
+	Xregister char *lp;
+	X{
+	X    register char *bp;
+	X 
+	X    bp = compex->braslist[i];
+	X    while (*lp && *bp == *lp) {
+	X	bp++;
+	X	lp++;
+	X	if (bp >= compex->braelist[i])
+	X	    return TRUE;
+	X    }
+	X    return FALSE;
+	X}
+	X
+	Xbool
+	Xcclass (set, c, af)
+	Xregister char  *set;
+	Xregister int c;
+	X{
+	X    c &= 0177;
+	X#if BITSPERBYTE == 8
+	X    if (set[c >> 3] & 1 << (c & 7))
+	X#else
+	X    if (set[c / BITSPERBYTE] & 1 << (c % BITSPERBYTE))
+	X#endif
+	X	return af;
+	X    return !af;
+	X}
+SHAR_EOF
+if test 13176 -ne "`wc -c < 'search.c'`"
+then
+	echo shar: error transmitting "'search.c'" '(should have been 13176 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'sw.c'" '(10008 characters)'
+if test -f 'sw.c'
+then
+	echo shar: will not over-write existing file "'sw.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'sw.c'
+	X/* $Header: sw.c,v 4.3.1.2 85/05/21 13:36:23 lwall Exp $
+	X *
+	X * $Log:	sw.c,v $
+	X * Revision 4.3.1.2  85/05/21  13:36:23  lwall
+	X * Sped up "rn -c" by not doing unnecessary initialization.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:40:38  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:50:54  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "head.h"
+	X#include "only.h"
+	X#include "term.h"
+	X#include "ng.h"
+	X#include "intrp.h"
+	X#include "INTERN.h"
+	X#include "sw.h"
+	X
+	Xvoid
+	Xsw_init(argc,argv,tcbufptr)
+	Xint argc;
+	Xchar *argv[];
+	Xchar **tcbufptr;
+	X{
+	X    register int i;
+	X
+	X    if (argc >= 2 && strEQ(argv[1],"-c"))
+	X	checkflag=TRUE;			/* so we can optimize for -c */
+	X    interp(*tcbufptr,1024,GLOBINIT);
+	X    sw_file(tcbufptr,FALSE);
+	X    safecpy(*tcbufptr,getenv("RNINIT"),1024);
+	X    if (**tcbufptr) {
+	X	if (**tcbufptr == '/') {
+	X	    sw_file(tcbufptr,TRUE);
+	X	}
+	X	else
+	X	    sw_list(*tcbufptr);
+	X    }
+	X
+	X    for (i = 1; i < argc; i++)
+	X	decode_switch(argv[i]);
+	X}
+	X
+	Xvoid
+	Xsw_file(tcbufptr,bleat)
+	Xchar **tcbufptr;
+	Xbool bleat;
+	X{
+	X    int initfd = open(*tcbufptr,0);
+	X	
+	X    if (initfd >= 0) {
+	X	fstat(initfd,&filestat);
+	X	if (filestat.st_size > 1024)
+	X	    *tcbufptr = saferealloc(*tcbufptr,(MEM_SIZE)filestat.st_size);
+	X	if (filestat.st_size) {
+	X	    read(initfd,*tcbufptr,(int)filestat.st_size);
+	X	    (*tcbufptr)[filestat.st_size-1] = '\0';
+	X				/* wipe out last newline */
+	X	    sw_list(*tcbufptr);
+	X	}
+	X	else
+	X	    **tcbufptr = '\0';
+	X	close(initfd);
+	X    }
+	X    else {
+	X	if (bleat)
+	X	    printf(cantopen,*tcbufptr) FLUSH;
+	X	**tcbufptr = '\0';
+	X    }
+	X}
+	X
+	X/* decode a list of space separated switches */
+	X
+	Xvoid
+	Xsw_list(swlist)
+	Xchar *swlist;
+	X{
+	X    char *tmplist = safemalloc((MEM_SIZE) strlen(swlist) + 2);
+	X					/* semi-automatic string */
+	X    register char *p, inquote = 0;
+	X
+	X    strcpy(tmplist,swlist);
+	X    for (p=tmplist; isspace(*p); p++) ;	/* skip any initial spaces */
+	X    while (*p) {			/* "String, or nothing" */
+	X	if (!inquote && isspace(*p)) {	/* word delimiter? */
+	X	    *p++ = '\0';		/* chop here */
+	X	    while (isspace(*p))		/* these will be ignored later */
+	X		p++;
+	X	}
+	X	else if (inquote == *p) {
+	X	    strcpy(p,p+1);		/* delete trailing quote */
+	X	    inquote = 0;		/* no longer quoting */
+	X	}
+	X	else if (!inquote && *p == '"' || *p == '\'') {
+	X					/* OK, I know when I am not wanted */
+	X	    inquote = *p;		/* remember single or double */
+	X	    strcpy(p,p+1);		/* delete the quote */
+	X	}				/* (crude, but effective) */
+	X	else if (*p == '\\') {		/* quoted something? */
+	X	    if (p[1] == '\n')		/* newline? */
+	X		strcpy(p,p+2);		/* "I didn't see anything" */
+	X	    else {
+	X		strcpy(p,p+1);		/* delete the backwhack */
+	X		p++;			/* leave the whatever alone */
+	X	    }
+	X	}
+	X	else
+	X	    p++;			/* normal char, leave it alone */
+	X    }
+	X    *++p = '\0';			/* put an extra null on the end */
+	X    if (inquote)
+	X	printf("Unmatched %c in switch\n",inquote) FLUSH;
+	X    for (p = tmplist; *p; /* p += strlen(p)+1 */ ) {
+	X	decode_switch(p);
+	X	while (*p++) ;			/* point at null + 1 */
+	X    }
+	X    free(tmplist);			/* this oughta be in Ada */
+	X}
+	X
+	X/* decode a single switch */
+	X
+	Xvoid
+	Xdecode_switch(s)
+	Xregister char *s;
+	X{
+	X    while (isspace(*s))			/* ignore leading spaces */
+	X	s++;
+	X#ifdef DEBUGGING
+	X    if (debug)
+	X	printf("Switch: %s\n",s) FLUSH;
+	X#endif
+	X    if (*s != '-' && *s != '+') {	/* newsgroup pattern */
+	X	setngtodo(s);
+	X    }
+	X    else {				/* normal switch */
+	X	bool upordown = *s == '-' ? TRUE : FALSE;
+	X	char tmpbuf[LBUFLEN];
+	X
+	X	s++;
+	X	switch (*s) {
+	X#ifdef TERMMOD
+	X	case '=': {
+	X	    char *beg = s+1;
+	X
+	X	    while (*s && *s != '-' && *s != '+') s++;
+	X	    cpytill(tmpbuf,beg,*s);
+	X	    if (upordown ? strEQ(getenv("TERM"),tmpbuf)
+	X	    		 : strNE(getenv("TERM"),tmpbuf) ) {
+	X		decode_switch(s);
+	X	    }
+	X	    break;
+	X	}
+	X#endif
+	X#ifdef BAUDMOD
+	X	case '0': case '1': case '2': case '3': case '4':
+	X	case '5': case '6': case '7': case '8': case '9':
+	X	    if (upordown ? (just_a_sec*10 <= atoi(s))
+	X	    		 : (just_a_sec*10 >= atoi(s)) ) {
+	X		while (isdigit(*s)) s++;
+	X		decode_switch(s);
+	X	    }
+	X	    break;
+	X#endif
+	X	case '/':
+	X	    if (checkflag)
+	X		break;
+	X#ifdef SETENV
+	X	    setenv("SAVEDIR",  upordown ? "%p/%c" : "%p" );
+	X	    setenv("SAVENAME", upordown ? "%a"    : "%^C");
+	X#else
+	X	    notincl("-/");
+	X#endif
+	X	    break;
+	X	case 'c':
+	X	    checkflag = upordown;
+	X	    break;
+	X	case 'C':
+	X	    s++;
+	X	    if (*s == '=') s++;
+	X	    docheckwhen = atoi(s);
+	X	    break;
+	X	case 'd': {
+	X	    if (checkflag)
+	X		break;
+	X	    s++;
+	X	    if (*s == '=') s++;
+	X	    if (cwd) {
+	X		chdir(cwd);
+	X		free(cwd);
+	X	    }
+	X	    cwd = savestr(s);
+	X	    break;
+	X	}
+	X#ifdef DEBUGGING
+	X	case 'D':
+	X	    s++;
+	X	    if (*s == '=') s++;
+	X	    if (*s)
+	X		if (upordown)
+	X		    debug |= atoi(s);
+	X		else
+	X		    debug &= ~atoi(s);
+	X	    else
+	X		if (upordown)
+	X		    debug |= 1;
+	X		else
+	X		    debug = 0;
+	X	    break;
+	X#endif
+	X	case 'e':
+	X	    erase_screen = upordown;
+	X	    break;
+	X	case 'E':
+	X#ifdef SETENV
+	X	    s++;
+	X	    if (*s == '=')
+	X		s++;
+	X	    strcpy(tmpbuf,s);
+	X	    s = index(tmpbuf,'=');
+	X	    if (s) {
+	X		*s++ = '\0';
+	X		setenv(tmpbuf,s);
+	X	    }
+	X	    else
+	X		setenv(tmpbuf,nullstr);
+	X#else
+	X	    notincl("-E");
+	X#endif
+	X	    break;
+	X	case 'F':
+	X	    s++;
+	X	    indstr = savestr(s);
+	X	    break;
+	X#ifdef INNERSEARCH
+	X	case 'g':
+	X	    gline = atoi(s+1)-1;
+	X	    break;
+	X#endif
+	X	case 'H':
+	X	case 'h': {
+	X	    register int len, i;
+	X	    char *t;
+	X	    int flag = (*s == 'h' ? HT_HIDE : HT_MAGIC);
+	X	    
+	X	    if (checkflag)
+	X		break;
+	X	    s++;
+	X	    len = strlen(s);
+	X	    for (t=s; *t; t++)
+	X		if (isupper(*t))
+	X		   *t = tolower(*t);
+	X	    for (i=HEAD_FIRST; i<HEAD_LAST; i++)
+	X		if (!len || strnEQ(s,htype[i].ht_name,len))
+	X		    if (upordown)
+	X			htype[i].ht_flags |= flag;
+	X		    else
+	X			htype[i].ht_flags &= ~flag;
+	X	    break;
+	X	}
+	X	case 'i':
+	X	    s++;
+	X	    if (*s == '=') s++;
+	X	    initlines = atoi(s);
+	X	    break;
+	X	case 'l':
+	X	    muck_up_clear = upordown;
+	X	    break;
+	X	case 'L':
+	X#ifdef CLEAREOL
+	X	    can_home_clear = upordown;
+	X#else
+	X	    notincl("-L");
+	X#endif
+	X	    break;
+	X	case 'M':
+	X	    mbox_always = upordown;
+	X	    break;
+	X	case 'm':
+	X	    s++;
+	X	    if (*s == '=') s++;
+	X	    if (!upordown)
+	X		marking = NOMARKING;
+	X	    else if (*s == 'u')
+	X		marking = UNDERLINE;
+	X	    else {
+	X		marking = STANDOUT;
+	X	    }
+	X	    break;
+	X	case 'N':
+	X	    norm_always = upordown;
+	X	    break;
+	X#ifdef VERBOSE
+	X	case 'n':
+	X	    fputs("This isn't readnews.  Don't use -n.\n\n",stdout) FLUSH;
+	X	    break;
+	X#endif
+	X	case 'r':
+	X	    findlast = upordown;
+	X	    break;
+	X	case 's':
+	X	    s++;
+	X	    if (*s == '=') s++;
+	X	    if (*s) {
+	X		countdown = atoi(s);
+	X		suppress_cn = FALSE;
+	X	    }
+	X	    else {
+	X		if (!upordown)
+	X		    countdown = 5;
+	X		suppress_cn = upordown;
+	X	    }
+	X	    break;
+	X	case 'S':
+	X#ifdef ARTSEARCH
+	X	    s++;
+	X	    if (*s == '=') s++;
+	X	    if (*s)
+	X		scanon = atoi(s);
+	X	    else
+	X		scanon = upordown*3;
+	X#else
+	X	    notincl("-S");
+	X#endif
+	X	    break;
+	X	case 't':
+	X#ifdef VERBOSE
+	X#ifdef TERSE
+	X	    verbose = !upordown;
+	X#else
+	X	    notincl("+t");
+	X#endif
+	X#else
+	X	    notincl("+t");
+	X#endif
+	X	    break;
+	X	case 'T':
+	X	    typeahead = upordown;
+	X	    break;
+	X	case 'v':
+	X#ifdef VERIFY
+	X	    verify = upordown;
+	X#else
+	X	    notincl("-v");
+	X#endif
+	X	    break;
+	X	default:
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("\nIgnoring unrecognized switch: -%c\n", *s) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("\nIgnoring -%c\n", *s) FLUSH;
+	X#endif
+	X	    break;
+	X	}
+	X    }
+	X}
+	X
+	X/* print current switch values */
+	X
+	Xvoid
+	Xpr_switches()
+	X{
+	X    static char mp[2] = {'+','-'};
+	X    register int i;
+	X    
+	X    fputs("\nCurrent switch settings:\n",stdout);
+	X    printf("%c/ ", mp[strEQ(getval("SAVEDIR",SAVEDIR),"%p/%c")]);
+	X    printf("%cc ", mp[checkflag]);
+	X    printf("-C%d ", docheckwhen);
+	X    printf("-d%s ", cwd);
+	X#ifdef DEBUGGING
+	X    if (debug)
+	X	printf("-D%d ", debug);
+	X#endif
+	X    printf("%ce ", mp[erase_screen]);
+	X    printf("-F\"%s\" ", indstr);
+	X#ifdef INNERSEARCH
+	X    printf("-g%d", gline);
+	X#endif
+	X    putchar('\n');
+	X#ifdef VERBOSE
+	X    if (verbose) {
+	X	for (i=HEAD_FIRST; i<HEAD_LAST; i++)
+	X	    printf("%ch%s%c",
+	X		mp[htype[i].ht_flags & HT_HIDE], htype[i].ht_name,
+	X		(! (i % 5) ? '\n' : ' ') );
+	X    }
+	X#endif
+	X    printf("-i%d ", initlines);
+	X    printf("%cl ", mp[muck_up_clear]);
+	X#ifdef CLEAREOL
+	X    printf("%cL ", mp[can_home_clear]);
+	X#endif CLEAREOL
+	X    if (marking)
+	X	printf("-m%c ",marking==UNDERLINE?'u':'s');
+	X    else
+	X	printf("+m ");
+	X    printf("%cM ", mp[mbox_always]);
+	X    printf("%cN ", mp[norm_always]);
+	X    printf("%cr ", mp[findlast]);
+	X    if (countdown)
+	X	printf("-s%d ", countdown);
+	X    else
+	X	printf("%cs ", mp[suppress_cn]);
+	X#ifdef ARTSEARCH
+	X    if (scanon)
+	X	printf("-S%d ",scanon);
+	X    else
+	X	printf("+S ");
+	X#ifdef VERBOSE
+	X#ifdef TERSE
+	X    printf("%ct ", mp[!verbose]);
+	X#endif
+	X#endif
+	X    printf("%cT ", mp[typeahead]);
+	X#ifdef VERIFY
+	X    printf("%cv ", mp[verify]);
+	X#endif
+	X#endif
+	X    fputs("\n\n",stdout) FLUSH;
+	X#ifdef ONLY
+	X    if (maxngtodo) {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    fputs("Current restriction:",stdout);
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs("Only:",stdout);
+	X#endif
+	X	for (i=0; i<maxngtodo; i++)
+	X	    printf(" %s",ngtodo[i]);
+	X	fputs("\n\n",stdout) FLUSH;
+	X    }
+	X#ifdef VERBOSE
+	X    else if (verbose)
+	X	fputs("No restriction.\n\n",stdout) FLUSH;
+	X#endif
+	X#endif
+	X}
+	X
+	Xvoid
+	Xcwd_check()
+	X{
+	X    char tmpbuf[LBUFLEN];
+	X
+	X    if (!cwd)
+	X	cwd = savestr(filexp("~/News"));
+	X    strcpy(tmpbuf,cwd);
+	X    if (chdir(cwd)) {
+	X	safecpy(tmpbuf,filexp(cwd),sizeof tmpbuf);
+	X	if (makedir(tmpbuf,MD_DIR) < 0 || chdir(tmpbuf) < 0) {
+	X	    interp(cmd_buf, (sizeof cmd_buf), "%~/News");
+	X	    if (makedir(cmd_buf,MD_DIR) < 0)
+	X		strcpy(tmpbuf,homedir);
+	X	    else
+	X		strcpy(tmpbuf,cmd_buf);
+	X	    chdir(tmpbuf);
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("\
+	XCannot make directory %s--\n\
+	X	articles will be saved to %s\n\
+	X\n\
+	X",cwd,tmpbuf) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("\
+	XCan't make %s--\n\
+	X	using %s\n\
+	X\n\
+	X",cwd,tmpbuf) FLUSH;
+	X#endif
+	X	}
+	X    }
+	X    free(cwd);
+	X    getwd(tmpbuf);
+	X    if (eaccess(tmpbuf,2)) {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    printf("\
+	XCurrent directory %s is not writeable--\n\
+	X	articles will be saved to home directory\n\n\
+	X",tmpbuf) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    printf("%s not writeable--using ~\n\n",tmpbuf) FLUSH;
+	X#endif
+	X	strcpy(tmpbuf,homedir);
+	X    }
+	X    cwd = savestr(tmpbuf);
+	X}
+SHAR_EOF
+if test 10008 -ne "`wc -c < 'sw.c'`"
+then
+	echo shar: error transmitting "'sw.c'" '(should have been 10008 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'term.c'" '(21351 characters)'
+if test -f 'term.c'
+then
+	echo shar: will not over-write existing file "'term.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'term.c'
+	X/* $Header: term.c,v 4.3.1.3 85/09/10 11:05:23 lwall Exp $
+	X *
+	X * $Log:	term.c,v $
+	X * Revision 4.3.1.3  85/09/10  11:05:23  lwall
+	X * Improved %m in in_char().
+	X * 
+	X * Revision 4.3.1.2  85/05/16  16:45:35  lwall
+	X * Forced \r to \n on input.
+	X * Fix for terminfo braindamage regarding bc emulation.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:41:03  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:51:10  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "final.h"
+	X#include "help.h"
+	X#include "cheat.h"
+	X#include "intrp.h"
+	X#include "INTERN.h"
+	X#include "term.h"
+	X
+	Xchar ERASECH;		/* rubout character */
+	Xchar KILLCH;		/* line delete character */
+	Xchar tcarea[TCSIZE];	/* area for "compiled" termcap strings */
+	X
+	X/* guarantee capability pointer != Nullch */
+	X/* (I believe terminfo will ignore the &tmpaddr argument.) */
+	X
+	X#define Tgetstr(key) ((tmpstr = tgetstr(key,&tmpaddr)) ? tmpstr : nullstr)
+	X
+	X#ifdef PUSHBACK
+	Xstruct keymap {
+	X    char km_type[128];
+	X    union km_union {
+	X	struct keymap *km_km;
+	X	char *km_str;
+	X    } km_ptr[128];
+	X};
+	X
+	X#define KM_NOTHIN 0
+	X#define KM_STRING 1
+	X#define KM_KEYMAP 2
+	X#define KM_BOGUS 3
+	X
+	X#define KM_TMASK 3
+	X#define KM_GSHIFT 4
+	X#define KM_GMASK 7
+	X
+	Xtypedef struct keymap KEYMAP;
+	X
+	XKEYMAP *topmap INIT(Null(KEYMAP*));
+	X
+	Xvoid mac_init();
+	XKEYMAP *newkeymap();
+	Xvoid show_keymap();
+	Xvoid pushstring();
+	X#endif
+	X
+	X/* terminal initialization */
+	X
+	Xvoid
+	Xterm_init()
+	X{
+	X    savetty();				/* remember current tty state */
+	X
+	X#ifdef TERMIO
+	X    ospeed = _tty.c_cflag & CBAUD;	/* for tputs() */
+	X    ERASECH = _tty.c_cc[VERASE];	/* for finish_command() */
+	X    KILLCH = _tty.c_cc[VKILL];		/* for finish_command() */
+	X#else
+	X    ospeed = _tty.sg_ospeed;		/* for tputs() */
+	X    ERASECH = _tty.sg_erase;		/* for finish_command() */
+	X    KILLCH = _tty.sg_kill;		/* for finish_command() */
+	X#endif
+	X
+	X    /* The following could be a table but I can't be sure that there isn't */
+	X    /* some degree of sparsity out there in the world. */
+	X
+	X    switch (ospeed) {			/* 1 second of padding */
+	X#ifdef BEXTA
+	X        case BEXTA:  just_a_sec = 1920; break;
+	X#else
+	X#ifdef B19200
+	X        case B19200: just_a_sec = 1920; break;
+	X#endif
+	X#endif
+	X        case B9600:  just_a_sec =  960; break;
+	X        case B4800:  just_a_sec =  480; break;
+	X        case B2400:  just_a_sec =  240; break;
+	X        case B1800:  just_a_sec =  180; break;
+	X        case B1200:  just_a_sec =  120; break;
+	X        case B600:   just_a_sec =   60; break;
+	X	case B300:   just_a_sec =   30; break;
+	X	/* do I really have to type the rest of this??? */
+	X        case B200:   just_a_sec =   20; break;
+	X        case B150:   just_a_sec =   15; break;
+	X        case B134:   just_a_sec =   13; break;
+	X        case B110:   just_a_sec =   11; break;
+	X        case B75:    just_a_sec =    8; break;
+	X        case B50:    just_a_sec =    5; break;
+	X        default:     just_a_sec =  960; break;
+	X					/* if we are running detached I */
+	X    }					/*  don't want to know about it! */
+	X}
+	X
+	X/* set terminal characteristics */
+	X
+	Xvoid
+	Xterm_set(tcbuf)
+	Xchar *tcbuf;		/* temp area for "uncompiled" termcap entry */
+	X{
+	X    char *tmpaddr;			/* must not be register */
+	X    register char *tmpstr;
+	X    char *tgetstr();
+	X    char *s;
+	X    int status;
+	X
+	X#ifdef PENDING
+	X#ifndef FIONREAD
+	X    /* do no delay reads on something that always gets closed on exit */
+	X
+	X    devtty = open("/dev/tty",0);
+	X    if (devtty < 0) {
+	X	printf(cantopen,"/dev/tty") FLUSH;
+	X	finalize(1);
+	X    }
+	X    fcntl(devtty,F_SETFL,O_NDELAY);
+	X#endif
+	X#endif
+	X    
+	X    /* get all that good termcap stuff */
+	X
+	X#ifdef HAVETERMLIB
+	X    status = tgetent(tcbuf,getenv("TERM"));	/* get termcap entry */
+	X    if (status < 1) {
+	X#ifdef VERBOSE
+	X	printf("No termcap %s found.\n", status ? "file" : "entry") FLUSH;
+	X#else
+	X	fputs("Termcap botch\n",stdout) FLUSH
+	X#endif
+	X	finalize(1);
+	X    }
+	X    tmpaddr = tcarea;			/* set up strange tgetstr pointer */
+	X    s = Tgetstr("pc");			/* get pad character */
+	X    PC = *s;				/* get it where tputs wants it */
+	X    if (!tgetflag("bs")) {		/* is backspace not used? */
+	X	BC = Tgetstr("bc");		/* find out what is */
+	X	if (BC == nullstr) 		/* terminfo grok's 'bs' but not 'bc' */
+	X	    BC = Tgetstr("le");
+	X    } else
+	X	BC = "\b";			/* make a backspace handy */
+	X    UP = Tgetstr("up");			/* move up a line */
+	X    if (!*UP)				/* no UP string? */
+	X	marking = 0;			/* disable any marking */
+	X    if (muck_up_clear)			/* this is for weird HPs */
+	X	CL = "\n\n\n\n";
+	X    else
+	X	CL = Tgetstr("cl");		/* get clear string */
+	X    CE = Tgetstr("ce");			/* clear to end of line string */
+	X#ifdef CLEAREOL
+	X    CM = Tgetstr("cm");			/* cursor motion - PWP */
+	X    HO = Tgetstr("ho");			/* home cursor if no CM - PWP */
+	X    CD = Tgetstr("cd");			/* clear to end of display - PWP */
+	X    if (!*CE || !*CD || (!*CM && !*HO))	/* can we CE, CD, and home? */
+	X	can_home_clear = FALSE;		/*  no, so disable use of clear eol */
+	X#endif CLEAREOL
+	X    SO = Tgetstr("so");			/* begin standout */
+	X    SE = Tgetstr("se");			/* end standout */
+	X    if ((SG = tgetnum("sg"))<0)
+	X	SG = 0;				/* blanks left by SG, SE */
+	X    US = Tgetstr("us");			/* start underline */
+	X    UE = Tgetstr("ue");			/* end underline */
+	X    if ((UG = tgetnum("ug"))<0)
+	X	UG = 0;				/* blanks left by US, UE */
+	X    if (*US)
+	X	UC = nullstr;			/* UC must not be NULL */
+	X    else
+	X	UC = Tgetstr("uc");		/* underline a character */
+	X    if (!*US && !*UC) {			/* no underline mode? */
+	X	US = SO;			/* substitute standout mode */
+	X	UE = SE;
+	X	UG = SG;
+	X    }
+	X    LINES = tgetnum("li");		/* lines per page */
+	X    COLS = tgetnum("co");		/* columns on page */
+	X    AM = tgetflag("am");		/* terminal wraps automatically? */
+	X    XN = tgetflag("xn");		/* then eats next newline? */
+	X    VB = Tgetstr("vb");
+	X    if (!*VB)
+	X	VB = "\007";
+	X    CR = Tgetstr("cr");
+	X    if (!*CR) {
+	X	if (tgetflag("nc") && *UP) {
+	X	    CR = safemalloc((MEM_SIZE)strlen(UP)+2);
+	X	    sprintf(CR,"%s\r",UP);
+	X	}
+	X	else
+	X	    CR = "\r";
+	X    }
+	X#else
+	X    ??????				/* Roll your own... */
+	X#endif
+	X    if (LINES > 0) {			/* is this a crt? */
+	X	if (!initlines)			/* no -i? */
+	X	    if (ospeed >= B9600)	/* whole page at >= 9600 baud */
+	X		initlines = LINES;
+	X	    else if (ospeed >= B4800)	/* 16 lines at 4800 */
+	X		initlines = 16;
+	X	    else			/* otherwise just header */
+	X		initlines = 8;
+	X    }
+	X    else {				/* not a crt */
+	X	LINES = 30000;			/* so don't page */
+	X	CL = "\n\n";			/* put a couple of lines between */
+	X	if (!initlines)			/* make initlines reasonable */
+	X	    initlines = 8;
+	X    }
+	X    if (COLS <= 0)
+	X	COLS = 80;
+	X    noecho();				/* turn off echo */
+	X    crmode();				/* enter cbreak mode */
+	X
+	X#ifdef PUSHBACK
+	X    mac_init(tcbuf);
+	X#endif
+	X}
+	X
+	X#ifdef PUSHBACK
+	Xvoid
+	Xmac_init(tcbuf)
+	Xchar *tcbuf;
+	X{
+	X    char tmpbuf[1024];
+	X
+	X    tmpfp = fopen(filexp(getval("RNMACRO",RNMACRO)),"r");
+	X    if (tmpfp != Nullfp) {
+	X	while (fgets(tcbuf,1024,tmpfp) != Nullch) {
+	X	    mac_line(tcbuf,tmpbuf,(sizeof tmpbuf));
+	X	}
+	X	fclose(tmpfp);
+	X    }
+	X}
+	X
+	Xvoid
+	Xmac_line(line,tmpbuf,tbsize)
+	Xchar *line;
+	Xchar *tmpbuf;
+	Xint tbsize;
+	X{
+	X    register char *s, *m;
+	X    register KEYMAP *curmap;
+	X    register int ch;
+	X    register int garbage = 0;
+	X    static char override[] = "\nkeymap overrides string\n";
+	X
+	X    if (topmap == Null(KEYMAP*))
+	X	topmap = newkeymap();
+	X    if (*line == '#' || *line == '\n')
+	X	return;
+	X    if (line[ch = strlen(line)-1] == '\n')
+	X	line[ch] = '\0';
+	X    m = dointerp(tmpbuf,tbsize,line," \t");
+	X    if (!*m)
+	X	return;
+	X    while (*m == ' ' || *m == '\t') m++;
+	X    for (s=tmpbuf,curmap=topmap; *s; s++) {
+	X	ch = *s & 0177;
+	X	if (s[1] == '+' && isdigit(s[2])) {
+	X	    s += 2;
+	X	    garbage = (*s & KM_GMASK) << KM_GSHIFT;
+	X	}
+	X	else
+	X	    garbage = 0;
+	X	if (s[1]) {
+	X	    if ((curmap->km_type[ch] & KM_TMASK) == KM_STRING) {
+	X		puts(override,stdout) FLUSH;
+	X		free(curmap->km_ptr[ch].km_str);
+	X		curmap->km_ptr[ch].km_str = Nullch;
+	X	    }
+	X	    curmap->km_type[ch] = KM_KEYMAP + garbage;
+	X	    if (curmap->km_ptr[ch].km_km == Null(KEYMAP*))
+	X		curmap->km_ptr[ch].km_km = newkeymap();
+	X	    curmap = curmap->km_ptr[ch].km_km;
+	X	}
+	X	else {
+	X	    if ((curmap->km_type[ch] & KM_TMASK) == KM_KEYMAP)
+	X		puts(override,stdout) FLUSH;
+	X	    else {
+	X		curmap->km_type[ch] = KM_STRING + garbage;
+	X		curmap->km_ptr[ch].km_str = savestr(m);
+	X	    }
+	X	}
+	X    }
+	X}
+	X
+	XKEYMAP*
+	Xnewkeymap()
+	X{
+	X    register int i;
+	X    register KEYMAP *map;
+	X
+	X#ifndef lint
+	X    map = (KEYMAP*)safemalloc(sizeof(KEYMAP));
+	X#else
+	X    map = Null(KEYMAP*);
+	X#endif lint
+	X    for (i=127; i>=0; --i) {
+	X	map->km_ptr[i].km_km = Null(KEYMAP*);
+	X	map->km_type[i] = KM_NOTHIN;
+	X    }
+	X    return map;
+	X}
+	X
+	Xvoid
+	Xshow_macros()
+	X{
+	X    char prebuf[64];
+	X
+	X    if (topmap != Null(KEYMAP*)) {
+	X	print_lines("Macros:\n",STANDOUT);
+	X	*prebuf = '\0';
+	X	show_keymap(topmap,prebuf);
+	X    }
+	X}
+	X
+	Xvoid
+	Xshow_keymap(curmap,prefix)
+	Xregister KEYMAP *curmap;
+	Xchar *prefix;
+	X{
+	X    register int i;
+	X    register char *next = prefix + strlen(prefix);
+	X    register int kt;
+	X
+	X    for (i=0; i<128; i++) {
+	X	if (kt = curmap->km_type[i]) {
+	X	    if (i < ' ')
+	X		sprintf(next,"^%c",i+64);
+	X	    else if (i == ' ')
+	X		strcpy(next,"\\040");
+	X	    else if (i == 127)
+	X		strcpy(next,"^?");
+	X	    else
+	X		sprintf(next,"%c",i);
+	X	    if ((kt >> KM_GSHIFT) & KM_GMASK) {
+	X		sprintf(cmd_buf,"+%d", (kt >> KM_GSHIFT) & KM_GMASK);
+	X		strcat(next,cmd_buf);
+	X	    }
+	X	    switch (kt & KM_TMASK) {
+	X	    case KM_NOTHIN:
+	X		sprintf(cmd_buf,"%s	%c\n",prefix,i);
+	X		print_lines(cmd_buf,NOMARKING);
+	X		break;
+	X	    case KM_KEYMAP:
+	X		show_keymap(curmap->km_ptr[(char)i].km_km, prefix);
+	X		break;
+	X	    case KM_STRING:
+	X		sprintf(cmd_buf,"%s	%s\n",prefix,curmap->km_ptr[i].km_str);
+	X		print_lines(cmd_buf,NOMARKING);
+	X		break;
+	X	    case KM_BOGUS:
+	X		sprintf(cmd_buf,"%s	BOGUS\n",prefix);
+	X		print_lines(cmd_buf,STANDOUT);
+	X		break;
+	X	    }
+	X	}
+	X    }
+	X}
+	X
+	X#endif
+	X
+	X/* routine to pass to tputs */
+	X
+	Xchar
+	Xputchr(ch)
+	Xregister char ch;
+	X{
+	X    putchar(ch);
+	X#ifdef lint
+	X    ch = Null(char);
+	X    ch = ch;
+	X#endif
+	X}
+	X
+	X/* input the 2nd and succeeding characters of a multi-character command */
+	X/* returns TRUE if command finished, FALSE if they rubbed out first character */
+	X
+	Xbool
+	Xfinish_command(donewline)
+	Xint donewline;
+	X{
+	X    register char *s;
+	X    register bool quoteone = FALSE;
+	X
+	X    s = buf;
+	X    if (s[1] != FINISHCMD)		/* someone faking up a command? */
+	X	return TRUE;
+	X    do {
+	X      top:
+	X	if (*s < ' ') {
+	X	    putchar('^');
+	X	    putchar(*s | 64);
+	X	}
+	X	else if (*s == '\177') {
+	X	    putchar('^');
+	X	    putchar('?');
+	X	}
+	X	else
+	X	    putchar(*s);		/* echo previous character */
+	X	s++;
+	Xre_read:
+	X	fflush(stdout);
+	X	getcmd(s);
+	X	if (quoteone) {
+	X	    quoteone = FALSE;
+	X	    continue;
+	X	}
+	X	if (errno || *s == Ctl('l')) {
+	X	    *s = Ctl('r');		/* force rewrite on CONT */
+	X	}
+	X	if (*s == '\033') {		/* substitution desired? */
+	X#ifdef ESCSUBS
+	X	    char tmpbuf[4], *cpybuf;
+	X
+	X	    tmpbuf[0] = '%';
+	X	    read_tty(&tmpbuf[1],1);
+	X#ifdef RAWONLY
+	X	    tmpbuf[1] &= 0177;
+	X#endif
+	X	    tmpbuf[2] = '\0';
+	X	    if (tmpbuf[1] == 'h') {
+	X		(void) help_subs();
+	X		*s = '\0';
+	X		reprint();
+	X		goto re_read;
+	X	    }
+	X	    else if (tmpbuf[1] == '\033') {
+	X		*s = '\0';
+	X		cpybuf = savestr(buf);
+	X		interp(buf, (sizeof buf), cpybuf);
+	X		free(cpybuf);
+	X		s = buf + strlen(buf);
+	X		reprint();
+	X		goto re_read;
+	X	    }
+	X	    else {
+	X		interp(s,(sizeof buf) - (s-buf),tmpbuf);
+	X		fputs(s,stdout);
+	X		s += strlen(s);
+	X	    }
+	X	    goto re_read;
+	X#else
+	X	    notincl("^[");
+	X	    *s = '\0';
+	X	    reprint();
+	X	    goto re_read;
+	X#endif
+	X	}
+	X	else if (*s == ERASECH) {	/* they want to rubout a char? */
+	X	    rubout();
+	X	    s--;			/* discount the char rubbed out */
+	X	    if (*s < ' ' || *s == '\177')
+	X		rubout();
+	X	    if (s == buf) {		/* entire string gone? */
+	X		fflush(stdout);		/* return to single char command mode */
+	X		return FALSE;
+	X	    }
+	X	    else
+	X		goto re_read;
+	X	}
+	X	else if (*s == KILLCH) {	/* wipe out the whole line? */
+	X	    while (s-- != buf) {	/* emulate that many ERASEs */
+	X		rubout();
+	X		if (*s < ' ' || *s == '\177')
+	X		    rubout();
+	X	    }
+	X	    fflush(stdout);
+	X	    return FALSE;		/* return to single char mode */
+	X	}
+	X#ifdef WORDERASE
+	X	else if (*s == Ctl('w')) {	/* wipe out one word? */
+	X	    *s-- = ' ';
+	X	    while (!isspace(*s) || isspace(s[1])) {
+	X		rubout();
+	X		if (s-- == buf) {
+	X		    fflush(stdout);
+	X		    return FALSE;	/* return to single char mode */
+	X		}
+	X		if (*s < ' ' || *s == '\177')
+	X		    rubout();
+	X	    }
+	X	    s++;
+	X	    goto re_read;
+	X	}
+	X#endif
+	X	else if (*s == Ctl('r')) {
+	X	    *s = '\0';
+	X	    reprint();
+	X	    goto re_read;
+	X	}
+	X	else if (*s == Ctl('v')) {
+	X	    putchar('^');
+	X	    backspace();
+	X	    fflush(stdout);
+	X	    getcmd(s);
+	X	    goto top;
+	X	}
+	X	else if (*s == '\\') {
+	X	    quoteone = TRUE;
+	X	}
+	X    } while (*s != '\n');		/* till a newline (not echoed) */
+	X    *s = '\0';				/* terminate the string nicely */
+	X    if (donewline)
+	X	putchar('\n') FLUSH;
+	X    return TRUE;			/* say we succeeded */
+	X}
+	X
+	X/* discard any characters typed ahead */
+	X
+	Xvoid
+	Xeat_typeahead()
+	X{
+	X#ifdef PUSHBACK
+	X    if (!typeahead && nextin==nextout)	/* cancel only keyboard stuff */
+	X#else
+	X    if (!typeahead)
+	X#endif
+	X    {
+	X#ifdef PENDING
+	X	while (input_pending())
+	X	    read_tty(buf,sizeof(buf));
+	X#else /* this is probably v7 */
+	X	ioctl(_tty_ch,TIOCSETP,&_tty);
+	X#endif
+	X    }
+	X}
+	X
+	Xvoid
+	Xsettle_down()
+	X{
+	X    dingaling();
+	X    fflush(stdout);
+	X    sleep(1);
+	X#ifdef PUSHBACK
+	X    nextout = nextin;			/* empty circlebuf */
+	X#endif
+	X    eat_typeahead();
+	X}
+	X
+	X#ifdef PUSHBACK
+	X/* read a character from the terminal, with multi-character pushback */
+	X
+	Xint
+	Xread_tty(addr,size)
+	Xchar *addr;
+	Xint size;
+	X{
+	X    if (nextout != nextin) {
+	X	*addr = circlebuf[nextout++];
+	X	nextout %= PUSHSIZE;
+	X	return 1;
+	X    }
+	X    else {
+	X	size = read(0,addr,size);
+	X#ifdef RAWONLY
+	X	*addr &= 0177;
+	X#endif
+	X	return size;
+	X    }
+	X}
+	X
+	X#ifdef PENDING
+	X#ifndef FIONREAD
+	Xint
+	Xcircfill()
+	X{
+	X    register int howmany = read(devtty,circlebuf+nextin,1);
+	X
+	X    if (howmany) {
+	X	nextin += howmany;
+	X	nextin %= PUSHSIZE;
+	X    }
+	X    return howmany;
+	X}
+	X#endif PENDING
+	X#endif FIONREAD
+	X
+	Xvoid
+	Xpushchar(c)
+	Xchar c;
+	X{
+	X    nextout--;
+	X    if (nextout < 0)
+	X	nextout = PUSHSIZE - 1;
+	X    if (nextout == nextin) {
+	X	fputs("\npushback buffer overflow\n",stdout) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X    circlebuf[nextout] = c;
+	X}
+	X
+	X#else PUSHBACK
+	X#ifndef read_tty
+	X/* read a character from the terminal, with hacks for O_NDELAY reads */
+	X
+	Xint
+	Xread_tty(addr,size)
+	Xchar *addr;
+	Xint size;
+	X{
+	X    if (is_input) {
+	X	*addr = pending_ch;
+	X	is_input = FALSE;
+	X	return 1;
+	X    }
+	X    else {
+	X	size = read(0,addr,size);
+	X#ifdef RAWONLY
+	X	*addr &= 0177;
+	X#endif
+	X	return size;
+	X    }
+	X}
+	X#endif read_tty
+	X#endif PUSHBACK
+	X
+	X/* print an underlined string, one way or another */
+	X
+	Xvoid
+	Xunderprint(s)
+	Xregister char *s;
+	X{
+	X    assert(UC);
+	X    if (*UC) {		/* char by char underline? */
+	X	while (*s) {
+	X	    if (*s < ' ') {
+	X		putchar('^');
+	X		backspace();/* back up over it */
+	X		underchar();/* and do the underline */
+	X		putchar(*s+64);
+	X		backspace();/* back up over it */
+	X		underchar();/* and do the underline */
+	X	    }
+	X	    else {
+	X		putchar(*s);
+	X		backspace();/* back up over it */
+	X		underchar();/* and do the underline */
+	X	    }
+	X	    s++;
+	X	}
+	X    }
+	X    else {		/* start and stop underline */
+	X	underline();	/* start underlining */
+	X	while (*s) {
+	X	    if (*s < ' ') {
+	X		putchar('^');
+	X		putchar(*s+64);
+	X	    }
+	X	    else
+	X		putchar(*s);
+	X	    s++;
+	X	}
+	X	un_underline();	/* stop underlining */
+	X    }
+	X}
+	X
+	X/* keep screen from flashing strangely on magic cookie terminals */
+	X
+	X#ifdef NOFIREWORKS
+	Xvoid
+	Xno_sofire()
+	X{
+	X    if (*UP && *SE) {		/* should we disable fireworks? */
+	X	putchar('\n');
+	X	un_standout();
+	X	up_line();
+	X	carriage_return();
+	X    }
+	X}
+	X
+	Xvoid
+	Xno_ulfire()
+	X{
+	X    if (*UP && *US) {		/* should we disable fireworks? */
+	X	putchar('\n');
+	X	un_underline();
+	X	up_line();
+	X	carriage_return();
+	X    }
+	X}
+	X#endif
+	X
+	X/* get a character into a buffer */
+	X
+	Xvoid
+	Xgetcmd(whatbuf)
+	Xregister char *whatbuf;
+	X{
+	X#ifdef PUSHBACK
+	X    register KEYMAP *curmap;
+	X    register int i;
+	X    bool no_macros; 
+	X    int times = 0;			/* loop detector */
+	X    char scrchar;
+	X
+	Xtryagain:
+	X    curmap = topmap;
+	X    no_macros = (whatbuf != buf && nextin == nextout); 
+	X#endif
+	X    for (;;) {
+	X	int_count = 0;
+	X	errno = 0;
+	X	if (read_tty(whatbuf,1) < 0 && !errno)
+	X	    errno = EINTR;
+	X	if (errno && errno != EINTR) {
+	X	    perror(readerr);
+	X	    sig_catcher(0);
+	X	}
+	X#ifdef PUSHBACK
+	X	if (*whatbuf & 0200 || no_macros) {
+	X	    *whatbuf &= 0177;
+	X	    goto got_canonical;
+	X	}
+	X	if (curmap == Null(KEYMAP*))
+	X	    goto got_canonical;
+	X	for (i = (curmap->km_type[*whatbuf] >> KM_GSHIFT) & KM_GMASK; i; --i){
+	X	    read_tty(&scrchar,1);
+	X	}
+	X	switch (curmap->km_type[*whatbuf] & KM_TMASK) {
+	X	case KM_NOTHIN:			/* no entry? */
+	X	    if (curmap == topmap)	/* unmapped canonical */
+	X		goto got_canonical;
+	X	    settle_down();
+	X	    goto tryagain;
+	X	case KM_KEYMAP:			/* another keymap? */
+	X	    curmap = curmap->km_ptr[*whatbuf].km_km;
+	X	    assert(curmap != Null(KEYMAP*));
+	X	    break;
+	X	case KM_STRING:			/* a string? */
+	X	    pushstring(curmap->km_ptr[*whatbuf].km_str);
+	X	    if (++times > 20) {		/* loop? */
+	X		fputs("\nmacro loop?\n",stdout);
+	X		settle_down();
+	X	    }
+	X	    no_macros = FALSE;
+	X	    goto tryagain;
+	X	}
+	X#else
+	X#ifdef RAWONLY
+	X	*whatbuf &= 0177;
+	X#endif
+	X	break;
+	X#endif
+	X    }
+	X
+	Xgot_canonical:
+	X#ifndef TERMIO
+	X    if (*whatbuf == '\r')
+	X	*whatbuf = '\n';
+	X#endif
+	X    if (whatbuf == buf)
+	X	whatbuf[1] = FINISHCMD;		/* tell finish_command to work */
+	X}
+	X
+	X#ifdef PUSHBACK
+	Xvoid
+	Xpushstring(str)
+	Xchar *str;
+	X{
+	X    register int i;
+	X    char tmpbuf[PUSHSIZE];
+	X    register char *s = tmpbuf;
+	X
+	X    assert(str != Nullch);
+	X    interp(s,PUSHSIZE,str);
+	X    for (i = strlen(s)-1; i >= 0; --i) {
+	X	s[i] ^= 0200; 
+	X	pushchar(s[i]);
+	X    }
+	X}
+	X#endif
+	X
+	Xint
+	Xget_anything()
+	X{
+	X    char tmpbuf[2];
+	X
+	Xreask_anything:
+	X    unflush_output();			/* disable any ^O in effect */
+	X    standout();
+	X#ifdef VERBOSE
+	X    IF(verbose)
+	X	fputs("[Type space to continue] ",stdout);
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	fputs("[MORE] ",stdout);
+	X#endif
+	X    un_standout();
+	X    fflush(stdout);
+	X    eat_typeahead();
+	X    if (int_count) {
+	X	return -1;
+	X    }
+	X    collect_subjects();			/* loads subject cache until */
+	X					/* input is pending */
+	X    getcmd(tmpbuf);
+	X    if (errno || *tmpbuf == '\f') {
+	X	putchar('\n') FLUSH;		/* if return from stop signal */
+	X	goto reask_anything;		/* give them a prompt again */
+	X    }
+	X    if (*tmpbuf == 'h') {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    fputs("\nType q to quit or space to continue.\n",stdout) FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs("\nq to quit, space to continue.\n",stdout) FLUSH;
+	X#endif
+	X	goto reask_anything;
+	X    }
+	X    else if (*tmpbuf != ' ' && *tmpbuf != '\n') {
+	X	carriage_return();
+	X	erase_eol();	/* erase the prompt */
+	X	return *tmpbuf == 'q' ? -1 : *tmpbuf;
+	X    }
+	X    if (*tmpbuf == '\n') {
+	X	page_line = LINES - 1;
+	X	carriage_return();
+	X	erase_eol();
+	X    }
+	X    else {
+	X	page_line = 1;
+	X	if (erase_screen)		/* -e? */
+	X	    clear();			/* clear screen */
+	X	else {
+	X	    carriage_return();
+	X	    erase_eol();		/* erase the prompt */
+	X	}
+	X    }
+	X    return 0;
+	X}
+	X
+	Xvoid
+	Xin_char(prompt, newmode)
+	Xchar *prompt;
+	Xchar newmode;
+	X{
+	X    char oldmode = mode;
+	X
+	Xreask_in_char:
+	X    unflush_output();			/* disable any ^O in effect */
+	X    fputs(prompt,stdout);
+	X    fflush(stdout);
+	X    eat_typeahead();
+	X    mode = newmode;
+	X    getcmd(buf);
+	X    if (errno || *buf == '\f') {
+	X	putchar('\n') FLUSH;		/* if return from stop signal */
+	X	goto reask_in_char;		/* give them a prompt again */
+	X    }
+	X    mode = oldmode;
+	X}
+	X
+	Xint
+	Xprint_lines(what_to_print,hilite)
+	Xchar *what_to_print;
+	Xint hilite;
+	X{
+	X    register char *s;
+	X    register int i;
+	X
+	X    if (page_line < 0)			/* they do not want to see this? */
+	X	return -1;
+	X    for (s=what_to_print; *s; ) {
+	X	if (page_line >= LINES || int_count) {
+	X	    if (i = -1, int_count || (i = get_anything())) {
+	X		page_line = -1;		/* disable further print_lines */
+	X		return i;
+	X	    }
+	X	}
+	X	page_line++;
+	X	if (hilite == STANDOUT) {
+	X#ifdef NOFIREWORKS
+	X	    if (erase_screen)
+	X		no_sofire();
+	X#endif
+	X	    standout();
+	X	}
+	X	else if (hilite == UNDERLINE) {
+	X#ifdef NOFIREWORKS
+	X	    if (erase_screen)
+	X		no_ulfire();
+	X#endif
+	X	    underline();
+	X	}
+	X	for (i=0; i<COLS; i++) {
+	X	    if (!*s)
+	X		break;
+	X	    if (*s >= ' ')
+	X		putchar(*s);
+	X	    else if (*s == '\t') {
+	X		putchar(*s);
+	X		i = ((i+8) & ~7) - 1; 
+	X	    }
+	X	    else if (*s == '\n') {
+	X		i = 32000;
+	X	    }
+	X	    else {
+	X		i++;
+	X		putchar('^');
+	X		putchar(*s + 64);
+	X	    }
+	X	    s++;
+	X	}
+	X	if (i) {
+	X	    if (hilite == STANDOUT)
+	X		un_standout();
+	X	    else if (hilite == UNDERLINE)
+	X		un_underline();
+	X	    if (AM && i == COLS)
+	X		fflush(stdout);
+	X	    else
+	X		putchar('\n') FLUSH;
+	X	}
+	X    }
+	X    return 0;
+	X}
+	X
+	Xvoid
+	Xpage_init()
+	X{
+	X    page_line = 1;
+	X    if (erase_screen)
+	X	clear();
+	X    else
+	X	putchar('\n') FLUSH;
+	X}
+	X
+	Xvoid
+	Xpad(num)
+	Xint num;
+	X{
+	X    register int i;
+	X
+	X    for (i = num; i; --i)
+	X	putchar(PC);
+	X    fflush(stdout);
+	X}
+	X
+	X/* echo the command just typed */
+	X
+	X#ifdef VERIFY
+	Xvoid
+	Xprintcmd()
+	X{
+	X    if (verify && buf[1] == FINISHCMD) {
+	X	if (*buf < ' ') {
+	X	    putchar('^');
+	X	    putchar(*buf | 64);
+	X	    backspace();
+	X	    backspace();
+	X	}
+	X	else {
+	X	    putchar(*buf);
+	X	    backspace();
+	X	}
+	X	fflush(stdout);
+	X    }
+	X}
+	X#endif
+	X
+	Xvoid
+	Xrubout()
+	X{
+	X    backspace();			/* do the old backspace, */
+	X    putchar(' ');			/*   space, */
+	X    backspace();			/*     backspace trick */
+	X}
+	X
+	Xvoid
+	Xreprint()
+	X{
+	X    register char *s;
+	X
+	X    fputs("^R\n",stdout) FLUSH;
+	X    for (s = buf; *s; s++) {
+	X	if (*s < ' ') {
+	X	    putchar('^');
+	X	    putchar(*s | 64);
+	X	}
+	X	else
+	X	    putchar(*s);
+	X    }
+	X}
+	X
+	X#ifdef CLEAREOL
+	X/* start of additions by Paul Placeway (PWP) */
+	X
+	Xvoid
+	Xhome_cursor()
+	X{
+	X    char *tgoto();
+	X
+	X    if (!*HO) {			/* no home sequence? */
+	X	if (!*CM) {		/* no cursor motion either? */
+	X	    fputs ("\n\n\n", stdout);
+	X	    return;		/* forget it. */
+	X	}
+	X	tputs (tgoto (CM, 0, 0), 1, putchr);	/* go to home via CM */
+	X	return;
+	X    }
+	X    else {			/* we have home sequence */
+	X	tputs (HO, 1, putchr);	/* home via HO */
+	X    }
+	X}
+	X#endif CLEAREOL
+SHAR_EOF
+if test 21351 -ne "`wc -c < 'term.c'`"
+then
+	echo shar: error transmitting "'term.c'" '(should have been 21351 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'util.c'" '(10664 characters)'
+if test -f 'util.c'
+then
+	echo shar: will not over-write existing file "'util.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'util.c'
+	X/* $Header: util.c,v 4.3.1.2 85/05/15 14:44:27 lwall Exp $
+	X *
+	X * $Log:	util.c,v $
+	X * Revision 4.3.1.2  85/05/15  14:44:27  lwall
+	X * Last arg of execl changed from 0 to Nullch [(char*)0].
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:41:30  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:51:44  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "final.h"
+	X#include "ndir.h"
+	X#include "INTERN.h"
+	X#include "util.h"
+	X
+	Xvoid
+	Xutil_init()
+	X{
+	X    ;
+	X}
+	X    
+	X/* fork and exec a shell command */
+	X
+	Xint
+	Xdoshell(shl,s)
+	Xchar *s, *shl;
+	X{
+	X    int status, pid, w;
+	X    register int (*istat)(), (*qstat)();
+	X    int (*signal())();
+	X    char *shell;
+	X
+	X#ifdef SIGTSTP
+	X    sigset(SIGTSTP,SIG_DFL);
+	X    sigset(SIGCONT,SIG_DFL);
+	X#endif
+	X    if (shl != Nullch)
+	X	shell = shl;
+	X    else if ((shell = getenv("SHELL")) == Nullch || !*shell)
+	X	shell = PREFSHELL;
+	X    if ((pid = vfork()) == 0) {
+	X	if (*s)
+	X	    execl(shell, shell, "-c", s, Nullch);
+	X	else
+	X	    execl(shell, shell, Nullch, Nullch, Nullch);
+	X	_exit(127);
+	X    }
+	X#ifndef lint
+	X    istat = signal(SIGINT, SIG_IGN);
+	X    qstat = signal(SIGQUIT, SIG_IGN);
+	X#else
+	X    istat = Null(int (*)());
+	X    qstat = Null(int (*)());
+	X#endif lint
+	X    waiting = TRUE;
+	X    while ((w = wait(&status)) != pid && w != -1)
+	X	;
+	X    if (w == -1)
+	X	status = -1;
+	X    waiting = FALSE;
+	X    signal(SIGINT, istat);
+	X    signal(SIGQUIT, qstat);
+	X#ifdef SIGTSTP
+	X    sigset(SIGTSTP,stop_catcher);
+	X    sigset(SIGCONT,cont_catcher);
+	X#endif
+	X    return status;
+	X}
+	X
+	Xstatic char nomem[] = "rn: out of memory!\n";
+	X
+	X/* paranoid version of malloc */
+	X
+	Xchar *
+	Xsafemalloc(size)
+	XMEM_SIZE size;
+	X{
+	X    char *ptr;
+	X    char *malloc();
+	X
+	X    ptr = malloc(size?size:1);	/* malloc(0) is NASTY on our system */
+	X    if (ptr != Nullch)
+	X	return ptr;
+	X    else {
+	X	fputs(nomem,stdout) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X    /*NOTREACHED*/
+	X}
+	X
+	X/* paranoid version of realloc */
+	X
+	Xchar *
+	Xsaferealloc(where,size)
+	Xchar *where;
+	XMEM_SIZE size;
+	X{
+	X    char *ptr;
+	X    char *realloc();
+	X
+	X    ptr = realloc(where,size?size:1);	/* realloc(0) is NASTY on our system */
+	X    if (ptr != Nullch)
+	X	return ptr;
+	X    else {
+	X	fputs(nomem,stdout) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X    /*NOTREACHED*/
+	X}
+	X
+	X/* safe version of string copy */
+	X
+	Xchar *
+	Xsafecpy(to,from,len)
+	Xchar *to;
+	Xregister char *from;
+	Xregister int len;
+	X{
+	X    register char *dest = to;
+	X
+	X    if (from != Nullch) 
+	X	for (len--; len && (*dest++ = *from++); len--) ;
+	X    *dest = '\0';
+	X    return to;
+	X}
+	X
+	X/* safe version of string concatenate, with \n deletion and space padding */
+	X
+	Xchar *
+	Xsafecat(to,from,len)
+	Xchar *to;
+	Xregister char *from;
+	Xregister int len;
+	X{
+	X    register char *dest = to;
+	X
+	X    len--;				/* leave room for null */
+	X    if (*dest) {
+	X	while (len && *dest++) len--;
+	X	if (len) {
+	X	    len--;
+	X	    *(dest-1) = ' ';
+	X	}
+	X    }
+	X    if (from != Nullch)
+	X	while (len && (*dest++ = *from++)) len--;
+	X    if (len)
+	X	dest--;
+	X    if (*(dest-1) == '\n')
+	X	dest--;
+	X    *dest = '\0';
+	X    return to;
+	X}
+	X
+	X/* copy a string up to some (non-backslashed) delimiter, if any */
+	X
+	Xchar *
+	Xcpytill(to,from,delim)
+	Xregister char *to, *from;
+	Xregister int delim;
+	X{
+	X    for (; *from; from++,to++) {
+	X	if (*from == '\\' && from[1] == delim)
+	X	    from++;
+	X	else if (*from == delim)
+	X	    break;
+	X	*to = *from;
+	X    }
+	X    *to = '\0';
+	X    return from;
+	X}
+	X
+	X/* return ptr to little string in big string, NULL if not found */
+	X
+	Xchar *
+	Xinstr(big, little)
+	Xchar *big, *little;
+	X
+	X{
+	X    register char *t, *s, *x;
+	X
+	X    for (t = big; *t; t++) {
+	X	for (x=t,s=little; *s; x++,s++) {
+	X	    if (!*x)
+	X		return Nullch;
+	X	    if (*s != *x)
+	X		break;
+	X	}
+	X	if (!*s)
+	X	    return t;
+	X    }
+	X    return Nullch;
+	X}
+	X
+	X/* effective access */
+	X
+	X#ifdef SETUIDGID
+	Xint
+	Xeaccess(filename, mod)
+	Xchar *filename;
+	Xint mod;
+	X{
+	X    int protection, euid;
+	X    
+	X    mod &= 7;				/* remove extraneous garbage */
+	X    if (stat(filename, &filestat) < 0)
+	X	return -1;
+	X    euid = geteuid();
+	X    if (euid == ROOTID)
+	X	return 0;
+	X    protection = 7 & (filestat.st_mode >>
+	X      (filestat.st_uid == euid ? 6 :
+	X        (filestat.st_gid == getegid() ? 3 : 0)
+	X      ));
+	X    if ((mod & protection) == mod)
+	X	return 0;
+	X    errno = EACCES;
+	X    return -1;
+	X}
+	X#endif
+	X
+	X/*
+	X * Get working directory
+	X */
+	X
+	X#ifdef GETWD
+	X#define	dot	"."
+	X#define	dotdot	".."
+	X
+	Xstatic	char	*name;
+	X
+	Xstatic	DIR	*dirp;
+	Xstatic	int	off;
+	Xstatic	struct	stat	d, dd;
+	Xstatic	struct	direct	*dir;
+	X
+	Xchar *
+	Xgetwd(np)
+	Xchar *np;
+	X{
+	X	long rdev, rino;
+	X
+	X	*np++ = '/';
+	X	*np = 0;
+	X	name = np;
+	X	off = -1;
+	X	stat("/", &d);
+	X	rdev = d.st_dev;
+	X	rino = d.st_ino;
+	X	for (;;) {
+	X		stat(dot, &d);
+	X		if (d.st_ino==rino && d.st_dev==rdev)
+	X			goto done;
+	X		if ((dirp = opendir(dotdot)) == Null(DIR *))
+	X			prexit("getwd: cannot open ..\n");
+	X		stat(dotdot, &dd);
+	X		chdir(dotdot);
+	X		if(d.st_dev == dd.st_dev) {
+	X			if(d.st_ino == dd.st_ino)
+	X				goto done;
+	X			do
+	X				if ((dir = readdir(dirp)) == Null(struct direct *))
+	X					prexit("getwd: read error in ..\n");
+	X			while (dir->d_ino != d.st_ino);
+	X		}
+	X		else do {
+	X				if ((dir = readdir(dirp)) == Null(struct direct *))
+	X					prexit("getwd: read error in ..\n");
+	X				stat(dir->d_name, &dd);
+	X			} while(dd.st_ino != d.st_ino || dd.st_dev != d.st_dev);
+	X		cat();
+	X		closedir(dirp);
+	X	}
+	Xdone:
+	X	name--;
+	X	if (chdir(name) < 0) {
+	X		printf("getwd: can't cd back to %s\n",name) FLUSH;
+	X		sig_catcher(0);
+	X	}
+	X	return (name);
+	X}
+	X
+	Xvoid
+	Xcat()
+	X{
+	X	register i, j;
+	X
+	X	i = -1;
+	X	while (dir->d_name[++i] != 0);
+	X	if ((off+i+2) > 1024-1)
+	X		return;
+	X	for(j=off+1; j>=0; --j)
+	X		name[j+i+1] = name[j];
+	X	if (off >= 0)
+	X		name[i] = '/';
+	X	off=i+off+1;
+	X	name[off] = 0;
+	X	for(--i; i>=0; --i)
+	X		name[i] = dir->d_name[i];
+	X}
+	X
+	Xvoid
+	Xprexit(cp)
+	Xchar *cp;
+	X{
+	X	write(2, cp, strlen(cp));
+	X	sig_catcher(0);
+	X}
+	X#else
+	Xchar *
+	Xgetwd(np)			/* shorter but slower */
+	Xchar *np;
+	X{
+	X    FILE *popen();
+	X    FILE *pipefp = popen("/bin/pwd","r");
+	X
+	X    if (pipefd == Nullfp) {
+	X	printf("Can't run /bin/pwd\n") FLUSH;
+	X	finalize(1);
+	X    }
+	X    fgets(np,512,pipefp);
+	X    np[strlen(np)-1] = '\0';	/* wipe out newline */
+	X    pclose(pipefp);
+	X    return np;
+	X}
+	X#endif
+	X
+	X/* just like fgets but will make bigger buffer as necessary */
+	X
+	Xchar *
+	Xget_a_line(original_buffer,buffer_length,fp)
+	Xchar *original_buffer;
+	Xregister int buffer_length;
+	XFILE *fp;
+	X{
+	X    register int bufix = 0;
+	X    register int nextch;
+	X    register char *some_buffer_or_other = original_buffer;
+	X
+	X    do {
+	X	if (bufix >= buffer_length) {
+	X	    buffer_length *= 2;
+	X	    if (some_buffer_or_other == original_buffer) {
+	X					/* currently static? */
+	X		some_buffer_or_other = safemalloc((MEM_SIZE)buffer_length+1);
+	X		strncpy(some_buffer_or_other,original_buffer,buffer_length/2);
+	X					/* so we must copy it */
+	X	    }
+	X	    else {			/* just grow in place, if possible */
+	X		some_buffer_or_other = saferealloc(some_buffer_or_other,
+	X		    (MEM_SIZE)buffer_length+1);
+	X	    }
+	X	}
+	X	if ((nextch = getc(fp)) == EOF)
+	X	    return Nullch;
+	X	some_buffer_or_other[bufix++] = (char) nextch;
+	X    } while (nextch && nextch != '\n');
+	X    some_buffer_or_other[bufix] = '\0';
+	X    len_last_line_got = bufix;
+	X    return some_buffer_or_other;
+	X}
+	X
+	X/* copy a string to a safe spot */
+	X
+	Xchar *
+	Xsavestr(str)
+	Xchar *str;
+	X{
+	X    register char *newaddr = safemalloc((MEM_SIZE)(strlen(str)+1));
+	X
+	X    strcpy(newaddr,str);
+	X    return newaddr;
+	X}
+	X
+	Xint
+	Xmakedir(dirname,nametype)
+	Xregister char *dirname;
+	Xint nametype;
+	X{
+	X#ifdef MAKEDIR
+	X    register char *end;
+	X    register char *s;
+	X    char tmpbuf[1024];
+	X    register char *tbptr = tmpbuf+5;
+	X
+	X    for (end = dirname; *end; end++) ;	/* find the end */
+	X    if (nametype == MD_FILE) {		/* not to create last component? */
+	X	for (--end; end != dirname && *end != '/'; --end) ;
+	X	if (*end != '/')
+	X	    return 0;			/* nothing to make */
+	X	*end = '\0';			/* isolate file name */
+	X    }
+	X    strcpy(tmpbuf,"mkdir");
+	X
+	X    s = end;
+	X    for (;;) {
+	X	if (stat(dirname,&filestat) >= 0) {
+	X					/* does this much exist? */
+	X	    *s = '/';			/* mark this as existing */
+	X	    break;
+	X	}
+	X	s = rindex(dirname,'/');	/* shorten name */
+	X	if (!s)				/* relative path! */
+	X	    break;			/* hope they know what they are doing */
+	X	*s = '\0';			/* mark as not existing */
+	X    }
+	X    
+	X    for (s=dirname; s <= end; s++) {	/* this is grody but efficient */
+	X	if (!*s) {			/* something to make? */
+	X	    sprintf(tbptr," %s",dirname);
+	X	    tbptr += strlen(tbptr);	/* make it, sort of */
+	X	    *s = '/';			/* mark it made */
+	X	}
+	X    }
+	X    if (nametype == MD_DIR)		/* don't need final slash unless */
+	X	*end = '\0';			/*  a filename follows the dir name */
+	X
+	X    return (tbptr==tmpbuf+5 ? 0 : doshell(sh,tmpbuf));
+	X					/* exercise our faith */
+	X#else
+	X    sprintf(cmd_buf,"%s %s %d", filexp(DIRMAKER), dirname, nametype);
+	X    return doshell(sh,cmd_buf);
+	X#endif
+	X}
+	X
+	X#ifdef SETENV
+	Xstatic bool firstsetenv = TRUE;
+	Xextern char **environ;
+	X
+	Xvoid
+	Xsetenv(nam,val)
+	Xchar *nam, *val;
+	X{
+	X    register int i=envix(nam);		/* where does it go? */
+	X
+	X    if (!environ[i]) {			/* does not exist yet */
+	X	if (firstsetenv) {		/* need we copy environment? */
+	X	    int j;
+	X#ifndef lint
+	X	    char **tmpenv = (char**)	/* point our wand at memory */
+	X		safemalloc((MEM_SIZE) (i+2) * sizeof(char*));
+	X#else
+	X	    char **tmpenv = Null(char **);
+	X#endif lint
+	X    
+	X	    firstsetenv = FALSE;
+	X	    for (j=0; j<i; j++)		/* copy environment */
+	X		tmpenv[j] = environ[j];
+	X	    environ = tmpenv;		/* tell exec where it is now */
+	X	}
+	X#ifndef lint
+	X	else
+	X	    environ = (char**) saferealloc((char*) environ,
+	X		(MEM_SIZE) (i+2) * sizeof(char*));
+	X					/* just expand it a bit */
+	X#endif lint
+	X	environ[i+1] = Nullch;	/* make sure it's null terminated */
+	X    }
+	X    environ[i] = safemalloc((MEM_SIZE) strlen(nam) + strlen(val) + 2);
+	X					/* this may or may not be in */
+	X					/* the old environ structure */
+	X    sprintf(environ[i],"%s=%s",nam,val);/* all that work just for this */
+	X}
+	X
+	Xint
+	Xenvix(nam)
+	Xchar *nam;
+	X{
+	X    register int i, len = strlen(nam);
+	X
+	X    for (i = 0; environ[i]; i++) {
+	X	if (strnEQ(environ[i],nam,len) && environ[i][len] == '=')
+	X	    break;			/* strnEQ must come first to avoid */
+	X    }					/* potential SEGV's */
+	X    return i;
+	X}
+	X#endif
+	X
+	Xvoid
+	Xnotincl(feature)
+	Xchar *feature;
+	X{
+	X    printf("\nNo room for feature \"%s\" on this machine.\n",feature) FLUSH;
+	X}
+	X
+	Xchar *
+	Xgetval(nam,def)
+	Xchar *nam,*def;
+	X{
+	X    char *val;
+	X
+	X    if ((val = getenv(nam)) == Nullch || !*val)
+	X	val = def;
+	X    return val;
+	X}
+	X
+	X/* grow a static string to at least a certain length */
+	X
+	Xvoid
+	Xgrowstr(strptr,curlen,newlen)
+	Xchar **strptr;
+	Xint *curlen;
+	Xint newlen;
+	X{
+	X    if (newlen > *curlen) {		/* need more room? */
+	X	if (*curlen)
+	X	    *strptr = saferealloc(*strptr,(MEM_SIZE)newlen);
+	X	else
+	X	    *strptr = safemalloc((MEM_SIZE)newlen);
+	X	*curlen = newlen;
+	X    }
+	X}
+	X
+	Xvoid
+	Xsetdef(buffer,dflt)
+	Xchar *buffer,*dflt;
+	X{
+	X#ifdef STRICTCR
+	X    if (*buffer == ' ')
+	X#else
+	X    if (*buffer == ' ' || *buffer == '\n')
+	X#endif
+	X    {
+	X	if (*dflt == '^' && isupper(dflt[1]))
+	X	    *buffer = Ctl(dflt[1]);
+	X	else
+	X	    *buffer = *dflt;
+	X    }
+	X}
+SHAR_EOF
+if test 10664 -ne "`wc -c < 'util.c'`"
+then
+	echo shar: error transmitting "'util.c'" '(should have been 10664 characters)'
+fi
+fi # end of overwriting check
+#	End of shell archive
+exit 0

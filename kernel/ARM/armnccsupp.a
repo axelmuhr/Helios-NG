@@ -1,0 +1,645 @@
+-- File:	armnccsupp.a
+-- Subsystem:	ARM Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	Sept '92
+--
+-- Description: ARM Norcroft C support functions.
+--
+--		This file is used in conjunction with nccsupport.c
+--		to provide the norcroft support functions. It also contains
+--		assembly language replacments for the C library string
+--		functions that are required by the kernel - they are also
+--		exported.
+--
+-- RcsId: $Id: armnccsupp.a,v 1.2 1993/08/24 08:41:11 paul Exp $
+--
+-- (C) Copyright 1992 Perihelion Software Ltd.
+-- 
+-- RcsLog: $Log: armnccsupp.a,v $
+-- Revision 1.2  1993/08/24  08:41:11  paul
+-- Integrated latest ARM world with Heliosv1.3.1 release.
+-- (CheckPoint).
+--
+-- Revision 1.1  1992/09/25  15:49:45  paul
+-- Initial revision
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include module.m
+include root.m
+include signal.m
+
+------------------------------------------------------------------------------
+-- ncc support functions
+------------------------------------------------------------------------------
+
+	Function __stack_overflow
+
+	-- Temporarily force SIGSTAK signal
+	-- @@@ update for automatic stack extension.
+
+	--	GetStaticDataWord __Task_ a1
+
+	-- get module of MyTask (__Task_)
+	patchinstr(patcharmdt, datamodule(__Task_),
+		ldr	ip, (dp, 0))
+
+	-- get task pointer into first arg
+	patchinstr(patcharmdt, datasymb(__Task_),
+		ldr	a1, (ip, 0))
+
+	mov	a2, SIGSTAK
+
+	patchinstr (PATCHARMJP, labelref(.CallException),
+		bl	0)
+
+
+
+	Function __stack_overflow_1
+
+	-- Temporarily force SIGSTAK signal
+	-- @@@ update for automatic stack extension.
+
+	-- get module of MyTask (__Task_)
+	patchinstr(patcharmdt, datamodule(__Task_),
+		ldr	ip, (dp, 0))
+
+	-- get task pointer into first arg
+	patchinstr(patcharmdt, datasymb(__Task_),
+		ldr	a1, (ip, 0))
+
+	mov	a2, SIGSTAK
+
+	patchinstr (PATCHARMJP, labelref(.CallException),
+		bl	0)
+
+
+
+------------------------------------------------------------------------------
+-- string functions (mainly used by GetMsg()/PutMsg(),TaskInit())
+------------------------------------------------------------------------------
+
+_if _false [ -- Now implemented in C.
+
+--      void * memset( void * pointer, unsigned char val, unsigned long num_bytes );
+--
+-- Upon Entry:
+--	A1	block memory address
+--	A2	The value to place into the memory
+--	A3	The number of bytes to place
+--
+--
+-- Purpose
+--	Fills an area of memory with a specified value.
+--	Note that the current implementation expects the destination
+--	to be word alligned and a word multiple.
+
+
+	Function memset
+
+	teq	a3,0			// check for zero length
+	moveqs	pc, lk			// return to the caller
+
+nextb:
+	str	a2, (a1), 1		// store value
+	subs	a3, 1			// dec count
+	bne	nextb
+	movs	pc, lk			// return to the caller
+]
+
+
+_if _false [
+-- WARNING: currently uses C version as C compiler shows bug in macro
+-- expansions when this version is used. I do not understand the problem
+-- any further, other than the copy may be copying the last character twice
+-- under some circumstances.
+
+--      void * memcpy( void * dest, const void * source, unsigned long num_bytes );
+--
+-- Upon Entry:
+--	R_A1	destination area of memory
+--	R_A2	source area of memory
+--	R_A3	number of bytes to copy from source to destination
+--
+-- Purpose
+--	Copies the contents of one area of memory to another area
+--	Does NOT check for overlapping areas.
+--	Does NOT check for NULL pointers
+--
+--	NB/ This function cannot be called _memcpy as this is an internal
+--	function used by the compiler
+--
+--	The best implementation would be to perform word transfers (since they
+--	take the same amount of time as byte transfers, but shift four times
+--	the data) but this relies on the source and destination having the
+--	same byte alignment within the address word. We provide optimal code
+--	where such an alignment exists, providing reasonably optimal code for
+--	the cases where the address arguments are not aligned. Using load and
+--	store multiple instructions (LDM and STM) also increase the performance,
+--	since we do not need to perform instruction fetching/decoding/executing
+--	between every word.
+--
+--	The majority of memcpy's by the kernel are called with sizes of 0x0c,
+--	0x10, 0x12, 0x14, 0x18 and the odd 0x08 and 0x20. Occasionally we move
+--	larger blocks. This means that for the kernel this code is a little
+--	bit of overkill, but it is exported for general use.
+--
+--	This code was cadged from Jamie.
+--
+--	Called by C code, so must be PCS conformant.
+
+	Function memcpy
+
+        MOV     ip, sp
+        STMFD   sp!, {v1,v2,v3,v4,v5,dp,fp,ip,lk,pc}
+        SUB     fp, ip, 4
+
+	-- Deal with over-lapping blocks
+	subs	v1, a1, a2		-- delta (v1) = destination - source
+	mvnmi	v1, v1			-- get absolute delta
+	cmp	v1, a3			-- check against the length
+	bcc	memcpy_Overlap	-- and special code if blocks overlap
+
+	-- This code is optimised for direct word-aligned addresses.
+	tst	a1, 0b11		-- check for word-aligned destination
+	tsteq	a2, 0b11		-- check for word-aligned source
+	bne	memcpy_Align		-- code required to align addresses
+
+memcpy_Word_Aligned:
+	-- Source and destination addresses are word-aligned
+	-- a1 = word aligned destination address
+	-- a2 = word aligned source address
+	-- a3 = number of bytes to move
+
+        bics    a4, a3, 0b11		-- a4 = number of words to move * 4
+        beq     memcpy_Spare 	-- less than one word to go
+	-- Move (a4 >> 2) words from source to destination
+        sub     a3, a4 		       	-- modify byte count for later use
+
+	-- Get the "a4" byte count to be a multiple of four (4) words
+	movs	v1, a4 lsl 29
+
+	-- bit 3 will now be in the Carry flag
+	-- bit 2 will be in bit31 of the result, reflected in the miNus flag
+	-- This code will do nothing if neither of these flags are set
+	ldmcsia	a2!, {v1, v2}		-- load two words
+	stmcsia	a1!, {v1, v2}		-- store two words
+	ldmmiia	a2!, {v1}		-- load one word
+	stmmiia	a1!, {v1}		-- store one word
+	-- The "a4" byte count is now a multiple of four (4) words
+
+	-- get word count to be a multiple of eight words
+	movs	v1,a4 lsl 27
+	-- bit 4 will be in bit31 of the result, reflected in the miNus flag
+	-- This code will do nothing if the flag is not set
+	ldmmiia	a2!, {v1,v2,v3,v4}	-- load four words
+	stmmiia	a1!, {v1,v2,v3,v4}	-- store four words
+
+	-- We know that the "a4" byte count is a multiple of eight (8) words.
+	-- Clear the relevant lo-order bits here, since we didn't update the
+	-- the count when (possibly) copying the above words.
+	bics	a4, a4, 8 * 4 - 1
+	beq	memcpy_Spare		-- end of transfer
+
+	-- The "a4" byte count is now a multiple of eight (8) words
+memcpy_Word_Aligned_loop:
+	ldmia	a2!, {v1,v2,v3,v4,v5,dp,ip,lk}	-- load eight words
+	STMIA	a1!, {v1,v2,v3,v4,v5,dp,ip,lk}	-- store eight words
+	SUBS	a4, a4, 4 * 8			-- decrement the byte count
+
+	-- We could optimise this approach by flattening out the loop (so that
+	-- we don't break the pipe-line with this branch back).
+	bne	memcpy_Word_Aligned_loop
+	-- and fall through to...
+memcpy_Spare:
+	-- a1 = destination address
+	-- a2 = source address
+	-- a3 = number of bytes to move (less than one word)
+	movs	v1, a3 lsl 31
+
+	-- bit 1 will now be in the Carry flag
+	-- bit 0 will now be bit31 of the result, reflected in the miNus flag
+	ldrcsb	v1, (a2), 1		-- two bytes moved if Carry set
+	strcsb	v1, (a1), 1
+	ldrcsb	v1, (a2), 1
+	strcsb	v1, (a1), 1
+	ldrmib	v1, (a2), 1		-- one byte moved if miNus set
+	strmib	v1, (a1), 1
+
+        -- copy completed, return
+        ldmea   fp, {v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+	------------------------------------------------------------------------
+
+memcpy_Align:
+	and	a4, a1, 0b11		-- a4 = destination byte alignment
+	and	v1, a2, 0b11		-- v1 = source byte alignment
+	teq	a4, v1			-- check alignments for equality
+	bne	memcpy_Align_Bad	-- source and destination not aligned
+
+	-- source and destination have same byte alignment
+	teq	a3, 0			-- check for zero length
+        ldmeqea fp, {v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+memcpy_Align_Same_loop:
+        ldrb    a4, (a2), 1		-- load byte from the source
+        strb    a4, (a1), 1		-- store at the destination
+        subs    a3, a3, 1		-- and decrement the count
+
+        -- If we have no more bytes then exit immediately
+        ldmeqea fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+        tst     a1, 0b11	  	-- check for word-aligned destination
+        bne     memcpy_Align_Same_loop
+	b	memcpy_Word_Aligned
+
+	------------------------------------------------------------------------
+
+memcpy_Overlap:
+	and	a4, a1, 0b11		-- a4 = destination byte alignment
+	and	v1, a2, 0b11		-- v1 = source byte alignment
+	teq	a4, v1			-- check alignments for equality
+	bne	memcpy_Align_Bad	-- source and destination not aligned
+
+	-- source and destination have same byte alignment
+	teq	a4, 0			-- check for word alignment
+	bne	memcpy_Overlap_byte
+memcpy_Overlap_word:
+        bics    a4, a3, 0b11		-- a4 = number of words to move * 4
+        beq     memcpy_Spare	 	-- less than one word to go
+
+        sub     a3, a3, a4        	-- we will move "a4" bytes of data
+memcpy_Overlap_loop:
+	ldr	v1, (a2), 4		-- load word from the source
+	str	v1, (a1), 4		-- store word at destination
+        subs    a4, a4, 4		-- decrement word count
+
+	-- We could optimise this approach by flattening out the loop (so that
+	-- we don't break the pipe-line with this branch back).
+        bne     memcpy_Overlap_loop	-- and around the loop again
+        b       memcpy_Spare		-- move any spare bytes to complete
+
+memcpy_Overlap_byte:
+	teq	a3, 0			-- check for zero length
+        ldmeqea fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+memcpy_Overlap_byte_loop:
+        ldrb    v1, (a2), 1		-- load byte from the source
+        STRB    v1, (a1), 1		-- store at the destination
+        SUBS    a3, a3, 1		-- and decrement the count
+
+        -- If we have no more bytes then exit immediately
+        ldmeqea fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+        tst     a1, 0b11	  	-- check for word-aligned destination
+        bne     memcpy_Overlap_byte_loop
+	b	memcpy_Overlap_word	-- otherwise move words
+
+	-- ---------------------------------------------------------------------
+
+memcpy_Align_Bad:
+	-- Source and destination have different byte alignments, so we word
+        -- align with the destination address.
+	teq	a3, 0			-- check for zero length
+        ldmeqea fp, {v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+memcpy_Align_loop:
+        ldrb    a4, (a2), 1		-- load byte from the source
+        strb    a4, (a1), 1		-- store at the destination
+        subs    a3, a3, 1		-- and decrement the count
+
+        -- If we have no more bytes then exit immediately
+        ldmeqea fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+        tst     a1, 0b11	  	-- check for word-aligned destination
+        bne     memcpy_Align_loop
+
+        bics    a4, a3, 0b11		-- a4 = number of words to move * 4
+        beq     memcpy_Spare	 	-- less than one word to go
+
+        sub     a3, a3, a4        	-- we will move "a4" bytes of data
+
+	-- We know that the source is NOT word-aligned from the fact that it
+	-- has a different alignment to the destination (from above), which we
+	-- have just word-aligned. This code discovers the alignment difference
+	-- between the source and destination addresses.
+        movs    v1, a2 lsl 31   	-- work out the source alignment
+
+	-- bit 1 will now be in the Carry flag
+	-- bit 0 will be in bit31 of the result, reflected in the miNus flag
+        bic     v1, a2, 0b11		-- word-aligned base address
+        ldmia	v1!, {v3}		-- v3 = value from word-aligned source
+        add     a2, a2, a4        	-- and source will move by "a4" bytes
+
+	-- set up the v4 and v5 shifts accordingly
+	movmi	v4, 24			-- v4 set if alignment of 1 or 3
+	movmi	v5, 8			-- v5 set if alignment of 1 or 3
+	movpl	v4, 16			-- v4 set if alignment of 2
+	movpl	v5, 16			-- v5 set if alignment of 2
+	movcc	v4, 8			-- v4 set if alignment of 1
+	movcc	v5, 24			-- v5 set if alignment of 1
+memcpy_Aligned:
+        mov     v2, v3			-- v2 = previous word
+        ldmia   v1!, {v3}		-- v3 = current word
+        mov     v2, v2 lsr v4		-- v2 = v2 >> v4
+        orr     v2, v2, v3 lsl v5	-- v2 = v2 OR (v3 << v5)
+        str     v2, (a1), 4		-- store v2 at word-aligned destination
+        subs    a4, a4, 4		-- decrement word count
+
+	-- We could optimise this approach by flattening out the loop (so that
+	-- we don't break the pipe-line with this branch back).
+        bne     memcpy_Aligned		-- and around the loop again
+        b       memcpy_Spare		-- move any spare bytes to complete
+]
+
+
+------------------------------------------------------------------------------
+-- backtrace function
+------------------------------------------------------------------------------
+
+--	int _backtrace( int * buffer, int frame_pointer )
+--
+-- Upon Entry:
+--      R_A1	byte offset of buffer to contain function name
+--      R_A2	frame pointer of previous function
+--	R_LR	return address
+--
+-- Upon Exit
+--	R_A1	frame pointer of the function whoes name is in buffer or NULL
+--      memory pointed to by R_A1 will have had function name copied into it  
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, R_ADDR2, ST
+--
+-- Purpose
+-- 	Produces a string identifying the parent function of
+--	the previous function identified on the execution stack.
+--	If the frame pointer to the previous function is NULL
+--	then it will use the current frame pointer
+--
+
+	Function _backtrace
+
+	warning "@@@ _backtrace still to be coded."
+
+	mov	a1, 0
+	movs	pc, lr
+
+
+
+------------------------------------------------------------------------------
+-- Simple maths support for norcroft compiler
+------------------------------------------------------------------------------
+
+	---------------------------------------------------------------------
+	-- This function is called by the compiler when the
+	-- result of an integer division is not used, but
+	-- according to the ANSI spec we must still generate
+	-- an error if the division is illegal.
+	--
+	-- eg:
+	--
+	-- int func( int arg ) { int a = 1 / arg; return 2; }
+
+
+	Function __divtest
+
+	cmp	a1, 0
+	movnes	pc, lr
+
+__divtest_part2:
+	-- may be entered here by div/udiv
+	stmfd	sp!, {lr}		-- corrupted by function calls
+
+	-- get module of MyTask (__Task_)
+	patchinstr(patcharmdt, datamodule(__Task_),
+		ldr	ip, (dp, 0))
+
+	-- get task pointer into first arg
+	patchinstr(patcharmdt, datasymb(__Task_),
+		ldr	a1, (ip, 0))
+
+	mov	a2, SIGFPE
+	patchinstr (PATCHARMJP, labelref(.CallException),
+		bl	0)		-- raise signal
+	ldmfd	sp!, {pc}^		-- return
+
+
+	---------------------------------------------------------------------
+	-- Multiply two 32 bit numbers and return 32 bit result
+
+	Function __multiply
+
+	-- a1 = a1 * a2, uses a3
+	mov	a3, 0
+xxxmultiplyit:
+	movs	a2, a2 lsr 1
+	addcs	a3, a3, a1
+	add	a1, a1, a1
+	bne	xxxmultiplyit
+	mov	a1, a3
+	movs	pc, lr
+
+
+
+	---------------------------------------------------------------------
+	-- Signed divide of a2 by a1: returns quotient in a1, remainder in a2
+	-- Quotient is truncated (rounded towards zero).
+	-- Sign of remainder = sign of dividend.
+	-- Destroys a3, a4 and ip
+	-- Negates dividend and divisor, then does an unsigned divide
+	-- signs get sorted out again at the end.
+	-- Code mostly as for udiv, except that the justification part is
+	-- slightly simplified by knowledge that the dividend is in the range
+	-- (0..0x80000000) (one register may be gained thereby).
+
+	Function __divide
+
+	movs	ip,  a1
+        beq	__divtest_part2
+        rsbmi	a1, a1, 0	-- absolute value of divisor
+        eor	ip, ip, a2
+        ands	a4, a2, 0x80000000
+        orr	ip, a4, ip lsr 1
+	-- ip bit 31  sign of dividend (= sign of remainder)
+	--    bit 30  sign of dividend EOR sign of divisor (= sign of quotient)
+        rsbne	a2, a2, 0	-- absolute value of dividend
+
+        mov	a3, a1
+        mov     a4, 0
+s_loop:
+	--cmp	a2, a3 asl 0
+	cmp	a2, a3
+        bls     s_shifted0mod8
+        cmp     a2, a3 asl 1
+        bls     s_shifted1mod8
+        cmp     a2, a3 asl 2
+        bls     s_shifted2mod8
+        cmp     a2, a3 asl 3
+        bls     s_shifted3mod8
+        cmp     a2, a3 asl 4
+        BLS     s_shifted4mod8
+        cmp     a2, a3 asl 5
+        bls     s_shifted5mod8
+        cmp     a2, a3 asl 6
+        bls     s_shifted6mod8
+        cmp     a2, a3 asl 7
+        movhi   a3, a3 asl 8
+        bhi     s_loop
+s_loop2:
+	cmp	a2, a3 asl 7
+	adc	a4, a4, a4
+        -- subhs   a2, a2, a3 asl 7
+        subcs   a2, a2, a3 asl 7
+        cmp     a2, a3 asl 6
+s_shifted6mod8:
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 6
+        subcs   a2, a2, a3 asl 6
+        cmp     a2, a3 asl 5
+s_shifted5mod8:
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 5
+        subcs   a2, a2, a3 asl 5
+        cmp     a2, a3 asl 4
+s_shifted4mod8:
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 4
+        subcs   a2, a2, a3 asl 4
+        cmp     a2, a3 asl 3
+s_shifted3mod8:
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 3
+        subcs   a2, a2, a3 asl 3
+        cmp     a2, a3 asl 2
+s_shifted2mod8:
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 2
+        subcs   a2, a2, a3 asl 2
+        cmp     a2, a3 asl 1
+s_shifted1mod8:
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 1
+        subcs   a2, a2, a3 asl 1
+	--cmp	a2, a3 asl 0
+	cmp	a2, a3
+s_shifted0mod8:
+        adc     a4, a4, a4
+	--subhs	a2, a2, a3 asl 0
+        subcs	a2, a2, a3
+        cmp     a1, a3 lsr 1
+        movls	a3, a3 lsr 8
+        bls	s_loop2
+        mov	a1, a4
+        tst	ip, 0x40000000
+        rsbne	a1, a1, 0
+        tst	ip, 0x80000000
+        rsbne	a2, a2, 0
+        movs	pc, lr
+
+
+	---------------------------------------------------------------------
+	-- return signed remainder of a2/a1 in a1
+
+	Function __remainder
+
+	stmfd	sp!, {lr}
+	bl	__divide		-- cheat a little!
+	mov	a1, a2
+	ldmfd	sp!, {pc}^
+
+
+	---------------------------------------------------------------------
+	-- Return unsigned remainder of a2/a1 in a1
+
+	Function __uremainder
+
+	stmfd	sp!, {lr}
+	bl	__udivide		-- cheat a little!
+	mov	a1, a2
+	ldmfd	sp!, {pc}^
+
+
+
+	---------------------------------------------------------------------
+	-- Signed divide of a2 by a1, returns quotient in a1, remainder in a2
+	-- Unsigned divide of a2 by a1: returns quotient in a1, remainder in a2
+	-- Destroys a3, a4 and ip
+
+	Function __udivide
+
+        movs	a3, a1
+        beq	__divtest_part2
+        mov     a4, 0
+        mov	ip, 0x80000000
+        cmp     a2, ip
+        -- movlo   ip, a2
+        movcc   ip, a2
+u_loop:
+	--cmp	ip, a3 asl 0
+        cmp     ip, a3
+        bls     u_shifted0mod8
+        cmp     ip, a3 asl 1
+        bls     u_shifted1mod8
+        cmp     ip, a3 asl 2
+        bls     u_shifted2mod8
+        cmp     ip, a3 asl 3
+        bls     u_shifted3mod8
+        cmp     ip, a3 asl 4
+        bls     u_shifted4mod8
+        cmp     ip, a3 asl 5
+        bls     u_shifted5mod8
+        cmp     ip, a3 asl 6
+        bls     u_shifted6mod8
+        cmp     ip, a3 asl 7
+        movhi   a3, a3 asl 8
+        bhi     u_loop
+u_loop2:
+u_shifted7mod8:
+        cmp     a2, a3 asl 7
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 7
+        subcs   a2, a2, a3 asl 7
+u_shifted6mod8:
+        cmp     a2, a3 asl 6
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 6
+        subcs   a2, a2, a3 asl 6
+u_shifted5mod8:
+        cmp     a2, a3 asl 5
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 5
+        subcs   a2, a2, a3 asl 5
+u_shifted4mod8:
+        cmp     a2, a3 asl 4
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 4
+        subcs   a2, a2, a3 asl 4
+u_shifted3mod8:
+        cmp     a2, a3 asl 3
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 3
+        subcs   a2, a2, a3 asl 3
+u_shifted2mod8:
+        cmp     a2, a3 asl 2
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 2
+        subcs   a2, a2, a3 asl 2
+u_shifted1mod8:
+        cmp     a2, a3 asl 1
+        adc     a4, a4, a4
+        -- subhs   a2, a2, a3 asl 1
+        subcs   a2, a2, a3 asl 1
+u_shifted0mod8:
+	--cmp	a2, a3 asl 0
+        cmp     a2, a3
+        adc     a4, a4, a4
+	--subhs	a2, a2, a3 asl 0
+        subcs	a2, a2, a3
+        cmp     a1, a3 lsr 1
+        movls	a3, a3 lsr 8
+        bls     u_loop2
+        mov     a1, a4
+        movs    pc, lr
+
+
+
+-- end of armnccsupp.a

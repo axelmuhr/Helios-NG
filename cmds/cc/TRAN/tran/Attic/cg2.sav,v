@@ -1,0 +1,1467 @@
+head     1.1;
+branch   1.1.1;
+access   ;
+symbols  ncc:1.1.1.1 ncc:1.1.1;
+locks    ; strict;
+comment  @# @;
+
+
+1.1
+date     93.07.21.14.07.08;  author nick;  state Exp;
+branches 1.1.1.1;
+next     ;
+
+1.1.1.1
+date     93.07.21.14.07.09;  author nick;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/* $Id: cg2.c,v 1.2 90/10/17 16:02:13 nick Exp $ */
+#ifdef __old
+#include "cchdr.h"
+#include "AEops.h"
+#include "util.h"
+#include "xpuops.h"
+#include "cg.h"
+#else
+#include "globals.h"
+#include "builtin.h"
+#include "store.h"
+#include "util.h"
+#include "aeops.h"
+#include "xpuops.h"
+#include "cg.h"
+#endif
+
+
+extern int maxssp;
+extern int ssp;
+extern int maxcall;
+extern int depth();
+
+/* forward references */
+void cg_storein();
+void cg_var();
+
+/* This file contains code for generating assignment statements and accessing
+   variables (in particular indexed or indirected variables).
+   
+   Also the translation between AEops and transputer instructions
+*/
+
+/* We have found a scalar assignment statement,
+   this is either s_assign    e.g.  a = ...;
+   or             s_displace  e.g.  a++;
+   
+   in addition valneeded may or may not be set depending on whether we
+   need to leave the value in the register as well
+   e.g. a = b = 3;
+   vs.  a = 3;
+
+   This is part of an attempt to improve the code for simple assignments
+   etc. More work is intended to be done here. In particular evaluating
+   the depth of the two sides, to evaluate them in the best order, and
+   dealing with valneeded by using dup when we know it is safe...
+   For expediency at the moment, this just calls the old routines.
+   This should also check for (e.g.) float x, y; x = y
+   and generate ldl y stl x rather than ldlp y fpldnlsn  ldlp x fpstnlsn
+*/
+void cg_scalarAssign(x,valneeded)
+Expr *x;
+bool valneeded;
+{
+    int mclength  = mcrepofexpr(x);
+    int mcmode    = (mclength>>24) & 0xff;
+    Expr *target  = arg1_(x), *source = arg2_(x);
+/*  int td = depth(target), sd = depth(source); */
+    AEop targetOp = h0_(target);
+    RegSort rsort = (mclength &= 0x00ffffff,
+	(mcmode!=2) ? INTREG : (mclength==4 ? FLTREG : DBLREG ));
+
+    push_trace("cg_scalarAssign");
+    
+    if(debugging(DEBUG_CG))
+    {
+       trace("Cg_scalarAssign: %x valneeded %d",x,valneeded);
+       eprintf("Target "); pr_expr(target);
+       eprintf("\nSource "); pr_expr(source);eprintf("\n");
+    }
+
+    /* A displace in a void context can be replaced with a simple */
+    /* assignment.						  */
+    if( h0_(x) == s_displace && !valneeded ) h0_(x) = s_assign;
+
+    /* This is where we should be much more subtle about depths etc */
+
+    if( !floatingHardware && rsort == DBLREG ) 
+    {
+	cg_doubleassign( target, source, h0_(x), valneeded );
+	pop_trace(); return;
+    }
+
+    cg_expr(source);
+
+    if (targetOp != s_binder)
+       cg_storein( target, h0_(x), valneeded);
+    else 
+       cg_var(  target,h0_(x),mcmode, mclength, valneeded);
+       
+   pop_trace();
+}
+
+/* The code generated here is not really very clever. It should be
+ * improved later, so that it extracts constants from the index expression
+ * into the base offset. It should also make use of wsubdb. These improvements
+ * are probably better done in the pre parser (or at least supported there).
+ * More attention should be paid to the context in which this procedure is
+ * called.
+ * At present something like short a[]; a[i] = a[j]; generates a move from a[j]
+ * to a temp and then a move from this to a[i] where a direct move a[j] to a[i]
+ * is obviously what is needed.
+ * In general this, cg_scalarAssign, cg_var, cg_storein and cg_addr all 
+ * need a total re-think and re-write.
+ */
+void cg_indirect(x,flag,mcmode,mclength,valneeded)
+Expr *x;
+int flag, mcmode, mclength,valneeded;
+{
+	VLocal *v1 = NULL;
+	VLocal *v2 = NULL;
+	Expr *x1, *x2 = NULL;
+	int offset = 0, postinc = 0;
+	const RegSort rsort = mcmode!=2 ? INTREG : 
+				(mclength==4 ? FLTREG : DBLREG);
+	int x1len, x1mode;
+	int d = depth(x);
+	int scaled = FALSE;
+
+	/* if this is a T4 and we are trying to get a single precision	*/
+	/* float, lie about it and load an integer instead.		*/
+	if( !floatingHardware && rsort==FLTREG )
+	{
+		mcmode = 0;
+		mclength = 4;
+	}
+
+	push_trace("cg_indirect");
+	
+        if(debugging(DEBUG_CG))
+	{ 
+	    trace("Cg_indirect: %x %s flag %d mcmode %d mclength %d",
+		x,symbol_name_(h0_(x)),flag,mcmode,mclength);
+	    trace("valneeded %d depth %d",valneeded,d);
+	}
+	switch( h0_(x))
+	{
+	case s_plus:
+	/* test for (x + n), common case for structure and array access */
+		x1 = arg1_(x); x2 = arg2_(x);
+		if(integer_constant(x1) ) offset=result2, x1=x2, x2=NULL ;
+		else if(integer_constant(x2) ) offset=result2, x2 = NULL;
+		else if( h0_(x2) == s_times && mclength == 4 )
+		{/* check for (x + (y * 4)), common case for array access */
+			if( integer_constant(arg1_(x2)) && result2 == 4 )
+				scaled = TRUE, x2 = arg2_(x2);
+			else if( integer_constant(arg2_(x2)) && result2 == 4 )
+				scaled = TRUE, x2 = arg1_(x2);
+		}
+		break;
+
+	case s_minus:
+		x1 = arg1_(x); x2 = arg2_(x);
+		if( integer_constant(x2) ) offset= -result2, x2 = NULL;
+		else x1 = x, x2 = NULL;
+		break;
+
+	case s_displace:
+	{
+		Expr *v = arg1_(x), *x3 = arg2_(x);
+		if( h0_(x3)==s_plus &&
+			is_same(arg1_(x3),v) && integer_constant(arg2_(x3)))
+		{ /* i.e. something like *p++ */
+			postinc = result2;
+			x = v;
+		}
+	}
+		/* drop through */
+	
+	default:
+		x1 = x; x2 = NULL;
+		break;
+
+	} /* end of switch */
+
+	/* Here x1 is the expression to generate the address,	*/
+	/* x2 is the offset, unless it is NULL in which case	*/
+	/* there is a constant integer offset in offset. If the */
+	/* expression contains a displace, there will be a post */
+	/* increment in postinc.				*/
+
+	if(debugging(DEBUG_CG))
+		trace("x1 %s x2 %s offset %d postinc %d",
+			x1?symbol_name_(h0_(x1)):"<NULL>",
+			x2?symbol_name_(h0_(x2)):"<NULL>",
+			offset,postinc);
+
+
+	/* If the result of the assignment is needed, store it away here */
+	/* or if we have to clear the decks for a complex expression	*/
+	/* This is only necessary for integers. the float stack is safe */
+	/* when the access is 16 bits, ALWAYS save it.			*/
+	if(	(rsort == INTREG || !floatingHardware ) && 		/* using int stack AND */
+		(	(flag==s_assign && valneeded ) ||		/* assignment result needed OR */
+			( (flag==s_displace||flag==s_assign) && 
+			  (idepth(d) > 2 || mclength == 2 )
+			) 
+		)
+	  ) 
+	{
+		v2 = pushtemp( INTREG );
+	}
+
+	else if( (rsort != INTREG || floatingHardware ) && (flag==s_assign && valneeded ) )
+	{
+		duplicate( FLTREG );
+	}
+
+	/* displace & assign need all 3 registers, if there is already 	*/
+	/* something in the stack, evict it.				*/
+	if( (	(rsort == INTREG  || !floatingHardware ) && 		/* using int stack AND */
+		(	
+			(	((flag == s_displace && v2 != NULL) ||
+				 (mclength == 2 ) ||
+				 (flag == s_assign && valneeded)) &&
+			 	mcmode < 2 && ida < 3 
+			) 
+		) 
+	    )
+	  )
+	{
+		v1 = pushtemp( INTREG );
+	}
+
+	/* restore value for assignment only if expression is not complex */
+	if( v2 != NULL && (idepth(d) < 3 && mclength != 2 )) 
+	{
+	   emit(p_ldvl, v2);
+	   pushInt();
+        }
+
+	if( x2 != NULL ) 
+	{
+		int oldae = addrexpr;
+		addrexpr = TRUE;
+		cg_binary(s_nothing,x2,x1,0,INTREG);
+		addrexpr = oldae;
+	}
+	else cg_addrexpr(x1);
+
+	switch( mcmode )
+	{
+	case 0:
+	case 1:
+	case 4:
+		/* integer-like things	*/
+	    switch( mclength )
+	    {
+	    case 1:		/* byte sized pieces 		*/
+		if( x2 ) emit(f_opr, op_bsub ), popInt(); 
+		else if( offset ) emit( f_adc, offset ); 
+		if( v2 != NULL && d > 2 )
+		{
+		   emit(p_ldvl, v2);
+		   emit(f_opr, op_rev );
+		   pushInt();
+		}
+		switch( flag )
+		{
+		case s_content:
+			emit(f_opr, op_lb );
+			if( mcmode == 0 )
+			{
+				emit(f_ldc, 0x80 );
+				emit( f_opr, op_xword );
+			}
+			break;
+
+		case s_displace:
+		{
+		/* The following code is NASTY. We enter with A=address	*/
+		/* and B = new value. We want to store the new value and*/
+		/* return the original value. While there are enough 	*/
+		/* registers for this, at some point we would want to   */
+		/* swap B and C without touching A.			*/
+			VLocal *v = pushtemp(INTREG);
+
+			emit( p_ldvl,v ); pushInt();
+			emit(f_opr, op_lb );
+			emit(f_opr, op_rev );
+			poptemp(v, INTREG);
+			emit(f_opr, op_sb ); popInt(); popInt();
+			if( mcmode == 0 )
+			{
+				emit(f_ldc, 0x80 );
+				emit( f_opr, op_xword );
+			}
+			break;
+		}
+		
+		case s_assign:
+			emit(f_opr, op_sb );popInt(); popInt();
+			break;
+		}
+		break;
+	
+	    case 2: 	/* short (16 bit) integers	*/
+#if 0	    
+	    	x1len = mcrepofexpr(x1);
+	    	x1mode = (x1len>>24) & 0xFF;
+	    	x1len = x1len & 0xFFFFFF;
+#endif
+		if( x2 ) emit(f_opr, op_bsub ), popInt(); 	
+
+		/* Shorts are done using move. This is VERY expensive	*/
+		switch( flag )
+		{
+		case s_content:
+		{
+			if( !move_shorts )
+			{
+				/* offset is a constant, we can use this to try	*/
+				/* and optimise the access. This code assumes	*/
+				/* that the base address is word oriented. This	*/
+				/* will be true for most cases, but is false	*/
+				/* for a pointer halfway through a word in an	*/
+				/* array of bytes. How can I detect this ??	*/
+				emit( f_ldnl, offset>>2);
+				if( (offset & 3) == 0 ) 
+				{
+					emit( f_ldc, 0xFFFF );
+					emit( f_opr, op_and );
+				}
+				else
+				{
+					emit( f_ldc, 16 );
+					emit( f_opr, op_shr );
+				}
+				if( mcmode == 0 )
+				{
+					emit(f_ldc, 0x8000 );
+					emit( f_opr, op_xword );
+				}
+			}
+			else
+			{
+				VLocal *v = allocatetemp(INTREG);
+				if( offset ) emit( f_adc, offset );
+				emit( f_ldc, 0 );
+				emit( p_stvl, v );
+				emit( p_ldvlp, v);
+				emit( f_ldc, 2 );
+				emit( f_opr, op_move );
+				emit( p_ldvl, v );
+				setInt(FullDepth-1);
+
+				if( mcmode == 0 )
+				{
+					emit(f_ldc, 0x8000 );
+					emit( f_opr, op_xword );
+				}
+				freetemp(v);
+			}
+			break;
+		}
+
+		case s_displace:
+		{
+			VLocal *p;
+			VLocal *v1;
+
+			if( offset ) emit( f_adc, offset );
+			p = pushtemp(INTREG);
+			v1 = allocatetemp(INTREG);
+			
+			emit( f_ldc, 0 );
+			emit( p_stvl, v1 );
+			emit( p_ldvl, p );
+			emit( p_ldvlp, v1);
+			emit( f_ldc, 2 );
+			emit( f_opr, op_move );
+			emit( p_ldvlp, v2);
+			emit( p_ldvl, p );
+			emit( f_ldc, 2 );
+			emit( f_opr, op_move );
+
+			emit( p_ldvl, v1 );
+			setInt(FullDepth-1);
+
+			if( mcmode == 0 )
+			{
+				emit(f_ldc, 0x8000 );
+				emit( f_opr, op_xword );
+			}
+
+			freetemp(v1);
+			freetemp(p);
+			break;	
+		}
+		
+		case s_assign:
+		{
+			if( offset ) emit( f_adc, offset );
+			emit( p_ldvlp, v2 );
+			emit( f_opr, op_rev );
+			emit( f_ldc, 2 );
+			emit( f_opr, op_move );
+			setInt(FullDepth);
+			break;
+		}
+		}
+		break;
+	
+
+	    case 4:		/* normal ints			*/
+
+		if( x2 ) 
+		{
+			if( scaled ) emit(f_opr, op_wsub );
+			else emit(f_opr, op_sum );
+			popInt();
+		}
+		if( v2 != NULL && d > 2 )
+		{
+		   emit(p_ldvl, v2);
+		   emit(f_opr, op_rev );
+		   pushInt();
+		}
+		switch( flag )
+		{
+		case s_content:
+			emit( f_ldnl, offset / 4 );
+			break;
+		
+		case s_displace:
+		{
+		/* More yukky code, see comment above.			*/
+			VLocal *v = pushtemp(INTREG);
+			
+			emit( p_ldvl, v ); pushInt();
+			emit( f_ldnl, offset / 4 );
+			emit(f_opr, op_rev );
+			poptemp(v, INTREG);
+			emit( f_stnl, offset / 4 ); popInt();popInt();
+			break;
+		}
+
+		case s_assign:
+			emit( f_stnl, offset / 4 ); popInt();popInt();
+			break;
+		}
+	    } /* mclength */
+	    break;
+
+
+	case 2:
+		/* real numbers		*/
+		if( x2 ) 
+		{
+			if( scaled ) emit(f_opr, op_wsub );
+			else emit(f_opr, op_sum );
+			popInt();
+		}
+		if( v2 != NULL && d > 2 )
+		{
+		   emit(p_ldvl, v2);
+		   emit(f_opr, op_rev );
+		   pushInt();
+		}
+
+		switch( flag )
+		{
+		case s_content:
+		    if( floatingHardware )
+		    {
+			emit( f_ldnlp, offset / 4 );
+			emit(f_opr, rsort == FLTREG ? 
+					op_fpldnlsn: op_fpldnldb);
+			popInt(); pushFloat();
+		    }
+		    else emit( rsort==FLTREG?f_ldnl:f_ldnlp, offset / 4 );
+		    break;
+		
+		case s_displace:
+		/* More yukky code, see comment above.			*/
+		   if( floatingHardware )
+		   {
+			emit( f_ldnlp, offset / 4 );
+			emit(f_opr, op_dup ); pushInt();
+	           	emit(f_opr, rsort == FLTREG ? op_fpldnlsn: op_fpldnldb);
+	           	popInt(); pushFloat();
+	           	emit(f_opr, op_fprev );
+	           	emit(f_opr, rsort == FLTREG ? op_fpstnlsn: op_fpstnldb);
+	           	popInt(); popFloat();
+		   }
+		   else {
+			syserr("cg_indirect: attempt to use double in T4");
+		   }
+		   break;
+		
+		case s_assign:
+		    if( floatingHardware )
+		    {
+			emit( f_ldnlp, offset / 4 );
+			emit(f_opr, rsort == FLTREG ? op_fpstnlsn:op_fpstnldb);
+			popInt(); popFloat();
+		    }
+		    else {
+			syserr("cg_indirect: attempt to use double in T4");
+		    }
+		    break;
+		}
+		
+		break;
+	} /* mcmode */
+
+	/* if there was a displace within the indirection, do the	*/
+	/* update part here. 						*/
+
+	if( postinc ) 
+	{
+		cg_addrexpr( x1 );		/* @@@@@@ side effects ??? */
+		emit( f_adc, postinc );
+		cg_storein( x1 , s_assign, 0 );
+	}
+
+
+	if( v1 != NULL ) poptemp( v1, INTREG );
+	if( v2 != NULL && flag==s_assign && valneeded ) poptemp( v2, INTREG );
+	
+	pop_trace();
+}
+
+
+/* I don't like the way this generates things if the value is required,
+ * I would prefer to do a dup on the value before saving it away.
+ * This saves a store cycle !!! FIX THIS LATER ! Jim.
+ */
+void cg_var(b,flag,mcmode,mclength,valneeded)
+Binder *b;
+AEop flag;
+int mcmode,mclength,valneeded;
+{
+   int loadOp, storeOp, loadAddressOp;
+
+	push_trace("cg_var");
+	         
+	if(debugging(DEBUG_CG)) 
+	    trace("Cg_var: %s flag %d mcmode %d mclength %d valneeded %d ida %d",
+			_symname(bindsym_(b)),flag,
+			mcmode,mclength,valneeded,ida);
+			
+	switch( bindstg_(b) & PRINCSTGBITS )
+	{
+	case bitofstg_(s_auto):
+	        loadOp = p_ldvl;
+	        storeOp= p_stvl;
+	        loadAddressOp = p_ldvlp;
+	        b = (Binder *)bindxx_(b);
+	        break;
+
+	case bitofstg_(s_extern):
+	        loadOp = p_ldx;
+	        storeOp= p_stx;
+	        loadAddressOp = p_ldxp;
+		break;
+
+	case bitofstg_(s_static):
+	        loadOp = p_lds;
+	        storeOp= p_sts;
+	        loadAddressOp = p_ldsp;
+		break;
+	
+	default:
+		syserr("Funny storage class %#x\n",bindstg_(b));
+
+	}
+	
+	if( mcmode < 2 || (!floatingHardware && mcmode==2 && mclength==4) )
+	{ /* all integer-like objects are stored in 1 word */
+	  /* also all 4 byte floats in T414 */
+	  	switch( mclength )
+	  	{
+	  	case 1:			/* chars */
+	  		switch( flag )
+	  		{
+	  		case s_displace:
+	  		{
+	  			if( ida < 2 )
+	  			{
+		  			VLocal *v;
+		  			emit( loadAddressOp, b ); pushInt();
+		  			emit( f_opr, op_lb );
+		  			v = pushtemp(INTREG);
+	  				emit( loadAddressOp, b ); pushInt();
+	  				emit( f_opr, op_sb );popInt();
+		  			poptemp(v, INTREG);	
+	  			}
+	  			else
+	  			{
+		  			emit( loadAddressOp, b ); pushInt();
+		  			emit( f_opr, op_lb );
+				        emit(f_opr, op_rev );
+	  				emit( loadAddressOp, b ); pushInt();
+	  				emit( f_opr, op_sb );popInt();
+	  			}
+				break;		        
+			}
+
+			case s_assign:
+				emit( storeOp, b );popInt();
+			        if (!valneeded) { pop_trace(); return; }
+				/* drop through to re-load */
+				
+			case s_content:
+			        if (valneeded)
+			        {  
+			        /* Check that higher up sets valneeded if volatile */
+		        	   emit( loadAddressOp, b); pushInt();
+		        	   emit( f_opr, op_lb );
+			        }
+			        else { pop_trace(); return; }
+			        break;
+			    
+			default:
+				syserr("Unknown flag %x8 in cg_var",flag);
+	  		}
+	  		
+	  		/* extend sign if this is a signed char */
+	  		if( mcmode == 0 )
+	  		{
+	  			if( ida == 0 )
+	  			{
+	  				VLocal *v;
+	  				emit( f_opr, op_rev );
+	  				v = pushtemp( INTREG );
+			  		emit( f_ldc, 0x80 );
+			  		emit( f_opr, op_xword );
+					poptemp(v, INTREG );
+	  				emit( f_opr, op_rev );
+	  			}
+	  			else {
+			  		emit( f_ldc, 0x80 );
+			  		emit( f_opr, op_xword );
+			  	}
+	  		}
+	  		break;
+
+	  	case 2:				/* shorts */
+		        switch (flag)
+			{
+			case s_displace: 
+				emit( loadOp,  b);pushInt();
+			        emit(f_opr, op_rev );
+				emit(  storeOp, b);popInt();
+				break;
+
+			case s_assign:
+				emit( storeOp, b ); popInt();
+			        if (!valneeded) { pop_trace(); return; }
+				/* drop through to re-load */
+				
+			case s_content:
+			        if (valneeded)
+			        {  
+			        /* Check that higher up sets valneeded if volatile */
+		        	   emit( loadOp, b); pushInt();
+			        }
+			        else { pop_trace(); return; }
+			        break;
+			    
+			default:
+				syserr("Unknown flag %x8 in cg_var",flag);
+			}
+	  		
+	  		/* on loading a short; mask, and extend sign to	*/
+	  		/* full width if needed.			*/
+
+  			if( ida == 0 )
+  			{
+  				VLocal *v;
+  				emit( f_opr, op_rev );
+  				v = pushtemp( INTREG );
+		  		emit( f_ldc, 0xFFFF );
+		  		emit( f_opr, op_and );
+	  			if( mcmode == 0 )
+	  			{
+			  		emit( f_ldc, 0x8000 );
+			  		emit( f_opr, op_xword );
+			  	}
+				poptemp(v, INTREG );
+  				emit( f_opr, op_rev );
+  			}
+  			else {
+		  		emit( f_ldc, 0xFFFF );
+		  		emit( f_opr, op_and );
+	  			if( mcmode == 0 )
+	  			{
+			  		emit( f_ldc, 0x8000 );
+			  		emit( f_opr, op_xword );
+			  	}
+			}
+	 
+	  		break;
+	  		
+	  	case 4:				/* ints/longs	*/
+		        switch (flag)
+			{
+			case s_displace: 
+				emit( loadOp,  b);pushInt();
+			        emit(f_opr, op_rev );
+				emit(  storeOp, b);popInt();
+				break;
+
+			case s_assign:
+				emit( storeOp, b );popInt();
+			        if (!valneeded) break;
+				/* drop through to re-load */
+				
+			case s_content:
+			        if (valneeded)
+			        {  
+			        /* Check that higher up sets valneeded if volatile */
+		        	   emit( loadOp, b); pushInt();
+			        }
+			        break;
+			    
+			default:
+				syserr("Unknown flag %x8 in cg_var",flag);
+			}
+		}        
+	}
+	else 
+	{ 
+	     if( !floatingHardware )
+	     {
+		/* Only doubles get through to here			*/
+		/* doubles are always represented by a pointer to the	*/
+		/* actual value in store.				*/
+		switch( flag )
+		{
+		case s_assign:
+		{
+			/* copy both words 1 by 1 */
+			VLocal *v = pushtemp(INTREG);
+			emit( p_ldvl, v ); pushInt();
+			emit( f_ldnl, 0 );
+			emit( loadAddressOp, b ); pushInt();
+			emit( f_stnl, 0 ); popInt(); popInt();
+
+			emit( p_ldvl, v ); pushInt();
+			emit( f_ldnl, 1 ); 
+			emit( loadAddressOp, b ); pushInt();
+			emit( f_stnl, 1 ); popInt(); popInt();
+			if( valneeded )
+			{
+				emit( loadAddressOp, b );
+				pushInt();
+			}
+			freetemp( v );
+			break;
+		}
+		case s_displace:
+		{
+			/* copy both words 1 by 1 */
+			VLocal *v = pushtemp(INTREG);
+			emit( p_ldvl, v ); pushInt();
+			emit( f_ldnl, 0 );
+			emit( loadAddressOp, b ); pushInt();
+			emit( f_stnl, 0 ); popInt(); popInt();
+
+			emit( p_ldvl, v ); pushInt();
+			emit( f_ldnl, 1 ); 
+			emit( loadAddressOp, b ); pushInt();
+			emit( f_stnl, 1 ); popInt(); popInt();
+
+			/* Return original pointer */
+			emit( p_ldvl, v ); pushInt();
+
+			freetemp( v );
+			break;
+		}
+		case s_content:
+			/* simply return address of variable */
+			emit( loadAddressOp, b); pushInt();
+		 	break;
+		} /* end of switch */
+		{ pop_trace(); return; }
+	     }
+	     /* floating objects, T8 only at present */
+	     emit( loadAddressOp, b); pushInt();
+	     switch (flag)
+             {
+	 	  case s_displace:
+	  	       emit(f_opr,op_dup); pushInt();
+		       emit(f_opr,mclength == 4 ? op_fpldnlsn:op_fpldnldb);
+		       popInt(); pushFloat();
+		       emit(f_opr,op_fprev);
+		       emit(f_opr,mclength == 4 ? op_fpstnlsn:op_fpstnldb);
+		       popInt(); popFloat();
+		       break;
+		  case s_assign:
+		       if (valneeded)
+	  	       {
+		          emit(f_opr, op_fpdup );
+	   	          pushFloat();
+		       }
+		       emit(f_opr,mclength == 4 ? op_fpstnlsn:op_fpstnldb);
+		       popInt(); popFloat();
+	 	       break;
+		  case s_content:
+		      emit(f_opr,mclength == 4 ? op_fpldnlsn:op_fpldnldb);
+		      popInt(); pushFloat();
+		      break;
+		  default:
+		      syserr("Unexpected flag in cg_var #%x8",flag);
+		}
+	}
+	pop_trace();
+}
+
+void cg_storein(e,flag,valneeded)
+Expr *e;
+AEop flag; 
+int valneeded;
+{
+	int mclength = mcrepofexpr(e);
+	int mcmode = (mclength>>24) & 0xff ;
+	mclength &= 0x00ffffff;
+
+	push_trace("cg_storein");
+	
+	if(debugging(DEBUG_CG))	trace("cg_storein: %d",h0_(e));
+		
+	switch( h0_(e) )
+	{
+	case s_binder:
+		cg_var( (Binder *)e, flag, mcmode, mclength, valneeded );
+		break;
+	
+	case s_dot:
+		e = cg_content_for_dot_(e);
+		pp_expr(e,valneeded);
+		cg_storein( e, flag, valneeded );
+                break;
+                
+	case s_content:
+		e = arg1_(e);
+		cg_indirect(e , flag, mcmode, mclength, valneeded );
+                break;
+
+	default:
+		syserr("cg_storein(%d)",h0_(e));
+	}
+	pop_trace();
+}
+
+
+void codeOperation( op, floating, mode )
+AEop op;
+bool floating;
+int mode;
+{
+    switch (op)
+    {
+       case  s_times: 
+       		    if( addrexpr && !floating ) emit( f_opr, op_prod );
+/*       		    else emit(f_opr, floating ? op_fpmul: op_mul); */
+       		    else emit(f_opr, floating ? op_fpmul: op_prod);
+                    break;
+       case  s_plus: emit(f_opr, floating ? op_fpadd: op_add);
+                    break;
+       case  s_minus: emit(f_opr, floating ? op_fpsub: op_sub);
+                    break;
+       case  s_div: emit(f_opr, floating ? op_fpdiv: op_div);
+                    break;
+       case  s_rem: if (floating)
+                        syserr("%% on floating value");
+                    emit(f_opr,op_rem);
+                    break;       
+       case  s_and: if (floating)
+                        syserr("& on floating value");
+                    emit(f_opr, op_and );
+                    break;
+       case  s_or:  if (floating)
+                        syserr("| on floating value");
+                    emit(f_opr, op_or );
+                    break;
+       case  s_xor: if (floating)
+                        syserr("^ on floating value");
+                    emit(f_opr, op_xor );
+                    break;
+       case  s_leftshift: 
+                    if (floating)
+                        syserr("<< on floating value");
+                    emit(f_opr, op_shl );
+                    break;
+       case  s_rightshift:
+                    if (floating)
+                        syserr(">> on floating value");
+                    emit(f_opr, op_shr );
+                    break;
+       case  s_equalequal:
+                    if (floating)
+                        emit(f_opr, op_fpeq);
+                    else
+                    {
+                        emit(f_opr, op_diff );
+                        emit(  f_eqc, 0 );
+                    }
+                    break;
+       case  s_diff:if (floating)
+                        syserr("diff on floating value");
+                    else
+                        emit(f_opr, op_diff );
+                    break;
+       case  s_greater: 
+       		    if( (mode>>24) == 1 )
+       		    {
+			emit( f_opr, op_mint );
+			emit( f_opr, op_xor );
+			emit( f_opr,op_rev );
+			emit( f_opr, op_mint );
+			emit( f_opr, op_xor );
+			emit( f_opr,op_rev );
+			emit( f_opr, op_gt );
+       		    }
+                    else emit(f_opr, floating ? op_fpgt: op_gt);
+                    break;
+       
+       default:     syserr("Unexpected aeop %d (%s) in codeOperation",
+                             op, symbol_name_(op));
+    }
+}
+
+
+/* The followng routines are used to implement floating point emulation on */
+/* the T4. The single precsion float stuff is quite simple, but the double */
+/* stuff is seriously complicated by the fact that doubles must always live*/
+/* in store, and are passed around as pointers. 			   */
+
+void codeFpCall( op, mode1 )
+AEop op; int mode1;
+{
+	VLocal *v;
+	int code = 3;
+
+	int dbl = (mode1==0x02000008);
+
+	push_trace("codeFpCall");
+	
+	if(debugging(DEBUG_CG))
+		trace("codeFpCall(%s,%x) dbl = %d doubledest = %x",
+			symbol_name_(op),mode1,dbl,doubledest);
+
+	if( !dbl )	/* single precision floating point */
+	{
+		switch( op )
+		{
+		case s_plus:  code--;
+		case s_minus: code--;
+		case s_times: code--;
+		case s_div:
+		{
+			if( real32op == NULL )
+				syserr("codeFpCall: real32op not cached");
+
+			/* this is a temporary kludge to get operands	*/
+			/* in the right order for - & /. The proper fix	*/
+			/* is to generate them correctly in the first	*/
+			/* place.					*/
+			if( op == s_minus || op == s_div ) emit( f_opr, op_rev );
+			
+			emit( f_ldc, code );
+			emit( f_opr, op_rev );
+			emit( p_fpcall, real32op );
+			setInt(FullDepth-1);
+			break;
+		}
+
+#if 0
+		/* actually the front end does not allow this to happen */
+		case s_rem:
+		{
+			VLocal *proc = allocatetemp(INTREG);
+			emit( p_ldx, fplib.real32rem );
+			emit( p_stvl, proc );
+			emit( p_fpcall, proc );
+			freetemp(proc);
+			break;
+		}
+#endif		
+		case s_greater:
+		{
+			VLocal *proc = allocatetemp(INTREG);
+			/* this is a temporary kludge to get operands	*/
+			/* in the right order. The proper fix		*/
+			/* is to generate them correctly in the first	*/
+			/* place.					*/
+			emit( f_opr, op_rev );
+
+			emit( p_ldx, fplib.real32gt );
+			emit( p_stvl, proc );
+			emit( p_fpcall, proc );
+			freetemp(proc);
+			setInt(FullDepth-1);
+			break;
+		}
+
+		case s_equalequal:
+		{
+			VLocal *proc = allocatetemp(INTREG);
+			emit( p_ldx, fplib.real32eq );
+			emit( p_stvl, proc );
+			emit( p_fpcall, proc );
+			freetemp(proc);
+			setInt(FullDepth-1);
+			break;
+		}
+
+
+		default:
+			syserr("Unexpected AeOp in codeFpCall: %d %s",
+				op,symbol_name_(op));
+		}
+	}
+	else
+	{
+		switch( op )
+		{
+		case s_plus:  code--;
+		case s_minus: code--;
+		case s_times: code--;
+		case s_div:
+		{
+			if( real64op == NULL )
+				syserr("codeFpCall: real64op not cached");
+
+			if( doubledest == NULL ) syserr("double operation without dest");
+
+			/* ensure there is enough room */
+			if( ssp == maxssp ) maxssp++;
+
+			emit( f_stl, 0 );
+
+			emit( f_ldc, code );
+			emit( f_opr, op_rev );
+			doubleaddr(doubledest);
+			emit( p_fpcall, real64op );
+			doubleaddr(doubledest);
+			setInt(FullDepth-1);
+			break;
+		}
+
+#if 0
+		/* actually the front end does not allow this to happen */
+		case s_rem:
+		{
+			VLocal *proc = allocatetemp(INTREG);
+
+			if( doubledest == NULL ) syserr("double operation without dest");
+
+			emit( p_ldx, fplib.real64rem );
+			emit( p_stvl, proc );
+			doubleaddr(doubledest);
+			emit( p_fpcall, proc );
+			freetemp(proc);
+			doubleaddr(doubledest);
+			break;
+		}
+#endif
+		default:
+			syserr("Unexpected AeOp in codeFpCall: %d %s",
+				op,symbol_name_(op));
+		}
+	}
+	
+	pop_trace();
+}
+
+#define islocal(x) ( (h0_(x) == s_binder) && ( ( bindstg_((Binder *)(x)) & bitofstg_(s_auto) ) != 0 ) )
+
+cg_doubleassign( target, source, flag, valneeded )
+Expr *target, *source;
+int flag, valneeded;
+{
+	int code = 3;
+	VLocal *prevdest = doubledest;
+	VLocal *src = NULL;
+	int savessp = ssp;
+	int op;
+
+	push_trace("cg_doubleassign");
+	
+	if(debugging(DEBUG_CG))
+		trace("cg_doubleassign(%x,%x,%d,%d) doubledest = %x",
+			target,source,flag,valneeded,doubledest);
+
+	if( islocal(target) )
+	{
+		doubledest = (VLocal *)bindxx_((Binder *)target);
+	}
+	else {
+		if( (h0_(target) == s_content) && islocal(arg1_(target)) )
+		{
+			doubledest = (VLocal *)bindxx_((Binder *)arg1_(target));
+		}
+		else {
+			cg_addrexpr( target );
+			doubledest = pushtemp( INTREG );
+		}
+	}
+
+	/* If the operation is a displace, copy the old value out first	  */
+	/* Note that a displace cannot happen in a void context, so there */
+	/* MUST be a previous doubledest set up. If not, winge.		  */
+	if( flag == s_displace )
+	{
+		if( prevdest == NULL )
+			syserr("Double displace in void context");
+#ifdef LONGCOPY
+		doubleaddr(prevdest);
+		emit( f_ldnl, 0 );
+		doubleaddr(doubledest);
+		emit( f_stnl, 0 );
+
+		doubleaddr(prevdest);
+		emit( f_ldnl, 1 );
+		doubleaddr(doubledest);
+		emit( f_stnl, 1 );
+#else
+		doubleaddr( prevdest );
+		doubleaddr( doubledest );
+		emit( f_ldc, 8 );
+		emit( f_opr, op_move );
+#endif
+	}
+
+again:
+	if(debugging(DEBUG_CG))	
+		trace("source op %s",symbol_name_(h0_(source)));
+	switch( op=h0_(source) )
+	{
+	case s_plus:  code--;
+	case s_minus: code--;
+	case s_times: code--;
+	case s_div:
+	case s_rem:
+	{
+		Expr* a1 = arg1_(source);
+		Expr* a2 = arg2_(source);
+		int d1 = idepth(depth(a1));
+		int d2 = idepth(depth(a2));
+		VLocal *olddd = doubledest;
+		VLocal *temp = NULL;
+		VLocal *v1 = NULL;
+
+		if( real64op == NULL )
+			syserr("codeFpCall: real32op not cached");
+
+		if(debugging(DEBUG_CG))
+			trace("(%s depth %d) %s (%s depth %d)",
+				symbol_name_(h0_(a1)),d1,
+				symbol_name_(h0_(source)),
+				symbol_name_(h0_(a2)),d2);
+				
+		/* While in theory it should be possible to use doubledest */
+		/* as the destination of one of the following expressions  */
+		/* there is always the possibility that one of these	   */
+		/* expressions uses the value currently in it. 		   */
+		/* For safety, therefore, evaluate them onto the stack.	   */
+		/* Note that we only need to allocate temps for expressions*/
+		/* which have maximum depth, only constants and binders have*/
+		/* less depth, and these do not need a destination.	   */
+		/* Note also that indirections may require more than 2 regs*/
+		/* we detect this case and don't generate a dest.	   */
+
+		if( d1 >= FullDepth )
+		{
+			if( h0_(a1) == s_content || h0_(a1) == s_dot )
+			{
+				cg_addrexpr( a1 );
+				v1 = pushtemp( INTREG );
+			}
+			else {
+				v1 = doubledest = allocatetemp(DBLREG);
+				cg_expr( a1 );
+			}
+		}
+		/* else we can load a1 later */
+
+		doubledest = olddd;
+
+		if( d2 >= FullDepth )
+		{
+			if( h0_(a2) != s_content && h0_(a2) != s_dot )
+				doubledest = allocatetemp(DBLREG);
+
+			cg_expr( a2 );
+
+			if( v1 == NULL ) cg_expr( a1 );
+			else doubleaddr( v1 );
+
+			/* if op is not commutable, get args in right order */
+			if( (op == s_div) || (op == s_minus) ) 
+				emit( f_opr, op_rev);
+		}
+		else {
+			if( v1 == NULL ) cg_expr( a1 );
+			else doubleaddr( v1 );
+
+			cg_expr( a2 );
+		}
+
+		/* pointers to the two operands should now be on the stack */
+		/* with a2 on top.					   */
+
+		/* ensure there is enough room */
+		if( ssp == maxssp ) maxssp++;
+
+		emit( f_stl, 0 );
+
+		emit( f_ldc, code ); 
+		emit( f_opr, op_rev );
+
+		doubleaddr(olddd);
+
+		emit( p_fpcall, real64op );
+
+		doubledest = olddd;
+
+		break;
+	}
+
+	case s_cond:
+	/* Convert    a = (b ? c : d) to                          	*/
+	/*    (LET double *g,                                           */
+	/*       g = &a,                                                */
+	/*       b ? (*g = c) : (*g = d))                               */
+	/*                                                              */
+        {   TypeExpr *t = typeofexpr(target);
+            Binder *gen = gentempbinder(ptrtotype_(t));
+	    Expr *e = mk_expr2(s_let,
+                         t,
+                         (Expr *)mkBindList(0, gen),
+                         mk_expr2(s_comma,
+                                  t,
+                                  mk_expr2(s_assign,
+                                           ptrtotype_(t),
+                                           (Expr *)gen,
+                                           take_address(target)),
+                                  mk_expr3(s_cond,
+                                           t,
+                                           arg1_(source),
+                                           mk_expr2(s_assign,
+                                                    t,
+                                                    mk_expr1(s_content,
+                                                             t,
+                                                             (Expr *)gen),
+                                                    arg2_(source)),
+                                           mk_expr2(s_assign,
+                                                    t,
+                                                    mk_expr1(s_content,
+                                                             t,
+                                                             (Expr *)gen),
+                                                    arg3_(source)))));
+		pp_expr(e,0);
+		cg_exprvoid(e);
+		break;		
+        }
+
+	case s_cast:
+	{
+		int mode = cautious_mcrepofexpr( source );
+		int argmode = mcrepofexpr(arg1_(source) );
+		
+		/* this filters out unnecessary casts which can happen	*/
+		/* if we have a typedef for double.			*/
+		
+		if( mode == argmode ) 
+		{ source = arg1_(source); goto again; }
+		
+		cg_cast1( arg1_(source), mode & 0x00ffffff, mode>>24 );
+
+		if( mcrepofexpr(arg1_(source)) != 0x02000008 ) break;
+		
+		/* here we are casting to or from a typedef, where a 	*/
+		/* conversion routine will not be called.		*/
+#ifdef LONGCOPY
+		src = pushtemp(INTREG);
+		
+		goto copydouble;
+#else
+		doubleaddr( doubledest );
+		emit( f_ldc, 8 );
+		emit( f_opr, op_move );
+		break;
+#endif
+	}
+
+	/* nested assignment, evaluate it and then copy result into our	*/
+	/* dest.							*/
+	case s_displace:
+	case s_assign:
+	case s_floatcon:
+		cg_expr( source );
+		src = pushtemp( INTREG );
+		goto copydouble;
+
+	/* for s_dot we convert and treat as content		*/
+	case s_dot:
+		source = cg_content_for_dot_(source);
+
+	/* for s_content we get the address and then copy out	*/
+	case s_content:
+		if( islocal(arg1_(source)) )
+		{
+			src = (VLocal *)bindxx_((Binder *)arg1_(source));
+		}
+		else {
+			cg_addrexpr( arg1_(source) );
+			src = pushtemp( INTREG );
+		}
+		goto copydouble;
+
+	case s_binder:
+	{
+		Binder *b = (Binder *)source;
+		if( ( bindstg_(b) & bitofstg_(s_auto) ) != 0 )
+		{ 
+			/* local -> var 	copy directly */
+			src = (VLocal *)bindxx_(b);
+		}
+		else
+		{	
+			/* static -> var	go via a local pointer */
+			cg_expr( source );
+			src = pushtemp(INTREG);
+		}
+	}
+
+	copydouble:
+#ifdef LONGCOPY
+		doubleaddr( src );
+		emit( f_ldnl, 0 );
+		doubleaddr(doubledest);
+		emit( f_stnl, 0 );
+
+		doubleaddr( src );
+		emit( f_ldnl, 1 );
+		doubleaddr(doubledest);
+		emit( f_stnl, 1 );
+#else
+		doubleaddr( src );
+		doubleaddr( doubledest );
+		emit( f_ldc, 8 );
+		emit( f_opr, op_move );
+#endif		
+		break;
+
+		/* the default is to evaluate the expression with doubledest */
+		/* set up as necessary.					     */
+	default:
+		cg_expr( source );
+		break;
+#if 0
+		syserr("Unexpected AeOp in cg_doubleassign: %d %s",
+			op,symbol_name_(op));
+#endif
+	}
+
+	if( valneeded )
+	{
+		doubleaddr(doubledest);
+		setInt(FullDepth-1);
+	}
+	else setInt(FullDepth);
+
+	/* dispose of all temps */
+	ssp = savessp;
+	doubledest = prevdest;
+	
+	pop_trace();
+}
+
+/* When compiling comparisons we may need to supply a destination for the */
+/* two sides. We only do this if the depth of the expressions is >= 3 	  */
+/* since variables and constant dont need it, and have depth=1.		  */
+/* NOTE: a1 & a2 swapped over here to fix a small bug.			  */
+void cg_doublecmp( op, a2, a1 )
+AEop op;
+Expr *a1, *a2;
+{
+	int d1 = idepth(depth(a1));
+	int d2 = idepth(depth(a2));
+	int savessp = ssp;
+	VLocal *olddd = doubledest;
+	Binder *func = op==s_greater ? fplib.real64gt : fplib.real64eq ;
+	VLocal *proc = allocatetemp( INTREG );
+
+	push_trace("cg_doublecmp");
+	
+	if( debugging(DEBUG_CG))
+		trace("cg_doublecmp(%s,%x,%x) d1 %x d2 %x",
+			symbol_name_(op),a1,a2,d1,d2);
+
+	emit( p_ldx, func );
+	emit( p_stvl, proc );
+
+	if( d1 >= FullDepth ) doubledest = allocatetemp( DBLREG );
+
+	cg_expr( a1 );
+
+	doubledest = NULL;
+
+	if( d2 >= FullDepth )
+	{
+		VLocal *tmp = allocatetemp( INTREG );
+
+		doubledest = allocatetemp( DBLREG );
+
+		emit( p_stvl, tmp ); popInt();
+
+		cg_expr( a2 );
+
+		emit( p_ldvl, tmp );  pushInt();
+		if( op == s_greater ) emit( f_opr, op_rev );
+	}
+	else cg_expr( a2 );
+
+	emit( p_fpcall, proc );
+
+	doubledest = olddd;
+	ssp = savessp;
+
+	setInt(FullDepth-1);
+	
+	pop_trace();
+}
+@
+
+
+1.1.1.1
+log
+@Initial Import of Norcroft C compiler for Transputer.
+@
+text
+@@

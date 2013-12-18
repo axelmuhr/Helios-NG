@@ -1,0 +1,319 @@
+Message interviews:19 -  Read
+From:    John Vlissides <vlis@interviews.stanford.edu>
+To:      InterViews Mailing List <interviews@interviews.stanford.edu>
+Cc:      John Vlissides <vlis@lurch.stanford.edu>
+Subject: tray memory leak fix
+
+The following fix patches memory leaks in Tray.  (Thanks to D.
+Griswold for his help in tracking these down.)
+
+Apply with ``cd iv; patch -p -N < diffs'' to patch files:
+
+        src/libInterViews/tray.c
+
+*** src/libInterViews/tray.c.orig   Tue Jul  4 15:35:55 1989
+--- src/libInterViews/tray.c	    Tue Jul  4 15:56:20 1989
+***************
+*** 4,10 ****
+
+  #include <InterViews/canvas.h>
+  #include <InterViews/painter.h>
+- #include <InterViews/resource.h>
+  #include <InterViews/shape.h>
+  #include <InterViews/tray.h>
+
+--- 4,9 ----
+***************
+*** 14,20 ****
+
+  /*************************************************************************/
+
+! class TElement : public Resource {
+  public:
+      TElement(Interactor*);
+      TElement(TGlue*);
+--- 13,19 ----
+
+  /*************************************************************************/
+
+! class TElement {
+  public:
+      TElement(Interactor*);
+      TElement(TGlue*);
+***************
+*** 155,163 ****
+  /*************************************************************************/
+
+  class TList {
+  protected:
+      TList(void* = nil);
+-     ~TList();
+
+      void Append(TList*);
+      void Prepend(TList*);
+--- 154,163 ----
+  /*************************************************************************/
+
+  class TList {
++ public:
++     ~TList();
+  protected:
+      TList(void* = nil);
+
+      void Append(TList*);
+      void Prepend(TList*);
+***************
+*** 245,251 ****
+  class TElementList : public TList {
+  public:
+      TElementList(TElement* = nil);
+-     ~TElementList();
+      TElementList* Copy();
+
+      boolean Includes(TElement*);
+--- 245,250 ----
+***************
+*** 264,272 ****
+  };
+
+  inline TElement* TElementList::GetElem () { return (TElement*) GetContents();
+}
+! inline void TElementList::Append (TElementList* el)
+!     { TList::Append(el); el->GetElem()->Reference(); }
+  inline void TElementList::Remove (TElementList* el) { TList::Remove(el); }
+  inline boolean TElementList::Includes (TElement* e) { return Find(e) != nil; 
+}
+  inline TElementList* TElementList::First ()
+      { return (TElementList*) TList::First(); }
+--- 263,271 ----
+  };
+
+  inline TElement* TElementList::GetElem () { return (TElement*) GetContents();
+}
+! inline void TElementList::Append (TElementList* el) { TList::Append(el); }
+  inline void TElementList::Remove (TElementList* el) { TList::Remove(el); }
++ inline void TElementList::Delete (TElement* o) { TList::Delete(o); }
+  inline boolean TElementList::Includes (TElement* e) { return Find(e) != nil; 
+}
+  inline TElementList* TElementList::First ()
+      { return (TElementList*) TList::First(); }
+***************
+*** 274,280 ****
+      { return (TElementList*) TList::End(); }
+  inline TElementList* TElementList::Next ()
+      { return (TElementList*) TList::Next(); }
+- inline void TElementList::Delete (TElement* e) { TList::Delete(e); }
+  inline boolean TElementList::Empty () { return TList::Empty(); }
+  inline boolean TElementList::OnlyOne () { return !Empty() && First()==Last();
+ }
+  inline boolean TElementList::OnlyTwo ()
+--- 273,278 ----
+***************
+*** 281,287 ****
+      { return !Empty() && !OnlyOne() && First()->Next() == Last(); }
+
+  TElementList::TElementList (TElement* o) : (o) { }
+- TElementList::~TElementList () { delete GetElem(); }
+
+  TElementList* TElementList::Copy () {
+      register TElementList* t;
+--- 279,284 ----
+***************
+*** 342,348 ****
+
+  /*************************************************************************/
+
+! class TNode : public Resource {
+      friend class TNodeList;
+  public:
+      TNode(TElementList* = nil, TElementList* = nil);
+--- 339,345 ----
+
+  /*************************************************************************/
+
+! class TNode {
+      friend class TNodeList;
+  public:
+      TNode(TElementList* = nil, TElementList* = nil);
+***************
+*** 349,354 ****
+--- 346,352 ----
+      TNode(Alignment, TElement*, Alignment = BottomLeft, TElement* = nil);
+      ~TNode();
+      TNode* Copy();
++     void DeleteElements();
+
+      void Merge(TNode*);
+      void Exclude(TElement*);
+***************
+*** 370,375 ****
+--- 368,374 ----
+
+      TElementList* LeftBottomElements();
+      TElementList* RightTopElements();
++     void DeleteElements(TElementList*);
+  };
+
+  inline boolean TNode::Includes (TElement* e)
+***************
+*** 407,412 ****
+--- 406,429 ----
+
+  TNode::~TNode () { delete lbElems; delete rtElems; }
+
++ void TNode::DeleteElements () {
++     register TElementList* t;
++
++     for (t = lbElems->First(); t != lbElems->End(); t = t->Next()) {
++         rtElems->Delete(t->GetElem());
++     }
++     DeleteElements(lbElems);
++     DeleteElements(rtElems);
++ }
++
++ void TNode::DeleteElements (TElementList* elems) {
++     register TElementList* t;
++
++     for (t = elems->First(); t != elems->End(); t = t->Next()) {
++         delete t->GetElem();
++     }
++ }
++
+  TNode* TNode::Copy () {
+      TNode* node = new TNode(lbElems->Copy(), rtElems->Copy());
+      node->SetPosition(GetPosition());
+***************
+*** 421,427 ****
+      for (cur = nelems->First(); cur != nelems->End(); cur = next) {
+  	next = cur->Next();
+  	nelems->Remove(cur);
+! 	if (!lbElems->Includes(cur->GetElem())) {
+  	    lbElems->Append(cur);
+  	}
+      }
+--- 438,446 ----
+      for (cur = nelems->First(); cur != nelems->End(); cur = next) {
+  	next = cur->Next();
+  	nelems->Remove(cur);
+! 	if (lbElems->Includes(cur->GetElem())) {
+!             delete cur;
+!         } else {
+  	    lbElems->Append(cur);
+  	}
+      }
+***************
+*** 429,435 ****
+      for (cur = nelems->First(); cur != nelems->End(); cur = next) {
+  	next = cur->Next();
+  	nelems->Remove(cur);
+! 	if (!rtElems->Includes(cur->GetElem())) {
+  	    rtElems->Append(cur);
+  	}
+      }
+--- 448,456 ----
+      for (cur = nelems->First(); cur != nelems->End(); cur = next) {
+  	next = cur->Next();
+  	nelems->Remove(cur);
+! 	if (rtElems->Includes(cur->GetElem())) {
+!             delete cur;
+!         } else {
+  	    rtElems->Append(cur);
+  	}
+      }
+***************
+*** 536,542 ****
+  class TNodeList : public TList {
+  public:
+      TNodeList(TNode* = nil);
+-     ~TNodeList();
+      TNodeList* Copy();
+
+      void Include(Alignment, TElement*, Alignment = BottomLeft, TElement* =nil
+);
+--- 557,562 ----
+***************
+*** 603,612 ****
+  	FoundParallel(n->LeftBottomElements(), n, e1, e2) ||
+  	FoundParallel(n->RightTopElements(), n, e1, e2);
+  }
+! inline void TNodeList::Append (TNodeList* t)
+!     { TList::Append(t); t->GetNode()->Reference(); }
+  inline void TNodeList::Remove (TNodeList* t) { TList::Remove(t); }
+! inline void TNodeList::Delete (TNode* n) { TList::Delete(n); }
+  inline TNodeList* TNodeList::First () { return (TNodeList*) TList::First(); }
+  inline TNodeList* TNodeList::End () { return (TNodeList*) TList::End(); }
+  inline TNodeList* TNodeList::Next () { return (TNodeList*) TList::Next(); }
+--- 623,631 ----
+  	FoundParallel(n->LeftBottomElements(), n, e1, e2) ||
+  	FoundParallel(n->RightTopElements(), n, e1, e2);
+  }
+! inline void TNodeList::Append (TNodeList* t) { TList::Append(t); }
+  inline void TNodeList::Remove (TNodeList* t) { TList::Remove(t); }
+! inline void TNodeList::Delete (TNode* o) { TList::Delete(o); }
+  inline TNodeList* TNodeList::First () { return (TNodeList*) TList::First(); }
+  inline TNodeList* TNodeList::End () { return (TNodeList*) TList::End(); }
+  inline TNodeList* TNodeList::Next () { return (TNodeList*) TList::Next(); }
+***************
+*** 617,623 ****
+      { return (a == BottomLeft) ? TopRight : BottomLeft; }
+
+  TNodeList::TNodeList (TNode* o) : (o) { }
+- TNodeList::~TNodeList () { delete GetNode(); }
+
+  TNodeList* TNodeList::Copy () {
+      register TNodeList* t;
+--- 636,641 ----
+***************
+*** 1248,1253 ****
+--- 1266,1272 ----
+      void TrayNodes(TNodeList*, TNode*&, TNode*&);
+      void UpdateMagicNodes();
+      void DeleteDanglingGlue(TNodeList*, TNode*);
++     void DeleteNodesAndElements(TNodeList*);
+  };
+
+  TSolver::TSolver (Tray* t, Interactor* bg) {
+***************
+*** 1259,1268 ****
+--- 1278,1307 ----
+  }
+
+  TSolver::~TSolver () {
++     DeleteNodesAndElements(hnodes);
++     DeleteNodesAndElements(vnodes);
+      delete hnodes;
+      delete vnodes;
+  }
+
++ void TSolver::DeleteNodesAndElements (TNodeList* nodes) {
++     TNode* merged;
++     register TNodeList* t = nodes->First();
++
++     if (t == nodes->End()) {
++         return;
++     }
++     merged = t->GetNode();
++
++     for (t = t->Next(); t != nodes->End(); t = t->Next()) {
++         TNode* doomed = t->GetNode();
++         merged->Merge(doomed);
++         delete doomed;
++     }
++     merged->DeleteElements();
++     delete merged;
++ }
++
+  inline boolean HAlignment (Alignment a) {
+      return a != Bottom && a != VertCenter && a != Top;
+  }
+***************
+*** 1825,1830 ****
+--- 1864,1871 ----
+
+  Tray::~Tray () {
+      register TrayElement* e, *next;
++
++     delete tsolver;
+
+      for (e = head; e != nil; e = next) {
+          next = e->next;

@@ -1,0 +1,111 @@
+			Buildrm
+			=======
+
+  This program is used to construct simple network resource maps automatically,
+in either text form or binary form as desired. The networks used must
+consist of a single I/O processor, a root processor, and an MxN grid of
+worker processors, all using the same hardware control. For example,
+the following is a 3x4 network.
+
+      +--+  +--+  +--+  +--+
+      |11|--|10|--|09|--|08|
+      +--+  +--+  +--+  +--+
+       |     |     |     |
+      +--+  +--+  +--+  +--+
+      |07|--|06|--|05|--|04|
+      +--+  +--+  +--+  +--+
+       |     |     |     |
+      +--+  +--+  +--+  +--+
+      |03|--|02|--|01|--|00|
+      +--+  +--+  +--+  +--+
+                         |
+			 |	+----+
+			 +------|root|
+				+----+
+				 |
+				+--+
+				|IO|
+				+--+
+
+
+The first job is parsing the arguments. This is easier said than done.
+Possible arguments are:
+	-o file		output file
+	-rm		(default) produce a text file
+	-map		produce a binary output file
+	MxN		give the grid size
+	tram		use the tram reset driver
+	parsytec	use the Parsytec reset driver
+	telmat		use the Telmat reset and configuration drivers
+	meiko		use the Meiko RTE reset and configuration drivers
+
+The program does not fill in the processor types or the memory sizes,
+leaving the network server to find these out for itself. Nor does the
+program specify any attributes.
+
+
+Producing the text resource map is fairly easy. Nearly all of the
+resource map consists of constant strings, and the only nasty bit is
+getting the link connections right.
+
+Producing the binary resource map is rather trickier. The following
+stages are involved.
+
+1) a new RmNetwork structure is allocated and given the name /Net.
+   The application can assume safely that the whole structure will be
+   fully initialised by the library
+
+2) RmProcessor structures are allocated for the I/O Processor and the
+   root processor. These are given their names by calls to RmSetProcessorID(),
+   and the appropriate purpose. Processor /IO is an I/O processor, and
+   processor /root is a system processor. Everything else can default to
+   helios processors. The two processors are added to the network, and
+   then link 0 of the root processor is connected to link 0 of the
+   I/O processor. It is unlikely that any of these calls will fail,
+   but not impossible. The manual describes the circumstances under which
+   the routines can fail in detail.
+
+3) Note that the two processors are added to the network BEFORE the
+   link between the processors is created. Links can only exist between
+   processors in the same network.
+
+4) the two dimensions of the grid are not known at compile time, so two
+   levels of indirection are used to access the processors in the grid.
+   For a 4x3 network the data is something like.
+		+--+--+--+--+
+   row_table -> |  |  |  |  |
+                +--+--+--+--+
+		 |   |  |  \
+   	    +----+   |  |    ---------\
+	    |	     |  +----\         |
+	    V        V        V        V
+           +--+--+--+--+--+--+--+--+--+--+--+--+
+           |  |  |  |  |  |  |  |  |  |  |  |  |
+           +--+--+--+--+--+--+--+--+--+--+--+--+
+            |  |  |  |  |  |  |  |  |  |  |  |
+            V  V  V  V  V  V  V  V  V  V  V  V
+           00  01  ...
+
+   Once this data structure is in place the appropriate number of RmProcessor
+   structures are allocated, given their name and purpose Helios, and
+   added to the network.
+
+5) In another phase all the connections between the processors in the
+   grid are set up, as well as the special case of the link between
+   the root processor and 00. Note that a link 0 is always connected to link 
+   2, and a link 1 is always connected to a link 3. Hence if all the link 0's
+   are made then all the link 2's are also made, and it is not necessary
+   to make them again. For example, if link 0 of processor /03 has been
+   connected to link 2 of processor /00, then link 2 of processor /00 is
+   already connected to /03 and does not have to be made again.
+
+6) The hardware facilities are initialised and added to the networks. Note
+   that the I/O processor and the root processor do not form part of the
+   network hardware control structure, since these processors can never
+   be reset by Helios. The network server runs on processor /root and will
+   never reboot its own processor.
+
+7) Finally, a single call to the resource management library suffices to
+   write the network to the specified file. This file can now be used
+   as an argument to the startns program, as the resource map.
+

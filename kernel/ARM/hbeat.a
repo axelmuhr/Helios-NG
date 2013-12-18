@@ -1,0 +1,42 @@
+	-- insert this code at the start of the "TimerIntrHandler" routine
+	-- (even before a1 is loaded with the ExecRoot address)
+
+	-- This routine corrupts a1-a4
+	-- The SCR (scratch) register in the VL86C551 serial device is
+	-- used as the state storage area for the LED heartbeat.
+	-- The following bit allocations are used:
+	--	b0-b1	active LED
+	--	b2	direction
+	--	b3-b7	count until next LED change
+_def 'hb_lpmask [0x3]	-- LED position mask
+_def 'hb_dir [1 << 2]	-- direction bit
+_def 'hb_inc [1 << 3]	-- lowest bit of count
+_def 'hb_oflow [1 << 8]	-- first bit outside the byte
+	-- Using this simple count means we only change the LED every
+	-- 32 timer events. On a standard 10ms timer this gives around
+	-- on third of a second between each change.
+	ldr	a1,hw_SERIAL_holder2	-- get the serial device address
+	ldrb	a2,(a1,hw_serial.SCR)	-- and load the current state
+	add	a2,a2,hb_inc		-- increment the counter
+	tst	a2,hb_oflow		-- check for overflow
+	beq	no_LED_change		-- and exit quick if we haven't
+	tst	a2,hb_dir		-- get the current direction
+	addeq	a2,a2,1			-- and either increment or
+	subne	a2,a2,1			-- decrement the LED number
+	and	a3,a2,hb_lpmask		-- get pure LED number
+	cmp	a3,0			-- and check the limits
+	cmpne	a3,3			-- so that we can change the
+	eoreq	a2,a2,hb_dir		-- direction flag accordingly
+	add	a3,a3,4			-- we can then make this into
+	mov	a4,1			-- a true GPIO value by shifting
+	mvn	a4,a4 lsl a3		-- and inverting the value.
+	ldr	a3,hw_PARALLEL_holder	-- get the GPIO hardware address
+	strb	a4,(a3,hw_parallel.GPIO)-- and update the LED
+no_LED_change:
+	strb	a2,(a1,hw_serial.SCR)	-- storing the new state back
+	b	heartbeat_completed	-- and continuing with the timer code
+hw_SERIAL_holder2:
+	word	hw_SERIAL
+hw_PARALLEL_holder:
+	word	hw_PARALLEL
+heartbeat_completed:

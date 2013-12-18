@@ -1,0 +1,411 @@
+head	1.5;
+access;
+symbols
+	Helios_1_3_1:1.4
+	Helios_C40_1_3_Official_Release:1.4
+	Alenia_release:1.4
+	Helios1_3:1.4
+	C40_Field_Test_2:1.4
+	C40_Field_Test_R1:1.4
+	Helios13_beta:1.4
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.2
+	Helios1_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.5
+date	94.03.08.12.45.13;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.05.01.08.08.30;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.04.12.12.44.17;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.09.15;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.19.51;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@test program to assess the performance of a disk drive
+@
+
+
+1.5
+log
+@fixed compile time warnings and removed use of floating point on ARM world
+@
+text
+@/************************************************************************/
+/*									*/
+/* Disk Speed Test Program v1.1						*/
+/*									*/
+/* Copyright (C) Perihelion Software 1989				*/
+/*									*/
+/*									*/
+/* PAB 10/5/89			 					*/
+/* V1.1 18/5/89	Unbuffered IO and UNIX compatibility			*/
+/*									*/
+/* Usage: dt [numblocks blocksize]					*/
+/*									*/
+/************************************************************************/
+
+#ifdef __TRAN
+static char *rcsid = "$Header: /users/nickc/RTNucleus/cmds/private/RCS/disktest.c,v 1.4 1992/05/01 08:08:30 nickc Exp nickc $";
+#endif
+
+#include <stdio.h>
+
+#define STDBUFFER 0	/* use our own buffering or std c lib buffering */
+
+#ifdef __STDC__		/* __STDC__ = ANSI C, else UNIX and K&R */
+#include <stdlib.h>
+#include <time.h>
+#else
+char *malloc();
+#define remove unlink
+
+#include <time.h>
+#define CLK_TCK 1000000	 /* Usecs */
+
+int clock()
+{
+	struct timeval t;
+	struct timezone tz;
+
+	gettimeofday(&t, &tz);
+
+	return(t.tv_sec * 1000000 + t.tv_usec);
+}
+#endif
+
+#define DEF_NBLOCKS 10
+
+#if STDBUFFER
+#define DEF_BLKSIZE BUFSIZ/1024
+#else
+#define DEF_BLKSIZE 32
+#endif
+
+#ifndef __ARM
+#define USE_FP
+#endif
+
+int
+main(argc, argv)
+int argc;
+char **argv;
+{
+	int	opentime,  writetime, readtime, seektime, closetime, deltime;
+	int	starttime, i, nblocks, blksize;
+#ifdef USE_FP
+	double	ftick;
+#endif
+	
+	FILE *  fp;
+
+#ifdef __STDC__	
+	void *	tmparea;
+	void *	buffarea;
+#else
+	char *	tmparea;
+	char *	buffarea;
+#endif
+
+	if (argc != 3)
+	{
+		nblocks = DEF_NBLOCKS;
+		blksize = DEF_BLKSIZE * 1024;
+	}
+	else
+	{
+		nblocks = atoi(argv[1]);
+#if STDBUFFER
+		blksize = BUFSIZ;
+#else
+		blksize = atoi(argv[2]) * 1024;
+#endif
+	}
+
+	if (blksize == 0 || nblocks == 0 || blksize * nblocks > 2000*1024)
+	{
+		printf("ERROR invalid number of blocks or block size - aborting\n");
+		exit(1);
+	}
+	
+	remove( "speedtst.tmp" );
+
+	printf("Helios Disk Speed Test Program v1.1");
+	
+#ifdef __STDC__
+printf(" (ANSI)\n");
+#else
+printf(" (UNIX)\n");
+#endif
+	printf("------------------------------------------\n\n");
+
+	printf("Test based on opening file, writing %d %dk blocks,\n", nblocks, blksize/1024);
+	printf("seeking back to the start, reading %d %dk blocks,\n", nblocks, blksize/1024);
+	printf("closing and then deleting the file.\n");
+#if STDBUFFER
+	printf("Uses only the C libraries standard buffer.\n");
+#endif
+
+	printf("\nOpening. "); fflush(stdout);
+	
+	starttime = clock();
+	if ((fp = fopen("speedtst.tmp", "wb+")) == NULL)
+	{
+		printf("ERROR opening test file - aborting\n");
+		exit(1);
+	}
+	opentime = clock() - starttime;
+
+#if !STDBUFFER
+	if ((buffarea = malloc(blksize)) == NULL)
+	{
+		printf("ERROR cannot get memory for buffer - aborting\n");
+		remove("speedtst.tmp");
+		exit(1);
+	}
+#endif
+	
+#if __STDC__
+#if !STDBUFFER
+	setvbuf(fp, (char *)buffarea, _IOFBF, blksize);
+#endif
+#else
+#if !STDBUFFER
+	setbuffer(fp, buffarea, blksize);
+#endif
+#endif
+	printf("Writing. "); fflush(stdout);
+	
+	starttime = clock();
+	for (i=0; i < nblocks; i++)
+	  fwrite("Gobbledygook", blksize, 1, fp);
+	fflush(fp);
+	/* wait until the last block is actually written */
+	writetime = clock() - starttime;
+
+	printf("Seeking. "); fflush(stdout);
+	
+	starttime = clock();
+	fseek(fp, 0, 0);
+	putc('x',fp);		/* make sure it really seeks */
+	seektime = clock() - starttime;
+	fseek(fp, 0, 0);
+	
+	printf("Reading. "); fflush(stdout);
+	
+	tmparea = (char *)malloc(blksize);
+	starttime = clock();
+	for (i=0; i < nblocks; i++)
+	  (void) fread(tmparea, blksize, 1, fp);
+	readtime = clock() - starttime;
+
+	free(tmparea);
+
+	printf("Closing. "); fflush(stdout);
+	
+	starttime = clock();
+	fclose(fp);
+	closetime = clock() - starttime;
+
+	printf("Deleting. "); fflush(stdout);
+	
+	starttime = clock();
+	remove("speedtst.tmp");
+	deltime = clock() - starttime;
+	
+#if 0
+	printf("open = %5.2f, write = %5.2f seek = %5.2f read = %5.2f close = %5.2f del = %5.2f\n",opentime,writetime,seektime,readtime,closetime,deltime); 
+	printf("CLK_TCK = %d\n",CLK_TCK);
+#endif
+#ifdef USE_FP
+	ftick = (double)CLK_TCK;
+#endif
+	
+	nblocks *= blksize / 1024;
+		
+	printf("Finished.\n\n");
+	printf("Elapsed times (in seconds):\n");
+#ifdef USE_FP
+	printf("Create and open %10.2f\n", opentime / ftick );
+	printf("Write %4dk     %10.2f\n",  nblocks, writetime / ftick );
+	printf("Seek %4dk      %10.2f\n",  nblocks, seektime  / ftick );
+	printf("Read %4dk      %10.2f\n",  nblocks, readtime  / ftick );
+	printf("Close file      %10.2f\n", closetime / ftick );
+	printf("Delete file     %10.2f\n", deltime   / ftick );
+
+	printf("\nTotal time      %10.2f\n\n",
+	       (opentime + writetime + seektime + readtime + closetime + deltime) / ftick );
+
+	printf("Transfer rate per second:\n");
+
+	printf("Read             %10.3fk\n", nblocks * ftick / readtime  );
+	printf("Write            %10.3fk\n", nblocks * ftick / writetime );
+#else
+	printf("Create and open %10d\n", opentime / CLK_TCK );
+	printf("Write %4dk     %10d\n",  nblocks, writetime / CLK_TCK );
+	printf("Seek %4dk      %10d\n",  nblocks, seektime  / CLK_TCK );
+	printf("Read %4dk      %10d\n",  nblocks, readtime  / CLK_TCK );
+	printf("Close file      %10d\n", closetime / CLK_TCK );
+	printf("Delete file     %10d\n", deltime   / CLK_TCK );
+
+	printf("\nTotal time      %10d\n\n",
+	       (opentime + writetime + seektime + readtime + closetime + deltime) / CLK_TCK );
+
+	printf("Transfer rate per second:\n");
+
+	printf("Read             %10dk\n", nblocks * CLK_TCK / readtime  );
+	printf("Write            %10dk\n", nblocks * CLK_TCK / writetime );
+#endif
+	
+	return(0);
+}
+@
+
+
+1.4
+log
+@improved coding of calculations
+@
+text
+@d15 3
+a17 1
+static char *rcsid = "$Header: /hsrc/cmds/private/RCS/disktest.c,v 1.3 1991/04/12 12:44:17 paul Exp nickc $";
+d52 4
+d63 1
+d65 2
+d134 1
+a134 1
+
+d137 1
+a137 1
+	setvbuf(fp, buffarea, _IOFBF, blksize);
+d163 1
+a163 1
+	tmparea = malloc(blksize);
+d187 1
+d189 1
+d195 1
+d210 12
+d223 4
+@
+
+
+1.3
+log
+@removed spurious output
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/disktest.c,v 1.2 1990/08/23 10:09:15 james Exp $";
+d55 4
+a58 3
+	float	opentime, writetime, readtime, seektime, closetime, deltime;
+	int	starttime, endtime, i, nblocks, blksize;
+	FILE *fp;
+d61 2
+a62 1
+void *tmparea, *buffarea;
+d64 2
+a65 1
+char *tmparea, *buffarea;
+d88 2
+a89 1
+	remove("speedtst.tmp");
+d92 1
+d108 1
+d115 1
+a115 2
+	endtime = clock();
+	opentime = endtime - starttime;
+d136 1
+d139 4
+a142 4
+		fwrite("Gobbledygook", blksize, 1, fp);
+	fflush(fp);	/* wait until the last block is actually written */
+	endtime = clock();
+	writetime = endtime - starttime;
+d145 1
+d149 1
+a149 2
+	endtime = clock();
+	seektime = endtime - starttime;
+d153 1
+d157 3
+a159 2
+		fread(tmparea, blksize, 1, fp);
+	endtime = clock();
+a160 1
+	readtime = endtime - starttime;
+d163 1
+d166 1
+a166 2
+	endtime = clock();
+	closetime = endtime - starttime;
+d169 1
+d172 2
+a173 2
+	endtime = clock();
+	deltime = endtime - starttime;
+d178 4
+d184 6
+a189 6
+	printf("Create and open %10.2f\n", opentime / CLK_TCK);
+	printf("Write %4dk     %10.2f\n", nblocks*blksize/1024, writetime / CLK_TCK);
+	printf("Seek %4dk      %10.2f\n", nblocks*blksize/1024, seektime / CLK_TCK);
+	printf("Read %4dk      %10.2f\n", nblocks*blksize/1024, readtime / CLK_TCK);
+	printf("Close file      %10.2f\n", closetime / CLK_TCK);
+	printf("Delete file     %10.2f\n", deltime / CLK_TCK);
+d192 1
+a192 1
+	    (opentime+writetime+seektime+readtime+closetime+deltime) / CLK_TCK);
+d195 3
+a197 2
+	printf("Read             %10.3fk\n", (nblocks * blksize) / (readtime / CLK_TCK) / 1024 );
+	printf("Write            %10.3fk\n", (nblocks * blksize) / (writetime / CLK_TCK) / 1024);
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d15 1
+a15 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/disktest.c,v 1.1 90/08/22 16:19:51 james Exp Locker: james $";
+d166 1
+d169 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d15 1
+a15 1
+static char rcsid[] = "$Header$";
+@

@@ -1,0 +1,887 @@
+head	1.12;
+access;
+symbols
+	Helios_1_3_1:1.10
+	Helios_C40_1_3_Official_Release:1.9
+	Alenia_release:1.9
+	Helios1_3:1.7
+	C40_Field_Test_2:1.7
+	C40_Field_Test_R1:1.6
+	Helios13_beta:1.6
+	Helios1_2_2:1.6
+	Helios1_2_2Beta:1.6
+	Helios1_2_1:1.6
+	Helios1_2:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.12
+date	94.06.07.12.30.45;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	94.03.14.14.42.31;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	93.07.12.11.28.53;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.11.20.16.44.26;	author nick;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.11.11.17.42.15;	author nick;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.09.22.17.29.42;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.03.14.21.48.17;	author paul;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.03.11.11.27.27;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	91.01.22.12.57.09;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.11.21.23.49.58;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.20.37;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.31.06;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@gives info on memory allocation
+@
+
+
+1.12
+log
+@fixed things (probably)
+@
+text
+@/*{{{  Header */
+
+#ifdef __TRAN
+static char *rcsid = "$Header: /users/nickc/RTNucleus/cmds/com/RCS/mem.c,v 1.11 1994/03/14 14:42:31 nickc Exp nickc $";
+#endif
+
+/*}}}*/
+/*{{{  Includes */
+
+#include <stddef.h>
+#include <syslib.h>
+#include <root.h>
+#include <stdio.h>
+#include <memory.h>
+#include <task.h>
+#include <servlib.h>
+#include <string.h>
+
+/*}}}*/
+/*{{{  Constants */
+
+#define tabmax 100
+
+/*}}}*/
+/*{{{  Macros */
+
+#define FirstPoolBlock(pool) ((Memory *)(pool + 1))
+#define LastPoolBlock(poo)  ((Memory *)(poo->Memory.Head))
+
+/*}}}*/
+/*{{{  Variables */
+
+Memory * old[ tabmax + 1 ];
+Memory * New[ tabmax + 1 ];
+char     lbuf[ 80 ];
+
+/*}}}*/
+/*{{{  Code */
+
+/*{{{  IndentifyCode() */
+
+const char *
+IdentifyCode( char * desc, MPtr m )
+{
+  word type = ModuleWord_( m, Type );
+  char name[ 32 ];
+	
+
+  if  ( type == T_Program ) strcat( desc, " Program: " );
+  elif( type == T_Module )  strcat( desc, " Module : " );
+  elif( type == T_Device )  strcat( desc, " Device : " );
+  else return NULL;
+  
+  ModuleName_( name, m );
+  strcat( desc, name );
+	
+  return "loader";
+}
+
+/*}}}*/
+/*{{{  main() */
+
+int
+main(int argc)
+{
+  RootStruct *	Root = GetRoot();
+  Pool *	p;
+  Pool *	mypool;
+  Pool *	freepool;
+  Pool *	syspool;
+  Pool *	codepool;
+  Pool **	specials;
+#if defined(__TRAN) || defined(__C40) 
+  Pool *	fastpool;
+#endif
+#ifdef __RRD
+  Pool *	rrdpool;
+#endif
+  Memory *	m;
+  Memory *	last;
+  bool		monitor = argc > 1;
+
+  
+  mypool   = &MyTask->MemPool;
+  freepool = p = Root->FreePool;
+  syspool  = &(Root->SysPool);
+  codepool = Root->LoaderPool;
+  specials = Root->SpecialPools;
+  
+#if defined(__TRAN) || defined(__C40)
+  fastpool = &(Root->FastPool);
+#endif		
+#ifdef __RRD
+  rrdpool = Root->RRDPool;
+#endif
+  
+  old[ 0 ] = NULL;
+  
+  forever
+    {
+      word 	x        = 0;
+      word	total    = 0;
+      word	maxblock = 0;
+      char	c;
+#ifdef NEW_SYSTEM
+      ExecInfo	sExecInfo;
+
+      GetExecInfo( &sExecInfo );
+#endif      
+      
+      printf( "  Block :   Size  State     Owner\n" );
+      
+#ifdef NEW_SYSTEM
+      WaitMutex( sExecInfo.MemoryLock );
+#endif
+      
+      m    = FirstPoolBlock( p );
+      last = LastPoolBlock(  p );
+
+      until ( m >= last )
+	{
+	  char 		desc[ 60 ];
+	  const char *	owner = NULL;
+	  word		size  = m->Size & (~15);
+	  MPtr		caddr = NULL;
+	  word		csize = -1;
+	  word		alloc = m->Size & Memory_Size_FwdBit;
+	  Memory *	next  = (Memory *)((word)m + size);
+
+	  
+	  *desc = 0;
+	  
+	  if (++x < tabmax) New[ x ] = m;
+	  
+	  if (!alloc)
+	    {
+	      total += size;
+	      if (size > maxblock) maxblock = size;
+	    }
+	  
+#if 0		
+	  if (m->Pool == mypool)
+	    strcat( desc, " mem's data" );
+	  elif ((Program *)(m + 1) == MyTask->Program)
+	    strcat( desc," mem's code" );
+#endif
+	  
+	  if ((m->Pool == freepool &&  alloc) ||
+ 	     ( m->Pool != freepool && !alloc) ) 
+	    {
+	      strcat( desc, " INCONSISTENT" );
+	    }
+	  
+	  if ((alloc && (next->Size & Memory_Size_BwdBit) == 0) ||
+	     (!alloc && (next->Size & Memory_Size_BwdBit) != 0))
+	    {
+	      strcat( desc, " BWD bit of next wrong" );
+	    }
+	  
+	  if (alloc && ((*(word *)(m + 1)) & T_Mask) == T_Valid)
+	    {
+	      owner = IdentifyCode( desc, CtoM_( m + 1 ) );
+	    }
+	  
+	  if (alloc && (*(word *)(m+1) == (word)(m + 1)))
+	    {
+	      strcat( desc, " Module Table" );
+	    }
+	  
+	  if (owner == NULL && alloc && m->Pool == codepool)
+	    {
+	      Carrier *	c = (Carrier *)(m + 1);
+	      MPtr	w = c->Addr;
+
+	      
+	      caddr = w;
+	      csize = c->Size;
+#ifdef __C40
+	      csize *= sizeof( word );
+#endif
+	      if ((ModuleWord_( w, Type ) & T_Mask) == T_Valid)
+		{
+		  owner = IdentifyCode( desc, w );
+		}
+	    }
+	  
+	  if (owner == NULL && (m->Size & Memory_Size_Carrier))
+	    {
+	      int 	i;
+	      Carrier *	c = (Carrier *)(m + 1);
+
+	      
+	      caddr = c->Addr;
+	      csize = c->Size;
+#ifdef __C40
+	      csize *= sizeof (word);
+#endif
+	      for (i = 0 ; i < 8 ; i++)
+		{
+		  if (m->Pool == specials[ i ])
+		    {
+		      strcat( desc, (i & 1) ? " fast"     : "" );
+		      strcat( desc, (i & 2) ? " indirect" : "" );
+		      strcat( desc, (i & 4) ? " global"   : " local" );
+		      owner = "Special";
+		      alloc = 0;
+		      break;
+		    }
+		}
+	      
+	    }
+	  
+	  if (monitor)
+	    {
+	      word y;
+	      
+	      for (y = 0; old[y] != NULL; y++)
+		if (old[ y ] == m)
+		  break;
+	      
+	      if (old[ y ] == NULL) strcat( desc," new" );
+	    }
+
+	  if (owner == NULL)
+	    {
+	      if   ( m->Pool == freepool ) owner = "FreePool";
+	      elif ( m->Pool == syspool )  owner = "SysPool";
+	      elif ( m->Pool == codepool ) owner = "Loader";
+#if defined(__TRAN) || defined(__C40) || defined(__ABC)
+	      elif ( m->Pool == fastpool ) owner = "FastPool";
+#endif
+#ifdef __RRD
+	      elif ( m->Pool == rrdpool )  owner = "RRDPool";
+#endif
+              else
+		{
+		  Task *	task = (Task*)((int)(m->Pool) - offsetof( Task, MemPool ));
+		  ObjNode *	entry = (ObjNode *)task->TaskEntry;
+		  
+		  owner = entry->Name;
+		}
+	    }
+	  
+#ifdef NEW_SYSTEM
+	  SignalMutex( sExecInfo.MemoryLock );
+#endif
+	  printf( "%08p: %7ld %s %10s ", m, size, alloc ? "Alloc" : "Free ", owner );
+	  
+	  if ( csize != -1 ) printf( " %08lx: %7ld", caddr, csize );
+
+	  printf( " %s\n", desc );
+	  
+	  m = (Memory *)((word)m + (m->Size & ~15));
+	  
+#ifdef NEW_SYSTEM
+	  WaitMutex( sExecInfo.MemoryLock );
+#endif
+	}
+      
+#ifdef NEW_SYSTEM
+      SignalMutex( sExecInfo.MemoryLock );
+#endif
+      
+      printf( "%ld Available, %ld Largest\n", total, maxblock );
+      
+      if ( !monitor ) break;
+      
+      printf("Hit CR to repeat, 'q' to quit..."); fflush(stdout);
+      c = getchar();
+      putchar('\n');
+      
+      if( c == 'q' ) break;
+      
+      New[x] = NULL;
+      memcpy(old,New,tabmax*sizeof(Memory *));
+    }
+  
+  return 0;
+}
+
+/*}}}*/
+
+/*}}}*/
+@
+
+
+1.11
+log
+@fixed compile time warnings
+@
+text
+@d1 2
+d4 1
+a4 1
+static char *rcsid = "$Header: /users/nickc/RTNucleus/cmds/com/RCS/mem.c,v 1.10 1993/07/12 11:28:53 nickc Exp nickc $";
+d7 3
+d19 3
+d24 5
+a28 11
+#ifdef __ABC
+# ifdef __MI
+#  define FirstPoolBlock(pool) ((Memory *)((word)(pool + 1) + ((sizeof(Pool) + sizeof(MIInfo) + 15) & ~15)))
+# else
+#  define FirstPoolBlock(pool) ((Memory *)(pool + 1))
+# endif
+# define LastPoolBlock(poo)  ((Memory *)((word)FirstPoolBlock(poo) + p->Max))
+#else
+# define FirstPoolBlock(pool) ((Memory *)(pool + 1))
+# define LastPoolBlock(poo)  ((Memory *)(poo->Memory.Head))
+#endif
+d30 2
+a31 1
+char *IdentifyCode(char *desc, MPtr m);
+d33 3
+a35 2
+Memory *old[tabmax+1];
+Memory *New[tabmax+1];
+d37 2
+a38 15
+char lbuf[80];
+int main(int argc)
+{
+	RootStruct *Root = GetRoot();
+	Pool *p, *mypool;
+	Pool *freepool, *syspool, *codepool;
+	Pool **specials;
+#if defined(__TRAN) || defined(__C40) || defined(__ABC)
+	Pool *fastpool;
+#endif
+#ifdef __RRD
+	Pool *rrdpool;
+#endif
+	Memory *m, *last;
+	bool monitor = argc > 1;
+d40 1
+a40 1
+	mypool = &MyTask->MemPool;
+d42 6
+a47 1
+	freepool = p = Root->FreePool;
+d49 10
+a58 1
+	syspool = &(Root->SysPool);
+d60 2
+a61 1
+	codepool = Root->LoaderPool;
+d63 29
+a91 4
+	specials = Root->SpecialPools;
+	
+#if defined(__TRAN) || defined(__C40) || defined(__ABC)
+	fastpool = &(Root->FastPool);
+d94 6
+a99 5
+	rrdpool = Root->RRDPool;
+#endif		
+	old[0] = NULL;
+
+    forever
+d101 18
+a118 3
+	word x = 0;
+	word total = 0, maxblock = 0;
+	char c;
+d120 1
+a120 6
+	m = FirstPoolBlock(p);
+	last = LastPoolBlock(p);
+
+	printf("  Block :   Size  State     Owner\n");
+	
+	until( m >= last )
+d122 19
+a140 18
+		char desc[60];
+		char *owner  = NULL;
+		word size    = m->Size&(~15);
+		MPtr caddr   = NULL;
+		word csize   = -1;
+		word alloc   = m->Size & Memory_Size_FwdBit;
+		Memory *next = (Memory *)((word)m + size);
+				
+		*desc = 0;
+
+		if( ++x < tabmax ) New[x] = m;
+
+		if( !alloc )
+		{
+			total += size;
+			if( size > maxblock ) maxblock = size;
+		}
+
+d142 4
+a145 4
+		if( m->Pool == mypool )
+			strcat(desc," mem's data");
+		elif( (Program *)(m+1) == MyTask->Program )
+			strcat(desc," mem's code");
+d147 31
+a177 29
+
+		if( (m->Pool == freepool &&  alloc) ||
+		    (m->Pool != freepool && !alloc) ) 
+		{
+			strcat(desc," INCONSISTENT");
+		}
+		
+		if( ( alloc && (next->Size & Memory_Size_BwdBit) == 0) ||
+		    (!alloc && (next->Size & Memory_Size_BwdBit) != 0) )
+		{
+			strcat(desc," BWD bit of next wrong");
+		}
+
+		if( alloc && ((*(word *)(m+1))&T_Mask) == T_Valid )
+		{
+			owner = IdentifyCode(desc,CtoM_(m+1));
+		}
+		
+		if( alloc && (*(word *)(m+1) == (word)(m+1)) )
+		{
+			strcat(desc," Module Table");
+		}
+
+		if( owner == NULL && alloc && m->Pool == codepool )
+		{
+			Carrier *c = (Carrier *)(m+1);
+			MPtr w = c->Addr;
+			caddr = w;
+			csize = c->Size;
+d179 1
+a179 1
+			csize *= sizeof(word);
+d181 3
+a183 4
+			if( (ModuleWord_(w,Type) & T_Mask) == T_Valid )
+			{
+				owner = IdentifyCode(desc,w);
+			}
+d185 10
+a194 7
+
+		if( owner == NULL && (m->Size & Memory_Size_Carrier) ) 
+		{
+			int i;
+			Carrier *c = (Carrier *)(m+1);
+			caddr = c->Addr;
+			csize = c->Size;
+d196 1
+a196 1
+			csize *= sizeof(word);
+d198 1
+a198 16
+			for( i = 0 ; i < 8 ; i++ )
+			{
+				if( m->Pool == specials[i] )
+				{
+					strcat(desc,(i&1)?" fast":"");
+					strcat(desc,(i&2)?" indirect":"");
+					strcat(desc,(i&4)?" global":" local");
+					owner = "Special";
+					alloc = 0;
+					break;
+				}
+			}
+
+		}
+		
+		if( monitor )
+d200 9
+a208 4
+			word y;
+			for( y = 0; old[y] != NULL; y++ )
+				if( old[y] == m ) break;
+			if( old[y] == NULL ) strcat(desc," new");
+d210 19
+a228 6
+
+		if( owner == NULL )
+		{
+			if( m->Pool == freepool ) owner = "FreePool";
+			elif( m->Pool == syspool ) owner = "SysPool";
+			elif( m->Pool == codepool ) owner = "Loader";
+d230 1
+a230 1
+			elif( m->Pool == fastpool ) owner = "FastPool";
+d233 1
+a233 1
+			elif( m->Pool == rrdpool ) owner = "RRDPool";
+d235 6
+a240 5
+			else {
+				Task *task = (Task*)((int)(m->Pool) - offsetof(Task,MemPool));
+				ObjNode *entry = (ObjNode *)task->TaskEntry;
+				owner = entry->Name;
+			}
+d242 16
+a257 7
+		
+		printf("%08p: %7ld %s %10s ",
+			m,size,alloc?"Alloc":"Free ",owner);
+		if( csize != -1 ) printf(" %08lp: %7ld",caddr,csize);
+		printf(" %s\n",desc);
+		
+		m = (Memory *)((word)m + (m->Size&~15));
+d259 17
+a275 13
+
+	printf("%ld Available, %ld Largest\n",total,maxblock);
+
+	if( !monitor ) break;
+
+	printf("Hit CR to repeat, 'q' to quit..."); fflush(stdout);
+	c = getchar();
+	putchar('\n');
+
+	if( c == 'q' ) break;
+
+	New[x] = NULL;
+	memcpy(old,New,tabmax*sizeof(Memory *));
+d277 2
+a278 1
+	return 0;
+d281 1
+a281 15
+char *IdentifyCode(char *desc, MPtr m)
+{
+	word type = ModuleWord_(m,Type);
+	char name[32];
+	
+	if( type == T_Program ) strcat(desc," Program: ");
+	elif( type == T_Module ) strcat(desc," Module : ");
+	elif( type == T_Device ) strcat(desc," Device : ");
+	else return NULL;
+	
+	ModuleName_(name,m);
+	strcat(desc,name);
+	
+	return "loader";
+}
+d283 1
+@
+
+
+1.10
+log
+@fixed compile time warnings
+@
+text
+@d1 3
+a3 2
+
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/mem.c,v 1.9 1992/11/20 16:44:26 nick Exp nickc $";
+d194 1
+a194 1
+		if( csize != -1 ) printf(" %08lx: %7ld",caddr,csize);
+@
+
+
+1.9
+log
+@Fixed to work with new loader mechanism of having a carrier for
+each loaded program/module. Now works with code in unaddressable
+memory. Special pools can now be identified and described.
+Output format changed to give address and size from carrier.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/mem.c,v 1.8 1992/11/11 17:42:15 nick Exp $";
+d30 1
+a30 1
+Memory *new[tabmax+1];
+d80 5
+a84 5
+		char *owner = NULL;
+		word size = m->Size&(~15);
+		MPtr caddr;
+		word csize = -1;
+		word alloc = m->Size & Memory_Size_FwdBit;
+d89 1
+a89 1
+		if( ++x < tabmax ) new[x] = m;
+d191 1
+a191 1
+		printf("%08x: %7d %s %10s ",
+d193 1
+a193 1
+		if( csize != -1 ) printf(" %08x: %7d",caddr,csize);
+d199 1
+a199 1
+	printf("%d Available, %d Largest\n",total,maxblock);
+d209 2
+a210 2
+	new[x] = NULL;
+	memcpy(old,new,tabmax*sizeof(Memory *));
+@
+
+
+1.8
+log
+@Access permissions changed on this file, it was unreadable by the
+general public.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/mem.c,v 1.7 1992/09/22 17:29:42 paul Exp nick $";
+d11 1
+d27 2
+d37 2
+a38 1
+	Pool *freepool, *syspool;
+d54 4
+d82 2
+a103 8
+#if defined(__TRAN) || defined(__C40) || defined(__ABC)
+		if( m->Size & 4 ) 
+		{
+			Carrier *c = (Carrier *)(m+1);
+			size = c->Size;			
+			strcat(desc," fast");
+		}
+#endif
+d115 2
+a116 2
+		
+		if( alloc && (*(word *)(m+1) == T_Program) )
+d118 1
+a118 4
+			Program *prog = (Program *)(m+1);
+			strcat(desc," Program: ");
+			strcat(desc,prog->Module.Name);
+			owner = "loader";
+d121 1
+a121 1
+		if( alloc && (*(word *)(m+1) == T_Module) )
+d123 1
+a123 4
+			Module *mod = (Module *)(m+1);
+			strcat(desc," Module : ");
+			strcat(desc,mod->Name);
+			owner = "loader";
+d125 2
+a126 2
+		
+		if( alloc && (*(word *)(m+1) == T_Device) )
+d128 11
+a138 4
+			Module *mod = (Module *)(m+1);
+			strcat(desc," Device : ");
+			strcat(desc,mod->Name);
+			owner = "loader";
+d140 2
+a141 2
+		
+		if( alloc && (*(word *)(m+1) == (word)(m+1)) )
+d143 20
+a162 1
+			strcat(desc," Module Table");
+d177 1
+d191 5
+a195 3
+		printf("%08x: %7d %s %10s %s\n",
+			m,size,alloc?"Alloc":"Free ",owner,desc);
+
+d214 17
+@
+
+
+1.7
+log
+@fixed for ONCHIPMEM on C40, removed for ARM, unless __ABC.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /m/giga/HeliosRoot/Helios/cmds/com/RCS/mem.c,v 1.6 1991/03/14 21:48:17 paul Exp paul $";
+@
+
+
+1.6
+log
+@fix for new ARM (__MI) organisation of FreePool memory headers
+Pool + RRDPool + MIInfo | Memory....
+(ARM only)
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/mem.c,v 1.5 91/03/11 11:27:27 paul Exp Locker: paul $";
+d14 1
+a14 1
+#ifdef __ARM
+d35 1
+a35 1
+#if defined(__TRAN) || defined(__ARM)
+d50 1
+a50 1
+#if defined(__TRAN) || defined(__ARM)
+d94 1
+a94 1
+#if defined(__TRAN) || defined(__ARM)
+d155 1
+a155 1
+#if defined(__TRAN) || defined(__ARM)
+@
+
+
+1.5
+log
+@made to comply with new root.h spec.
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/mem.c,v 1.4 91/01/22 12:57:09 paul Exp Locker: paul $";
+d14 12
+a62 2
+	
+	last = (Memory *)p->Memory.Head;
+d64 2
+a65 1
+	m = (Memory *)(p+1);
+@
+
+
+1.4
+log
+@updated to enable fastram display for ARM version as well as TRAN
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/mem.c,v 1.3 90/11/21 23:49:58 paul Exp $";
+d42 1
+a42 1
+	rrdpool = &Root->RRDPool;
+@
+
+
+1.3
+log
+@fixed for Robust ram disk pool
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/mem.c,v 1.2 90/08/23 10:20:37 james Exp $";
+d23 1
+a23 1
+#ifdef __TRAN
+d38 1
+a38 1
+#ifdef __TRAN
+d83 1
+a83 1
+#ifdef __TRAN
+d144 1
+a144 1
+#ifdef __TRAN
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d2 1
+a2 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/mem.c,v 1.1 90/08/22 16:31:06 james Exp Locker: james $";
+d23 1
+a23 1
+#ifndef __HELIOSARM
+d26 3
+d38 1
+a38 1
+#ifndef __HELIOSARM
+d41 3
+d83 1
+a83 1
+#ifndef __HELIOSARM
+d144 1
+a144 1
+#ifndef __HELIOSARM
+d146 3
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+static char rcsid[] = "$Header$";
+@

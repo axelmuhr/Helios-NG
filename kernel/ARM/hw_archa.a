@@ -1,0 +1,200 @@
+-- File:	hw_archa.a
+-- Subsystem:	Helios-ARM executive
+-- Author:	P.A.Beskeen
+-- Date:	Oct '92
+--
+-- Description: Archimedies specific hardware assembler functions.
+--
+--
+-- RcsId: $Id: hw_archa.a,v 1.1 1993/08/24 08:45:33 paul Exp $
+--
+-- (C) Copyright 1992 Perihelion Software Ltd.
+-- All Rights Reserved.
+--
+-- RcsLog: $Log: hw_archa.a,v $
+-- Revision 1.1  1993/08/24  08:45:33  paul
+-- Initial revision
+--
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include module.m
+include ARM/ioc.m
+
+
+_if _not _defp '__IOC [
+	error "This source file should only be used for IOC based systems"
+]
+
+
+------------------------------------------------------------------------------
+-- Hardware initialisation functions
+
+-- void IOCInit(void);
+--
+-- Initialises IOC to aquescent state.
+--
+-- Called in SVC mode.
+-- Called from C so must conform to PCS.
+
+	Function IOCInit
+
+	mov	a1, 0
+	mov	a2, 1
+	mov	tmp, IOC_base
+
+	_if _false [
+		-- On reset the control reg bits are all set
+		-- @@@ WHY? pin c0 is used for what interrupt?
+		strb	a2, (tmp, ioc_regs.control)
+	]
+
+	-- Disable all interrupts
+	strb	a1, (tmp, ioc_regs.irq_a + intr_block.mask)
+	strb	a1, (tmp, ioc_regs.irq_b + intr_block.mask)
+	strb	a1, (tmp, ioc_regs.firq + intr_block.mask)
+
+	movs	pc, lr
+
+
+-- void MEMCInit(void);
+--
+-- Initialises MEMC to default state.
+--
+-- Called in SVC mode.
+-- Called from C so must conform to PCS.
+
+	Function MEMCInit
+
+	warning "@@@ MEMCInit not coded"
+
+	movs	pc, lr
+
+
+-- void VIDCInit(void);
+--
+-- Initialises VIDC to default state.
+--
+-- Called in SVC mode.
+-- Called from C so must conform to PCS.
+
+	Function VIDCInit
+
+	warning "@@@ VIDCInit not coded"
+
+	movs	pc, lr
+
+
+-- void ResetCPU(void);
+--
+-- Reset the processor and restart boot sequence. Caused by a Terminate
+-- protocol being received by a link guardian.
+--
+-- In a single processor system this function is not required.
+--
+-- Called by C so must conform to PCS (ha - no return buddy so forget it)
+-- SVC mode assumed.
+
+	Function ResetCPU
+
+	-- Disable FIQ and IRQ
+	AllIntsOff
+
+HaltLoop:
+	b	HaltLoop
+
+	warning "@@@ Code required to restart bootstrap or Helios, or reset CPU"
+
+
+
+
+
+------------------------------------------------------------------------------
+-- Functions to support system timer interrupts
+--
+-- These are used for thread time slicing, timer Q handling and system time
+-- keeping. There are further hardware specific timer dependecies in both
+-- armintr.a (timer interrupt source recognition) and armslice.a (timer
+-- interrupt clearing).
+
+
+_if _false [
+-- *Warning* Currently the C based versions of these functions are used.
+-- These assembler versions must be updated to disable interrupts before
+-- en/disabling the timer - this stops spurious interrupts from occuring.
+
+-- void ClockIntsOn(void);
+--
+-- Enable time slicer clock interrupts.
+--
+-- Called in SVC mode.
+-- Called from C so must conform to PCS.
+
+	Function ClockIntsOn
+
+	-- Enable IOC timer 0 interrupts
+
+	mov	tmp, IOC_base
+	ldrb	a1, (tmp, ioc_regs.irq_a + intr_block.mask)
+	orr	a1, IRQA_TM0
+	strb	a1, (tmp, ioc_regs.irq_a + intr_block.mask)
+	movs	pc, lr
+
+
+-- void ClockIntsOff(void);
+--
+-- Disable time slicer clock interrupts, without having to change the processor
+-- interrupt mask.
+--
+-- Called in SVC mode.
+-- Called from C so must conform to PCS.
+
+	Function ClockIntsOff
+
+	-- Disable IOC timer 0 interrupts
+
+	mov	tmp, IOC_base
+	ldrb	a1, (tmp, ioc_regs.irq_a + intr_block.mask)
+	bic	a1, IRQA_TM0
+	strb	a1, (tmp, ioc_regs.irq_a + intr_block.mask)
+	movs	pc, lr
+]
+
+
+-- void StartTimeSlicer(void)
+--
+-- Starts the time slicer.
+-- 
+-- Initialise time slicer clock to call `TimerIntrHandler' every
+-- millisecond. Once set up, the clock is reset and slicer interrupts are
+-- enabled.
+--
+-- Assumes IRQ interrupt vector is already initialised.
+--
+-- Called in SVC mode.
+-- Called from C so must conform to PCS.
+
+	Function StartTimeSlicer
+
+	mov	tmp, IOC_base
+
+	-- Load timer counter latch with a 1Ms count.
+	mov	a1, IOC_Timer_1ms >> 8
+	strb	a1, (tmp, ioc_regs.timer_0 + timer_block.count_hi)
+	mov	a1, IOC_Timer_1ms & 0xff
+	strb	a1, (tmp, ioc_regs.timer_0 + timer_block.count_lo)
+
+	-- Set timer running with contents from latch.
+	strb	a1, (tmp, ioc_regs.timer_0 + timer_block.go_cmd)
+
+	-- Enable timer 0 interrupts in IOC IRQA interrupt mask.
+	ldrb	a1, (tmp, ioc_regs.irq_a + intr_block.mask)
+	orr	a1, IRQA_TM0
+	strb	a1, (tmp, ioc_regs.irq_a + intr_block.mask)
+
+	movs	pc, lr
+
+
+
+-- end of hw_archa.a

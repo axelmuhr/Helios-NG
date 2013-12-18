@@ -1,0 +1,6305 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	93.06.22.08.51.08;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.06.22.08.40.01;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	93.06.21.14.53.46;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	93.06.16.13.50.26;	author nickc;	state Exp;
+branches;
+next	;
+
+
+desc
+@68K specific disassembler
+@
+
+
+1.4
+log
+@removed unnecessary include
+@
+text
+@/*
+ * 68kdisas.c - A stand alone disassembler for the Helios 68020
+ *
+ * Copyright (c) 1993 Perihelion Software Ltd.
+ *  All Rights Reserved.
+ *
+ * Author: 	N Clifton
+ * Version:	$Revision: 1.3 $
+ * Date:	$Date: 1993/06/22 08:40:01 $
+ * Header:	$Header: /hsrc/cmds/linker/RS6000/RCS/68kdisas.c,v 1.3 1993/06/22 08:40:01 nickc Exp nickc $
+ */
+
+/*{{{ Header Files    */
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <stdlib.h>
+#include <helios.h>
+#include <module.h>
+
+/*}}}*/
+/*{{{ Types           */
+
+/* 68000 instruction formats */
+
+typedef enum
+  {
+    none=0,  dbit,   sbit,    movep,  ori,     andi,     subi, addi,
+    eori,    cmpi,   move,    negx,   movefsr, clr,      neg,  move_ccr,
+    not,     move_sr,nbcd,    pea,    swap,    movemfreg,tst,  tas,
+    movem_reg,trap,  link,    unlk,   move_usp,movefusp, reset,nop,
+    stop,    rte,    rts,     trapv,  rtr,     jsr,      jmp,  chk,
+    lea,     addq,   subq,    scc,    dbcc,    bcc,      moveq,or,
+    divu,    divs,   sbcd,    sub,    subx,    cmp,      cmpm, eor,
+    and,     mulu,   muls,    abcd,   exgd,    exga,     exgm, add,
+    addx,    dshift, mshift,  adda,   cmpa,    movea,    suba, ill,
+    ori_ccr, ori_sr, andi_ccr,andi_sr,eori_ccr,eori_sr,  extw, extl,
+    
+/* 68010 instructions */
+    
+    moves_1, movefccr_1,rtd_1,movec_1,bkpt_1,
+    
+/* 68020 instructions */
+    
+    chm_2,    callm_2,rtm_2, cas_2, linkl_2, extbl_2, mulsl_2, divsl_2,
+    trapcc_2, pack_2, unpk_2,bfld_2,fp_2
+  }
+instrenum;
+
+typedef unsigned long int instrword;
+typedef unsigned long int int32;
+
+/*}}}*/
+/*{{{ Constants       */
+
+/* #define BRANCH_TRACING */
+
+#ifdef SUN4
+#include <unistd.h>	/* for SEEK_SET */
+#define EXIT_SUCCESS	0
+#define EXIT_FAILURE	-1
+#define strtoul		strtol
+#endif
+
+#ifndef TRUE
+#define TRUE	1
+#define FALSE	0
+#define bool	int
+#endif
+
+#define COL_ADDR	1
+#define COL_HEX_VALUE	9
+#define COL_BYTE_VALUES	26
+#define COL_OP_CODE	45
+#define COL_OPERANDS	51
+#define COL_DESTINATION	66
+#define COL_TRACE	83
+
+/*}}}*/
+/*{{{ Local Variables */
+
+static unsigned char * 		ProgName     = (unsigned char *)"disas68k"; /* the name of the program */
+static unsigned char *		output_file  = (unsigned char *)"-";	    /* name of output destination */
+static FILE *			output	     = NULL;			    /* file handle for output */
+static FILE *			input	     = NULL;			    /* file handle for input */
+static unsigned long int	address      = 0;			    /* address of op code */
+static unsigned long int	address_base = 0;			    /* offset to address */
+
+/*}}}*/
+/*{{{ Functions       */
+
+/*{{{ Utilities            */
+
+/*{{{ inform     */
+
+/*
+ * display an error or information message
+ */
+
+#ifdef __CC_NORCROFT
+#pragma -v3
+#endif
+
+static void
+inform(
+       char *	message,
+       ...		)
+{
+  va_list	args;
+
+
+  va_start( args, message );
+
+  if (ProgName)
+    fprintf( stderr, "%s: ", ProgName );
+
+  vfprintf( stderr, message, args );
+
+  fprintf( stderr, "\n" );
+
+  va_end( args );
+
+  return;
+  
+} /* inform */
+
+#ifdef __CC_NORCROFT
+#pragma -v0
+#endif
+
+/*}}}*/
+/*{{{ myprintf   */
+
+#ifdef __CC_NORCROFT
+#pragma -v3
+#endif
+
+/*
+ * display a message, keeping a track of where we are
+ */
+
+static int 	current_column = 0;		/* number of characters printed out on current line */
+static char *	print_buffer   = NULL;		/* if set, print into this buffer */
+
+
+static void
+myprintf( const char * format, ... )
+{
+  static char	buffer[ 1024 ];			/* XXX */
+  va_list	args;
+  char *	start;
+  char *	ptr;
+  
+
+  va_start( args, format );
+
+  if (print_buffer == NULL)
+    { 
+      vsprintf( buffer, format, args );
+    }
+  else
+    {
+      vsprintf( print_buffer + strlen( print_buffer ), format, args );
+
+      va_end( args );
+      
+      return;
+    }
+  
+  va_end( args );
+
+  if (output == NULL)
+    return;
+
+  current_column += strlen( buffer );
+
+  start = buffer;
+  
+  while ((ptr = (char *)strchr( start, '%' )) != NULL)
+    {
+      *ptr = '\0';
+      
+      fprintf( output, start );
+      
+      fprintf( output, "%%" );
+      
+      start = ptr + 1;
+    }
+
+  fprintf( output, start );
+  
+  return;
+    
+} /* myprintf */
+
+#ifdef __CC_NORCROFT
+#pragma -v0
+#endif
+
+/*}}}*/
+/*{{{ pad_to     */
+
+/*
+ * output spaces until the given column is reached
+ */
+
+static void
+pad_to( int goal_column )
+{
+  if (current_column < goal_column)
+    {
+      while (current_column < goal_column)
+	{
+	  fputc( ' ', output );
+
+	  ++current_column;
+	}
+    }
+  else if (current_column > goal_column)
+    {
+      fputc( ' ', output );
+    }
+
+  return;
+
+} /* pad_to */
+
+/*}}}*/
+/*{{{ new_line   */
+
+/*
+ * send a newline character, adjusting column count aswell
+ */
+
+static void
+new_line( void )
+{
+  fputc( '\n', output );
+
+  current_column = 0;
+
+  return;
+  
+} /* new_line */
+  
+
+/*}}}*/
+/*{{{ print_byte */
+
+static void
+print_byte( long int value )
+{
+  if (value < 0)
+    value = -value;
+
+  value &= 0xff;
+
+  if (value == '\n')
+    {
+      myprintf( "\\n " );
+    }
+  else if (value == '\t')
+    {
+      myprintf( "\\t " );
+    }
+  else if (value == '\v')
+    {
+      myprintf( "\\v " );
+    }
+  else if (value == '\f')
+    {
+      myprintf( "\\f " );
+    }
+  else if (value >= ' ' && value <= '~' )
+    {
+      myprintf( " %c ", (char)value );
+    }
+  else
+    {
+      myprintf( "..." );
+    }
+
+  return;
+  
+} /* print_byte */
+  
+
+/*}}}*/
+/*{{{ bitreverse */
+
+int32
+bitreverse( int32 n )
+{
+  int32 m1 = 0x0001;
+  int32 m2 = 0x8000;
+  int32 i;
+  int32 r = 0;
+
+  for ( i = 1; i <= 16; m1 <<= 1, m2 >>= 1, i++)
+    if (n & m1) r |= m2;
+
+  return(r);
+}
+
+/*}}}*/
+
+/*}}}*/
+/*{{{ List Manipulation    */
+
+#ifdef BRANCH_TRACING
+
+/*{{{ Types       */
+
+/*
+ * list manipulation routines - stolen from Helios
+ */
+
+typedef struct Node
+  {
+    struct Node *	next;
+    struct Node *	prev;
+  }
+Node;
+
+typedef struct
+  {
+    Node *	head;	/* points to first real item on list */
+    Node *	earth;	/* always NULL */
+    Node *	tail;	/* points to last real item on list */
+  }
+List;
+
+/*}}}*/
+
+/*{{{ search_list */
+
+/*
+ * search a list using a supplied boolean function
+ * returns the first node that "matches" or NULL
+ */
+
+static Node *
+search_list(
+	    register List *	plist,		/* the list to scan */
+	    register bool (*	pfunc)(),	/* the function to apply */
+	    register long int 	arg )		/* the argument to the applied function */
+{
+  register Node *	pnode;
+
+
+  for (pnode = plist->head; pnode->next != NULL; pnode = pnode->next)
+    {
+      if ((*pfunc)( pnode, arg ))
+	return pnode;
+    }
+  
+  return NULL;
+
+} /* search_list */
+
+/*}}}*/
+/*{{{ init_list   */
+
+/*
+ * initialise a list
+ */
+
+static void
+init_list( register List * plist )
+{
+  plist->head  = (Node *)&plist->earth;
+  plist->earth = NULL;
+  plist->tail  = (Node *)&plist->head;
+  
+  return;
+  
+} /* init_list */
+
+/*}}}*/
+/*{{{ pre_insert  */
+
+/*
+ * insert a node before another node in a list
+ */
+
+static void
+pre_insert(
+	   register Node *	pnext,
+	   register Node *	pnode )
+{
+  pnode->prev       = pnext->prev;
+  pnode->next       = pnext;
+  pnext->prev       = pnode;
+  pnode->prev->next = pnode;
+	
+  return;
+  
+} /* pre_insert */
+
+/*}}}*/
+/*{{{ add_tail    */
+
+/*
+ * add a node to the end of the list
+ */
+
+static void
+add_tail(
+	register List *	plist,
+	register Node *	pnode )
+{
+  pnode->prev       = plist->tail;
+  pnode->next       = (Node *)&plist->earth;
+  plist->tail->next = pnode;
+  plist->tail       = pnode; 
+  
+  return;
+
+} /* add_tail */
+
+/*}}}*/
+/*{{{ remove_head */
+
+/*
+ * remove the first node on a list
+ * returns the node or NULL
+ */
+
+static Node *
+remove_head( register List * plist )
+{
+  register Node *	pnode;
+  
+
+  pnode = plist->head;
+  
+  if (pnode->next == NULL)
+    return NULL;
+  
+  pnode->next->prev = (Node *)plist;
+  plist->head       = pnode->next;
+  pnode->next       = NULL;
+  pnode->prev       = NULL;
+	
+  return pnode;
+
+} /* remove_head */
+
+/*}}}*/
+
+#endif /* BRANCH_TRACING */
+
+/*}}}*/
+/*{{{ Disasembler Routines */
+
+/*{{{ read_word         */
+
+#define MAX_NUM_BYTES	8
+
+static int32		iPutBackVal = 0;	/* (bigendian) value pushed back onto input queue */
+static int32		iPutBackLen = 0;	/* number of bytes in the value                   */
+static char		byte_read[ MAX_NUM_BYTES ];	  /* buffer recording bytes read	  */
+static int		num_bytes_read = -1;	 /* negative disables recording			  */
+
+
+#define get_val_( val )				\
+  if (iPutBackLen > 0)				\
+    {						\
+      val = iPutBackVal >> 24;			\
+      iPutBackVal <<= 8;	    		\
+      iPutBackLen  -= 1;	    		\
+    }				    		\
+  else if (fread( &val, 1, 1, input ) != 1)	\
+    {						\
+      return FALSE;				\
+    }						\
+  if (num_bytes_read >= 0 && num_bytes_read < MAX_NUM_BYTES)	\
+    {								\
+      byte_read[ num_bytes_read++ ] = val;			\
+    }
+  
+
+static bool
+read_word( int32 *	pDestination )
+{
+  unsigned char	val;
+  int32		tmp;
+  
+
+  if (input == NULL || pDestination == NULL)
+    return FALSE;
+
+  get_val_( val );
+  
+  tmp = val;
+
+  get_val_( val );
+  
+  address += 2;
+  
+  *pDestination = tmp << 8 | (int32)val;
+  
+  return TRUE;
+  
+} /* read_word */
+
+/*}}}*/
+/*{{{ read_long         */
+
+static bool
+read_long( int32 *	pDestination )
+{
+  unsigned char	val;
+  int32		tmp;
+  
+
+  if (input == NULL || pDestination == NULL)
+    return FALSE;
+
+  get_val_( val );
+  
+  tmp = val;
+
+  get_val_( val );
+  
+  tmp = tmp << 8 | (int32)val;
+  
+  get_val_( val );
+  
+  tmp = tmp << 8 | (int32)val;
+  
+  get_val_( val );
+
+  *pDestination = tmp << 8 | (int32)val;
+
+  address += 4;
+  
+  return TRUE;
+  
+} /* read_long */
+
+/*}}}*/
+/*{{{ put_back_word     */
+
+static void
+put_back_word( int32 val )
+{
+  if (iPutBackLen > 2)
+    {
+      inform( "Error: attempting to put back a long word when put back queue is not empty" );
+    }
+  else if (iPutBackLen > 0)
+    {
+      if (iPutBackLen == 1)
+	{
+	  iPutBackVal |= ((val & 0xFFFF) << 8);
+	}
+      else
+	{
+	  iPutBackVal |= (val & 0xFFFF);
+	}
+      
+      iPutBackLen += 2;
+    }
+  else
+    {
+      iPutBackLen = 2;
+
+      iPutBackVal = val << 16;
+    }
+
+  address        -= 2;
+  num_bytes_read -= 2;
+  
+  return;
+  
+} /* put_back_word */
+
+/*}}}*/
+/*{{{ put_back_long     */
+
+static void
+put_back_long( int32 val )
+{
+  if (iPutBackLen > 0)
+    {
+      inform( "Error: attempting to put back a long word when put back queue is not empty" );
+    }
+  else
+    {
+      iPutBackLen     = 4;
+      iPutBackVal     = val;
+      address        -= 4;
+      num_bytes_read -= 4;
+    }
+  
+  return;
+  
+} /* put_back_long */
+
+/*}}}*/
+/*{{{ readword		*/
+
+static int32
+readword( void )
+{
+  int32 	a;
+
+  
+  if (read_word( &a ))
+    {
+      return a;
+    }
+  else
+    {
+      inform( "read failure" );
+      
+      return 0;
+    }
+  
+} /* readword */
+  
+
+/*}}}*/
+/*{{{ readlong		*/
+
+static int32
+readlong( void )
+{
+  int32 	a;
+
+  
+  if (read_long( &a ))
+    {
+      return a;
+    }
+  else
+    {
+      inform( "read failure" );
+      
+      return 0;
+    }
+  
+} /* readlong */
+
+/*}}}*/
+
+/*{{{ show_value        */
+
+static void
+show_value( void )
+{
+  int	i;
+
+
+  pad_to( COL_HEX_VALUE );
+
+  /* left pad with zeros */
+  
+  if (num_bytes_read < MAX_NUM_BYTES)
+    {
+      myprintf( "%*c", (MAX_NUM_BYTES - num_bytes_read) * 2, ' ' ); 
+    }
+
+  /* display number */
+  
+  for (i = 0; i < num_bytes_read; i++)
+    {
+      myprintf( "%02.2lx", byte_read[ i ] );
+    }
+
+  /* move to start of byte display */
+  
+  pad_to( COL_BYTE_VALUES );
+
+  /* display bytes */
+  
+  for (i = 0; i < num_bytes_read; i++)
+    {
+      print_byte( byte_read[ i ] );
+    }
+
+  return;
+  
+} /* show_value */
+
+/*}}}*/
+/*{{{ bits		*/
+
+#define _BITS_PER_WORD	32
+
+/*
+ * mask out all bits outside of the specified
+ * range (inclusive), and return the resultant
+ * word
+ */
+
+static unsigned long int
+bits(
+     int32 	iValue,
+     int	iTopBit,
+     int	iBottomBit )
+{
+  if (iTopBit < iBottomBit)
+    {
+      int	temp = iTopBit;
+
+      
+      iTopBit    = iBottomBit;
+      iBottomBit = temp;
+    }
+
+  /* mask out bottom bits */
+  
+  iValue = iValue << (_BITS_PER_WORD - 1 - iTopBit);
+
+  /* mask out top bits */
+  
+  return ( iValue >> (_BITS_PER_WORD - 1 - iTopBit + iBottomBit));
+  
+} /* bits */
+
+/*}}}*/
+
+/*{{{ writereg		*/
+
+static void
+writereg( int32 reg )
+{
+  if ( reg > 7 )
+    myprintf( "A%d", reg - 8);
+  else
+    myprintf( "D%d", reg );
+}
+
+/*}}}*/
+/*{{{ short_value	*/
+
+static int32
+short_value( int32 n )
+{
+  return ((n == 0) ? 8 : n);
+}
+
+/*}}}*/
+/*{{{ byte_extend	*/
+
+static int32
+byte_extend( int32 n )
+{
+  return ((n > 127) ? (n | ~0XFF) : n);
+}
+
+/*}}}*/
+/*{{{ word_extend	*/
+
+static int32
+word_extend( int32 n )
+{
+  return ((n & 0x8000) != 0 ? (n | 0xffff0000) : n);
+}
+
+/*}}}*/
+/*{{{ op_size		*/
+
+static int
+op_size(
+	instrenum  op,
+	instrword  a,
+	instrword  w )
+{
+  switch (op)
+    {
+    case ori:
+    case andi:
+    case subi:
+    case addi:
+    case eori:
+    case cmpi:
+    case negx:
+    case clr:
+    case neg:
+    case not:
+    case tst:
+    case addq:
+    case subq:
+    case or:
+    case sub:
+    case subx:
+    case cmp:
+    case cmpm:
+    case eor:
+    case and:
+    case add:
+    case addx:
+    case dshift:
+      return bits( a, 7, 6 );
+      
+    case move:
+      switch (bits( a, 13, 12 ))
+        {
+	case 1: return 0;
+	case 2: return 2;
+	case 3: return 1;
+	}
+    case movea:
+      return (bits( a, 13, 12 ) == 3) ? 1 : 2;
+      
+    case adda:
+    case suba:
+    case cmpa:
+      return (bits( a, 8, 6 ) == 3) ? 1 : 2;
+      
+    case movem_reg:
+    case movemfreg:
+    case movep:
+      return (bits( a, 6, 6 ) == 0) ? 1 : 2;
+      
+    case fp_2:    /* This case w = 2nd word of instr */
+      switch( bits( w, 12, 10 ) )
+        {
+	case 0:  return 2;
+	case 1:  return 2;
+	case 2:  return 4;
+	case 3:  return 4;
+	case 4:  return 1;
+	case 5:  return 3;
+	case 6:  return 4;
+        } 
+      
+    case mulsl_2:
+    case divsl_2:
+      return 2;
+      
+    default:
+      return 1;
+    }
+  
+} /* op_size */
+
+/*}}}*/
+/*{{{ condition_code	*/
+
+static char *
+condition_code(
+	       instrenum	op,
+	       instrword	a )
+{
+  switch (bits( a, 11, 8 ))
+    {
+    case  0: return (op == bcc ? "RA": "T");
+    case  1: return (op == bcc ? "SR": "RA");
+    case  2: return "HI";
+    case  3: return "LS";
+    case  4: return "CC";
+    case  5: return "CS";
+    case  6: return "NE";
+    case  7: return "EQ";
+    case  8: return "VC";
+    case  9: return "VS";
+    case 10: return "PL";
+    case 11: return "MI";
+    case 12: return "GE";
+    case 13: return "LT";
+    case 14: return "GT";
+    case 15: return "LE";
+    }
+  
+  return(0); /* Artificial (never executed) */
+  
+} /* condition_code */
+
+/*}}}*/
+/*{{{ write_op		*/
+
+static void
+write_op(
+	 char * instruction,
+	 int	n )
+{
+  int	s;
+
+  
+  myprintf( "%s", instruction );
+  
+  if ( n == 0 ) myprintf( ".B" );
+  if ( n == 1 ) myprintf( ".W" );
+  if ( n == 2 ) myprintf( ".L" );
+
+  s = strlen( instruction );
+
+  if (n >= 0 && n <= 2) s += 2;
+
+  if (s < 10)
+    myprintf( "%*c", (10 - s) - 1, ' ' );
+
+  return;
+  
+} /* write_op */
+
+/*}}}*/
+/*{{{ w_index		*/
+
+static void
+w_index(
+	int32 a,
+	int32 reg,
+	int32 l,
+	int32 scl )
+{
+  myprintf( (a == 1 ? "A%d" : "D%d"), reg);
+  
+  if (l == 1) myprintf( ".L" );
+  
+  if (scl != 0)
+    myprintf( "*%d", (1 << scl) );
+}
+
+/*}}}*/
+/*{{{ mode6orpc3	*/
+
+static void
+mode6orpc3(
+	   int32 arg,
+	   int32 mode )
+{
+  int32 b      = readword();
+  int32 d      = b & 0xff;
+  int32 scl    = bits( b, 10, 9  );
+  int32 reg    = bits( b, 14, 12 );
+  int32 a      = bits( b, 15, 15 );
+  int32 l      = bits( b, 11, 11 );
+  int32 pcmode = mode == 7;
+  int32 pcx    = address - 2;
+  int32 iis, bds, is, bs;
+  
+
+  if (bits( b, 8, 8 ) == 0)
+    {
+      if (d > 127)
+	d = byte_extend( d );
+      
+      myprintf( (pcmode ? "$%04x(PC,":"%d(A%d,"), d/*+(pcmode ? pcx : 0)*/, arg );
+      
+      w_index( a, reg, l, scl );
+      
+      myprintf( ")" );
+    }
+  else
+    {
+      iis = bits( b, 2, 0 );
+      bds = bits( b, 5, 4 );
+      is  = bits( b, 6, 6 );
+      bs  = bits( b, 7, 7 );
+      
+      myprintf( "(" );
+      
+      if (iis != 0)
+	myprintf( "[" );
+      
+      if (bds != 1)
+	{
+          if (bds == 3)
+	    myprintf( "$%x,", readlong() + (pcmode ? pcx : 0) );
+          else
+	    myprintf( (pcmode ? "%04x," : "%d,"),
+		      readword() + (pcmode ? pcx : 0) );
+	}
+      
+      if (bs == 1)
+	myprintf( "Z" );
+      
+      myprintf( (pcmode ? "PC" : "A%1d"), arg );
+      
+      if (iis <= 7 && iis >= 5)
+	myprintf( "]" );
+      
+      if (is == 0)
+	{
+          myprintf( "," );
+	  
+          w_index( a, reg, l, scl );
+	}
+      
+      if (iis <= 3 && iis >= 1)
+	myprintf( "]" );
+      
+      if (bits( is, 1, 0 ) > 1 )
+	{
+          if (bits( is, 1, 0 ) == 3)
+	    myprintf( "%08x", readlong() );
+          else
+	    myprintf( "%d", readword() );
+	}
+      
+      if (iis != 0)
+	myprintf( "]" );
+      
+      myprintf( ")" );
+    }
+  
+  return;
+  
+} /* mode6orpc3 */
+
+/*}}}*/
+/*{{{ ea		*/
+
+static void
+ea(
+   instrenum	op,
+   instrword	a,
+   int32	w )
+{
+  int32 	mode = bits( a, 5, 3 );
+  int32		arg  = bits( a, 2, 0 );
+  int		size;
+
+  
+  switch (mode)
+    {
+    case 0: myprintf( "D%d", arg );     break;
+    case 1: myprintf( "A%d", arg );     break;
+    case 2: myprintf( "(A%d)", arg );   break;
+    case 3: myprintf( "(A%d)+", arg );  break;
+    case 4: myprintf( "-(A%d)", arg );  break;
+    case 5: myprintf( "%d(A%d)", word_extend( readword() ), arg ); break;
+    case 6: mode6orpc3( arg, mode );    break;
+    case 7:
+      switch (arg)
+	{
+	case 0: /* absolute short */
+	    {
+	      unsigned long int offset = readword();
+	      
+	      if ((offset & 0x8000) == 0)
+		myprintf( "$%04x.W", offset );
+	      else
+		myprintf( "$%08lx.W", offset | 0xffff0000 );
+	    }
+	    break;
+	    
+	  case 1: /* absolute long (e.g. extref) */
+	      {
+		int32  w = readlong();
+
+		
+		myprintf( "$%08lx", (long)w );
+	      }
+	    break;
+	    
+	  case 2: /* PC indirect with disp */
+	      {
+		int32 old_address = address;
+		
+		myprintf( "$%04x", (word_extend( readword() ) + old_address) & 0XFFFFFF);
+	      }
+	    break;
+	    
+	    /* PC mode 3 not complete for 020 yet */
+	    
+	  case 3:
+	    mode6orpc3( arg, mode );
+	    break;
+	    
+	  case 4:
+	    size = op_size( op, a, w );
+	    switch( size )
+	      {
+		int32 a,b,c;
+		    
+	      case 0:
+	      case 1:
+		myprintf( "#%d", readword() );
+		break;
+		
+	      case 2:
+		myprintf( "#$%08x", readlong() );
+		break;
+		
+	      case 3:
+		a = readlong();
+		b = readlong();
+		
+		myprintf( "#$%08x%08x", a, b );
+		break;
+		
+	      case 4:
+		a = readlong();
+		b = readlong();
+		c = readlong();
+		
+		myprintf( "#$%08x%08x%08x", a, b, c );
+		break;
+	      }
+	    break;
+	    
+	  default:
+	    myprintf( "???" );
+	  }
+    }
+  
+} /* ea */
+
+/*}}}*/
+/*{{{ write_opi		*/
+
+static void
+write_opi(
+	  char *	instruction,
+	  int32		op,
+	  instrword	a )
+{
+  int32 	size;
+
+
+  size = op_size( op, a, 0 );
+
+  write_op( instruction, size );
+
+  if (size == 0)  myprintf( "#%d,",    readword() );
+  if (size == 1)  myprintf( "#%d,",    readword() );
+  if (size == 2)  myprintf( "#$%08X,", readlong() );
+
+  ea( op, a, 0 );
+}
+
+/*}}}*/
+/*{{{ register_list     */
+
+static void
+register_list(
+	      int32 	m,
+	      void (*	preg)( int32 ) )
+{
+  int32 	i, freg = 0;
+  int32		state   = 0;
+  int32		list_started = 0;
+
+  
+  for (i = 0; i <= 16; i++)     /* 16 to flush A7 if set */
+    {
+      int32 x;
+      
+      if ((x = bits(m,i,i)) != state)
+	{
+	  state = x;
+	  
+	  if (state)
+	    {
+	      if (list_started )
+		myprintf("/");
+	      
+	      preg(i);
+	      freg = i;               /* Record first reg in list */
+	      list_started = 1;
+	    }
+	  else
+	    {
+	      if ( (i-1) != freg )
+		{
+		  myprintf("-");
+		  preg(i-1);
+		}
+	    }
+	}
+    }
+} /* register_list */
+
+
+/*}}}*/
+/*{{{ fpcond		*/
+
+static void
+fpcond(
+       char * 	op,
+       int32	pred,
+       int32	sz )
+{
+  char *	bop;
+  char		s[ 10 ];
+
+
+  s[ 0 ] = 0;
+  strcat( s, op );
+
+  switch( pred )
+    {
+    default:
+    case 0x00:  bop = "F";   break;
+    case 0x01:  bop = "EQ";  break;
+    case 0x02:  bop = "OGT"; break;
+    case 0x03:  bop = "OGE"; break;
+    case 0x04:  bop = "OLT"; break;
+    case 0x05:  bop = "OLE"; break;
+    case 0x06:  bop = "OGL"; break;
+    case 0x07:  bop = "OR";  break;
+    case 0x08:  bop = "UN";  break;
+    case 0x09:  bop = "UEQ"; break;
+    case 0x0a:  bop = "UGT"; break;
+    case 0x0b:  bop = "UGE"; break;
+    case 0x0c:  bop = "ULT"; break;
+    case 0x0d:  bop = "NLE"; break;
+    case 0x0e:  bop = "NE";  break;
+    case 0x0f:  bop = "T";   break;
+    case 0x10:  bop = "SF";  break;
+    case 0x11:  bop = "SEQ"; break;
+    case 0x12:  bop = "GT";  break;
+    case 0x13:  bop = "GE";  break;
+    case 0x14:  bop = "LT";  break;
+    case 0x15:  bop = "LE";  break;
+    case 0x16:  bop = "GL";  break;
+    case 0x17:  bop = "GLE"; break;
+    case 0x18:  bop = "NGLE"; break;
+    case 0x19:  bop = "NGL"; break;
+    case 0x1a:  bop = "NLE"; break;
+    case 0x1b:  bop = "NLT"; break;
+    case 0x1c:  bop = "NGE"; break;
+    case 0x1d:  bop = "NGT"; break;
+    case 0x1e:  bop = "SNE"; break;
+    case 0x1f:  bop = "ST";  break;
+    }
+  
+  strcat( s, bop );
+  
+  write_op( s, sz );
+  
+  return;
+  
+} /* fpcond */
+
+/*}}}*/
+/*{{{ fpdbcc		*/
+
+static void
+fpdbcc( instrword a )
+{
+  int fpr  = bits( a, 2, 0 );
+  int pcx  = address;
+  int pred = readword();
+  int off  = readword();
+
+
+  fpcond( "FDB", pred, -1 );
+  
+  myprintf( "D%d,%06x", fpr, off + pcx );
+
+  return;
+  
+} /* fpdbcc */
+
+/*}}}*/
+/*{{{ fpbcc		*/
+
+static void
+fpbcc( instrword a )
+{
+  int pred = bits( a, 5, 0 );
+  int s    = bits( a, 6, 6 );
+  int pcx  = address;
+  int addr;
+  
+
+  fpcond( "FB", pred, s + 1 );
+
+  addr = s == 1 ? readlong() : readword();
+  
+  myprintf( "%06x", addr + pcx );
+
+  return;
+  
+} /* fpbcc */
+
+/*}}}*/
+/*{{{ fptcc		*/
+
+static void
+fptcc( instrword a )
+{
+  int32 pred = readword();
+  int32 mode = bits( a, 2, 0 );
+
+
+  fpcond( "FTRAP", pred, (mode == 4)? 7: mode - 1 );
+
+  if (mode == 4)
+    return;
+
+  if (mode == 2)
+    {
+      myprintf( "%04x", readword() );
+      return;
+    }
+
+  if (mode == 3)
+   {
+     myprintf( "%08x", readlong() );
+     return;
+   }
+  
+} /* fptcc */
+
+/*}}}*/
+/*{{{ fpscc		*/
+
+static void
+fpscc( instrword a )
+{
+   int32 	pred = readword();
+
+   
+   fpcond( "FS", pred, 0 );
+   
+   ea( fp_2, a, 0 ); /* op size irrelevant */
+}
+
+/*}}}*/
+/*{{{ fpsave		*/
+
+static void
+fpsave( instrword a )
+{
+   write_op( "FSAVE", -1 );
+   ea( fp_2, a, 0 ); /* op size irrelevant */
+}
+
+/*}}}*/
+/*{{{ fprestore		*/
+
+static void
+fprestore( instrword a )
+{
+  write_op( "FRESTORE", -1 );
+  ea( fp_2, a, 0 ); /* op size irrelevant */
+}
+
+/*}}}*/
+/*{{{ write_opf		*/
+
+static void
+write_opf(
+	  char *	op,
+	  int32		w,
+	  int32		ss )
+{
+  char *	opts = "LSXPWDB";
+  int32		l;
+
+
+  myprintf( "%s.", op );
+
+  myprintf( "%c", ((w & 0x4000) == 0)? *(opts + 2): *(opts + ss) );
+
+  pad_to( COL_OPERANDS );
+}
+
+/*}}}*/
+/*{{{ fpgen0		*/
+
+static void fpgen0(instrword a, int32 w)
+{
+   int32 argtype = 3;
+   int32 s = bits(w,12,10);
+   int32 d = bits(w,9,7);
+   int32 m = bits(w,14,14);
+   char *insstr;
+
+   if( ( s == 7 ) && ( m == 1 ) )
+   {
+      write_opf("FMOVECR",w,0);
+      myprintf("#$%02x,FP%d", w & 0x3f, bits(w,9,7));
+      return;
+   }
+   else
+   {
+      switch( w & 0x7f )
+      {
+      case 0x00: argtype = 2; insstr = "FMOVE"; break;
+      case 0x02: insstr = "FSINH"; break;
+      case 0x03: insstr = "FINTRZ"; break;
+      case 0x04: insstr = "FSQRT"; break;
+      case 0x06: insstr = "FLOGNP1"; break;
+      case 0x08: insstr = "FETOXM1"; break;
+      case 0x09: insstr = "FTANH"; break;
+      case 0x0a: insstr = "FATAN"; break;
+      case 0x0c: insstr = "FASIN"; break;
+      case 0x0d: insstr = "FATANH"; break;
+      case 0x0e: insstr = "FSIN"; break;
+      case 0x0f: insstr = "FTAN"; break;
+      case 0x10: insstr = "FETOX"; break;
+      case 0x11: insstr = "FTWOTOX"; break;
+      case 0x12: insstr = "FTENTOX"; break;
+      case 0x14: insstr = "FLOGN"; break;
+      case 0x15: insstr = "FLOG10"; break;
+      case 0x16: insstr = "FLOG2"; break;
+      case 0x19: insstr = "FCOSH"; break;
+      case 0x1a: insstr = "FNEG"; break;
+      case 0x1c: insstr = "FACOS"; break;
+      case 0x1e: insstr = "FGETEXP"; break;
+      case 0x1f: insstr = "FGETMAN"; break;
+      case 0x20: argtype = 2; insstr = "FDIV"; break;
+      case 0x21: argtype = 2; insstr = "FMOD"; break;
+      case 0x22: argtype = 2; insstr = "FADD"; break;
+      case 0x23: argtype = 2; insstr = "FMUL"; break;
+      case 0x24: argtype = 2; insstr = "FSGLDIV"; break;
+      case 0x25: argtype = 2; insstr = "FREM"; break;
+      case 0x26: argtype = 2; insstr = "FSCALE"; break;
+      case 0x27: argtype = 2; insstr = "FSGLMUL"; break;
+      case 0x28: argtype = 2; insstr = "FSUB"; break;
+      case 0x30: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x31: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x32: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x33: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x34: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x35: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x36: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x37: argtype = 4; insstr = "FSINCOS"; break;
+      case 0x38: argtype = 2; insstr = "FCMP"; break;
+      case 0x3a: argtype = 1; insstr = "FTST"; break;
+      case 0x3d: argtype = 2; insstr = "FCOS"; break;
+      default:
+         myprintf("????");
+         return;
+      }
+   }
+   write_opf(insstr,w,s);
+
+   if( m != 0 )
+      ea( fp_2, a, w);
+   else
+      myprintf("FP%d", s);
+
+   switch( argtype )
+   {
+   case 1:
+      break;
+
+   case 2:
+      myprintf(",FP%d", d);
+      break;
+
+   case 3:
+      if( (m != 0) || ( (m == 0) && (s != d) ) )
+         myprintf(",FP%d",d);
+      break;
+
+   case 4:
+      myprintf(",FP%d:FP%d",bits(w,2,0),d);
+      break;
+   }
+}
+
+/*}}}*/
+/*{{{ writefpcr		*/
+
+static void writefpcr(int32 n)
+{
+   char s[15];
+   bool started = 0;
+
+   s[0] = 0;
+   if( n & 1 )
+   {  strcat(s,"FPIAR");
+      started = 1;
+   }
+   if( n & 2 )
+   {  if( started ) strcat(s,"/");
+      else started = 1;
+
+      strcat(s,"FPSR");
+   }
+
+   if( n & 4 )
+   {  if( started ) strcat(s,"/");
+      else started = 1;
+
+      strcat(s,"FPCR");
+   }
+   myprintf(s);
+}
+
+/*}}}*/
+/*{{{ fpmovefpcr	*/
+
+static void fpmovefpcr(instrword a, int32 w)
+{
+   int32 dir = bits(w,13,13);
+   int32 fpr = bits(w,12,10);
+
+   write_op("FMOVE",2);
+
+   if( dir == 1 )
+   {
+      writefpcr(fpr);
+      myprintf(",");
+      ea(fp_2,a, w);
+   }
+   else
+   {
+      ea(fp_2,a, w);
+      myprintf(",");
+      writefpcr(fpr);
+   }
+}
+
+/*}}}*/
+/*{{{ fpmovefromfp	*/
+
+static void fpmovefromfp(instrword a, int32 w)
+{
+   int32 s = bits(w,9,7);
+   int32 d = bits(w,12,10);
+   int32 k = bits(w,6,0);
+
+   write_opf("FMOVE",w,d);
+
+   myprintf("FP%d,",s);
+   ea(fp_2,a, w);
+
+   if( d == 3 )
+      myprintf("{#%d}",k);
+
+   if( d == 7 )
+      myprintf("{D%d}",bits(k,6,4));
+}
+
+/*}}}*/
+/*{{{ writefpreg        */
+
+static void
+writefpreg( int32 n ) 
+{
+  myprintf( "FP%d", n );
+}
+
+/*}}}*/
+/*{{{ fpmovem		*/
+
+static void fpmovem(instrword a, int32 w)
+{
+   int32 rlist = bits(w,7,0);           /* AM changed 6 to 7 Aug 89 (check) */
+   int32 mode  = bits(w,12,11);
+   int32 dir   = bits(w,13,13);
+   int32 dreg  = bits(w,6,4);
+
+   write_op("FMOVEM.X",-1);
+
+   switch( mode )
+   {
+   case 0:
+   case 2:
+      if ( mode == 2 )
+	rlist = bitreverse( rlist ) >> 8;
+      if ( dir == 1 )
+      {
+         register_list( rlist, writefpreg );
+         myprintf(",");
+         ea(fp_2, a, 0);
+      }
+      else
+      {
+         ea(fp_2, a, 0);
+         myprintf(",");
+         register_list( rlist, writefpreg );
+      }
+      break;
+
+   case 3:
+   case 1:
+      if( dir == 1 )
+      {
+         myprintf("D%d,",dreg);
+         ea(fp_2, a, 0);
+      }
+      else
+      {
+         ea(fp_2, a, 0);
+         myprintf(",D%d",dreg);
+      }
+   }
+}
+
+/*}}}*/
+/*{{{ fpgen		*/
+
+static void
+fpgen( instrword a )
+{
+  int32 	w = readword();
+
+
+  switch( bits(w, 15, 13) )
+    {
+    case 0:
+    case 2:
+      fpgen0(a,w);
+      break;
+
+    case 1:
+      myprintf("????");
+      break;
+
+    case 3:
+      fpmovefromfp( a, w );
+      break;
+
+    case 4:
+    case 5:
+      fpmovefpcr( a, w );
+      break;
+      
+   case 6:
+   case 7:
+      fpmovem( a, w );
+      break;
+    }
+  
+  return;
+  
+} /* fpgen */
+
+/*}}}*/
+/*{{{ write_fp_ins	*/
+
+static void
+write_fp_ins( instrword a )
+{
+  switch (bits( a, 8, 6 ))
+    {
+    case 0:
+      fpgen( a );
+      break;
+
+    case 1:
+      switch (bits( a, 5, 3 ))
+	{
+	case 1:
+	  fpdbcc( a );
+	  break;
+	  
+	case 7:
+	  fptcc( a );
+	  break;
+	  
+	default:
+	  fpscc( a );
+	  break;
+	} 
+      break;
+
+    case 2:
+    case 3:
+      fpbcc( a );
+      break;
+
+    case 4:
+      fpsave( a );
+      break;
+
+    case 5:
+      fprestore( a );
+      break;
+      
+    case 6:
+    case 7:
+      myprintf( "????" );
+      break;
+    }
+  
+  return;
+  
+} /* write_fp_ins */
+
+/*}}}*/
+/*{{{ write_mulsl	*/
+
+static void
+write_mulsl( instrword a )
+{
+  instrword 	w   = readword();
+
+  
+  write_op( bits( w, 11, 11 ) ? "MULS": "MULU", 2 );
+
+  ea( mulsl_2, a, 0 );
+
+  myprintf( "," );
+
+  if (bits( w, 10, 10 ) != 0)
+    {
+      writereg( bits( w,  2,  0 ) );
+      myprintf( ":" );
+    }
+
+  writereg( bits( w, 14, 12 ) );
+
+  return;
+  
+} /* write_mulsl */
+
+/*}}}*/
+/*{{{ write_divsl	*/
+
+static void
+write_divsl( instrword a )
+{
+  instrword 	w = readword();
+  char *	ins;
+  int32		dr  = bits( w, 2,  0  );
+  int32		dq  = bits( w, 14, 12 );
+  int32		sz  = bits( w, 10, 10 );
+
+  
+  ins = bits( w, 11, 11) ? ( (sz != 0)? "DIVSL": "DIVS" ):
+                           ( (sz != 0)? "DIVUL": "DIVU" );
+  write_op( ins, 2 );
+
+  ea( divsl_2, a, 0 );
+
+  myprintf( "," );
+  
+  writereg( dr );
+  
+  if (( sz != 0 ) | (dr != dq))
+    {
+      myprintf( ":" );
+      writereg( dq );
+    }
+
+  return;
+  
+} /* write_divsl */
+
+/*}}}*/
+/*{{{ write_instruction */
+
+static void
+write_instruction(
+		  instrenum op,
+		  instrword a )
+{
+  int32 	dir;
+  int32		addr;
+  int32		pcx;
+  int32		b;
+  int32		mode;
+  int32		val;
+  char		s[ 10 ];
+  char *	type;
+  char *	str;
+  char *	sh_op;
+  char *	condition;
+
+  
+  switch (op)
+    {
+    default:
+    case none:
+      write_op("?DC", 1);
+      myprintf("$%04x", a);
+      break;
+      
+    case abcd:
+      write_op("ABCD", -1);
+      if (bits(a, 3, 3) == 0)
+	myprintf("-(A%d),-(A%d)", bits(a, 2, 0), bits(a, 11, 9));
+      else
+	myprintf("D%d,D%d", bits(a, 2, 0), bits(a, 11, 9));
+      break;
+      
+    case add:
+      write_op("ADD", bits(a, 8, 6));
+      if (bits(a, 8, 6) <= 2 && bits(a, 8, 6) >= 0)
+	{
+	  ea(op, a, 0);
+	  myprintf(",D%d", bits(a, 11, 9));
+	}
+      if (bits(a, 8, 6) <= 6 && bits(a, 8, 6) >= 4)
+	{
+	  myprintf("D%d,", bits(a, 11, 9));
+	  ea(op, a, 0);
+	}
+      break;
+      
+    case adda:
+      write_op("ADDA", op_size(op, a, 0));
+      ea(op, a, 0);
+      myprintf(",A%d", bits(a, 11, 9));
+      break;
+      
+    case addi:
+      write_opi("ADDI",op,  a);
+      break;
+      
+    case addq:
+      write_op("ADDQ", bits(a, 7, 6));
+      myprintf("#%d,", short_value(bits(a, 11, 9)));
+      ea(op, a, 0);
+      break;
+      
+    case addx:
+      write_op("ADDX", bits(a, 7, 6));
+      if (bits(a, 3, 3) == 0)
+	myprintf("-(A%d),-(A%d)", bits(a, 2, 0), bits(a, 11, 9));
+      else myprintf("D%d,D%d", bits(a, 2, 0), bits(a, 11, 9));
+      break;
+      
+    case and:
+      write_op("AND", bits(a, 8, 6));
+      if (bits(a, 8, 6) <= 2 && bits(a, 8, 6) >= 0)
+	{
+	  ea(op, a, 0);
+	  myprintf(",D%d", bits(a, 11, 9));
+	}
+      if (bits(a, 8, 6) <= 6 && bits(a, 8, 6) >= 4)
+	{
+	  myprintf("D%d,", bits(a, 11, 9));
+	  ea(op, a, 0);
+	}
+      break;
+      
+    case andi:
+      write_opi("ANDI",op,  a);
+      break;
+      
+    case andi_sr:         /* not complete */
+      myprintf("ANDI_SR");
+      break;
+      
+    case andi_ccr:        /* not complete */
+      myprintf("ANDI_CCR");
+      break;
+      
+    case dshift:
+	{
+	  dir = bits(a, 8, 8);
+	  switch (bits(a, 4, 3))
+	    {
+	    default:
+            case 0: sh_op =  ((dir == 0 ) ?  "ASR" : "ASL"); break;
+            case 1: sh_op =  ((dir == 0 ) ?  "LSR" : "LSL"); break;
+            case 2: sh_op =  ((dir == 0 ) ?  "ROXR": "ROXL"); break;
+            case 3: sh_op =  ((dir == 0 ) ?  "ROR" : "ROL");break;
+	    }
+	  write_op(sh_op, bits(a, 7, 6));
+	  if ( bits(a, 5, 5) == 0 )
+	    myprintf("#%d,D%d", short_value(bits(a, 11, 9)), bits(a, 2, 0));
+	  else myprintf("D%d,D%d", bits(a, 11, 9), bits(a, 2, 0));
+	  break;
+	}
+      
+    case mshift:
+	{
+	  dir = bits(a, 8, 8);
+	  
+	  switch (bits(a, 10, 9))
+	    {
+	    default:
+            case 0: sh_op =  ((dir == 0 ) ?  "ASR" : "ASL"); break;
+            case 1: sh_op =  ((dir == 0 ) ?  "LSR" : "LSL"); break;
+            case 2: sh_op =  ((dir == 0 ) ?  "ROXR": "ROXL"); break;
+            case 3: sh_op =  ((dir == 0 ) ?  "ROR" : "ROL"); break;
+	    }
+	  write_op(sh_op, -1);
+	  ea(op, a, 0);
+	  break;
+	}
+      
+    case scc:
+	{
+	  condition = condition_code(op, a);
+	  
+	  strcpy(s,"S");
+	  strcat(s,condition);
+	  write_op(s,-1);
+	  ea(op,a, 0);
+	  break;
+	}
+      
+    case bcc:
+    case dbcc:
+	{
+	  addr      = bits( a, 7, 0 );
+	  pcx       = address;
+	  condition = condition_code( op, a );
+	  
+	  if (op == bcc )
+	    strcpy( s,"B" );
+	  
+	  if (op == dbcc ) 
+	    strcpy( s, "DB" );
+	  
+	  strcat( s, condition );
+	  
+	  if (op == bcc)
+	    {
+	      if (addr > 127 )
+		addr = byte_extend( addr );
+	      
+	      if (addr != 0)
+		strcat( s, ".S" );
+	    }
+	  else
+	    addr = 0;
+	  
+	  write_op(s,-1);
+	  
+	  if (addr == 0 )  addr = word_extend(readword());
+	  
+	  if (addr == 0XFF)
+	    addr = readlong();
+	  
+	  /* Decode this as a label */
+	  
+	  if (op == dbcc)
+	    myprintf("D1,"); /* Atari HiSoft requires this! */
+	  
+	  break;
+	}
+      
+    case dbit:
+	{
+	  switch (bits(a, 7, 6))
+	    {   default:
+		case 0: type = "BTST"; break;
+		case 1: type = "BCHG"; break;
+		case 2: type = "BCLR"; break;
+		case 3: type = "BSET"; break;
+		}
+	  write_op(type, -1);
+	  myprintf("D%d,", bits(a, 11, 9));
+	  ea(op, a, 0);
+	  break;
+	}
+      
+    case sbit:
+	{
+	  b = readword();
+	  switch (bits(a, 7, 6))
+	    {
+	    default:
+            case 0: type = "BTST"; break;
+            case 1: type = "BCHG"; break;
+            case 2: type = "BCLR"; break;
+            case 3: type = "BSET"; break;
+	    }
+	  write_op(type, -1);
+	  myprintf("#%d,", b);
+	  ea(op, a, 0);
+	  break;
+	}
+      
+    case chk:
+      write_op("CHK", -1);
+      ea(op, a, 0);
+      myprintf(",D%d", bits(a, 11, 9));
+      break;
+      
+    case clr:
+      write_op("CLR", bits(a, 7, 6));
+      ea(op, a, 0);
+      break;
+      
+    case cmp:
+      write_op("CMP", bits(a, 8, 6));
+      ea(op, a, 0);
+      myprintf(",D%d", bits(a, 11, 9));
+      break;
+      
+    case cmpa:
+      write_op("CMPA", op_size(op, a, 0));
+      ea(op, a, 0);
+      myprintf(",A%d", bits(a, 11, 9));
+      break;
+      
+    case cmpi:
+      write_opi("CMPI",op,  a);
+      break;
+      
+    case cmpm:
+      write_op("CMPM", bits(a, 7, 6));
+      myprintf("(A%d)+,(A%d)+", bits(a, 2, 0), bits(a, 11, 9));
+      break;
+      
+    case divs:
+      write_op("DIVS", -1);
+      ea(op, a, 0);
+      myprintf(",D%d", bits(a, 11, 9));
+      break;
+      
+    case divu:
+      write_op("DIVU", -1);
+      ea(op, a, 0);
+      myprintf(",D%d", bits(a, 11, 9));
+      break;
+      
+    case eor:
+      write_op("EOR", bits(a, 7, 6)); /* This used to be 8,6 but seems wrong */
+      myprintf("D%d,", bits(a, 11, 9));
+      ea(op, a, 0);
+      break;
+      
+    case eori:
+      write_opi("EORI",op,  a);
+      break;
+      
+    case eori_ccr:         /* notcomplete */
+      myprintf("EORI_CCR");
+      break;
+      
+    case eori_sr:         /* notcomplete */
+      myprintf("EORI_CCR");
+      break;
+      
+    case exgm:
+    case exgd:
+    case exga:
+	{
+	  mode = bits(a, 7, 3);
+	  str = "D%d,D%d";
+	  write_op("EXG", -1);
+	  if (mode == 9 )  str = "A%d,A%d";
+	  if (mode == 17 )  str = "D%d,A%d";
+	  myprintf(str, bits(a, 11, 9), bits(a, 2, 0));
+	  break;
+	}
+      
+    case extbl_2:
+    case extw:
+    case extl:
+      if ( op == extbl_2 )
+	write_op("EXTBL",2);
+      else
+	write_op("EXT", bits(a, 8, 6) == 2  ?  1 : 2);
+      writereg(bits(a, 2, 0));
+      break;
+      
+      
+    case ill:
+      write_op("ILLEGAL", -1);
+      break;
+      
+    case jmp:
+      write_op("JMP", -1);
+      ea(op, a, 0);
+      break;
+      
+    case jsr:
+      write_op("JSR", -1);
+      ea( op, a, 0 );
+      break;
+      
+    case lea:
+      write_op("LEA", -1);
+      ea(op, a, 0);
+      myprintf(",A%d", bits(a, 11, 9));
+      break;
+      
+    case link:
+	{
+	  int32 off = bits(a,7,3) == 1 ? readlong() : word_extend(readword());
+	  write_op("LINK", -1);
+	  myprintf("A%d,#%d", bits(a, 2, 0), off);
+	}
+      break;
+      
+    case move:
+	{
+	  b = (bits(a, 8, 6) << 3) | bits(a, 11, 9) | (bits(a, 15, 12) << 12);
+	  write_op("MOVE", op_size(op, a, 0));
+	  ea(op, a, 0);
+	  myprintf(",");
+	  ea(op, b, 0);
+	  break;
+	}
+      
+    case movea:
+      write_op("MOVEA", op_size(op, a, 0));
+      ea(op, a, 0);
+      myprintf(",A%d", bits(a, 11, 9));
+      break;
+      
+    case move_ccr:
+      write_op("MOVE", -1);
+      ea( op, a, 0 );
+      myprintf(",CCR");
+      break;
+      
+    case move_sr:
+      write_op("MOVE", -1);
+      ea(op, a, 0);
+      myprintf(",SR");
+      break;
+      
+    case movefsr:
+      write_op("MOVE", -1);
+      myprintf("SR,");
+      ea(op, a, 0);
+      break;
+      
+    case move_usp:
+    case movefusp:
+      write_op("MOVE", -1);
+      if (bits(a, 3, 3) == 0)
+	myprintf("A%d,USP", bits(a, 2, 0));
+      else myprintf("USP,A%d", bits(a, 2, 0));
+      break;
+      
+    case movemfreg:
+    case movem_reg:
+      write_op("MOVEM", bits(a, 6, 6) == 0  ?  1 : 2);
+      if (  bits(a, 10, 10) == 0 )
+	{
+	  register_list( (bits(a,5,3) == 4)? bitreverse(readword()):
+			readword(), writereg);
+	  myprintf(",");
+	  ea(op, a, 0);
+	}
+      else
+	{
+	  ea(op, a, 0);
+	  myprintf(",");
+	  register_list(readword(), writereg);
+	}
+      break;
+      
+    case movep:
+      write_op("MOVEP", bits(a, 6, 6) == 0  ?  1 : 2);
+      if ( bits(a, 7, 7))
+	myprintf("%d(A%d),D%d", readword(), bits(a, 2, 0), bits(a, 11, 9));
+      else myprintf("D%d,%d(A%d)", bits(a, 11, 9), readword(), bits(a, 2, 0));
+      break;
+      
+    case moveq:
+	{
+	  val = a & 0XFF;
+	  if (val > 127 )  val = byte_extend(val);
+	  write_op("MOVEQ", -1);
+	  myprintf("#%d,D%d", val, bits(a, 11, 9));
+	  break;
+	}
+      
+    case muls:
+      write_op("MULS", -1);
+      ea(op, a, 0);
+      myprintf(",D%d", bits(a, 11, 9));
+      break;
+      
+    case mulu:
+      write_op("MULU", -1);
+      ea(op, a, 0);
+      myprintf(",D%d", bits(a, 11, 9));
+      break;
+      
+    case nbcd:
+      write_op("NBCD", -1);
+      ea(op, a, 0);
+      break;
+      
+    case neg:
+      write_op("NEG", bits(a, 7, 6));
+      ea(op, a, 0);
+      break;
+      
+    case negx:
+      write_op("NEGX", bits(a, 7, 6));
+      ea(op, a, 0);
+      break;
+      
+    case nop:
+      myprintf("NOP");
+      break;
+      
+    case not:
+      write_op("NOT", bits(a, 7, 6));
+      ea(op, a, 0);
+      break;
+      
+    case or:
+      write_op("OR", bits(a, 7, 6));
+      if (bits(a, 8, 6) <= 2 && bits(a, 8, 6) >= 0)
+	{
+	  ea(op, a, 0);
+	  myprintf(",D%d", bits(a, 11, 9));
+	}
+      if (bits(a, 8, 6) <= 6 && bits(a, 8, 6) >= 4)
+	{
+	  myprintf("D%d,", bits(a, 11, 9));
+	  ea(op, a, 0);
+	}
+      break;
+      
+    case ori:
+      write_opi("ORI", op,  a);
+      break;
+      
+    case ori_sr:        /* not complete */
+      myprintf("ORI_SR");
+      break;
+      
+    case ori_ccr:       /* not complete */
+      myprintf("ORI_CCR");
+      break;
+      
+    case pea:
+      write_op("PEA", -1);
+      ea(op, a, 0);
+      break;
+      
+    case reset:
+      myprintf("RESET");
+      break;
+      
+    case rtd_1:
+      write_op("RTD", -1);
+      myprintf("#%d", word_extend(readword()));
+      break;
+      
+    case rte:
+      myprintf("RTE");
+      break;
+      
+    case rtr:
+      myprintf("RTR");
+      break;
+      
+    case rts:
+      myprintf("RTS");
+      break;
+      
+    case sbcd:
+      write_op("SBCD", -1);
+      if ( bits(a, 3, 3) == 0 )
+        myprintf("-(A%d),-(A%d)", bits(a, 2, 0), bits(a, 11, 9));
+      else myprintf("D%d,D%d", bits(a, 2, 0), bits(a, 11, 9));
+      break;
+      
+    case stop:
+      myprintf("STOP");
+      break;
+      
+    case sub:
+      write_op("SUB", bits(a, 8, 6));
+      if (bits(a, 8, 6) <= 2 && bits(a, 8, 6) >= 0)
+	{
+	  ea(op, a, 0);
+	  myprintf(",D%d", bits(a, 11, 9));
+	}
+      if (bits(a, 8, 6) <= 6 && bits(a, 8, 6) >= 4)
+	{
+	  myprintf("D%d,", bits(a, 11, 9));
+	  ea(op, a, 0);
+	}
+      break;
+      
+    case suba:
+      write_op("SUBA", op_size(op, a, 0));
+      ea(op, a, 0);
+      myprintf(",A%d", bits(a, 11, 9));
+      break;
+      
+    case subi:
+      write_opi("SUBI", op, a);
+      break;
+      
+    case subq:
+      write_op("SUBQ", bits(a, 7, 6));
+      myprintf("#%d,", short_value(bits(a, 11, 9)));
+      ea(op, a, 0);
+      break;
+      
+    case subx:
+      write_op("SUBX", bits(a, 7, 6));
+      if ( bits(a, 3, 3) == 0 )
+	myprintf("-(A%d),-(A%d)", bits(a, 2, 0), bits(a, 11, 9));
+      else myprintf("D%d,D%d", bits(a, 2, 0), bits(a, 11, 9));
+      break;
+      
+    case swap:
+      write_op("SWAP", -1);
+      myprintf("D%d", bits(a, 2, 0));
+      break;
+      
+    case tas:
+      write_op("TAS", -1);
+      ea(op, a, 0);
+      break;
+      
+    case trap:
+      write_op("TRAP",-1);
+      myprintf("#%d", a & 0XF);
+      break;
+      
+    case trapv:
+      write_op("TRAPV", -1);
+      break;
+      
+    case tst:
+      write_op("TST", bits(a, 7, 6));
+      ea(op, a, 0);
+      break;
+      
+    case unlk:
+      write_op("UNLK", -1);
+      myprintf("A%d", bits(a, 2, 0));
+      break;
+      
+    case mulsl_2:
+      write_mulsl(a);
+      break;
+      
+    case divsl_2:
+      write_divsl(a);
+      break;
+      
+    case fp_2:
+      write_fp_ins(a);
+      break;
+    }
+} /* write_instruction */
+
+/*}}}*/
+/*{{{ find_opcode	*/
+
+static instrenum
+find_opcode( instrword op_code )
+{
+  switch (bits( op_code, 15, 12 ))
+    {
+    case 0:
+      switch (bits( op_code, 11, 8 ))
+	{
+        case 14: return ((bits( op_code, 7, 6 ) == 3) ? cas_2 : moves_1);
+        case 12: return ((bits( op_code, 7, 6 ) == 3) ? cas_2 : cmpi);
+        case 10:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return cas_2;
+	  else
+	    {
+	      if (bits( op_code, 5, 0 ) == 0X3C)
+		switch (bits( op_code, 7, 6 ))
+		  {
+		  case 0: return (eori_ccr);
+		  case 1: return (eori_sr);
+		  }
+	      else
+		return (eori);
+	    }
+	  
+        case  8:
+	  return (sbit);
+	  
+        case  6:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return ((bits( op_code, 5, 4 ) == 0) ? rtm_2 : callm_2);
+	  else
+	    return (addi);
+	  
+        case  4:
+	  return ((bits( op_code, 7, 6 ) == 3) ? chm_2 : subi);
+	  
+        case  2:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return (chm_2);
+	  else
+	    {
+	      if (bits( op_code, 5, 0 ) == 0X3C)
+		switch (bits( op_code, 7, 6 ))
+		  {
+		  case 0: return (andi_ccr);
+		  case 1: return (andi_sr);
+		  }
+	      else return (andi);
+	    }
+	  
+        case  0:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return (chm_2);
+	  else
+	    {
+	      if (bits( op_code, 5, 0 ) == 0X3C)
+		switch (bits( op_code, 7, 6 ))
+		  {
+		  case 0: return (ori_ccr);
+		  case 1: return (ori_sr);
+		  }
+	      else return (ori);
+	    }
+	  
+        default:
+	  if ((bits( op_code, 5, 3 ) == 1) &&  bits( op_code, 8, 6) <= 7
+	      && bits( op_code, 8, 6 ) >= 4 )
+	    return (movep);
+
+	  if (bits( op_code, 8, 8 ) == 1)
+	    return (dbit);
+
+	  return (none);
+	}
+
+    case 1:
+    case 2:
+    case 3:
+      return ((bits( op_code, 8, 6 ) == 1) ? movea : move);
+      
+    case 4:
+      switch (bits( op_code, 11, 8 ))
+	{
+        case  0:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return (movefsr);
+	  else
+	    return (negx);
+	  
+        case  2:
+	  return (bits( op_code, 7, 6 ) == 3) ? movefccr_1 : clr;
+	  
+        case  4:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return move_ccr;
+	  else
+	    return neg;
+	  
+        case  6:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return move_sr;
+	  else
+	    return not;
+	  
+        case  8:
+	  switch (bits( op_code, 7, 6 ))
+            {
+            case  0:
+	      return (bits( op_code, 5, 3 ) == 1) ? linkl_2 : nbcd;
+	      
+            case  1:
+	      switch (bits( op_code, 5, 3 ))
+		{
+		case 0 :return swap;
+		case 1 :return bkpt_1;
+		default :return pea;
+		}
+	      
+            case  2:
+	      if (bits( op_code, 5, 3 ) == 0)
+		return extw;
+	      else
+		return movemfreg;
+	      
+            case  3:
+	      if ((bits( op_code, 5, 3 )) == 0)
+		return extl;
+	      else
+		return (movemfreg);
+            }
+
+        case 10:
+	  if (bits( op_code, 7, 6 ) == 3)
+	    return (bits( op_code, 5, 0 ) == 0X3C) ? ill : tas;
+	  else
+	    return tst;
+	  
+        case 12:
+	  if (bits( op_code, 7, 7 ) == 1)
+	    return movem_reg;
+	  else
+	    {
+	      if (bits( op_code, 6, 6 ) == 0)
+		return mulsl_2;
+	      else
+		return divsl_2;
+	    }
+	  
+        case 14:
+	  switch (bits( op_code, 7, 3 ))
+	    {
+            case  1: return link;
+            case  8:               /* fall through */
+            case  9: return trap;
+            case 10: return link;
+            case 11: return unlk;
+            case 12: return move_usp;
+            case 13: return movefusp;
+            case 14:
+	      switch (bits( op_code, 2, 0 ))
+		{
+                case 0: return reset;
+                case 1: return nop;
+                case 2: return stop;
+                case 3: return rte;
+                case 4: return rtd_1;
+                case 5: return rts;
+                case 6: return trapv;
+                case 7: return rtr;
+		}
+            case 15: return movec_1;
+            default:
+	      if (bits( op_code, 7, 6 ) == 2)
+		return jsr;
+	      if (bits( op_code, 7, 6 ) == 3)
+		return jmp;
+	      return none;
+	    }
+	  
+        default:
+	  if (bits( op_code, 8, 6 ) == 6)
+	    return chk;
+	  
+	  if ((op_code & 0xfff8) == 0x49c0)
+	    return extbl_2;
+	  
+	  if (bits( op_code, 8, 6 ) == 7)
+	    return lea;
+	  
+	  return none;
+	}
+
+    case  5:
+      if (bits( op_code, 7, 3) == 25)
+	return dbcc;
+      if (bits( op_code, 7, 6) == 3)
+	{
+	  if ( bits( op_code, 5, 0) <= 074 && bits( op_code, 5, 0) >= 072 )
+	    return trapcc_2;
+	  else
+	    return scc;
+	}
+      if (bits( op_code, 8, 8) == 0)
+	return addq;
+      else return subq;
+      
+    case  6:
+      return bcc;
+
+    case  7:
+      if (bits( op_code, 8, 8) == 0)
+	return moveq;
+      else return none;
+
+    case  8:
+      switch (bits( op_code, 8, 4))
+	{
+	case 16: return sbcd;
+	case 20: return pack_2;
+	case 24: return unpk_2;
+	}
+
+      switch (bits( op_code, 8, 6))
+	{
+	case 7: return divs;
+	case 3:return divu;
+	default: return or;
+	}
+
+    case  9:
+      if (bits( op_code, 5, 4) == 0 && bits( op_code, 8, 8) == 1 &&
+	  bits( op_code, 7, 6) <= 2 && bits( op_code, 7, 6) >= 0)
+	return subx;
+
+      if (bits( op_code, 8, 6) == 3 || bits( op_code, 8, 6) == 7)
+	return suba;
+      
+      return sub;
+
+    case 11:
+      if (bits( op_code, 8, 8) == 1 && bits( op_code, 5, 3) == 1 &&
+	  bits( op_code, 7, 6) <= 2 && bits( op_code, 7, 6) >= 0)
+	return cmpm;
+
+      if (bits( op_code, 8, 6) <= 6 && bits( op_code, 8, 6) >= 4)
+	return eor;
+
+      if (bits( op_code, 8, 6) == 3 || bits( op_code, 8, 6) == 7)
+	return cmpa;
+
+      return cmp;
+
+    case 12:
+      switch (bits( op_code, 8, 6))
+	{
+        case  3: return mulu;
+        case  7: return muls;
+        case  4:
+	  if (bits( op_code, 5, 4) == 0) 
+	    return abcd;
+	  else
+	    return  and;
+
+        case  5:
+	  if (bits( op_code, 5, 3) == 0)
+	    return exgd;
+	  if (bits( op_code, 5, 3) == 1)
+	    return exga;
+	  return and;
+	  
+        case  6:
+	  if (bits( op_code, 5, 3) == 1)
+	    return exgm;
+        default: return and;
+	}
+
+    case 13:
+      if ((bits( op_code, 8, 8) == 1) && bits( op_code, 5, 4) == 0 &&
+	  bits( op_code, 7, 6) <= 2 && bits( op_code, 7, 6) >= 0)
+	return addx;
+
+      if (bits( op_code, 8, 6) == 3 || bits( op_code, 8, 6) == 7)
+	return adda;
+
+      return add;
+
+    case 14:
+      if (bits( op_code, 7, 6) == 3) {
+	  if (bits( op_code, 11, 11) == 0)
+	    return mshift;
+	  else
+	    return bfld_2;
+	}
+      else
+	return dshift;
+
+    case 15:
+      return fp_2;
+    }
+  
+  return 0; /* Artificial (never executed) */
+}
+
+/*}}}*/
+/*{{{ disassemble       */
+
+static void
+disassemble(
+#ifdef BRANCH_TRACING
+	    bool	trace 		/* TRUE if branches are to be traced to their destinations */
+#else
+	    void
+#endif
+	    )
+{
+  unsigned long int	value;
+  bool			show_code;
+  long int		name_len      = 0;
+  char *		func_name     = NULL;
+#ifdef BRANCH_TRACING
+  branch_ref *		pnext_branch;
+  func_ref *		pnext_func;
+#endif
+  
+
+  if (input == NULL)
+    return;
+  
+  if ( output_file      == NULL  ||
+      *output_file      == '\0'  ||
+      (output_file[ 0 ] == '-'  &&
+       output_file[ 1 ] == '\0' ) )
+    {
+      output = stdout;
+    }
+  else
+    {
+      output = fopen( (char *)output_file, "w" );
+      
+      if (output == NULL)
+	{
+	  inform( "could not open output file '%s' - using stdout instead", output_file );
+	  
+	  output = stdout;
+	}
+    }
+  
+/*{{{ BRANCH_TRACING */
+
+#ifdef BRANCH_TRACING
+  if (input == stdin)
+    trace = FALSE;
+  
+  if (trace)
+    {
+      trace = load_trace_data( input );
+    }
+  
+  (void) fseek( input, 0L, SEEK_SET );
+
+  if (trace)
+    {
+      pnext_branch = (branch_ref *)remove_head( &branch_trace );
+      pnext_func   =   (func_ref *)remove_head( &func_trace   );
+      
+      if (pnext_func)
+	{
+	  name_len = pnext_func->length_of_name;
+	  
+	  func_name = (char *)malloc( (int)(name_len * sizeof (long) + 5) );
+	  
+	  if (func_name == NULL)
+	    {
+	      inform( "out of memory allocating buffer for function name" );
+	      
+	      name_len = 0;
+	    }
+	}
+    }
+  else
+    {
+      pnext_branch = NULL;
+      pnext_func   = NULL;
+    }
+#endif /* BRANCH_TRACING */
+  
+
+/*}}}*/
+
+  address   = 0;
+  show_code = FALSE;
+  
+  while (read_long( &value ))
+    {
+      if (value == T_Module)
+	{
+	  int	i;
+
+	  
+	  /* we have the start of a module header */
+
+	  for (i = sizeof (Module) / sizeof (unsigned long); i--; )
+	    {
+	      myprintf( "%8lx", address + address_base - 4 );
+	      
+	      pad_to( COL_HEX_VALUE + ((MAX_NUM_BYTES - 4) * 2) );
+	      
+	      myprintf( "%08.8lx", value );
+	      
+	      pad_to( COL_BYTE_VALUES );
+	      
+	      print_byte( value >> 24 );
+	      print_byte( value >> 16 );
+	      print_byte( value >>  8 );
+	      print_byte( value );
+	      
+	      new_line();
+	      
+	      if (!read_long( &value ))
+		break;
+	    }
+	}
+      
+      myprintf( "%8lx", address + address_base - 4 );
+
+/*{{{ BRANCH_TRACING */
+
+#ifdef BRANCH_TRACING
+      if (pnext_func && address == pnext_func->address_of_name)
+	{
+	  show_code = FALSE;
+	  name_len  = pnext_func->length_of_name;
+	  
+	  free( pnext_func );
+	  
+	  pnext_func = (func_ref *)remove_head( &func_trace );
+	  
+	  func_name  = (char *)malloc( (int)(name_len * sizeof (long) + 5 ) );
+	  
+	  if (func_name == NULL)
+	    {
+	      inform( "out of memory allocating buffer for function name" );
+	      
+	      name_len = 0;
+	    }
+	  else
+	    {
+	      func_name[ 0 ] = '\0';
+	    }
+	}
+#endif /* BRANCH_TRACING */
+
+/*}}}*/
+      
+      if (((value & 0xFFFFFF00U) == 0xFF000000U))
+	{
+	  if (func_name)
+	    {
+	      pad_to( COL_OP_CODE );
+
+	      myprintf( "%s():", func_name );
+
+	      free( func_name );
+
+	      func_name = NULL;
+	      name_len  = 0;
+	    }
+	  
+	  show_code = TRUE;
+	  
+	  pad_to( COL_HEX_VALUE + ((MAX_NUM_BYTES - 4) * 2) );
+	  
+	  myprintf( "%08.8lx", value );
+	}
+      else if (value > 10 && show_code)
+	{
+	  char	buffer[ 80 ];		/* XXX */
+
+	  
+	  put_back_long( value );
+	  
+	  /* enable byte recording */
+	  
+	  num_bytes_read = 0;
+
+	  value = readword();
+
+	  buffer[ 0 ] = '\0';
+	  
+	  print_buffer = buffer;
+	  
+	  write_instruction( find_opcode( value ), value );
+
+	  print_buffer = NULL;
+	  
+	  show_value();
+	  
+	  /* disable byte recording */
+  
+	  num_bytes_read = -1;
+
+	  pad_to( COL_OP_CODE );
+
+	  myprintf( buffer );
+	}
+      else
+	{
+	  pad_to( COL_HEX_VALUE + ((MAX_NUM_BYTES - 4) * 2) );
+	  
+	  myprintf( "%08.8lx", value );
+	  
+	  pad_to( COL_BYTE_VALUES );
+	      
+	  print_byte( value >> 24 );
+	  print_byte( value >> 16 );
+	  print_byte( value >>  8 );
+	  print_byte( value );
+	}
+      
+      if (name_len > 0 && func_name)
+	{
+	  int 	i = strlen( func_name );
+	  
+	  
+	  func_name[ i++ ] = (char)((value >> 24) & 0xff);
+	  func_name[ i++ ] = (char)((value >> 16) & 0xff);
+	  func_name[ i++ ] = (char)((value >>  8) & 0xff);
+	  func_name[ i++ ] = (char)( value        & 0xff);
+	  func_name[ i++ ] = '\0';
+	  
+	  --name_len;
+	}
+      
+/*{{{ BRANCH_TRACING */
+
+#ifdef BRANCH_TRACING
+      if (trace && pnext_branch && address == pnext_branch->address_refered_to)
+	{
+	  pad_to( COL_TRACE );
+	  
+	  myprintf( "branched from: " );
+	  
+	  while (pnext_branch->address_refered_to == address)
+	    {
+	      myprintf( "%lx ", pnext_branch->address_of_refer + address_base );
+	      
+	      free( pnext_branch );
+	      
+	      pnext_branch = (branch_ref *)remove_head( &branch_trace );
+	    }
+	}
+#endif /* BRANCH_TRACING */
+
+/*}}}*/
+      
+      new_line();
+#if 0      
+      fflush( output );
+#endif
+    }
+  
+  return;
+  
+} /* disassemble */
+
+/*}}}*/
+
+/*}}}*/
+/*{{{ Branch Tracing       */
+
+#ifdef BRANCH_TRACING
+
+/*{{{ Types & Variables */
+
+static List branch_trace;		/* linked list of branch_ref structures */
+static List func_trace;			/* linked list of function headers      */
+
+typedef struct branch_ref
+  {
+    Node		node;			/* link into branch trace list       */
+    unsigned long int	address_refered_to;	/* address to which a branch will go */
+    unsigned long int	address_of_refer;	/* address of branch instruction     */
+  }
+branch_ref;
+
+typedef struct func_ref
+  {
+    Node		node;			/* link into function header list         */
+    unsigned long int	address_of_name;	/* word address of start of function name */
+    unsigned long int	length_of_name;		/* byte length of function name           */
+  }
+func_ref;
+
+/*}}}*/
+
+/*{{{ is_branch         */
+
+/*
+ * returns non-zero if the instruction is a branch instruction, 0 otherwise
+ */
+
+static signed long int
+is_branch( unsigned long instruction )
+{
+  return 0L;
+  
+} /* is_branch */
+
+/*}}}*/
+/*{{{ check_node        */
+
+/*
+ * returs TRUE if the address refered to in
+ * the node is earlier in memory than arg
+ */
+
+static bool
+check_node(
+	   Node *	pnode,
+	   int		arg )
+{
+  return (((branch_ref *)pnode)->address_refered_to > arg);
+
+} /* check_node */
+
+/*}}}*/
+/*{{{ store_func_ref    */
+
+/*
+ * add an entry to the function header list
+ */
+
+static void
+store_func_ref(
+	       unsigned long int	address,
+	       unsigned long int	length )
+{
+  func_ref *	pref;
+
+
+  pref = (func_ref *)malloc( sizeof( *pref ) );
+
+  if (pref == NULL)
+    {
+      inform( "out of memory allocating function reference" );
+
+      return;
+    }
+
+  pref->address_of_name = address;
+  pref->length_of_name  = length;
+
+  add_tail( &func_trace, &pref->node );
+  
+  return;
+  
+} /* store_func_ref */
+
+/*}}}*/
+/*{{{ store_branch      */
+
+/*
+ * add an entry to the branch reference list
+ */
+
+static void
+store_branch(
+	     unsigned long int	address,
+	     signed long int	offset )
+{
+  Node *	pprev;
+  branch_ref *	pref;
+
+
+  pref = (branch_ref *)malloc( sizeof( *pref ) );
+
+  if (pref == NULL)
+    {
+      inform( "out of memory allocating branch list" );
+
+      return;
+    }
+
+  pref->address_of_refer   = address;
+  pref->address_refered_to = address + offset;
+
+  pprev = search_list( &branch_trace, check_node, address + offset );
+
+  if (pprev)
+    {
+      pre_insert( pprev, &pref->node );
+    }
+  else
+    {
+      add_tail( &branch_trace, &pref->node );
+    }
+  
+  return;
+  
+} /* store branch */
+
+/*}}}*/
+/*{{{ load_trace_data   */
+
+/*
+ * get the information needed by the branch tracing code
+ * returns TRUE upon success, FALSE otherwise
+ */
+
+static bool
+load_trace_data( FILE * input )
+{
+  unsigned long int	value;
+
+  
+  if (fseek( input, 0L, SEEK_SET ) != 0)
+    {
+      extern int errno;
+
+      
+      inform( "failed to rewind input, errno = %d", errno );
+
+      return FALSE;
+    }
+  
+  address = 0;
+
+  init_list( &branch_trace );
+  init_list( &func_trace   );
+  
+  while (read_long( &value ))
+    {
+      signed long int	offset;
+
+
+      if ((value & 0xFFFFFF00U) == 0xFF000000U)
+	{
+	  /* we have found a start of function marker */
+	  
+	  offset = value & 0xFF;
+	  offset /= sizeof (int);
+
+	  /* function name starts at 'address - offset' */
+
+	  store_func_ref( address - offset, offset );
+	}
+      
+      if ((offset = is_branch( value )) != 0)
+	{
+	  store_branch( address, offset );
+	}
+
+      address++;
+    }
+
+  return TRUE;
+  
+} /* load_trace_data */
+
+/*}}}*/
+
+#endif /* BRANCH_TRACING */
+  
+
+/*}}}*/
+/*{{{ Control Routines     */
+
+/*{{{ usage       */
+
+/*
+ * describe the command line options
+ */
+
+static void
+usage( void )
+{
+  inform( "valid command line options:" );
+#ifdef BRANCH_TRACING
+  inform( "-b        enable  branch tracing" );
+  inform( "-B        disable branch tracing (the default)" );
+#endif
+  inform( "-o <file> send output to the named file" );  
+  inform( "-help     this message" );
+  inform( "-?        this message" );
+  inform( "+<offset> addition to current offset for instruction addresses" );
+  inform( "-         disassemble from stdin (default)" );
+  inform( "<file>    disassemble <file>" );
+  inform( "--        treat all futher command line options as file names to disassemble" );
+  
+  exit( 0 );
+  
+} /* usage */
+
+/*}}}*/
+/*{{{ main        */
+
+/*
+ * disassembler entry point
+ */
+  
+int
+main(
+     int		argc,
+     unsigned char **	argv )
+{
+#ifdef BRANCH_TRACING
+  bool		trace         = FALSE;
+#endif
+
+
+  /* find name of program */
+  
+  if ((ProgName = (unsigned char *)strrchr( (const char *)argv[ 0 ], '/' )) != NULL)
+    {
+      ProgName++;
+    }
+  else
+    {
+      ProgName = argv[ 0 ];
+    }
+
+  /*
+   * parse command line arguments
+   *
+   * what we want to achieve is this:
+   *
+   * disas fred			- disassembles file 'fred' in Helios format
+   * disas -t fred		- disassembles file 'fred' in TI format
+   * disas fred -t		- disassembles file 'fred' in TI format
+   * disas fred -t jim		- disassembles file 'fred' in Helios format and file 'jim' in TI format
+   * disas fred jim -t		- disassembles files 'fred' and 'jim' in TI format
+   * disas -t fred jim		- disassembles files 'fred' and 'jim' in TI format
+   * disas -t fred -T jim	- disaeembles file 'fred' in TI format, file 'jim' in Helios format
+   * disas -t fred -T jim -t	- illegal
+   *
+   * yeah!
+   *
+   */
+   
+  if (argc > 1)
+    {
+      int	arg;
+      int	found_switch = -1;
+
+
+      /*
+       * pre-scan arguments for the special case where we have
+       * one or more files followed by switches but then no more
+       * files ...
+       */
+      
+
+      for (arg = 1; arg < argc; arg++)
+	{
+	  if (argv[ arg ][ 0 ] == '-'  &&
+	      argv[ arg ][ 1 ] != '\0' &&
+	      found_switch     == -1    )
+	    {
+	      found_switch = arg;
+	    }
+	  else if (found_switch != -1)
+	    {
+	      if (arg > 1                     &&
+		  argv[ arg - 1 ][ 0 ] == '-' &&
+		  argv[ arg - 1 ][ 1 ] == 'o' &&
+		  argv[ arg - 1 ][ 2 ] == '\0' )
+		{
+		  /* catch the very special cases of -o <name> */
+		  
+		  continue;		  
+		}
+	      
+	      if (arg > 1                     &&
+		  argv[ arg - 1 ][ 0 ] == '+' &&
+		  argv[ arg - 1 ][ 1 ] == '\0' )
+		{
+		  /* catch the very special cases of + <offset> */
+		  
+		  continue;		  
+		}
+	      
+	      /* we have a switch followed by a file name - special case does not apply */
+
+	      found_switch = -1;
+	      
+	      break;
+	    }
+	}
+
+      if (found_switch != -1)
+	{
+	  /* yup special case applies */
+
+	  for (arg = found_switch; arg < argc; arg++ )
+	    {
+	      if (argv[ arg ][ 0 ] == '+')
+		{
+		  long int	off = 0;
+		      
+
+		  if (argv[ arg ][ 1 ] == '\0')
+		    {
+		      if (++arg >= argc)
+			{
+			  inform( "warning - no value following '+' option; option has been ignored" );
+			}
+		      else
+			{
+			  if (argv[ arg ][ 1 ] == 'x' || argv[ arg ][ 1 ] == 'X')
+			    off = strtoul( (char *)argv[ arg ], (char **)(&argv[ arg ]), 16 );
+			  else
+			    off = atoi( (char *)argv[ arg ] );
+
+			  if (off == 0)
+			    {
+			      inform( "warning - no value following '+' option; option has been ignored" );
+			  
+			      --arg;
+			    }
+			} 
+		    }
+		  else
+		    {
+		      if (argv[ arg ][ 2 ] == 'x' || argv[ arg ][ 2 ] == 'X')
+			off = strtoul( (char *)argv[ arg ], (char **)(&argv[ arg ]), 16 );
+		      else
+			off = atoi( (char *)argv[ arg ] );
+		      
+		      if (off == 0)
+			inform( "warning - string following '+' option is not a number; option has been ignored" );		  
+		    }
+	      
+		  address_base += off;		      
+		}
+	      else
+		{
+		  switch (argv[ arg ][ 1 ])
+		    {
+		    case 'o':
+		      if (argv[ arg ][ 2 ] == '\0')
+			{
+			  if (++arg >= argc)
+			    {
+			      inform( "no name following '-o' option" );
+			      
+			      return EXIT_FAILURE;
+			    }
+			  
+			  output_file = argv[ arg ];
+			}
+		      else
+			{
+			  output_file = argv[ arg ] + 2;		      
+			}
+		      
+		      break;
+		      
+		    case 'h':
+		    case '?':
+		      break;
+#ifdef BRANCH_TRACING		      
+		    case 'b':
+		      trace = TRUE;
+		      break;
+		      
+		    case 'B':
+		      trace = FALSE;
+		      break;
+#endif
+		    }
+		}	      
+	    }
+	}
+      
+      for (arg = 1; arg < argc; arg++)
+	{
+	  if (argv[ arg ][ 0 ] == '-')
+	    {
+	      long int	next_arg = TRUE;
+
+	      
+	      switch (argv[ arg ][ 1 ])
+		{
+		case 'o':
+		  if (argv[ arg ][ 2 ] == '\0')
+		    {
+		      if (++arg >= argc)
+			{
+			  inform( "no name following '-o' option" );
+
+			  return EXIT_FAILURE;
+			}		      
+		      
+		      output_file = argv[ arg ];
+		    }
+		  else
+		    {
+		      output_file = argv[ arg ] + 2;		      
+		    }
+		  break;
+		  
+		case 'h':
+		case '?':
+		  usage();
+		  break;
+		  
+		case '\0':
+		  input    = stdin;
+		  next_arg = FALSE;
+		  break;
+#ifdef BRANCH_TRACING
+		case 'b':
+		  trace = TRUE;
+		  break;
+
+		case 'B':
+		  trace = FALSE;
+		  break;
+#endif
+		case '-':
+		  while (++arg < argc)
+		    {
+		      input = fopen( (char *)argv[ arg ], "rb" );
+
+		      if (input == NULL)
+			{
+			  inform( "could not open input file '%s' - skipping", argv[ arg ] );
+			}
+		      else
+			{
+#ifdef BRANCH_TRACING
+			  disassemble( trace );
+#else
+			  disassemble();
+#endif
+			}
+
+		      if (input)
+			fclose( input );
+		    }
+		  
+		  break;
+
+		default:
+		  inform( "unknown command line option '%c'", argv[ arg ][ 1 ] );
+		  usage();
+		  break;
+		}
+
+	      if (next_arg)
+		continue;
+	    }
+	  else if (argv[ arg ][ 0 ] == '+')
+	    {
+	      unsigned long int	off = 0;
+		      
+
+	      if (argv[ arg ][ 1 ] == '\0')
+		{
+		  if (++arg >= argc)
+		    {
+		      inform( "warning - no value following '+' option; option has been ignored" );
+		    }
+		  else
+		    {
+		      if (argv[ arg ][ 1 ] == 'x' || argv[ arg ][ 1 ] == 'X')
+			off = strtoul( (char *)argv[ arg ], (char **)(&argv[ arg ]), 16 );
+		      else
+			off = (unsigned long int)atoi( (char *)argv[ arg ] );
+		      
+		      if (off == 0)
+			{
+			  inform( "warning - no value following '+' option; option has been ignored" );
+			  
+			  --arg;
+			}
+		    } 
+		}
+	      else
+		{
+		  if (argv[ arg ][ 2 ] == 'x' || argv[ arg ][ 2 ] == 'X')
+		    off = strtoul( (char *)argv[ arg ], (char **)(&argv[ arg ]), 16 );
+		  else
+		    off = (unsigned long int)atoi( (char *)argv[ arg ] );
+		      
+		  if (off == 0)
+		    inform( "warning - string following '+' option is not a number; option has been ignored" );		  
+		}
+	      
+	      address_base += off;		      
+	    }	  
+	  else
+	    {
+	      input = fopen( (char *)argv[ arg ], "rb" );
+
+	      if (input == NULL)
+		{
+		  inform( "could not open input file %s - using stdin instead", argv[ arg ] );
+
+		  /* possible bug - stdin may have been opened in text mode */
+		  
+		  input = stdin;
+		}
+	    }
+
+#ifdef BRANCH_TRACING
+	  disassemble( trace );
+#else
+	  disassemble( );
+#endif
+
+	  if (input != stdin)
+	    {
+	      fclose( input );
+
+	      input = NULL;
+	    }
+	}
+    }
+  else
+    { 
+      /* possible bug - stdin may have been opened in text mode */
+
+      input = stdin;
+      
+#ifdef BRANCH_TRACING
+      disassemble( trace );
+#else
+      disassemble( );
+#endif
+    }
+
+  return EXIT_SUCCESS;
+  
+} /* main */
+
+/*}}}*/
+
+/*}}}*/
+
+/*}}}*/
+/*{{{ SUN4 hack       */
+
+#ifdef SUN4
+/*
+ * The gcc compiler appears to generate references to the following functions
+ * without providing them in a standard library.  Since the code for the
+ * linker does not use either of them, they are provided here as stubs
+ */
+
+int ___assert( void ) { return 0; }
+int ___typeof( void ) { return 0; }  
+
+#endif /* SUN4 */
+
+/*}}}*/
+@
+
+
+1.3
+log
+@tidied up formatting
+@
+text
+@d8 3
+a10 3
+ * Version:	$Revision: 1.2 $
+ * Date:	$Date: 1993/06/21 14:53:46 $
+ * Header:	$Header: /hsrc/cmds/linker/RS6000/RCS/68kdisas.c,v 1.2 1993/06/21 14:53:46 nickc Exp nickc $
+a18 1
+#include "68kops.h"
+@
+
+
+1.2
+log
+@now decodes bytes correctly
+@
+text
+@d2 1
+a2 1
+ * 68kdisas - a stand alone disassembler for the 68020
+d8 3
+a10 3
+ * Version:	$Revision: 1.1 $
+ * Date:	$Date: 1993/06/16 13:50:26 $
+ * Header:	$Header: /hsrc/cmds/linker/RS6000/RCS/68kdisas.c,v 1.1 1993/06/16 13:50:26 nickc Exp nickc $
+d75 1
+a75 1
+#define COL_BYTE_VALUES	25
+d77 1
+a77 1
+#define COL_OPERAND	51
+a225 2
+  fflush( output );
+
+a665 2
+  else
+    myprintf( "*<>*" );
+a684 4
+  /* disable byte recording */
+  
+  num_bytes_read = -1;
+
+d883 3
+d892 3
+a894 1
+  myprintf( " " );
+d896 3
+d1356 1
+a1356 1
+  pad_to( COL_OPERAND );
+d2735 1
+a2735 1
+	      myprintf( "%08.8lx ", value );
+d2800 1
+a2800 1
+	  myprintf( "%08.8lx ", value );
+d2808 4
+a2811 2
+	      
+	  num_bytes_read = 0;		/* enables byte recording */
+d2823 1
+a2823 1
+	  show_value();			/* also disables byte recording */
+d2825 4
+d2837 1
+a2837 1
+	  myprintf( "%08.8lx ", value );
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+ * c40disas - a stand alone disassembler for the TMS320C40
+d4 1
+a4 1
+ * Copyright (c) 1992 Perihelion Software Ltd.
+d8 3
+a10 3
+ * Version:	$Revision: 1.26 $
+ * Date:	$Date: 1993/01/15 14:22:40 $
+ * Header:	$Header: /hsrc/cmds/linker/RCS/c40disas.c,v 1.26 1993/01/15 14:22:40 nick Exp $
+d13 2
+d19 1
+a19 2
+#include "c40ops.h"
+#include "c40target.h"
+d23 37
+a66 8
+typedef enum
+  {
+    TYPE_SIGNED,
+    TYPE_UNSIGNED,
+    TYPE_FLOATING
+  }
+immed_type;
+
+a72 16
+/*
+ * the disassembly layout is as follows:
+ *
+ * AAAAAAAA WWWWWWWW BBBB OOOOO PPPPPPPPPPPP DDDDDD TTTTTTT
+ *
+ * where
+ *
+ *   A - word address
+ *   W - value at address
+ *   B - byte equivalents of word
+ *   O - corresponding op code
+ *   P - operands of op code
+ *   D - destination of branches
+ *   T - trace information
+ */
+
+d74 16
+a89 10
+#define COL_WORD	9
+#define COL_BYTES	21
+#define COL_OP_CODE	35
+#define COL_OPERAND	41
+#define COL_DESTINATION	56
+#define COL_TRACE	73
+
+#ifndef RS6000
+#define abs( a )	((a) < 0 ? -(a) : (a))
+#endif
+d91 2
+a92 3
+static unsigned char * 		ProgName     = (unsigned char *)"disas"; /* the name of the program */
+static unsigned long int	word_address = 0;			 /* address of current instruction */
+static unsigned long int	address_base = 0;			 /* offset to word address for displaying addresses */
+d94 1
+a94 2
+static unsigned char *		output_file  = (unsigned char *)"-";	 /* name of output destination */
+static FILE *			output	     = NULL;			 /* file handle for output */
+d96 1
+a96 1
+int	pcsregs = FALSE;	/* default to std machine register names */
+a115 6
+#if 0
+  fflush( stderr );
+
+  fseek( stderr, 0L, SEEK_END );
+#endif
+  
+a122 4
+#if 0
+  fflush( stderr );
+#endif
+  
+d129 3
+d133 2
+a134 1
+static int 	current_column = 0;		/* number of characters printed out on current line */
+d136 3
+d144 4
+d149 1
+a149 1
+myprint( const char * format, ... )
+d155 1
+a155 1
+
+a156 3
+  if (output == NULL)
+    return;
+  
+d159 7
+a165 2
+#if 0
+  fflush( output );
+d167 4
+a170 2
+  fseek( output, 0L, SEEK_END );
+#endif
+d172 1
+a172 1
+  vsprintf( buffer, format, args );
+d174 3
+d184 1
+a184 1
+
+d186 1
+a186 1
+
+d188 1
+a188 1
+
+d193 1
+a193 7
+
+#if 0
+  fflush( output );
+#endif
+
+  va_end( args );
+
+d196 1
+a196 1
+} /* myprint */
+d202 2
+d232 2
+d251 67
+a321 1
+
+d337 3
+d365 2
+d383 2
+d404 2
+d425 2
+d453 1
+a453 4
+
+/*
+ * Disassembler routines
+ */
+d455 1
+a455 16
+static char *	regstr =
+  "R0\0\0R1\0\0R2\0\0R3\0\0R4\0\0R5\0\0R6\0\0R7\0\0"
+  "AR0\0AR1\0AR2\0AR3\0AR4\0AR5\0AR6\0AR7\0"
+  "DP\0\0IR0\0IR1\0BK\0\0SP\0\0ST\0\0DIE\0IIE\0"
+  "IIF\0RS\0\0RE\0\0RC\0\0R8\0\0R9\0\0R10\0R11\0";
+
+#define _regname( r ) ((((r) & 0x1f) * 4) + regstr)
+		       
+static char *	condstr =
+  "u\0\0\0\0lo\0\0\0ls\0\0\0hi\0\0\0hs\0\0\0eq\0\0\0ne\0\0\0"
+  "lt\0\0\0le\0\0\0gt\0\0\0ge\0\0\0<xx>\0nv\0\0\0v\0\0\0\0"
+  "nuf\0\0uf\0\0\0nlv\0\0lv\0\0\0nluf\0luf\0\0zuf\0\0"
+  "<xx>\0<xx>\0<xx>\0<xx>\0<xx>\0<xx>\0<xx>\0"
+  "<xx>\0<xx>\0<xx>\0<xx>\0";
+  
+#define _condname( r ) ((((r) & 0x1f) * 5) + condstr)
+d457 2
+d460 1
+a460 3
+/*
+ * decodes the indirect addressing field of a 'C40 op code
+ */
+d462 22
+a483 38
+static void
+decode_indirect_address(
+			long int	mode,	/* the indirect addressing mode (5 bits wide) */
+			long int	addr,	/* the address register involved */
+			long int	disp )	/* the displacement involved */
+{
+  pad_to( COL_OPERAND );
+  
+  switch (mode)
+    {
+    case B_00000:	myprint( "*+AR%ld(%ld)",         addr, disp ); break;
+    case B_00001:	myprint( "*-AR%ld(%ld)",         addr, disp ); break;
+    case B_00010:	myprint( "*++AR%ld(%ld)",        addr, disp ); break;
+    case B_00011:	myprint( "*--AR%ld(%ld)",        addr, disp ); break;
+    case B_00100:	myprint( "*AR%ld++(%ld)",        addr, disp ); break;
+    case B_00101:	myprint( "*AR%ld--(%ld)",        addr, disp ); break;
+    case B_00110:	myprint( "*AR%ld++(%ld)%%",      addr, disp ); break;
+    case B_00111:	myprint( "*AR%ld--(%ld)%%",      addr, disp ); break;
+    case B_01000:	myprint( "*+AR%ld(IR0)",         addr       ); break;
+    case B_01001:	myprint( "*-AR%ld(IR0)",         addr       ); break;
+    case B_01010:	myprint( "*++AR%ld(IR0)",        addr       ); break;
+    case B_01011:	myprint( "*--AR%ld(IR0)",        addr       ); break;
+    case B_01100:	myprint( "*AR%ld++(IR0)",        addr       ); break;
+    case B_01101:	myprint( "*AR%ld--(IR0)",        addr       ); break;
+    case B_01110:	myprint( "*AR%ld++(IR0)%%",      addr       ); break;
+    case B_01111:	myprint( "*AR%ld--(IR0)%%",      addr       ); break;
+    case B_10000:	myprint( "*+AR%ld(IR1)",         addr       ); break;
+    case B_10001:	myprint( "*-AR%ld(IR1)",         addr       ); break;
+    case B_10010:	myprint( "*++AR%ld(IR1)",        addr       ); break;
+    case B_10011:	myprint( "*--AR%ld(IR1)",        addr       ); break;
+    case B_10100:	myprint( "*AR%ld++(IR1)",        addr       ); break;
+    case B_10101:	myprint( "*AR%ld--(IR1)",        addr       ); break;
+    case B_10110:	myprint( "*AR%ld++(IR1)%%",      addr       ); break;
+    case B_10111:	myprint( "*AR%ld--(IR1)%%",      addr       ); break;
+    case B_11000:	myprint( "*AR%ld",               addr       ); break;
+    case B_11001:	myprint( "*AR%ld++(IR0)B",       addr       ); break;
+    default:
+      return;      
+a485 3
+  return;
+  
+} /* decode_indirect_addressing */
+d487 2
+a488 12
+
+/*
+ * extracts the bits specified by 'mask' from the word 'value'
+ * if necessary the resulting word is sign extended.
+ * 'mask' must be a contigous set of bits starting from
+ * the least significant bit
+ */
+
+signed long int
+mask_and_sign_extend_word(
+			  unsigned long	int	value,
+			  unsigned long	int	mask )
+d490 3
+a492 1
+  value &= mask;
+d494 2
+a495 4
+  if (value & ((mask + 1) >> 1))
+    {
+      value |= ~mask;
+    }
+d497 1
+a497 1
+  return (signed long int)value;
+d499 1
+a499 1
+} /* mask_and_sign_extend_word */
+d501 9
+d511 2
+a512 5
+/*
+ * turns a 16 bit integer into a string
+ * representing a short format C40 style
+ * floating point number
+ */
+d514 2
+a515 2
+static const char *
+decode_short_float( unsigned long number )
+d517 2
+a518 11
+  static char	buffer[ 20 ];
+  unsigned long	e;
+  unsigned long	s;
+  unsigned long	f;
+  union
+    {
+      float		f;	/* XXX beware of assumption that 	*/
+      unsigned long	l;	/* sizeof (float) == sizeof (long)	*/
+    }
+  converter;
+  
+a519 4
+  if (number & 0xffff0000U)
+    {
+      return "bad format short float";
+    }
+d521 2
+a522 18
+  /*
+   * format is ...
+   *
+   *
+   *  15      12   11   10       0
+   *  ____________________________
+   * |          |      |          |
+   * | exponent | sign | mantissa |
+   * |          |      |          |
+   *  ----------------------------
+   *
+   * interpretation is ...
+   *
+   * e = -8, s = 0, m = 0 => 0.0
+   * s = 0                =>   01.m  x 2^e
+   * s = -1               => -(10.m) x 2^e
+   *
+   */
+d524 1
+a524 1
+  /* extract components */
+d526 1
+a526 3
+  e = (number & 0xf000U) >> 12;
+  s =  number & 0x0800U;
+  f =  number & 0x07ffU;
+d528 5
+a532 1
+  e = mask_and_sign_extend_word( e, 0xf );
+d534 1
+a534 1
+  /* handle the special case */
+d536 1
+a536 4
+  if (s == 0 && e == -8 && f == 0)
+    {
+      return "0.0";
+    }
+d538 1
+a538 3
+  /* convert the binary value into host specific floating point value */
+  
+#ifdef HP
+d540 1
+a540 1
+  /* convert to IEEE single precision */
+d542 1
+a542 1
+  e += 0x7f;
+d544 9
+a552 1
+  if (s == 0)
+d554 1
+a554 1
+      converter.l = (e << 23) | (f << (22 - 10));
+d556 1
+a556 1
+  else
+d558 1
+a558 1
+      if (f == 0)
+d560 1
+a560 1
+	  converter.l = ((e + 1) << 23) | (1 << 31);
+d564 1
+a564 1
+	  converter.l = (e << 23) | (((((~f) + 1) << (22 - 10))) & ((1 << 23) - 1)) | (1 << 31);
+d566 2
+d569 3
+a571 1
+#else
+d573 2
+a574 5
+  /* convert to C40 single precision */
+  
+  converter.l = (e << 24) | (s << (23 - 11)) | (f << (22 - 10));
+  
+#endif /* __C40 */
+d576 2
+a577 1
+  /* convert to a string */
+d579 1
+a579 3
+  sprintf( buffer, "%f", converter.f );
+
+  /* return the string */
+d581 1
+a581 1
+  return buffer;
+d583 2
+a584 1
+} /* decode_short_float */
+a585 6
+
+/*
+ * decodes the addressing modes (the 'G' field)
+ * of a 'C40 diadic op code
+ */
+
+d587 1
+a587 5
+decode_diadic_address(
+		      unsigned long	op_code,	/* instruction 			  */
+		      char *		instruction,	/* string identifying instruction */
+		      immed_type	type,		/* type of immediate value	  */
+		      bool		store )		/* non zero if a store operation  */
+d589 11
+a599 3
+  char *	pdest;
+  long int	dest;
+
+d601 1
+a601 8
+  /*
+   * we have a diaidic op code
+   *
+   * bits 16 - 20 encode destination
+   * bits 21 - 22 encode addressing type
+   * bits 23 - 28 encode op code
+   * bits 29 - 31 are 000
+   */
+d603 1
+a603 1
+  dest = (op_code >> 16) & 0x1f;
+d605 2
+a606 1
+  myprint( instruction );
+d608 4
+a611 1
+  pad_to( COL_OPERAND );
+d613 2
+a614 1
+  if ((op_code >> 23) == OP_RPTS || (op_code >> 23) == OP_IACK)
+d616 1
+a616 3
+      /* this op code has no destination */
+      
+      pdest = NULL;
+d620 7
+a626 1
+      dest = (op_code >> 16) & 0x1f;
+d628 2
+a629 3
+      if (type == TYPE_FLOATING)
+	{
+	  /* the destination (or source) register of a floating point op must be R0 - R11 */
+d631 4
+a634 5
+	  if (!is_extended_precision_register( dest ))
+	    {
+	      myprint( "R<illegal>," );
+	    }
+	}
+d636 4
+a639 1
+      pdest = _regname( dest );
+d641 1
+a641 2
+  
+  switch ((op_code >> 21) & 0x3)
+d643 1
+a643 13
+    case 0: /* register to register */
+      /*
+       * we have a diaidic op code, using register addressing
+       *
+       * bits  0 - 4  encode source register
+       * bits  5 - 15 are 00000000000
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+
+      op_code &= 0xffff;
+d645 4
+a648 13
+      if ((op_code > 0x1f) ||
+	  (type == TYPE_FLOATING &&
+	  !is_extended_precision_register( op_code )))
+	{
+	  myprint( "R<illegal>" );
+	  
+	  return;
+	}
+      
+      if (pdest)
+	myprint( "%s, %s", _regname( op_code ), pdest );
+      else
+	myprint( "%s", _regname( op_code ) );
+d650 1
+a650 12
+      break;
+	      
+    case 1: /* direct */
+      /*
+       * we have a diaidic op code, using direct addressing
+       *
+       * bits  0 - 15 are an unsigned offset to the data page register
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+d652 1
+a652 10
+      op_code &= 0xffff;
+      
+      if (store)	/* pdest is actually source */
+	myprint( "%s, @@%#04.4lx", pdest, op_code );
+      else if (pdest)
+	myprint( "@@%#04.4lx, %s", op_code, pdest );
+      else
+	myprint( "@@%#04.4lx", op_code );
+      
+      break;
+d654 4
+a657 12
+    case 2: /* indirect */
+      /*
+       * we have a diaidic op code, using indirect addressing
+       *
+       * bits  0 -  7 encode the displacment
+       * bits  8 - 10 encode the address register
+       * bits 11 - 15 encode the mode
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+a658 3
+	{
+	  long int	disp = op_code & 0xff;
+	  long int	addr = (op_code >> 8) & 0x7;
+d660 1
+d662 8
+a669 3
+	  if (store)
+	    {
+	      myprint( "%s, ", pdest );
+d671 6
+a676 5
+	      decode_indirect_address( op_code >> 11 & 0x1f, addr, disp );
+	    }
+	  else
+	    {
+	      decode_indirect_address( (op_code >> 11) & 0x1f, addr, disp );
+d678 3
+a680 16
+	      if (pdest)
+		myprint( ", %s", pdest );
+	    }
+	}
+      break;
+      
+    case 3: /* immediate */
+      /*
+       * we have a diaidic op code, using immeadiate addressing
+       *
+       * bits  0 - 15 are a signed immeadiate value
+       * bits 16 - 20 encode destination register
+       * bits 21 - 22 encode addressing type
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+d682 5
+a686 23
+      if (type == TYPE_SIGNED)
+	dest = mask_and_sign_extend_word( op_code, 0x0000ffffU );
+      else
+	dest = op_code & 0xffffU;
+      
+      if (type == TYPE_FLOATING)
+	{
+	  myprint( "%s, %s", decode_short_float( dest ), pdest );
+	}
+      else if (dest < 500 && dest > -500 && type == TYPE_SIGNED)
+	{
+	  myprint( "%ld, %s", dest, pdest );
+	}
+      else if (pdest)
+	{
+	  myprint( "%#lx, %s", dest, pdest );
+	}
+      else
+	{
+	  myprint( "%#lx", dest );
+	}
+	
+      break;      
+d689 4
+d695 4
+a698 1
+} /* decode_diadic_address */
+d700 1
+d703 3
+a705 1
+ * handle the special case of the STI op code
+d708 5
+a712 2
+static void
+decode_integer_store( unsigned long op_code )
+d714 12
+a725 1
+  long int		dest;
+d727 3
+d731 1
+a731 8
+  /*
+   * we have an integer store
+   *
+   * bits  0 - 15 encode destination
+   * bits 16 - 20 encode source
+   * bits 21 - 22 encode addressing type
+   * bits 23 - 31 are 000101010
+   */
+d733 1
+a733 1
+  dest = (op_code >> 16) & 0x1f;
+d735 1
+a735 8
+  switch ((op_code >> 21) & 0x3)
+    {
+    case 0: /* indirect immediate */
+      /*
+       * bits  0 - 15 are an unsigned offset from the data page register
+       * bits 16 - 20 encode value
+       * bits 21 - 31 are 00010101000
+       */
+d737 8
+a744 1
+      myprint( "STIK" );
+d746 2
+a747 1
+      pad_to( COL_OPERAND );
+d749 101
+a849 1
+      myprint( "%ld, @@%#04.4lx", mask_and_sign_extend_word( dest, 0x1f ), (op_code & 0xffff) );
+d851 2
+a852 8
+      break;
+	      
+    case 1: /* direct register */
+      /*
+       * bits  0 - 15 are an unsigned offset to the data page register
+       * bits 16 - 20 encode source register
+       * bits 21 - 31 are 00010101001
+       */
+d854 28
+a881 1
+      myprint( "STI" );
+d883 2
+a884 1
+      pad_to( COL_OPERAND );
+d886 10
+a895 1
+      myprint( "%s, @@%#04.4lx", _regname( dest ), (op_code & 0xffff) );
+d897 1
+a897 1
+      break;
+d899 3
+a901 8
+    case 2: /* indirect register */
+      /*
+       * bits  0 -  7 encode the displacment
+       * bits  8 - 10 encode the address register
+       * bits 11 - 15 encode the mode
+       * bits 16 - 20 encode source register
+       * bits 21 - 31 are 00010101010
+       */
+d903 2
+a904 1
+      myprint( "STI" );
+d906 14
+a919 1
+      pad_to( COL_OPERAND );
+d921 2
+a922 1
+      myprint( "%s, ", _regname( dest ) );
+d924 15
+a938 1
+      decode_indirect_address( (op_code >> 11) & 0x1f, (op_code >> 8) & 0x7, op_code & 0xff );
+d940 57
+a996 1
+      break;
+d998 2
+a999 18
+    case 3: /* indirect immediate */
+      /*
+       * bits  0 -  7 encode the displacment
+       * bits  8 - 10 encode the address register
+       * bits 11 - 15 encode the mode
+       * bits 16 - 20 encode source value
+       * bits 21 - 31 are 00010101011
+       */
+
+      myprint( "STIK" );
+
+      pad_to( COL_OPERAND );
+
+      myprint( "%ld, ", mask_and_sign_extend_word( dest, 0x1f ) );
+	
+      decode_indirect_address( (op_code >> 11) & 0x1f, (op_code >> 8) & 0x7, op_code & 0xff );
+
+      break;
+d1001 1
+d1003 1
+a1003 1
+
+d1006 1
+a1006 2
+} /* decode_integer_store */
+  
+d1008 2
+a1009 3
+/*
+ * decodes a 'C40 opcode concerned with handling program execution
+ */
+d1012 4
+a1015 1
+decode_flow_control( unsigned long op_code )	/* the instruction to decode */
+d1017 3
+a1019 7
+  /*
+   * we have a flow control op code
+   *
+   * bits 30 - 31 are 01
+   *
+   * other bits are semi-random
+   */
+d1021 2
+a1022 1
+  if (op_code & (1 << 29))
+d1024 9
+a1032 3
+      /* bits 29 - 31 are 011 */
+
+      if (op_code & (1 << 28))
+d1034 1
+a1034 3
+	  /* bits 28 - 31 are 0111 */
+	  
+	  if (op_code & (1 << 27))
+d1036 4
+a1039 30
+	      /* bits 27 - 31 are 01111 */
+
+	      if (op_code & (1 << 24))
+		{
+		  /*
+		   * we have a repeat block with register addressing
+		   *
+		   * bits  0 -  4 encode the source
+		   * bits  5 - 22 are 000000000000000000
+		   * bit  23      encodes the delay
+		   * bits 24 - 31 are 01111001
+		   */
+
+		  if (op_code & (1 << 23))
+		    {
+		      myprint( "RPTBD" );
+		      
+		      pad_to( COL_OPERAND );
+		      
+		      myprint( "%s", _regname( op_code ) );
+		    }
+		  else
+		    {
+		      myprint( "RPTB" );
+
+		      pad_to( COL_OPERAND );
+
+		      myprint( "%s", _regname( op_code ) );
+		    }
+		}
+d1041 1
+a1041 36
+		{
+		  /* bits 24 - 31 are 01111xx0 */
+
+		  if (op_code & (1 << 23))
+		    {
+		      /*
+		       * we have a conditional return from subroutine
+		       *
+		       * bits  0 - 15 are 0000000000000000
+		       * bits 16 - 20 encode the condition 
+		       * bits 21 - 31 are 01111000100
+		       */
+
+		      myprint( "RETS%s", _condname( op_code >> 16 ) );
+		    }
+		  else
+		    {
+		      /*
+		       * we have a conditional return from interrupt
+		       *
+		       * bits  0 - 15 are 0000000000000000
+		       * bits 16 - 20 encode the condition
+		       * bit  21      encodes the delay type
+		       * bits 22 - 31 are 0111100000
+		       */
+
+		      if (op_code & (1 << 21))
+			{
+			  myprint( "RETI%sD", _condname( op_code >> 16 ) );
+			}
+		      else
+			{
+			  myprint( "RETI%s", _condname( op_code >> 16 ) );
+			}
+		    }
+		}
+d1043 63
+a1105 7
+	  else
+	    {
+	      /* bits 27 - 31 are 01110 */
+	      
+	      if (op_code & (1 << 26))
+		{
+		  /* bits 26 - 31 are 011101 */
+d1107 2
+a1108 12
+		  if (op_code & (1 << 25))
+		    {
+		      /*
+		       * we have a transfer between register file and expansion register file
+		       *
+		       * bits  0 -  5 encode the source register
+		       * bits  6 - 15 are 0000000000
+		       * bits 16 - 20 encode the destination register
+		       * bits 21 - 22 are 00
+		       * bit  23      encodes the transfer type
+		       * bits 24 - 31 are 01110110
+		       */
+d1110 7
+a1116 3
+		      if (op_code & (1 << 23))
+			{
+			  myprint( "LDPE" );
+a1117 9
+			  pad_to( COL_OPERAND );
+			  
+			  myprint( "%s, %s",
+				  _regname( op_code ),
+				  (((op_code >> 16) & 0xf) == 0) ? "IVTP" : "TVTP" );
+			}
+		      else
+			{
+			  myprint( "LDEP" );
+d1119 1
+a1119 10
+			  pad_to( COL_OPERAND );
+			  
+			  myprint( "%s, %s",
+				  ((op_code & 0xf) == 0) ? "IVTP" : "TVTP",
+				  _regname( op_code >> 16 ) );
+			}
+		    }
+		  else
+		    {
+		      char	op[ 10 ];
+d1121 1
+a1121 11
+		  
+		      /*
+		       * we have a conditional trap
+		       *
+		       * bits  0 -  8 encode the trap number
+		       * bits  9 - 15 are 0000000
+		       * bits 16 - 20 encode the condition
+		       * bits 21 - 22 are 00
+		       * bit  23      encodes the trap type
+		       * bits 24 - 31 are 01110100
+		       */
+d1123 3
+a1125 10
+		      if (op_code & (1 << 23))
+			{
+			  strcpy( op, "LAT" );
+			}
+		      else
+			{
+			  strcpy( op, "TRAP" );
+			}
+		      
+		      strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+d1127 2
+a1128 1
+		      myprint( op );
+d1130 2
+a1131 20
+		      pad_to( COL_OPERAND );
+		      
+		      myprint( "%lu", op_code & 0x1ff );
+		    }
+		}
+	      else
+		{
+		  char	op[ 10 ];
+		  
+		  
+		  /*
+		   * we have a conditional jump to subroutine
+		   *
+		   * bits  0 - 15 encode the source register or displacement
+		   * bits 16 - 20 encode the condition
+		   * bits 21      encodes the jump type
+		   * bits 22 - 24 are 000
+		   * bit  25      encodes the addressing mode
+		   * bits 26 - 31 are 011100
+		   */
+d1133 8
+a1140 8
+		  if (op_code & (1 << 21))
+		    {
+		      strcpy( op, "LAJ" );
+		    }
+		  else
+		    {
+		      strcpy( op, "CALL" );
+		    }
+d1142 6
+a1147 20
+		  strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+
+		  myprint( op );
+
+		  pad_to( COL_OPERAND );
+		  
+		  if (op_code & (1 << 25))
+		    {
+		      op_code = mask_and_sign_extend_word( op_code, 0xffffU );
+
+		      myprint( "L%ld", word_address + op_code );
+		    }
+		  else
+		    {
+		      myprint( "%s", _regname( op_code & 0x1f ) );
+		    }
+		}
+	    }
+	}
+      else
+d1149 3
+a1151 3
+	  /* bits 28 - 31 are 0110 */
+
+	  if (op_code & (1 << 27))
+d1153 6
+a1158 110
+	      /* bits 27 - 31 are 01101 */
+
+	      if (op_code & (1 << 26))
+		{
+		  char		op[ 10 ];
+		  long int	addr;
+		  long int	offset = 0;
+		  
+
+		  /*
+		   * we have a conditional decrement and branch
+		   *
+		   * bits  0 - 15 encode the source register or displacement
+		   * bits 16 - 20 encode the condition
+		   * bits 21      encodes delay
+		   * bits 22 - 24 encodes the address register to be decremented
+		   * bit  25      encodes the addressing mode
+		   * bits 26 - 31 are 011011
+		   */
+
+		  strcpy( op, "DB" );
+
+		  strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+		  
+		  if (op_code & (1 << 21))
+		    {
+		      strcat( op, "D" );
+
+		      offset = 4;
+		    }
+		  else
+		    {
+		      offset = 1;
+		    }
+
+		  addr = (op_code >> 22) & 0x7;
+
+		  myprint( op );
+
+		  pad_to( COL_OPERAND );
+		  
+		  if (op_code & (1 << 25))
+		    {
+		      op_code = mask_and_sign_extend_word( op_code, 0xffffU );
+		      
+		      myprint( "AR%1ld, %+ld", addr, op_code );
+		    }
+		  else
+		    {
+		      myprint( "AR%1ld, %s", addr, _regname( op_code & 0x1f ) );
+		    }
+		}
+	      else
+		{
+		  char		op[ 10 ];
+		  long int	offset = 0;
+		  
+
+		  /*
+		   * we have a conditional branch
+		   *
+		   * bits  0 - 15 encode the source register or displacement
+		   * bits 16 - 20 encode the condition
+		   * bits 21 - 23 encode the type of branch
+		   * bits 24      is 0
+		   * bit  25      encodes the addressing mode
+		   * bits 26 - 31 are 011010
+		   */
+
+		  strcpy( op, "B" );
+
+		  strcat( op, _condname( (op_code >> 16) & 0x1f ) );
+		  
+		  switch ((op_code >> 21) & 0x7)
+		    {
+		    case B_000:	offset = 1; break;
+		    case B_001:	strcat( op, "D"  ); offset = 3; break;
+		    case B_010: return;
+		    case B_011:	strcat( op, "AT" ); offset = 3; break;
+		    case B_100:	return;
+		    case B_101:	strcat( op, "AF" ); offset = 3; break;
+		    case B_110:	return;
+		    case B_111:	return;
+		    }
+
+		  myprint( op );
+
+		  pad_to( COL_OPERAND );
+		  
+		  if (op_code & (1 << 25))
+		    {
+		      signed long int	dest;
+		      signed long int	displacement;
+		      
+		      
+		      displacement = mask_and_sign_extend_word( op_code, 0xffffU );
+
+		      dest = displacement + offset + word_address;
+
+		      myprint( "%+ld", displacement );
+
+		      pad_to( COL_DESTINATION );
+
+		      myprint( "(branch to %lx)", dest + address_base );
+		    }
+		  else
+		    {
+		      myprint( "%s", _regname( op_code & 0x1f ) );
+		    }
+		}
+d1162 1
+a1162 6
+	      long int	offset = 0;
+	      
+	      
+	      /* bits 27 - 31 are 01100 */
+
+	      switch ((op_code >> 24) & 0x7)
+d1164 2
+a1165 9
+		case B_000:	myprint( "BR"    ); offset = 1; break;
+		case B_001:	myprint( "BRD"   ); offset = 3; break;
+		case B_010:	myprint( "CALL"  ); offset = 1; break;
+		case B_011:	myprint( "LAJ"   ); offset = 3; break;
+		case B_100:	myprint( "RPTB"  ); offset = 1; break;
+		case B_101:	myprint( "RPTBD" ); offset = 3; break;
+		case B_110:	myprint( "SWI"   ); return;
+		default:
+		case B_111:	return;
+a1166 10
+
+	      op_code = mask_and_sign_extend_word( op_code, 0xffffffU );
+
+	      pad_to( COL_OPERAND );
+
+	      myprint( "%+ld", op_code );
+
+	      pad_to( COL_DESTINATION );
+
+	      myprint( "(branch to %lx)", op_code + offset + word_address + address_base );
+d1170 5
+a1174 16
+  else
+    {
+      char 		op[ 10 ];
+      immed_type	type;
+      
+      
+      /*
+       * we have a conditional load op
+       *
+       * bits  0 - 15 encode the source
+       * bits 16 - 20 encode the destination
+       * bits 21 - 22 encode the addressing mode
+       * bits 23 - 27 encode the condition
+       * bit  28      encodes op
+       * bits 29 - 31 are 010
+       */
+d1176 8
+a1183 3
+      if (((op_code >> 28) & 0x1) == 0)
+	{
+	  strcpy( op, "LDF" );
+a1184 5
+	  type = TYPE_FLOATING;
+	}
+      else
+	{
+	  strcpy( op, "LDI" );
+d1186 2
+a1187 4
+	  type = TYPE_SIGNED;
+	}
+      
+      strcat( op, _condname( (op_code >> 23) & 0x1f ) );
+d1189 35
+a1223 3
+      decode_diadic_address( op_code, op, type, FALSE );
+      
+      return;
+d1225 5
+a1229 1
+
+d1231 2
+d1234 2
+a1235 1
+} /* decode_flow_control */
+d1237 7
+a1244 3
+/*
+ * decodes a 'C40 op code concerened with loading non-word quantities
+ */
+d1246 1
+a1246 5
+static void
+decode_non_word_load( unsigned long	op_code )	/* instruction */
+{
+  char	op[ 5 ];
+  char	B;
+d1248 1
+a1248 11
+  
+  /*
+   * we have a non-word data transfer
+   *
+   * bits  0 - 16 encode source
+   * bits 17 - 20 encode destination
+   * bits 21 - 22 encode addressing type
+   * bits 23 - 24 MAY encode a byte selector
+   * bits 24 - 27 encode op
+   * bits 28 - 31 are 1011
+   */
+d1250 1
+a1250 1
+  B = (char)((op_code >> 23) & 0x03);
+d1252 1
+a1252 11
+  switch ((op_code >> 24) & 0x0f)
+    {
+    case OP_LB:
+    case B_0001:
+      strcpy( op, "LB0" );
+      
+      op[ 2 ] = '0' + B;
+      
+      decode_diadic_address( op_code, op, TYPE_SIGNED, FALSE );
+      
+      break;
+d1254 2
+a1255 9
+    case OP_LBU:
+    case B_0011:
+      strcpy( op, "LBU0" );
+      
+      op[ 3 ] = '0' + B;
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+d1257 8
+a1264 3
+    case OP_LWL:
+    case B_0101:
+      strcpy( op, "LWL0" );
+d1266 1
+a1266 5
+      op[ 3 ] = '0' + B;
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+d1268 3
+a1270 3
+    case OP_LWR:
+    case B_0111:
+      strcpy( op, "LWR0" );
+d1272 3
+a1274 5
+      op[ 3 ] = '0' + B;
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+d1276 2
+a1277 3
+    case OP_MB:
+    case B_1001:
+      strcpy( op, "MB0" );
+d1279 5
+a1283 5
+      op[ 2 ] = '0' + B;
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+a1284 2
+    case OP_LH:
+      strcpy( op, "LH0" );
+d1286 1
+a1286 8
+      op[ 2 ] = '0' + (B & 1);
+      
+      decode_diadic_address( op_code, op, TYPE_SIGNED, FALSE );
+      
+      break;
+      
+    case OP_LHU:
+      strcpy( op, "LHU0" );
+d1288 2
+a1289 5
+      op[ 3 ] = '0' + (B & 1);
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+d1291 5
+a1295 2
+    case OP_MH:
+      strcpy( op, "MH0" );
+d1297 7
+a1303 9
+      op[ 2 ] = '0' + (B & 1);
+      
+      decode_diadic_address( op_code, op, TYPE_UNSIGNED, FALSE );
+      
+      break;
+
+    default:
+      break;
+    }
+d1305 2
+a1306 1
+  return;
+d1308 4
+a1311 1
+} /* decode_non_word_load */
+d1313 5
+d1319 2
+a1320 3
+/*
+ * decodes a multiple parallel triadic op code
+ */
+d1323 1
+a1323 1
+decode_special_triadic( unsigned long 	op_code ) 	/* instruction to decode */
+d1325 3
+a1327 23
+  char *	op1;
+  char *	op2;
+  long int	src1;
+  long int	src2;
+  long int	src3;
+  long int	src4;
+  long int	dst1;
+  long int	dst2;
+  
+  
+  /*
+   * we have a special form of triadic op code
+   *
+   * bits  0 -  7 encode src4
+   * bits  8 - 15 encode src3
+   * bits 16 - 18 encode src2
+   * bits 19 - 21 encode src1
+   * bit  22      encodes dst2
+   * bit  23      encodes dst1
+   * bits 24 - 25 encode addressing mode
+   * bits 26 - 27 encode operation
+   * bits 28 - 31 are 1000
+   */
+d1329 2
+a1330 15
+  src4 =   op_code        & 0xff;
+  src3 =  (op_code >>  8) & 0xff;
+  src2 =  (op_code >> 16) & 0x07;
+  src1 =  (op_code >> 19) & 0x07;
+  dst2 = ((op_code >> 22) & 0x01) + 2;
+  dst1 =  (op_code >> 23) & 0x01;
+  
+  switch ((op_code >> 26) & 0x3)
+    {
+    default:
+    case OP_MPYF3_ADDF3:	op1 = "MPYF3"; op2 = "ADDF3"; break;
+    case OP_MPYF3_SUBF3:	op1 = "MPYF3"; op2 = "SUBF3"; break;
+    case OP_MPYI3_ADDI3:	op1 = "MPYI3"; op2 = "ADDI3"; break;
+    case OP_MPYI3_SUBI3:	op1 = "MPYI3"; op2 = "SUBI3"; break;
+    }
+d1332 6
+a1337 4
+  switch ((op_code >> 24) & 0x3)
+    {
+    case B_00:
+      myprint( "%s", op1 );
+d1339 2
+a1340 3
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+d1342 8
+a1349 3
+      myprint( ", " );
+      
+      decode_indirect_address( src4 >> 3, src4 & 7, 1 );
+a1350 1
+      myprint( ", %s", _regname( dst1 ) );
+d1352 1
+a1352 1
+      new_line();
+d1354 1
+a1354 1
+      pad_to( COL_OP_CODE - 3 );
+d1356 2
+a1357 1
+      myprint( "|| %s", op2 );
+d1359 2
+a1360 3
+      pad_to( COL_OPERAND );
+      
+      myprint( "%s, %s, %s", _regname( src1 ), _regname( src2 ), _regname( dst2 + 2 ) );
+d1362 206
+a1568 3
+      
+    case B_01:
+      myprint( "%s", op1 );
+d1570 14
+a1583 3
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+d1585 2
+a1586 1
+      myprint( ", %s, %s", _regname( src1 ), _regname( dst1 ) );
+d1588 4
+a1591 1
+      new_line();
+a1592 3
+      pad_to( COL_OP_CODE - 3 );
+      
+      myprint( "|| %s", op2 );
+d1594 6
+a1599 3
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src4 >> 3, src4 & 7, 1 );
+d1601 3
+a1603 1
+      myprint( ", %s, %s", _regname( src2 ), _regname( dst2 + 2 ) );
+d1605 2
+a1607 3
+      
+    case B_10:
+      myprint( "%s", op1 );
+d1609 4
+a1612 7
+      pad_to( COL_OPERAND );
+
+      myprint( "%s, %s, %s", _regname( src1 ), _regname( src2 ), _regname( dst1 ) );
+
+      new_line();
+
+      pad_to( COL_OP_CODE - 3 );
+d1614 9
+a1622 1
+      myprint( "|| %s ", op2 );
+d1624 2
+a1625 3
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+d1627 8
+a1634 1
+      myprint( ", " );
+d1636 16
+a1651 1
+      decode_indirect_address( src4 >> 4, src4 & 7, 1 );
+d1653 4
+a1656 1
+      myprint( ", %s", _regname( dst2 + 2 ) );
+d1658 2
+a1660 3
+      
+    case B_11:
+      myprint( "%s", op1 );
+d1662 3
+a1664 9
+      pad_to( COL_OPERAND );
+      
+      decode_indirect_address( src3 >> 3, src3 & 7, 1 );
+
+      myprint( ", %s, %s", _regname( src1 ), _regname( dst1 ) );
+
+      new_line();
+
+      pad_to( COL_OP_CODE - 3 );
+d1666 3
+a1668 10
+      myprint( "|| %s", op2 );
+
+      pad_to( COL_OPERAND );
+      
+      myprint( "%s, ", _regname( src2 ) );
+
+      decode_indirect_address( src4 >> 3, src4 & 7, 1 );
+
+      myprint( ", %s", _regname( dst2  + 2 ) );
+
+d1674 1
+a1674 1
+} /* decode_special_triadic */
+d1676 2
+d1680 1
+a1680 1
+decode_non_word_load_or_triadic( unsigned long	op_code )	/* instruction to decode */
+d1682 1
+a1682 6
+  /*
+   * we have either a special form of triadic op code or a non-word data transfer
+   *
+   * bits 28 - 29 encode form
+   * bits 30 - 31 are 10
+   */
+d1684 2
+a1685 6
+  switch ((op_code >> 28) & 0x3)
+    {
+    case B_00:	decode_special_triadic( op_code ); break;
+    case B_11:	decode_non_word_load( op_code ); break;
+    default:	break;
+    }
+d1687 1
+a1687 1
+  return;
+d1689 1
+a1689 1
+} /* decode_non_word_load_or_triadic */
+d1691 5
+d1697 1
+a1697 11
+static void
+decode_triadic_parallel_addressing(
+				   unsigned long	op_code,	/* the instruction to decode */
+				   char *		first_op,	/* the name of the first op code */
+				   char *		second_op )	/* the name of the second op code */
+{
+  unsigned long	src1;
+  unsigned long	src2;
+  unsigned long	src3;
+  unsigned long	dst1;
+  unsigned long	dst2;
+d1699 1
+a1699 28
+  
+  /*
+   * we have a triaidic parallel op code of the form:
+   *
+   *    first_op  src2, src1, dst1
+   * || second_op src3, dst2
+   *
+   *
+   * bits  0 -  7 encode src2
+   * bits  8 - 15 encode dst2
+   * bits 16 - 18 encode src3
+   * bits 19 - 21 encode src1
+   * bits 22 - 24 encode dst1
+   * bits 25 - 29 encode the operation
+   * bits 30 - 31 are 11
+   */
+
+  src2 = (op_code      ) & 0xff;
+  dst2 = (op_code >>  8) & 0xff;
+  src3 = (op_code >> 16) & 0x07;
+  src1 = (op_code >> 19) & 0x07;
+  dst1 = (op_code >> 22) & 0x07;
+  
+  myprint( "%s ", first_op );
+
+  pad_to( COL_OPERAND );
+  
+  decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+d1701 1
+a1701 1
+  myprint( ", %s, %s", _regname( src1 ), _regname( dst1 ) );
+d1703 2
+a1704 15
+  new_line();
+  
+  pad_to( COL_OP_CODE - 3 );
+  
+  myprint( "|| %s", second_op );
+
+  pad_to( COL_OPERAND );
+  
+  myprint( "%s, ", _regname( src3 ) );
+      
+  decode_indirect_address( dst2 >> 3, dst2 & 7, 1 );
+      
+  return;
+      
+} /* decode_triadic_parallel_addressing */
+a1705 1
+  
+d1707 1
+a1707 4
+decode_diadic_parallel_addressing(
+				  unsigned long	op_code,	/* the instruction to decode */
+				  char *	first_op,	/* string identifying the first op code */
+				  char *	second_op )	/* string identifying the second op code */
+d1709 5
+a1713 4
+  unsigned long	src2;
+  unsigned long	src3;
+  unsigned long	dst1;
+  unsigned long	dst2;
+d1716 5
+a1720 15
+  /*
+   * we have a diaidic parallel op code of the form:
+   *
+   *    first_op  src2, dst1
+   * || second_op src3, dst2
+   *
+   *
+   * bits  0 -  7 encode src2
+   * bits  8 - 15 encode dst2
+   * bits 16 - 18 encode src3
+   * bits 19 - 21 are 000
+   * bits 22 - 24 encode dst1
+   * bits 25 - 29 encode the operation
+   * bits 30 - 31 are 11
+   */
+d1722 1
+a1722 4
+  src2 = (op_code      ) & 0xff;
+  dst2 = (op_code >>  8) & 0xff;
+  src3 = (op_code >> 16) & 0x07;
+  dst1 = (op_code >> 22) & 0x07;
+d1724 1
+a1724 1
+  /* validity test */
+d1726 1
+a1726 1
+  if (((op_code >> 19) & 0x07) != 0)
+d1728 2
+a1729 1
+      return;
+d1732 1
+a1732 1
+  pad_to( COL_OP_CODE );
+d1734 1
+a1734 1
+  myprint( "%s", first_op );
+d1736 2
+a1737 21
+  pad_to( COL_OPERAND );
+  
+  decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+
+  myprint( ", %s", _regname( dst1 ) );
+
+  new_line();
+  
+  pad_to( COL_OP_CODE - 3 );
+  
+  myprint( "|| %s", second_op );
+
+  pad_to( COL_OPERAND );
+  
+  myprint( "%s, ", _regname( src3 ) );
+      
+  decode_indirect_address( dst2 >> 3, dst2 & 7, 1 );
+  
+  return;
+      
+} /* decode_diadic_parallel_addressing */
+a1738 1
+  
+d1740 3
+a1742 1
+decode_parallel_op( unsigned long 	op_code ) 	/* instruction to decode */
+d1744 11
+a1754 18
+  unsigned long	field1;
+  unsigned long	field2;
+  unsigned long	field3;
+  unsigned long	field4;
+  unsigned long	field5;
+
+  
+  /*
+   * we have a parallel op code
+   *
+   * bits  0 -  7 encode field1
+   * bits  8 - 15 encode field2
+   * bits 16 - 18 encode field3
+   * bits 19 - 21 encode field4
+   * bits 22 - 24 encode field5
+   * bits 25 - 29 encode the operation
+   * bits 30 - 31 are 11
+   */
+a1755 5
+  field1 = (op_code      ) & 0xff;
+  field2 = (op_code >>  8) & 0xff;
+  field3 = (op_code >> 16) & 0x07;
+  field4 = (op_code >> 19) & 0x07;
+  field5 = (op_code >> 22) & 0x07;
+d1757 1
+a1757 1
+  switch ((op_code >> 25) & 0x1f)
+d1759 22
+a1780 4
+    case OP_STF_STF:
+      /* validity tests */
+
+      if (field4 != 0)
+d1782 2
+a1783 1
+	  return;
+d1785 7
+d1793 3
+a1795 1
+      myprint( "STF" );
+d1797 5
+a1801 3
+      pad_to( COL_OPERAND );
+
+      myprint( "%s, ", _regname( field5 ) );
+d1803 6
+a1808 5
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+
+      new_line();
+
+      pad_to( COL_OP_CODE - 3 );
+d1810 13
+a1822 3
+      myprint( "|| STF" );
+
+      pad_to( COL_OPERAND );
+d1824 3
+a1826 1
+      myprint( "%s, ", _regname( field3 ) );
+d1828 3
+a1830 1
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+d1832 2
+d1836 88
+a1923 4
+    case OP_STI_STI:
+      /* validity tests */
+
+      if (field4 != 0)
+d1925 28
+a1952 1
+	  return;
+d1955 31
+a1985 5
+      myprint( "STI" );
+
+      pad_to( COL_OPERAND );
+
+      myprint( "%s, ", _regname( field5 ) );
+d1987 5
+a1991 3
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+
+      new_line();
+d1993 5
+a1997 1
+      pad_to( COL_OP_CODE - 3 );
+d1999 5
+a2003 3
+      myprint( "|| STI" );
+
+      pad_to( COL_OPERAND );
+d2005 3
+a2007 1
+      myprint( "%s, ", _regname( field3 ) );
+d2009 3
+a2011 1
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+d2013 2
+d2017 3
+a2019 4
+    case OP_LDF_LDF:
+      /* validity tests */
+
+      if (field3 != 0)
+d2021 7
+a2027 1
+	  return;
+d2030 9
+a2038 3
+      myprint( "LDF" );
+
+      pad_to( COL_OPERAND );
+a2039 1
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+d2041 3
+a2043 5
+      myprint( ", %s", _regname( field5 ) );
+
+      new_line();
+
+      pad_to( COL_OP_CODE - 3 );
+d2045 4
+a2048 3
+      myprint( "|| LDF" );
+
+      pad_to( COL_OPERAND );
+d2050 4
+a2053 3
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+
+      myprint( ", %s", _regname( field4 ) );
+d2055 4
+d2061 1
+a2061 4
+    case OP_LDI_LDI:
+      /* validity tests */
+
+      if (field3 != 0)
+d2063 3
+a2065 1
+	  return;
+d2067 1
+d2069 9
+a2077 3
+      myprint( "LDI" );
+
+      pad_to( COL_OPERAND );
+d2079 5
+a2083 1
+      decode_indirect_address( field1 >> 3, field1 & 7, 1 );
+d2085 5
+a2089 3
+      myprint( ", %s", _regname( field5 ) );
+
+      new_line();
+d2091 5
+a2095 1
+      pad_to( COL_OP_CODE - 3 );
+d2097 5
+a2101 1
+      myprint( "|| LDI" );
+d2103 7
+a2109 1
+      pad_to( COL_OPERAND );
+d2111 17
+a2127 3
+      decode_indirect_address( field2 >> 3, field2 & 7, 1 );
+
+      myprint( ", %s", _regname( field4 ) );
+d2129 5
+d2136 1
+a2136 71
+    case OP_ABSF_STF:	decode_diadic_parallel_addressing(  op_code, "ABSF",   "STF" ); break;
+    case OP_ABSI_STI:	decode_diadic_parallel_addressing(  op_code, "ABSI",   "STI" ); break;
+    case OP_ADDF3_STF:	decode_triadic_parallel_addressing( op_code, "ADDF3",  "STF" ); break;
+    case OP_ADDI3_STI:	decode_triadic_parallel_addressing( op_code, "ADDI3",  "STI" ); break;
+    case OP_AND3_STI:	decode_triadic_parallel_addressing( op_code, "AND3",   "STI" ); break;
+    case OP_ASH3_STI:	decode_triadic_parallel_addressing( op_code, "ASH3",   "STI" ); break;
+    case OP_FIX_STI:	decode_diadic_parallel_addressing(  op_code, "FIX",    "STI" ); break;
+    case OP_FLOAT_STF:	decode_diadic_parallel_addressing(  op_code, "FLOAT",  "STF" ); break;
+    case OP_LDF_STF:	decode_diadic_parallel_addressing(  op_code, "LDF",    "STF" ); break;
+    case OP_LDI_STI:	decode_diadic_parallel_addressing(  op_code, "LDI",    "STI" ); break;
+    case OP_LSH3_STI:	decode_triadic_parallel_addressing( op_code, "LSH3",   "STI" ); break;
+    case OP_MPYF3_STF:	decode_triadic_parallel_addressing( op_code, "MPYF3",  "STF" ); break;
+    case OP_MPYI3_STI:	decode_triadic_parallel_addressing( op_code, "MPYI3",  "STI" ); break;
+    case OP_NEGF_STF:	decode_diadic_parallel_addressing(  op_code, "NEGF",   "STF" ); break;
+    case OP_NEGI_STI:	decode_diadic_parallel_addressing(  op_code, "NEGI",   "STI" ); break;
+    case OP_NOT_STI:	decode_diadic_parallel_addressing(  op_code, "NOT",    "STI" ); break;
+    case OP_OR3_STI:	decode_triadic_parallel_addressing( op_code, "OR3",    "STI" ); break;
+    case OP_SUBF3_STF:	decode_triadic_parallel_addressing( op_code, "SUBF3",  "STF" ); break;
+    case OP_SUBI3_STI:	decode_triadic_parallel_addressing( op_code, "SUBI3",  "STI" ); break;
+    case OP_XOR3_STI:	decode_triadic_parallel_addressing( op_code, "XOR3",   "STI" ); break;
+    case OP_TOIEEE_STF:	decode_diadic_parallel_addressing(  op_code, "TOIEEE", "STF" ); break;
+    case OP_FRIEEE_STF:	decode_diadic_parallel_addressing(  op_code, "FRIEEE", "STF" ); break;
+    default:
+      break;
+    }
+
+  return;
+
+} /* decode_parallel_op */
+
+
+/*
+ * deocdes a 'C40 triadic op code
+ */
+
+static void
+decode_triadic_address(
+		       unsigned long	op_code,	/* instruction to decode 	  */
+		       char *		instruction,	/* string identifying the op code */
+		       immed_type	type )		/* type of immediate values       */
+{
+  char *	pdest;
+  long int	dest;
+  unsigned long	addr;
+  unsigned long	src1;
+  unsigned long	src2;
+  
+
+  /*
+   * we have a triaidic op code
+   *
+   * bits  0 -  7 encode source2
+   * bits  8 - 15 encode source1
+   * bits 16 - 20 encode destination register
+   * bits 21 - 22 encode addessing mode
+   * bits 23 - 27 encode op code
+   * bit  28      encodes addressing type
+   * bits 29 - 31 are 001
+   */
+
+  myprint( instruction );
+
+  pad_to( COL_OPERAND );
+  
+  dest = (op_code >> 16) & 0x1f;
+
+  if (type == TYPE_FLOATING)
+    {
+      /* the destination (or source) register of a floating point op must be R0 - R11 */
+
+      if (!is_extended_precision_register( dest ))
+d2138 5
+a2142 2
+	  myprint( "R<illegal>," );
+	  return;
+a2143 22
+    }
+
+  pdest = _regname( dest );
+  
+  /* build combined addressing type */
+
+  addr = (op_code >> 28) & 0x1;
+
+  addr <<= 2;
+
+  addr |= ((op_code >> 21) & 0x3);
+
+  /* extract source fields */
+  
+  src2 = op_code & 0xff;
+  src1 = (op_code >> 8) & 0xff;
+
+  /* and print out result */
+  
+  switch (addr)
+    {
+    case B_000:	/* src1 = register, src2 = register */
+d2145 4
+a2148 4
+      myprint( "%s, %s, %s",
+	      _regname( src2 & 0x3f ),
+	      _regname( src1 & 0x3f ),
+	      pdest );
+a2149 8
+
+    case B_001: /* src1 = indirect, src2 = register */
+
+      myprint( "%s, ", _regname( src2 & 0x3f ) );
+	      
+      decode_indirect_address( src1 >> 3, src1 & 7, 1 );
+
+      myprint( ", %s", pdest );
+d2151 4
+d2157 4
+a2160 1
+    case B_010:	/* src1 = register, src2 = indirect */
+d2162 4
+a2165 3
+      decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+
+      myprint( ", %s", _regname( src1 & 0x3f ) );
+d2167 4
+a2170 1
+      myprint( ", %s", pdest );
+d2172 2
+a2174 10
+
+    case B_011:	/* src1 = indirect, src2 = indirect */
+      
+      decode_indirect_address( src2 >> 3, src2 & 7, 1 );
+
+      myprint( ", " );
+      
+      decode_indirect_address( src1 >> 3, src1 & 7, 1 );
+
+      myprint( ", %s", pdest );
+d2176 3
+a2179 2
+
+    case B_100: /* src1 = register, src2 = immediate */
+d2181 3
+a2183 1
+      if (type == TYPE_FLOATING)
+d2185 2
+a2186 1
+	  myprint( "triadic floating point immediate operations are impossible" );
+d2188 1
+a2188 1
+      else if (type == TYPE_SIGNED)
+d2190 2
+a2191 4
+	  myprint( "%ld, %s, %s",
+		  mask_and_sign_extend_word( op_code, 0xff ),
+		  _regname( src1 & 0x3f ),
+		  pdest );
+d2193 31
+a2223 7
+      else
+	{
+	  myprint( "%lx, %s, %s",
+		  op_code & 0xff,
+		  _regname( src1 & 0x3f ),
+		  pdest );
+	}
+d2225 2
+d2229 3
+a2231 1
+    case B_101:	/* src1 = register, src2 = indirect */
+d2233 5
+a2237 4
+      myprint( "*+AR%.1ld(%.2lu), %s, %s",
+	      src2 & 0x7, (src2 >> 3),
+	      _regname( src1 & 0x3f ),
+	      pdest );
+d2240 3
+a2242 1
+    case B_110:	/* src1 = indirect, src2 = immediate */
+d2244 3
+a2246 1
+      if (type == TYPE_FLOATING)
+d2248 2
+a2249 1
+	  myprint( "triadic floating point immediate operations are impossible" );
+d2251 1
+a2251 1
+      else if (type == TYPE_SIGNED)
+d2253 2
+a2254 4
+	  myprint( "%ld, *+AR%.1ld(%.2lu), %s",
+		  mask_and_sign_extend_word( op_code, 0xff ),
+		  src1 & 0x7, (src1 >> 3),
+		  pdest );
+d2256 52
+a2307 8
+      else
+	{
+	  myprint( "%#lx, *+AR%.1ld(%.2lu), %s",
+		  op_code & 0xff,
+		  src1 & 0x7, (src1 >> 3),
+		  pdest );
+	}
+
+d2310 3
+a2312 1
+    case B_111:	/* src1 = indirect, src2 = indirect */
+d2314 2
+a2315 4
+      myprint( "*+AR%.1ld(%.2lu), *+AR%.1ld(%.2lu), %s",
+	      src2 & 0x7, (src2 >> 3),
+	      src1 & 0x7,(src1 >> 3),
+	      pdest );
+d2318 2
+a2319 1
+    default:
+d2322 74
+d2397 2
+a2398 3
+  return;
+  
+} /* decode_triadic_address */
+d2400 2
+d2403 55
+a2457 8
+static void
+decode_monadic_op(
+		  unsigned long	op_code,
+		  char *	instruction )
+{
+  myprint( instruction );
+  
+  pad_to( COL_OPERAND );
+d2459 60
+a2518 1
+  myprint( "%s", _regname( (op_code >> 16) & 0x1f ) );
+d2520 16
+a2535 3
+  return;
+  
+} /* decode_monadic_op */
+d2537 4
+a2540 18
+  
+static void
+decode_sequential_op( unsigned long	op_code )	/* instruction to decode */
+{
+  /*
+   * bit  29      encodes diadic or triadic style op codes
+   * bits 30 - 31 are 00
+   */
+  
+  if (op_code & 0x20000000L)
+    {
+      /*
+       * triaidic op code
+       *
+       * bits 23 - 27 encode op code
+       * bit  28      encodes addressing type
+       * bits 29 - 31 are 001
+       */
+d2542 2
+a2543 1
+      switch ((op_code >> 23) & 0x1f)
+d2545 3
+a2547 21
+	case OP_ADDC3:	decode_triadic_address( op_code, "ADDC3"   , TYPE_SIGNED   ); return;
+	case OP_ADDF3:	decode_triadic_address( op_code, "ADDF3"   , TYPE_FLOATING ); return;
+	case OP_ADDI3:	decode_triadic_address( op_code, "ADDI3"   , TYPE_SIGNED   ); return;
+	case OP_AND3:	decode_triadic_address( op_code, "AND3"    , TYPE_UNSIGNED ); return;
+	case OP_ANDN3:	decode_triadic_address( op_code, "ANDN3"   , TYPE_UNSIGNED ); return;
+	case OP_ASH3:	decode_triadic_address( op_code, "ASH3"    , TYPE_SIGNED   ); return;
+	case OP_CMPF3:	decode_triadic_address( op_code, "CMPF3"   , TYPE_FLOATING ); return;
+	case OP_CMPI3:	decode_triadic_address( op_code, "CMPI3"   , TYPE_SIGNED   ); return;
+	case OP_LSH3:	decode_triadic_address( op_code, "LSH3"    , TYPE_SIGNED   ); return;
+	case OP_MPYF3:	decode_triadic_address( op_code, "MPYF3"   , TYPE_FLOATING ); return;
+	case OP_MPYI3:	decode_triadic_address( op_code, "MPYI3"   , TYPE_SIGNED   ); return;
+	case OP_OR3:	decode_triadic_address( op_code, "OR3"     , TYPE_UNSIGNED ); return;
+	case OP_SUBB3:	decode_triadic_address( op_code, "SUBB3"   , TYPE_SIGNED   ); return;
+	case OP_SUBF3:	decode_triadic_address( op_code, "SUBF3"   , TYPE_FLOATING ); return;
+	case OP_SUBI3:	decode_triadic_address( op_code, "SUBI3"   , TYPE_SIGNED   ); return;
+	case OP_TSTB3:	decode_triadic_address( op_code, "TSTB3"   , TYPE_UNSIGNED ); return;
+	case OP_XOR3:	decode_triadic_address( op_code, "XOR3"    , TYPE_UNSIGNED ); return;
+	case OP_MPYSHI3:decode_triadic_address( op_code, "MPYSHI3" , TYPE_SIGNED   ); return;
+	case OP_MPYUHI3:decode_triadic_address( op_code, "MPYUHI3" , TYPE_UNSIGNED ); return;
+	default:
+	  return;
+a2548 9
+    }
+  else
+    {
+      /*
+       * diaidic op code
+       *
+       * bits 23 - 28 encode op code
+       * bits 29 - 31 are 000
+       */
+d2550 1
+a2550 1
+      switch (op_code >> 23)
+d2552 3
+a2554 65
+	case OP_ABSF:	decode_diadic_address( op_code, "ABSF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_ABSI:	decode_diadic_address( op_code, "ABSI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_ADDC:	decode_diadic_address( op_code, "ADDC"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_ADDF:	decode_diadic_address( op_code, "ADDF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_ADDI:	decode_diadic_address( op_code, "ADDI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_AND:	decode_diadic_address( op_code, "AND"    , TYPE_UNSIGNED, FALSE ); return;
+	case OP_ANDN:	decode_diadic_address( op_code, "ANDN"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_ASH:	decode_diadic_address( op_code, "ASH"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_CMPF:	decode_diadic_address( op_code, "CMPF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_CMPI:	decode_diadic_address( op_code, "CMPI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_FIX:	decode_diadic_address( op_code, "FIX"    , TYPE_FLOATING, FALSE ); return;
+	case OP_FLOAT:	decode_diadic_address( op_code, "FLOAT"  , TYPE_SIGNED,   FALSE ); return;
+	case OP_IDLE:	myprint( "IDLE" ); return;
+	case OP_LDE:	decode_diadic_address( op_code, "LDE"    , TYPE_FLOATING, FALSE ); return;
+	case OP_LDF:	decode_diadic_address( op_code, "LDF"    , TYPE_FLOATING, FALSE ); return;
+	case OP_LDFI:	decode_diadic_address( op_code, "LDFI"   , TYPE_FLOATING, FALSE ); return;
+	case OP_LDI:	decode_diadic_address( op_code, "LDI"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDII:	decode_diadic_address( op_code, "LDII"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDM:	decode_diadic_address( op_code, "LDM"    , TYPE_FLOATING, FALSE ); return;
+	case OP_LSH:	decode_diadic_address( op_code, "LSH"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_MPYF:	decode_diadic_address( op_code, "MPYF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_MPYI:	decode_diadic_address( op_code, "MPYI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_NEGB:	decode_diadic_address( op_code, "NEGB"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_NEGF:	decode_diadic_address( op_code, "NEGF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_NEGI:	decode_diadic_address( op_code, "NEGI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_NOP:	myprint( "NOP" ); return;	/* XXX - what about indirect addressing modes */
+	case OP_NORM:	decode_diadic_address( op_code, "NORM"   , TYPE_FLOATING, FALSE ); return;
+	case OP_NOT:	decode_diadic_address( op_code, "NOT"    , TYPE_UNSIGNED, FALSE ); return;
+	case OP_POP:	decode_monadic_op(     op_code, "POP"   ); return;
+	case OP_POPF:	decode_monadic_op(     op_code, "POPF"  ); return;
+	case OP_PUSH:	decode_monadic_op(     op_code, "PUSH"  ); return;
+	case OP_PUSHF:	decode_monadic_op(     op_code, "PUSHF" ); return;
+	case OP_OR:	decode_diadic_address( op_code, "OR"     , TYPE_UNSIGNED, FALSE ); return;
+	case OP_RND:	decode_diadic_address( op_code, "RND"    , TYPE_FLOATING, FALSE ); return;
+	case OP_ROL:	decode_monadic_op(     op_code, "ROL"   ); return;
+	case OP_ROLC:	decode_monadic_op(     op_code, "ROLC"  ); return;
+	case OP_ROR:	decode_monadic_op(     op_code, "ROR"   ); return;
+	case OP_RORC:	decode_monadic_op(     op_code, "RORC"  ); return;
+	case OP_RPTS:	decode_diadic_address( op_code, "RPTS"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_STF:	decode_diadic_address( op_code, "STF"    , TYPE_FLOATING, TRUE  ); return;
+	case OP_STFI:	decode_diadic_address( op_code, "STFI"   , TYPE_FLOATING, TRUE  ); return;
+	case OP_STI:	decode_integer_store(  op_code ); return;
+	case OP_SIGI:	decode_diadic_address( op_code, "SIGI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_STII:	decode_diadic_address( op_code, "STII"   , TYPE_SIGNED,   TRUE  ); return;
+	case OP_SUBB:	decode_diadic_address( op_code, "SUBB"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBC:	decode_diadic_address( op_code, "SUBC"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBF:	decode_diadic_address( op_code, "SUBF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_SUBI:	decode_diadic_address( op_code, "SUBI"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBRB:	decode_diadic_address( op_code, "SUBRB"  , TYPE_SIGNED,   FALSE ); return;
+	case OP_SUBRF:	decode_diadic_address( op_code, "SUBRF"  , TYPE_FLOATING, FALSE ); return;
+	case OP_SUBRI:	decode_diadic_address( op_code, "SUBRI"  , TYPE_SIGNED,   FALSE ); return;
+	case OP_TSTB:	decode_diadic_address( op_code, "TSTB"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_XOR:	decode_diadic_address( op_code, "XOR"    , TYPE_UNSIGNED, FALSE ); return;
+	case OP_IACK:	decode_diadic_address( op_code, "IACK"   , TYPE_UNSIGNED, FALSE ); return;
+	case OP_TOIEEE:	decode_diadic_address( op_code, "TOIEEE" , TYPE_FLOATING, FALSE ); return;
+	case OP_FRIEEE:	decode_diadic_address( op_code, "FRIEEE" , TYPE_FLOATING, FALSE ); return;
+	case OP_RSQRF:	decode_diadic_address( op_code, "RSQRF"  , TYPE_FLOATING, FALSE ); return;
+	case OP_RCPF:	decode_diadic_address( op_code, "RCPF"   , TYPE_FLOATING, FALSE ); return;
+	case OP_MPYSHI:	decode_diadic_address( op_code, "MPYSHI" , TYPE_SIGNED,   FALSE ); return;
+	case OP_MPYUHI:	decode_diadic_address( op_code, "MPYUHI" , TYPE_UNSIGNED, FALSE ); return;
+	case OP_LDA:	decode_diadic_address( op_code, "LDA"    , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDPK:	decode_diadic_address( op_code, "LDPK"   , TYPE_SIGNED,   FALSE ); return;
+	case OP_LDHI:	decode_diadic_address( op_code, "LDHI"   , TYPE_UNSIGNED, FALSE ); return;
+	default:
+	  return;
+d2556 23
+a2578 5
+    }
+  
+  return;
+  
+} /* decode_sequential_op */
+d2580 10
+d2591 32
+a2622 6
+static void
+decode( unsigned long op_code )	/* instruction to decode */
+{
+  /*
+   * bits 30 and 31 encode instruction type
+   */
+d2624 2
+a2625 7
+  switch ((op_code >> 30) & 0x3)
+    {
+    default:
+    case 0: decode_sequential_op(            op_code ); return;
+    case 1: decode_flow_control(             op_code ); return;
+    case 2: decode_non_word_load_or_triadic( op_code ); return;
+    case 3: decode_parallel_op(              op_code ); return;
+d2627 3
+a2629 2
+
+} /* decode */
+d2631 2
+d2635 7
+a2641 1
+print_byte( long int value )
+d2643 9
+a2651 2
+  if (value < 0)
+    value = -value;
+d2653 7
+a2659 3
+  value &= 0xff;
+
+  if (value == '\n')
+d2661 1
+a2661 1
+      myprint( "\\n " );
+d2663 1
+a2663 1
+  else if (value == '\t')
+d2665 8
+a2672 1
+      myprint( "\\t " );
+d2674 8
+a2681 1
+  else if (value == '\v')
+d2683 1
+a2683 1
+      myprint( "\\v " );
+d2685 4
+a2688 1
+  else if (value == '\f')
+d2690 16
+a2705 5
+      myprint( "\\f " );
+    }
+  else if (value >= ' ' && value <= '~' )
+    {
+      myprint( " %c ", (char)value );
+d2709 2
+a2710 1
+      myprint( "..." );
+d2712 4
+d2717 2
+a2718 1
+  return;
+d2720 67
+a2786 2
+} /* print_byte */
+  
+d2788 1
+d2790 1
+a2790 3
+/*
+ * returns non-zero if the instruction is a branch instruction, 0 otherwise
+ */
+d2792 11
+a2802 6
+static signed long int
+is_branch( unsigned long instruction )
+{
+  if (((instruction >> 24) & 0xffL) == B_01101010)
+    {
+      if (((instruction >> 21) & 0x7L) == B_000)
+d2804 22
+a2825 1
+	  return 1L + mask_and_sign_extend_word( instruction, 0xffffL );
+d2829 10
+a2838 1
+	  return 3L + mask_and_sign_extend_word( instruction, 0xffffL );
+d2840 2
+a2841 5
+    }
+
+  if (((instruction >> 26) & 0x3fL) == B_011000)
+    {
+      if (instruction & (0x1 << 24))
+d2843 10
+a2852 1
+	  return 3L + mask_and_sign_extend_word( instruction, 0xffffffL );
+d2854 5
+a2858 1
+      else
+d2860 12
+a2871 1
+	  return 1L + mask_and_sign_extend_word( instruction, 0xffffffL );
+d2873 8
+d2882 4
+d2887 6
+a2892 3
+  return 0L;
+  
+} /* is_branch */
+d2894 1
+a2898 1
+
+a2906 1
+
+d2915 17
+d2946 3
+a2948 1
+  
+d2980 3
+a2982 1
+  
+d3005 2
+a3006 2
+  pref->address_of_refer   = word_address;
+  pref->address_refered_to = word_address + offset;
+d3008 1
+a3008 1
+  pprev = search_list( &branch_trace, check_node, word_address + offset );
+d3023 2
+a3024 35
+  
+static bool
+read_word(
+	  unsigned int long *	destination,
+	  FILE *		input )
+{
+  unsigned char	val;
+  long int	tmp;
+  
+
+  if (fread( &val, 1, 1, input ) != 1)
+    {
+      return FALSE;
+    }
+
+  tmp = val;
+
+  if (fread( &val, 1, 1, input ) != 1)
+    {
+      return FALSE;
+    }
+
+  tmp |= (((unsigned long int)val) << 8);
+  
+  if (fread( &val, 1, 1, input ) != 1)
+    {
+      return FALSE;
+    }
+
+  tmp |= (((unsigned long int)val) << 16);
+  
+  if (fread( &val, 1, 1, input ) != 1)
+    {
+      return FALSE;
+    }
+a3025 7
+  *destination = tmp | (((unsigned long int)val) << 24);
+
+  return TRUE;
+  
+} /* read_word */
+  
+  
+d3047 1
+a3047 1
+  word_address = 0;
+d3052 1
+a3052 1
+  while (read_word( &value, input ))
+d3064 1
+a3064 1
+	  /* function name starts at 'word_address - offset' */
+d3066 1
+a3066 1
+	  store_func_ref( word_address - offset, offset );
+d3071 1
+a3071 1
+	  store_branch( word_address, offset );
+d3074 1
+a3074 1
+      word_address++;
+d3081 1
+a3081 123
+
+static void
+ti_disassemble( FILE * input )	/* file containing binary image */
+{
+  unsigned long int	value;
+  int			i;
+  
+  
+  /* nothing fancy - just turn into .word directives! */
+
+  if (input == NULL)
+    return;
+
+  if ( output_file      == NULL  ||
+      *output_file      == '\0'  ||
+      (output_file[ 0 ] == '-'  &&
+       output_file[ 1 ] == '\0' ) )
+    {
+      output = stdout;
+    }
+  else
+    {
+      output = fopen( (char *)output_file, "w" );
+
+      if (output == NULL)
+	{
+	  inform( "could not open output file '%s' - using stdout instead", output_file );
+
+	  output = stdout;	  
+	}      
+    }
+  
+  /* skip image header - we do not need it */
+  
+  for (i = 0; i < sizeof (ImageHdr) / sizeof (unsigned long); i++)
+    read_word( &value, input );
+
+  /* decode rest of file */
+  
+  while (read_word( &value, input ))
+    {
+      myprint( " .word 0%lxH", value );
+      
+      new_line();
+    }
+
+  myprint( ".end:" );
+
+  new_line();
+  
+  return;
+  
+
+} /* ti_disassemble */
+
+
+static void
+disassemble(
+	    FILE *	input,		/* file containing binary op-codes */
+	    bool	trace,		/* TRUE if branches are to be traced to their destinations */
+	    bool	helios_format )	/* TRUE if the input is in Helios Linker format */
+{
+  unsigned long int	value;
+  branch_ref *		pnext_branch;
+  func_ref *		pnext_func;
+  bool			show_code;
+  long int		name_len      = 0;
+  char *		func_name     = NULL;
+  
+
+  if (input == NULL)
+    return;
+
+  if ( output_file      == NULL  ||
+      *output_file      == '\0'  ||
+      (output_file[ 0 ] == '-'  &&
+       output_file[ 1 ] == '\0' ) )
+    {
+      output = stdout;
+    }
+  else
+    {
+      output = fopen( (char *)output_file, "w" );
+
+      if (output == NULL)
+	{
+	  inform( "could not open output file '%s' - using stdout instead", output_file );
+
+	  output = stdout;	  
+	}      
+    }
+  
+  if (input == stdin)
+    trace = FALSE;
+
+  if (helios_format)
+    show_code = FALSE;
+  else
+    show_code = TRUE;
+  
+  if (trace)
+    {
+      trace = load_trace_data( input );
+    }
+
+  (void) fseek( input, 0L, SEEK_SET );
+  
+  word_address = 0;
+
+  if (trace)
+    {
+      pnext_branch = (branch_ref *)remove_head( &branch_trace );
+      pnext_func   =   (func_ref *)remove_head( &func_trace   );
+
+      if (pnext_func)
+	{
+	  name_len = pnext_func->length_of_name;
+
+	  func_name = (char *)malloc( (int)(name_len * sizeof (long) + 5) );
+
+	  if (func_name == NULL)
+	    {
+	      inform( "out of memory allocating buffer for function name" );
+d3083 1
+a3083 9
+	      name_len = 0;
+	    }
+	}
+    }
+  else
+    {
+      pnext_branch = NULL;
+      pnext_func   = NULL;
+    }
+a3084 131
+  while (read_word( &value, input ))
+    {
+      if (value == T_Module)
+	{
+	  int	i;
+
+	  
+	  /* we have the start of a module header */
+
+	  for (i = sizeof (Module) / sizeof (unsigned long); i--; )
+	    {
+	      myprint( "%8lx", word_address + address_base );
+	      
+	      pad_to( COL_WORD );
+	      
+	      myprint( "0x%08.8lx ", value );
+	      
+	      pad_to( COL_BYTES );
+	      
+	      print_byte( value );
+	      print_byte( value >>  8 );	
+	      print_byte( value >> 16 );
+	      print_byte( value >> 24 );
+	      
+	      new_line();
+	      
+	      word_address++;
+	      
+	      if (!read_word( &value, input ))
+		break;
+	    }
+	}
+      
+      myprint( "%8lx", word_address + address_base );
+
+      pad_to( COL_WORD );
+      
+      myprint( "0x%08.8lx ", value );
+
+      if (helios_format && ((value & 0xFFFFFF00U) == 0xFF000000U))
+	{
+	  if (func_name)
+	    {
+	      pad_to( COL_OP_CODE );
+
+	      myprint( "%s():", func_name );
+
+	      free( func_name );
+
+	      func_name = NULL;
+	      name_len  = 0;
+	    }
+
+	  show_code = TRUE;
+
+	  value = 0;
+	}
+
+      if (helios_format && pnext_func && word_address == pnext_func->address_of_name)
+	{
+	  show_code = FALSE;
+	  name_len  = pnext_func->length_of_name;
+	  
+	  free( pnext_func );
+
+	  pnext_func = (func_ref *)remove_head( &func_trace );
+	  
+	  func_name  = (char *)malloc( (int)(name_len * sizeof (long) + 5 ) );
+
+	  if (func_name == NULL)
+	    {
+	      inform( "out of memory allocating buffer for function name" );
+	      
+	      name_len = 0;
+	    }
+	  else
+	    {
+	      func_name[ 0 ] = '\0';
+	    }
+	}
+
+      if (!helios_format || value > 10)
+	{
+	  pad_to( COL_BYTES );
+      
+	  print_byte( value );
+	  print_byte( value >>  8 );	
+	  print_byte( value >> 16 );
+	  print_byte( value >> 24 );
+
+	  pad_to( COL_OP_CODE );
+	  
+	  if (show_code)
+	    {
+	      decode( value );
+	    }
+	}
+
+      if (name_len > 0 && func_name)
+	{
+	  int 	i = strlen( func_name );
+
+	  
+	  func_name[ i++ ] = (char)( value        & 0xff);
+	  func_name[ i++ ] = (char)((value >>  8) & 0xff);
+	  func_name[ i++ ] = (char)((value >> 16) & 0xff);
+	  func_name[ i++ ] = (char)((value >> 24) & 0xff);
+	  func_name[ i++ ] = '\0';
+
+	  --name_len;
+	}
+
+      if (trace && pnext_branch && word_address == pnext_branch->address_refered_to)
+	{
+	  pad_to( COL_TRACE );
+
+	  myprint( "branched from: " );
+
+	  while (pnext_branch->address_refered_to == word_address)
+	    {
+	      myprint( "%lx ", pnext_branch->address_of_refer + address_base );
+
+	      free( pnext_branch );
+
+	      pnext_branch = (branch_ref *)remove_head( &branch_trace );
+	    }
+	}
+
+      new_line();
+      
+      fflush( output );
+d3086 2
+a3087 6
+      word_address++;
+    }
+
+  return;
+  
+} /* disassemble */
+d3089 1
+d3099 1
+d3102 1
+a3102 5
+  inform( "-t        produce output compatible with the TI assembler" );
+  inform( "-T        produce verbose output (the default)" );
+  inform( "-h        assume input is in Generic Helios Executable Format (the default)" );
+  inform( "-H        do not make such an assumption" );
+  inform( "-p        display PCS register aliases" );
+d3115 2
+d3127 1
+a3127 1
+  bool		helios_format = TRUE;
+d3129 1
+a3129 2
+  bool		ti_format     = FALSE;
+  FILE *	input	      = NULL;
+a3278 4
+		    case 'H':
+		      helios_format = FALSE;
+		      break;
+		      
+a3279 8
+		      if (argv[ arg ][ 2 ] == '\0')
+			{
+			  helios_format = TRUE;
+			  break;
+			}
+		      
+		      /* drop through */
+		      
+d3282 1
+a3282 9
+		      
+		    case 'T':
+		      ti_format = FALSE;
+		      break;
+		      
+		    case 't':
+		      ti_format = TRUE;
+		      break;
+		      
+d3290 1
+a3322 4
+		case 'H':
+		  helios_format = FALSE;
+		  break;
+		  
+a3323 8
+		  if (argv[ arg ][ 2 ] == '\0')
+		    {
+		      helios_format = TRUE;
+		      break;
+		    }
+		  
+		  /* drop through */
+		    
+d3332 1
+a3332 9
+
+		case 'T':
+		  ti_format = FALSE;
+		  break;
+
+		case 't':
+		  ti_format = TRUE;
+		  break;
+
+d3340 1
+a3340 5
+
+		case 'p':
+		  pcsregs = TRUE;
+		  break;
+
+a3349 4
+		      else if (ti_format)
+			{
+			  ti_disassemble( input );
+			}
+d3352 5
+a3356 1
+			  disassemble( input, trace, helios_format );
+d3427 5
+a3431 4
+	  if (ti_format)
+	    ti_disassemble( input );
+	  else	  
+	    disassemble( input, trace, helios_format );
+d3445 7
+a3451 4
+      if (ti_format)
+	ti_disassemble( stdin );
+      else
+	disassemble( stdin, trace, helios_format );
+d3458 7
+d3476 2
+@

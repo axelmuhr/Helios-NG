@@ -1,0 +1,185 @@
+From inmos.co.uk!ariel.com!tpa@ganymede.inmos.co.uk Thu Sep 24 04:12:35 1992
+Return-Path: <inmos.co.uk!ariel.com!tpa@ganymede.inmos.co.uk>
+Received: from ganymede.inmos.co.uk by  (4.0/SMI-4.0)
+	id AA14380; Thu, 24 Sep 92 04:12:33 BST
+Received: from ben.uknet.ac.uk by ganymede.inmos.co.uk; Thu, 24 Sep 92 03:18:12 BST
+Received: from RUTGERS.EDU by ben.uknet.ac.uk via EUnet with SMTP (PP) 
+          id <g.12975-0@ben.uknet.ac.uk>; Thu, 24 Sep 1992 03:17:58 +0100
+Received: from master.UUCP by rutgers.edu (5.59/SMI4.0/RU1.4/3.08) with UUCP 
+          id AA09151; Wed, 23 Sep 92 21:51:18 EDT
+Received: from talon.ariel.com by master.ariel.com (4.1/SMI-4.1) id AA01225;
+          Wed, 23 Sep 92 21:39:56 EDT
+Message-Id: <9209240139.AA01225@master.ariel.com>
+From: tpa@talon.ariel.com (Timothy Andre)
+Date: Wed, 23 Sep 1992 21:39:55 EDT
+X-Mailer: Mail User's Shell (7.2.0 10/31/90)
+To: paul@perihelion.co.uk
+Subject: Configured device driver
+Status: O
+
+Paul,
+
+First, please note that our e-mail is acting up a bit - it seems that
+the NIC has forgotten about domain "ariel.com".  Please address e-mail
+to us as follows until this problem clears up:
+
+Tim Andre:	master!tpa@rutgers.rutgers.edu
+Tony Agnello:	master!ama@rutgers.rutgers.edu
+Bob Dillon:	master!rmd@rutgers.rutgers.edu
+
+Here is how to configure the Hydra device driver into your system's
+kernel.  I had to make one minor modification to the source I have
+already sent to you in order to do this.  The following mail messages
+duplicate the source I have already sent to you, with the above
+mentioned change made.
+
+I also had to make a minor modification to the COFF loader routine to
+correctly read the symbols from COFF files, these new files follow
+separately.
+
+Please forgive me if these instructions seem really simple minded, but
+I don't know how much you know about configuring a kernel - what I know
+about could fit in a thimble.  Feel free to modify it as you see fit.
+
+As I was writing this, I realized there is one problem.  The EPROM file
+we sent you has a bad configuration parameter: the address for the
+control register is specified as an A-24 address, but the address
+modifier is set to A-32.  The Sun won't like this. (The reason for this
+is long and arduous, and involves working until 4am and being in
+Dallas....)  If you can, connect a dumb terminal to Hydra's RS-232 port
+(set for 4800 baud) use the CF HydraMon command to change the address
+of the control register to 44000000.  If you can't do this, wait for
+Bob Dillon to get there and have him change it.  He can also explain it
+better than I can.
+
+I will try to come up with a better solution to this so you can at
+least try things out before Bob gets there, but in the meantime you can
+perform all of the following procedure, just don't install the board
+until Bob has changed the address of the control register.
+
+1) The new files will unpack into a directory called "hydra_cfg".  Copy
+these to the kernel configuration area:
+
+	cp -r hydra_cfg /usr/sys/sundev/hydra
+
+2) Create a new kernel configuration file:
+
+	cd /usr/sys/sun3/conf
+	cp GENERIC HYDRA
+
+3) Look for interrupt vectors not in use:
+	grep vector HYDRA
+
+   On our Sun 3 vectors 0x50, 0x51, 0x52, and 0x53 are unused.
+
+4) Edit the new configuration file, "HYDRA", and add the following line to
+its end:
+
+device hydra1 at vme16d32 ? csr 0xf000 priority 2 vector vc_intr 0x50
+
+This line will recognize one Hydra in the system, and all DSPs on this
+Hydra will use the same interrtupt vector 0x50.  If you desire to have
+each DSP to be assigned its own interrupt vector, then add one line per
+DSP.  For example, DSP 2 would be defined as:
+
+device hydra2 at vme16d32 ? csr 0xf000 priority 2 vector vc_intr 0x51
+
+Note that if you had more than one Hydra installed in the system, DSP 1
+of the second board would be unit 5, regardless of the number of DSPs
+installed on the first board.
+
+5) edit the file "files" in this same directory.  To its end add the lines:
+
+#
+# Ariel's Hydra
+#
+sundev/hydra/vc40cfg.c  	optional	hydra	device-driver
+sundev/hydra/vc40top.c  	optional	hydra 	device-driver
+sundev/hydra/vc40bottom.c       optional	hydra 	device-driver
+sundev/hydra/vc40priv.c 	optional 	hydra 	device-driver
+
+6) Edit /usr/sys/sun/conf.c:
+
+Immediately before the struct cdevsw declaration (which is near the end of the file) add the lines:
+
+/*
+ * support for Ariel's Hydra
+ */
+#include "hydra.h"
+
+#if NHYDRA > 0
+int vc40_open(), vc40_close(), vc40_read(), vc40_write(), vc40_ioctl();
+int vc40_mmap();
+
+#else
+#define	vc40_open	nodev
+#define	vc40_close	nodev
+#define	vc40_read	nodev
+#define	vc40_write	nodev
+#define	vc40_ioctl	nodev
+#define	vc40_mmap	nodev
+
+#endif
+
+
+Then, at the end of the cdevsw structure, add the entry for Hydra as:
+
+    {
+        vc40_open,      vc40_close,     vc40_read,      vc40_write,     /*105*/
+        vc40_ioctl,     nodev,          nodev,          vc40_mmap, 
+        0, 0
+    },
+
+Note: the index 105 is appropriate for our system, but could be
+different for yours.  Whatever it is, remember it for the mknod command
+in the next step, as this is the major device number for Hydra.
+
+7) Make the device special entries:
+
+	cd /dev
+	mknod vc40a1 c 105 1
+	mknod vc40a2 c 105 2
+	mknod vc40a3 c 105 3
+	mknod vc40a4 c 105 4
+
+	chmod a+rw vc40*
+
+Substitute the appropriate major device number in these commands.
+
+8) Configure and build the new kernel:
+
+	cd /usr/sys/sun3/conf
+	config HYDRA
+	cd ../HYDRA
+	make
+
+9) Install the new kernel, do a test run first:
+
+	cp vmunix /vmunix.new
+	sync ; sync ; fasthalt
+
+    At the ">" prompt:
+	b vmunix.new -s
+
+
+When the system finishes booting, you should see the message:
+
+	vc40dsp1 at vme16d32 0xf000 vec 0x50
+	vc40dsp: Attached 2-headed Hydra
+
+(assuming that you have the new EPROM programmed correctly).
+
+If you don't have the board installed for the reasons discussed above, 
+you will get the message:
+
+	failed to read ICR0
+
+and the system will continue to boot.
+
+10) Make the new kernel permanent:
+	mv /vmunix   /vmunix.old
+	mv /vmunix.new   /vmunix
+
+	reboot
+
+

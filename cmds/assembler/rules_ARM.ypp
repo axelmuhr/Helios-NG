@@ -1,0 +1,629 @@
+/*
+ * File:	rules_ARM.c
+ * Subsystem:	Generic (ARM) Assembler
+ * Author:	P.A.Beskeen
+ * Date:	Dec '91 - Aug '92
+ *
+ * Description: YACC grammer rules and actions to implement the ARM
+ *		specific parts of the parser.
+ *
+ *
+ * RcsId: $Id: rules_ARM.ypp,v 1.6 1994/03/08 13:00:21 nickc Exp $
+ *
+ * (C) Copyright 1992 Perihelion Software
+ * 
+ * $RcsLog$
+ *
+ */
+
+/*
+ * The rules define the syntax of acceptable input, enabling the parser to
+ * identify individual instructions, operands and addressing modes. If the
+ * input does not match these rules, then a syntax error is generated and
+ * the parser will attempt to recover and find the next instruction to parse.
+ *
+ * The actions associated with the rules add Instruction type parse items
+ * into the parse tree, incrementing the logical program counter (curPC)
+ * as they do so. These items are then used by the second pass CPU
+ * specific module to place binary instructions into the object code.
+ *
+ */
+
+
+/* *** REGISTER ADDRESSING ********************************************	*/
+
+reg:		R0 | R1 | R2 | R3 | R4 | R5 | R6 | R7 |
+		R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15
+		| error
+		{	Error("Expecting an ARM register");	}
+		;
+
+cp_reg:		CR0 | CR1 | CR2 | CR3 | CR4 | CR5 | CR6 | CR7 |
+		CR8 | CR9 | CR10 | CR11 | CR12 | CR13 | CR14 | CR15
+		| error
+		{	Error("Expecting a coprocessor register");	}
+		;
+
+
+
+/* ******************************************************************** */
+/* ARM specific mnemonic grammers and actions				*/
+/* ******************************************************************** */
+/* Parsed opcodes should increment the logical program counter (curPC)	*/
+/* and add themselves to the parse tree.				*/
+/* ******************************************************************** */
+
+
+machine_op:	{
+			/* create instr. template to be filled in by parser */
+			if ((CurInstr = (Instruction *)malloc(sizeof(Instruction))) == 0)
+				Fatal("Out of Memory for new instruction");
+
+			/* initialise instruction template */
+			CurInstr->opcode = 0;
+			CurInstr->optexpr = NULL;
+			CurInstr->combine = 0;
+			CurInstr->optcoprocnum = NULL;
+			CurInstr->optcoprocaux = NULL;
+		}
+		ARM_op	/* match 'ARM mneumonics */
+		{
+			/* add new instruction into the parse tree */
+			ParseTreeItem *pti = NewParseTreeItem(INSTRUCTION);
+			pti->type.instr = CurInstr;
+
+			curPC += sizeof(int);
+		}
+		;
+
+ARM_op:
+	branch
+	| dataproc
+	| arm6psr
+	| multiply
+	| datatran
+	| ldstmult
+	| softintr
+	| swap
+	| coproc
+	| pseudo
+	;
+
+
+
+/* *** BRANCH INSTRUCTIONS ********************************************	*/
+
+branch:		branch_ops armconstexpr
+		{
+			CurInstr->opcode = $1->Template;
+			CurInstr->optexpr = $2;
+
+			/* specifies eval and check of 24 bit pcrel value */
+			CurInstr->combine = COM_PCREL_24;
+		}
+		;
+
+branch_ops:	B | BL ;
+
+
+/* *** DATA PROCESSING INSTRUCTIONS ***********************************	*/
+
+dataproc:	move | comp | logic ;
+
+move:		move_ops reg ',' op2
+		{
+			CurInstr->opcode = $1->Template | DP_DSTREG($2) | $4;
+		}
+		;
+
+comp:		comp_ops reg ',' op2
+		{
+			CurInstr->opcode = $1->Template | DP_OPREG1($2) | $4;
+		}
+		;
+
+logic:		logic_ops reg ',' reg ',' op2
+		{
+			CurInstr->opcode = $1->Template | \
+				DP_DSTREG($2) | DP_OPREG1($4) | $6;
+		}
+		| logic_ops reg ',' op2		/* shorthand src=dst */
+		{
+			CurInstr->opcode = $1->Template | \
+				DP_DSTREG($2) | DP_OPREG1($2) | $4;
+		}
+		;
+
+op2:		shifttype
+		{	$$ = $1; }
+		| armconstexpr
+		{
+			/* after evaluation the value must be formed into an */
+			/* eight bit value + a rotation 4*2 rotation */
+			CurInstr->optexpr = $1;
+			CurInstr->combine = COM_ROTIMM_8;
+			/* set immediate mode in instruction */
+			$$ = DP_I;
+		}
+		;
+
+shifttype:	reg
+		{	$$ = $1; }
+		| reg shiftname reg
+		{	$$ = DP_REGSHIFT | $1 | $2 | DP_SHIFTREG($3); }
+		| reg shiftname armconstexpr
+		{
+			$$ = $1 | $2;
+			CurInstr->optexpr = $3;
+			CurInstr->combine = COM_SHIFT;
+		}
+		| reg RRX
+		{	$$ = $1 | $2; }
+		;
+
+shiftname:	LSL | LSR | ASR | ROR ;
+
+comp_ops:	TST | TEQ | CMP | CMN ;
+
+move_ops:	MVN | MOV ;
+
+logic_ops:	AND | EOR | SUB | RSB | ADD | ADC | SBC | RSC | ORR | BIC ;
+
+
+/* *** ARM6 PSR INSTRUCTIONS ******************************************	*/
+
+arm6psr:	mrs | msr ;
+
+mrs:		MRS	reg ',' cpsr
+		{
+/*fprintf(stderr, "mrs opcode = %x, dstreg %x, cpsr %x\n", $1, $2, $4);*/
+			CurInstr->opcode = $1->Template | MRS_DSTREG($2) | $4;
+		}
+		;
+
+msr:		MSR	cpsr_flg ',' reg_expr
+		{
+/*fprintf(stderr, "msr opcode = %x, cpsr %x, reg_expr %x\n", $1, $2, $4);*/
+			if (($2 & MSR_ALLPSR) && ($4 & DP_I)) {
+				/* Cannot use immediate mode with full psr */
+				Error("MSR instruction can only set psr flags with immediate operand");
+			}
+			CurInstr->opcode = $1->Template | $2 | $4;
+		}
+		;
+
+reg_expr:	reg
+		{	$$ = $1; }
+		| armconstexpr 
+		{
+			/* after evaluation the value must be formed into an */
+			/* eight bit value + a rotation 4*2 rotation */
+			CurInstr->optexpr = $1;
+			CurInstr->combine = COM_ROTIMM_8;
+			/* set immediate mode in instruction */
+			$$ = DP_I;
+		}
+		;
+
+cpsr:		CPSR | SPSR ;
+
+cpsr_flg:	CPSR | CPSR_FLG | SPSR | SPSR_FLG ;
+
+
+/* *** MULTIPLY INSTRUCTIONS ******************************************	*/
+
+multiply:	MUL	reg ',' reg ',' reg
+		{
+			CurInstr->opcode = $1->Template | \
+				MPY_DSTREG($2) | \
+				MPY_SRC1REG($4) | \
+				MPY_SRC2REG($6);
+
+			if ($2 == $4)
+				Error("Destination and first source operand "
+				"must not be the same");
+
+			if ($2 == R_R15)
+				Warn("Destination of R15 will have no "
+				"effect, other than altering the PSR flags");
+
+		}
+		| MLA	reg ',' reg ',' reg ',' reg
+		{
+			CurInstr->opcode = $1->Template | \
+				MPY_DSTREG($2) | \
+				MPY_SRC1REG($4) | \
+				MPY_SRC2REG($6) | \
+				MPY_SRC3REG($8);
+
+			if ($2 == $4)
+				Error("Destination and first source operand "
+				"must not be the same");
+
+			if ($2 == R_R15)
+				Warn("Destination of R15 will have no "
+				"effect, other than altering the PSR flags");
+		}
+		;
+
+
+
+/* *** DATA TRANSFER INSTRUCTIONS *************************************	*/
+
+datatran:	data_ops reg ',' addr
+		{	CurInstr->opcode = $1->Template | SDT_REG($2) | $4; }
+		;
+
+addr:		armconstexpr	/* twelve bit */
+		{
+			CurInstr->optexpr = $1;
+			CurInstr->combine = COM_INDEX_12;
+			/* preindex address relative to the PC */
+			$$ = INDEX_BASEREG(R_R15) | PREINDEX;
+		}
+		| preindex
+		| postindex
+		;
+
+preindex:	'[' reg ']' optpling
+		{
+			/* as the offset is zero, make it a positive offset */
+			/* (INDEXUP) so we don't see '-0' in disassemblies */
+			$$ = PREINDEX | INDEX_BASEREG($2) | INDEXUP | $4;
+		}
+		| '(' reg ')' optpling
+		{
+			$$ = PREINDEX | INDEX_BASEREG($2) | INDEXUP | $4;
+		}
+		| '[' reg ',' armconstexpr ']' optpling
+		{
+			CurInstr->optexpr = $4;
+			CurInstr->combine = COM_INDEX_12;
+			$$ = PREINDEX | INDEX_BASEREG($2) | $6;
+		}
+		| '(' reg ',' armconstexpr ')' optpling
+		{
+			CurInstr->optexpr = $4;
+			CurInstr->combine = COM_INDEX_12;
+			$$ = PREINDEX | INDEX_BASEREG($2) | $6;
+		}
+		| '[' reg ',' indexreg optshift ']' optpling
+		{
+			$$ = PREINDEX | SDT_I | INDEX_BASEREG($2) |
+			     $4 | $5 | $7;
+		}
+		| '(' reg ',' indexreg optshift ')' optpling
+		{
+			$$ = PREINDEX | SDT_I | INDEX_BASEREG($2) |
+			     $4 | $5 | $7;
+		}
+		;
+
+postindex:	'[' reg ']' ',' armconstexpr
+		{
+			CurInstr->optexpr = $5;
+			CurInstr->combine = COM_INDEX_12;
+			$$ = INDEX_BASEREG($2);
+		}
+		| '(' reg ')' ',' armconstexpr
+		{
+			CurInstr->optexpr = $5;
+			CurInstr->combine = COM_INDEX_12;
+			$$ = INDEX_BASEREG($2);
+		}
+		| '[' reg ']' ',' indexreg optshift
+		{	$$ = SDT_I | INDEX_BASEREG($2) | $5 | $6; }
+		| '(' reg ')' ',' indexreg optshift
+		{	$$ = SDT_I | INDEX_BASEREG($2) | $5 | $6; }
+		;
+
+indexreg:	reg
+		{	$$ = INDEXUP | $1; }	/* default to add offset */
+		| '+' reg
+		{	$$ = INDEXUP | $2; }
+		| '-' reg
+		{	$$ = $2; }
+		;
+
+		/* similar to shifttype, but without the reg shift */
+optshift:	/* empty */
+		{	$$ = 0; }
+		| shiftname armconstexpr
+		{
+			CurInstr->optexpr = $2;
+			CurInstr->combine = COM_SHIFT;
+			$$ = $1;
+		}
+		| RRX
+		;
+
+/* optpling used by ARM data transfer and coprocessor data transfer instr. */
+optpling:	/* empty */
+		{	$$ = 0; }
+		| '!'
+		{	$$ = WRITEBACK; }
+		;
+
+data_ops:	LDR | STR ;
+
+
+
+/* *** LOAD STORE MULTIPLE REGISTER INSTRUCTIONS **********************	*/
+
+ldstmult:	ldstmult_ops	reg optpling ',' reglist optclaret
+		{	CurInstr->opcode = $1->Template | INDEX_BASEREG($2) \
+				| $3 | $5 | $6;}
+		;
+
+reglist:	reg
+		{	$$ = 1 << $1; }
+		| '{' regs '}'
+		{	$$ = $2; }
+		;
+
+regs:		reg
+		{	$$ = 1 << $1; }
+		| reg '-' reg
+		{
+			int i;
+
+			$$ = 0;
+
+			if ($1 < $3) {
+				for (i = $1; i <= $3; i++)
+					$$ |= 1 << i;
+			} else {
+				for (i = $3; i <= $1; i++)
+					$$ |= 1 << i;
+			}
+		}
+		| reg ',' regs
+		{	$$ = 1 << $1 | $3; }
+		| reg '-' reg ',' regs
+		{
+			int i;
+
+			$$ = 0;
+
+			if ($1 < $3) {
+				for (i = $1; i <= $3; i++)
+					$$ |= 1 << i;
+			} else {
+				for (i = $3; i <= $1; i++)
+					$$ |= 1 << i;
+			}
+
+			$$ |= $5;
+		}
+		;
+
+optclaret:	/* empty */
+		{	$$ = 0; }
+		| '^'
+		{	$$ = BDT_S; }
+		;
+
+ldstmult_ops:	LDM
+		{
+			$$ = $1;
+			if ($1->Template == BDT_ERROR)
+				Error("LDM mnemonic must include a mode");
+		}
+		| STM
+		{
+			$$ = $1;
+
+			if ($1->Template == BDT_ERROR)
+				Error("STM mnemonic must include a mode");
+		}
+		;
+
+
+
+/* *** SOFTWARE INTERRUPT INSTRUCTION *********************************	*/
+
+softintr:	SWI	armconstexpr
+		{
+			CurInstr->opcode = $1->Template;
+			CurInstr->optexpr = $2;
+			CurInstr->combine = COM_SWI;
+		}
+		;
+
+
+
+/* *** SWAP INSTRUCTION ***********************************************	*/
+
+swap:		SWP reg ',' reg ',' '[' reg ']'
+		{
+			CurInstr->opcode = $1->Template | SWP_DSTREG($2) |
+				SWP_SRCREG($4) | INDEX_BASEREG($7) ;
+		}
+		| SWP reg ',' reg ',' '(' reg ')'
+		{
+			CurInstr->opcode = $1->Template | SWP_DSTREG($2) |
+				SWP_SRCREG($4) | INDEX_BASEREG($7) ;
+		}
+		;
+
+
+
+/* *** COPROCESSOR INSTRUCTIONS ***************************************	*/
+
+		/* data operations, data transfers and register transfers */
+coproc:		cdo | cdt | crt ;
+
+
+cdo:		CDO armconstexpr ',' armconstexpr ',' cp_reg ',' cp_reg ',' cp_reg optaux
+		{
+			CurInstr->opcode = $1->Template | CDO_CP_CRDST($6) |
+				CDO_CP_CRn($8) | CDO_CP_CRm($10);
+
+			CurInstr->optexpr = $4; /* CP Opc */
+			CurInstr->combine = COM_CP_OPc;
+
+			CurInstr->optcoprocnum = $2; /* CP# */
+			CurInstr->optcoprocaux = $11; /* AUX expr */
+		}
+		;
+
+cdt:		cdt_ops armconstexpr ',' cp_reg ',' cp_addr
+		{
+			CurInstr->opcode = $1->Template | CDT_CP_REG($4) | $6;
+			/* CurInstr->optexpr set by cp_addr rule */
+			CurInstr->optcoprocnum = $2; /* CP# */
+		}
+		;
+
+
+cdt_ops:	LDC | STC ;
+
+
+crt:		crt_ops armconstexpr ',' armconstexpr ',' reg ',' cp_reg ',' cp_reg optaux
+		{
+			CurInstr->opcode = $1->Template | CRT_SRCDST($6) |
+				CRT_CP_CRn($8) | CRT_CP_CRm($10);
+
+			CurInstr->optexpr = $4; /* CP Opc */
+			CurInstr->combine = COM_CP_OPc2;
+
+			CurInstr->optcoprocnum = $2; /* CP# */
+			CurInstr->optcoprocaux = $11; /* AUX expr */
+		}
+
+
+crt_ops:	MCR | MRC ;
+
+
+optaux:		/* empty */
+		{	$$ = NULL; }
+		| ',' armconstexpr
+		{	$$ = $2; }
+		;
+
+
+/* resticted form of indirect addressing - only 8 bit offset and no shifts */
+cp_addr:	armconstexpr	/* 8 bit */
+		{
+			CurInstr->optexpr = $1;
+			CurInstr->combine = COM_INDEX_8;
+			/* preindex address relative to the PC */
+			$$ = INDEX_BASEREG(R_R15) | PREINDEX;
+		}
+		| cp_preindex
+		| cp_postindex
+		;
+
+cp_preindex:	'[' reg ']' optpling
+		{
+			/* as the offset is zero, make it a positive offset */
+			/* (INDEXUP) so we don't see '-0' in disassemblies */
+			$$ = PREINDEX | INDEX_BASEREG($2) | INDEXUP | $4;
+		}
+		| '(' reg ')' optpling
+		{
+			$$ = PREINDEX | INDEX_BASEREG($2) | INDEXUP | $4;
+		}
+		| '[' reg ',' armconstexpr ']' optpling
+		{
+			CurInstr->optexpr = $4;
+			CurInstr->combine = COM_INDEX_8;
+			$$ = PREINDEX | INDEX_BASEREG($2) | $6;
+		}
+		| '(' reg ',' armconstexpr ')' optpling
+		{
+			CurInstr->optexpr = $4;
+			CurInstr->combine = COM_INDEX_8;
+			$$ = PREINDEX | INDEX_BASEREG($2) | $6;
+		}
+		;
+
+cp_postindex:	'[' reg ']' ',' armconstexpr optpling
+		{
+			CurInstr->optexpr = $5;
+			CurInstr->combine = COM_INDEX_8;
+			$$ = INDEX_BASEREG($2) | $6;
+		}
+		| '(' reg ')' ',' armconstexpr optpling
+		{
+			CurInstr->optexpr = $5;
+			CurInstr->combine = COM_INDEX_8;
+			$$ = INDEX_BASEREG($2) | $6;
+		}
+		;
+
+
+/* *** PSEUDO OPCODES *************************************************	*/
+
+pseudo:		LEA	reg ',' constexpr
+		{
+			/* LEA is used to load the absolute address of a */
+			/* label at run time. This version is currently */
+			/* limited to the addressability of one data */
+			/* processing add or sub. */
+
+			/* note constexpr, not armconstexpr as we don't allow */
+			/* non pc relative constants in LEA's */
+
+			/* set PC as src and immediate mode in instruction */
+			CurInstr->opcode = $1->Template | DP_DSTREG($2) \
+					| DP_OPREG1(R_R15) | DP_I;
+
+			/* After evaluation the constant should have eight */
+			/* subtracted from it (to take account of the */
+			/* pipeline). This value must then be formed into */
+			/* an eight bit value + a rotation 4*2 rotation */
+
+			CurInstr->optexpr = $4;
+			CurInstr->combine = COM_LEAROTIMM_8;
+		}
+		| NOP
+		{
+			/* NOP is simply a mov r0, r0 */
+			CurInstr->opcode = $1->Template;
+		}
+		;
+
+
+
+/* For compatibility with old ARM assemblers, we allow an optional syntax */
+/* where any numeric constant can be prefixed by a '#' */
+armconstexpr:	'#' constexpr
+		{	$$ = $2; }
+		| constexpr		/* defaults to $$ = $1 */
+		;
+
+
+/* ******************************************************************** */
+/* ARM specific linker instruction patches				*/
+/* ******************************************************************** */
+/* These patches are implemented by the target CPU's linker.		*/
+/* They enable instructions to be patched with data that is only	*/
+/* available at link time, such as the module number, or offsets into	*/
+/* the module table for static data. The patch usually masks in the	*/
+/* information into the immediate data area of specific instructions.	*/
+/* The instrpatch rule fakes up a Expression struture to allow normal	*/
+/* expressions to be used as patch number arguments as well.		*/
+/* ******************************************************************** */
+
+
+instrpatch:
+		armconstexpr
+		| armpatches
+			/* fake up constexpr item with our patch number */
+		{	$$ = NewExprNum($1);}
+		;
+
+
+armpatches:
+		PATCHARMDT
+		| PATCHARMDP
+		| PATCHARMJP
+		| PATCHARMDPLSB
+		| PATCHARMDPMID
+		| PATCHARMDPREST
+		;
+
+
+
+/* end of rules_arm.ypp */

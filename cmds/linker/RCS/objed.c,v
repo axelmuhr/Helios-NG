@@ -1,0 +1,494 @@
+head	1.10;
+access;
+symbols
+	Helios_1_3_1:1.10
+	Helios_C40_1_3_Official_Release:1.10
+	Alenia_release:1.10
+	C40_Field_Test_2:1.10
+	C40_Field_Test_R1:1.6;
+locks; strict;
+comment	@ * @;
+
+
+1.10
+date	92.10.01.10.01.17;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.09.16.11.19.42;	author paul;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.09.15.08.39.12;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.09.11.16.58.29;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.05.21.07.40.24;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.05.21.07.29.04;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	91.12.12.21.28.50;	author paul;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.10.18.15.18.39;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.10.09.08.50.59;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.10.22.15.47.03;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.10
+log
+@fixed compile time warnings
+@
+text
+@/****************************************************************/
+/* Helios Linker 						*/
+/*								*/
+/* File: objed.c                                                */
+/*                                                              */
+/*                                                              */
+/* Author: NHG 16-May-88                                        */
+/* 					                        */
+/****************************************************************/
+/* RcsId: $Id: objed.c,v 1.9 1992/09/16 11:19:42 paul Exp nickc $ */
+
+/* do NOT include link.h */
+
+#ifdef __STDC__
+# include <string.h>
+#else
+# define void int
+# include <strings.h>
+#endif
+
+#include <stdio.h>
+#include <module.h>
+#include <unistd.h>	/* for SEEK_SET */
+
+extern FILE *verfd;
+extern WORD verbose;
+
+#ifndef __STDC__
+#include <sys/file.h>
+#define SEEK_SET L_SET
+#endif
+
+#ifdef __STDC__
+extern void error(char *, ...);
+extern void report(char *, ...);
+extern void warn(char *, ...);
+#else
+extern void error();
+extern void report();
+extern void warn();
+#endif
+
+extern int errno;
+
+#if (defined(HOSTISBIGENDIAN) && !defined(__BIGENDIAN)) || (defined(__BIGENDIAN) && !defined(HOSTISBIGENDIAN))
+long swap(x)
+long x;
+{
+   long r;
+   char *a = (char *)&x;
+   char *b = (char *)&r;
+
+   b[0] = a[3];
+   b[1] = a[2];
+   b[2] = a[1];
+   b[3] = a[0];
+
+   return r;
+}
+#else
+# define swap(x) (x)
+#endif
+
+#ifdef __STDC__
+void
+objed( int file, char * name, long stacksize, long heapsize)
+#else
+void
+objed( file, name, stacksize, heapsize )
+  int		file;
+  char *	name;
+  long		stacksize;
+  long		heapsize;
+#endif
+{
+  Program prog;
+  ImageHdr hdr;
+  WORD info = verbose;
+  int size;
+  long progtype;
+  char *type;
+
+
+  lseek( file, 0, SEEK_SET );   /* ensure we are at start of file */
+
+  errno = 0;
+
+  size = read( file, (char *)&hdr, sizeof (ImageHdr) );
+  
+  if ( size != sizeof(ImageHdr) )
+    error("Read failure, reading ImageHdr structure: %#x, errno = %d", size, errno );
+  
+  /*printf("header magic: %x swapped  %x \n",hdr.Magic,swap(hdr.Magic));*/
+  
+  if( swap(hdr.Magic) != Image_Magic )
+    error("(objed) Corrupt output image file detected");
+  
+  size = read(file, (char *)&prog, sizeof(Program));
+  
+  if( size != sizeof(Program) )
+    error("Read failure, reading Program structure: %#x",size);
+  
+  progtype = swap(prog.Module.Type);
+  
+  if   ( progtype == T_Program ) type = "Program";
+  elif ( progtype == T_Module  ) type = "Module";
+  elif ( progtype == T_ResRef  ) type = "ResRef"; 
+  else type = "<UNKNOWN>";
+  
+  report("Type %s Size %ld bytes",type,swap(hdr.Size));
+  
+  report(                  "                  Old        New");
+  
+  if ( info )
+    fprintf(verfd,"Name       %10s",prog.Module.Name);
+  
+  if ( name != 0 )
+    {
+      int i;
+
+      
+      for (i = 0; i < 32; i++ )
+	prog.Module.Name[i] = 0;
+      
+      (void)strcpy( prog.Module.Name, name );
+      
+      if ( info )
+	fprintf(verfd," %10s",prog.Module.Name);
+    }
+  
+  if ( info )
+    putc('\n',verfd);
+  
+  if ( swap(prog.Module.Type) == T_Program )
+    {
+      if ( info )
+	fprintf(verfd,"Stacksize      %6ld",swap(prog.Stacksize));
+      
+      if ( stacksize != -1 )
+	{
+	  prog.Stacksize = swap(stacksize);
+	  
+	  if ( info )
+	    fprintf(verfd,"     %6ld",stacksize);
+	}
+      
+      if ( info )
+	fprintf(verfd,"\nHeapsize       %6ld",swap(prog.Heapsize));
+      
+      if ( heapsize != -1 )
+	{
+	  prog.Heapsize = swap(heapsize);
+	  
+	  if ( info )
+	    fprintf(verfd,"     %6ld",heapsize);
+	}
+      
+      if ( info )
+	putc('\n',verfd);
+    }
+  
+  lseek( file, 0, SEEK_SET);   /* ensure we are at start of file */
+  
+  size = write(file, (char *)&hdr, sizeof(ImageHdr));
+  
+  if( size != sizeof(ImageHdr) )
+    error("Failed to write back image header: %d %d",size,errno);
+  
+  size = write( file, (char *)&prog, sizeof (Program) );
+  
+  if ( size != sizeof (Program) )
+    error("Failed to write back program header: %d %d",size,errno);
+
+  return;
+  
+} /* objed */
+@
+
+
+1.9
+log
+@removed warnings and errors
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.8 1992/09/15 08:39:12 nickc Exp $ */
+d108 1
+@
+
+
+1.8
+log
+@changed output file descriptor to file handle
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.7 1992/09/11 16:58:29 nickc Exp nickc $ */
+d64 4
+d74 1
+d88 1
+a88 1
+  size = read( file, &hdr, sizeof (ImageHdr) );
+d98 1
+a98 1
+  size = read(file, &prog, sizeof(Program));
+d163 1
+a163 1
+  size = write(file, &hdr, sizeof(ImageHdr));
+d168 1
+a168 1
+  size = write( file, &prog, sizeof (Program) );
+@
+
+
+1.7
+log
+@added inclusion of <unistd.h> for SEEK_SET etc
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.6 1992/05/21 07:40:24 nickc Exp nickc $ */
+d65 2
+a66 2
+objed( fd, name, stacksize, heapsize )
+  FILE *	fd;
+d77 7
+d85 2
+a86 1
+  fseek(fd,0,SEEK_SET);   /* ensure we are at start of file */
+d88 1
+a88 4
+  size = fread(&hdr,1,sizeof(ImageHdr),fd);
+  
+  if( size != sizeof(ImageHdr) )
+    error("Read failure: %d",size);
+a89 1
+  /*printf("header magic: %x swapped  %x \n",hdr.Magic,swap(hdr.Magic));*/
+d93 1
+a93 1
+  size = fread(&prog,1,sizeof(Program),fd);
+d96 1
+a96 1
+    error("Read failure: %d",size);
+d156 1
+a156 1
+  fseek(fd,0,SEEK_SET);   /* ensure we are at start of file */
+d158 1
+a158 1
+  size = fwrite(&hdr,1,sizeof(ImageHdr),fd);
+d163 1
+a163 1
+  size = fwrite( &prog, 1, sizeof (Program), fd );
+@
+
+
+1.6
+log
+@minor cosmetic changes
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.5 1992/05/21 07:29:04 paul Exp nickc $ */
+d23 1
+@
+
+
+1.5
+log
+@improved bigendian detection
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.4 1991/12/12 21:28:50 paul Exp $ */
+d63 6
+a68 5
+void objed(fd,name,stacksize,heapsize)
+FILE *fd;
+char *name;
+long stacksize;
+long heapsize;
+d70 38
+a107 37
+   Program prog;
+   ImageHdr hdr;
+   WORD info = verbose;
+   int size;
+   long progtype;
+   char *type;
+
+   fseek(fd,0,SEEK_SET);   /* ensure we are at start of file */
+   
+   size = fread(&hdr,1,sizeof(ImageHdr),fd);
+
+   if( size != sizeof(ImageHdr) )
+      error("Read failure: %d",size);
+
+/*printf("header magic: %x swapped  %x \n",hdr.Magic,swap(hdr.Magic));*/
+   if( swap(hdr.Magic) != Image_Magic )
+      error("(objed) Corrupt output image file detected");
+
+   size = fread(&prog,1,sizeof(Program),fd);
+
+   if( size != sizeof(Program) )
+      error("Read failure: %d",size);
+
+   progtype = swap(prog.Module.Type);
+
+   if   ( progtype == T_Program ) type = "Program";
+   elif ( progtype == T_Module  ) type = "Module";
+   elif ( progtype == T_ResRef  ) type = "ResRef"; 
+
+   report("Type %s Size %ld bytes",type,swap(hdr.Size));
+
+   report(                  "                  Old        New");
+   
+   if( info ) fprintf(verfd,"Name       %10s",prog.Module.Name);
+
+   if( name != 0 )
+   {
+a108 27
+      for(i=0; i<32; i++ ) prog.Module.Name[i] = 0;
+      (void)strcpy(prog.Module.Name,name);
+      if( info ) fprintf(verfd," %10s",prog.Module.Name);
+   }
+
+   if( info ) putc('\n',verfd);
+
+   if( swap(prog.Module.Type) == T_Program )
+   {
+      if ( info ) fprintf(verfd,"Stacksize      %6ld",swap(prog.Stacksize));
+      if( stacksize != -1 )
+      {
+         prog.Stacksize = swap(stacksize);
+         if ( info ) fprintf(verfd,"     %6ld",stacksize);
+      }
+      if ( info ) fprintf(verfd,"\nHeapsize       %6ld",swap(prog.Heapsize));
+      if( heapsize != -1 )
+      {
+         prog.Heapsize = swap(heapsize);
+         if ( info ) fprintf(verfd,"     %6ld",heapsize);
+      }
+      if ( info ) putc('\n',verfd);
+   }
+
+   fseek(fd,0,SEEK_SET);   /* ensure we are at start of file */
+   
+   size = fwrite(&hdr,1,sizeof(ImageHdr),fd);
+d110 56
+a165 8
+   if( size != sizeof(ImageHdr) )
+      error("Failed to write back image header: %d %d",size,errno);
+
+   size = fwrite(&prog,1,sizeof(Program),fd);
+
+   if( size != sizeof(Program) )
+      error("Failed to write back program header: %d %d",size,errno);
+}
+@
+
+
+1.4
+log
+@fixed for std __BIGENDIAN and HOSTISBIGENDIAN define
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.3 1991/10/18 15:18:39 paul Exp $ */
+d44 1
+a44 1
+#if defined(HOSTISBIGENDIAN) && !defined(__BIGENDIAN) || defined(__BIGENDIAN) && !defined(HOSTISBIGENDIAN)
+d111 1
+@
+
+
+1.3
+log
+@removed orion stuff
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.2 1991/10/09 08:50:59 paul Exp $ */
+d44 1
+a44 1
+#ifdef M68K
+@
+
+
+1.2
+log
+@NickC's bug fixes
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id: objed.c,v 1.1 1991/08/22 15:05:01 nickc Exp $ */
+d17 1
+a17 3
+# ifndef ORION
+#  define void int
+# endif
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d10 1
+a10 1
+/* RcsId: $Id$ */
+d110 1
+a110 1
+      (void)strncpy(prog.Module.Name,name,31);
+@

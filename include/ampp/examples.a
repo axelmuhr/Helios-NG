@@ -1,0 +1,330 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--				H E L I O S				--
+--                      	-----------				--
+--                                                                      --
+--             Copyright (C) 1988, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- examples.a								--
+--                                                                      --
+--	Example assembler routines.					--
+--                                                                      --
+--	Author:  NHG 20/10/88						--
+--                                                                      --
+--------------------------------------------------------------------------
+
+include basic.m
+include procs.m
+include structs.m
+include module.m
+include memory.m
+
+	StartModule Examples -1 1000
+
+	static
+	[
+		extern	func	move2dall
+	
+		extern	func	runfast
+
+		extern	func	muldiv
+
+		extern	func	chanio
+	]
+
+
+----------------------------------------------------------
+-- move2dall						--
+--							--
+-- T414 version of T800 move2dall instruction.		--
+-- The move2dzero and move2dnonzero instructions are	--
+-- left as an exercise for the reader.			--
+--							--
+----------------------------------------------------------
+
+proc move2dall
+[
+	word		source		-- source array
+	word		dest		-- dest array
+	word		sstride		-- source array stride
+	word		dstride		-- dest array stride
+	word		width		-- width of block
+	word		length		-- number of rows
+]
+[]	-- no locals
+[
+	while[ cne0 length ]		-- for each row
+	[
+		source			-- load source address
+		dest			-- load dest address
+		width			-- row width
+		move			-- and move it
+
+		source sstride sum	-- advance to next line of source
+		store source
+
+		dest dstride sum	-- advance to next line of dest
+		store dest
+
+		length adc -1		-- decrement length
+		store length
+	]
+]
+
+----------------------------------------------------------
+-- runfast						--
+--							--
+-- Run a given procedure from a stack in on-chip RAM.	--
+-- The required amount of on-chip RAM is allocated and	--
+-- an entry stack frame manufactured as follows:	--
+--							--
+-- HiMem	+----------------+			--
+--		|    old wsp	 |			--
+--		+----------------+			--
+--	   +----|vector stack ptr|			--
+--	   |	+----------------+			--
+--	   |	|module table ptr|<-----+		--
+--	   |	+----------------+	|		--
+--	   |	|		 |	|		--
+--	   |	:      args	 |	|		--
+--	   |	|		 |	|		--
+--	   |	+----------------+	|		--
+--	   |	|  display ptr	 |------+		--
+--	   |	+----------------+			--
+--	   |	|  return link	 |			--
+--	   |	+----------------+<--- initial wsp	--
+--	   |	|     call	 |			--
+--	   |	|     stack	 |			--
+--	   |	:		 :			--
+--	   |	|    vector	 |			--
+--	   |	|     stack	 |			--
+-- LowMem  +--->+----------------+			--
+--							--
+--							--
+----------------------------------------------------------
+
+struct StackFrame
+[
+	word		link		-- return link
+	word		desc		-- descriptor
+	word		args		-- followed by args
+]
+
+struct Display
+[
+	word		modtab		-- pointer to module table
+	word		vsp		-- vector stack pointer
+	word		oldwsp		-- pointer to old workspace
+					-- (not normally present)
+]
+
+proc runfast
+[
+	word		stacksize	-- size of stack
+	word		fn		-- pointer procedure to run
+	word		nargs		-- number of bytes of args
+	word		args		-- first argument
+]
+[
+	word		carrier		-- pointer to fast RAM carrier
+	struct Pool	fastpool	-- memory pool for fast RAM
+	word		display		-- pointer to C call display
+	word		wsp		-- pointer to workspace pointer
+	word		result		-- result of runfast
+]
+[
+	fastpool			-- arg1 = pointer to fastpool
+	callx InitPool			-- and initialise it
+
+	fastpool			-- arg2 = pointer to fastpool
+	stacksize			-- arg1 = size of block to allocate
+	callx AllocFast			-- and allocate it
+	store carrier			-- and save result
+
+	if[ ceq0 carrier ]		-- if we could not get space
+	[
+		ldc -1 return		-- return error
+	]
+
+	carrier Carrier.Addr		-- base of stack
+	stacksize add			-- add stacksize
+	ldc 3 not and			-- adjust to word address
+	adc -Display.sizeof		-- allocate a display
+	store display			-- save this pointer
+
+	display
+	nargs sub			-- allocate arg space
+	adc -StackFrame.sizeof		-- allocate a stack frame
+	store wsp			-- and save
+
+	-- setup display
+	ldl _ModTab ldnl 0		-- load my module table
+	display store Display.modtab	-- set in new display
+	carrier Carrier.Addr		-- base of stack
+	display store Display.vsp	-- set vector stack pointer
+
+	-- set up old workspace pointer, this is not normally saved
+	ldlp 0				-- current workspace pointer
+	display store Display.oldwsp	-- save in display for return
+
+	-- now set up call stack frame
+	ptr args			-- pointer to source args
+	wsp ptr StackFrame.args		-- pointer to dest args
+	nargs				-- bytes to move
+	move				-- and copy
+
+	ldc ..fastret-2 ldpi		-- set return address explicitly
+	wsp store StackFrame.link
+
+	display				-- set display pointer
+	wsp store StackFrame.desc
+
+	fn				-- load function
+	wsp				-- entry workspace pointer
+
+	gajw				-- swap W and A (we are now in fast RAM)
+	rev				-- junk old workspace
+	gcall				-- swap I and A to enter fn
+
+
+	-- when the function returns it will return to here with W
+	-- just above the entry stack frame.
+
+..fastret:
+	ajw -4			-- reclaim stack frame
+	ldl 1			-- pick up display pointer
+	Display.oldwsp		-- pick up old workspace
+
+	gajw			-- swap back to runfast() workspace
+
+	rev			-- junk old workspace
+	store result		-- save result of call
+	
+	fastpool		-- arg1 = pointer to pool
+	callx FreePool		-- release all memory
+
+	result			-- load result to return
+]
+
+----------------------------------------------------------
+-- muldiv						--
+--							--
+-- ((a * b) / c) with (a * b) held as a 64 bit value.	--
+--							--
+----------------------------------------------------------
+
+proc muldiv
+[
+	word		a
+	word		b
+	word		c
+]
+[]	-- no locals
+[
+	ldc 0		-- lmul does (Areg * Breg) + Creg
+	a
+	b
+	lmul
+	c
+	ldiv		-- result is in Areg
+]
+
+----------------------------------------------------------
+-- chanio						--
+--							--
+-- transfer data on a channel which might be a little	--
+-- dodgy, therefore protect ourself with a timeout.	--
+-- It can be used to talk to Occam programs on soft	--
+-- channels or on link channels (although the Kernel	--
+-- LinkIn and LinkOut routines are more efficient than	--
+-- this procedure).					--
+--							--
+----------------------------------------------------------
+
+proc chanio
+[
+	word	size		-- size of transfer
+	word	chan		-- pointer to channel
+	word	buf		-- data buffer
+	word	timeout		-- transfer timeout in ticks
+	word	direction	-- 0 = in, 1 = out
+]
+[
+	word	rc		-- return code, 1 = ok, 0 = failed
+	word	completed	-- channel for completion signal
+	word	pid		-- process from resetch
+	word	endtime		-- timeout completion time
+	word	junk		-- scratch location
+]
+[
+	ptr completed resetch		-- reset channel
+
+	timeout
+	ldtimer sum store endtime	-- set timeout
+
+	fork 20				-- allow 20 words for first process
+	[
+		-- left hand process performs the I/O and then signals
+		-- completion on the completed channel.
+
+		test[ cne0 direction ]
+		[
+			buf
+			chan
+			size
+			out			-- perform output
+		]
+		-- else do an in
+		[
+			buf
+			chan
+			size
+			in			-- perform input
+		]
+
+		ptr junk
+		ptr completed
+		ldc 1 
+		out		-- signal completion
+	] -- end of left hand process
+	[
+		-- right hand process executed an alt waiting for either
+		-- for a timeout or the signal on the completed channel.
+
+		alternate	-- wait either for timeout or completion
+		[
+		timer [ endtime ]
+			[
+				-- if the timout goes off first, terminate
+				-- the transfer and restart the process.
+
+				chan resetch store pid
+				if[ cne mint pid ] [pid runp]
+
+				ldc 0 store rc		-- result = failed
+				break
+			]
+		channel [ ptr completed ]
+			[
+				-- if the completion channel goes off first,
+				-- we have succeeded.
+
+				ldc 1 store rc		-- result = success
+			]
+		]
+
+		ptr junk
+		ptr completed
+		ldc 1 in		-- in all cases get completion value
+
+	] -- end of right hand process
+
+	-- here the fork has re-joined, rc will tell us what happened
+
+	rc
+]
+
+	EndModule		-- terminate the module
+
+-- End of example.a

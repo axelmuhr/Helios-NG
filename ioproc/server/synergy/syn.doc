@@ -1,0 +1,407 @@
+.get /users/bart/helios/letters/macros
+.normal
+.font 2
+%cHelios Support for the Synergy Board
+.sp 3
+.font 54
+%cBart Veer, 25.1.89
+.np
+.justifiedtext
+.par
+This document describes how to access the Synoptics Synergy board from
+Helios. The document consists of three parts :the synserv.exe program;
+the synlib.c interface library; and the low-level protocols used
+between the library and the server.
+.sp 2
+.ti 0
+The Synserv.exe Program
+.par
+The synserv.exe program is a special version of the Helios input/output
+Server running on the host processor, 
+and takes the place of server.exe in the standard Helios system.
+In addition to the usual facilities it provides a /synergy device,
+which can be accessed by the interface library to interact with the
+synergy board. The synergy board can only be accessed if there are
+two lines in the server configuration file specifying the base address
+of the synergy board and the file to be used when booting up the
+board. Typical entries are:
+.code
+.sp
+       synergy_base = 0x2e0
+       synergy_file = synergy.cod
+.sp
+.justifiedtext
+This specifies that the board is located at address 0x2e0 in the PC, the
+default address, and that the file synergy.cod contains the code provided
+by Synoptics which runs on the board.
+.par
+The synserv program does not boot up the board automatically, because
+it may be desirable at times to reboot the transputer network without
+rebooting the synergy board. However, the synergy board can be booted
+via a call in the interface library, or by some other program run before
+synserv.exe .
+.sp 2
+.ti 0
+The Interface Library
+.par
+The synserv.exe program provides an additional Helios server called
+/synergy, which may be accessed by programs running in the transputer
+network. The protocols understood by this server are described below,
+and hence the server may be accessed directly by application software,
+but to facilitate programming an interface library is provided. This
+library provides the same facilities as the standard synergy.cod program
+provided by Synoptics, plus some extensions.
+The library is written in C and it is assumed
+that application software is also written in C. However, the library
+may be called by any other language obeying the Helios calling
+conventions, e.g. Fortran, and you are referred to the appropriate
+manual for details of how to access C routines from other languages.
+.par
+The library routines provided are described below. All the routines
+return 0 to indicate failure and non-zero to indicate success. The
+library routines are defined in the header file syndef.h, which should
+be #included in application sources. Note that most of the routines are the
+same as those provided by Synoptics, and the reader is referred to the
+Synoptics software manual for further details.
+.sp 2
+.table
+.tableentry
+int syn_Init(void)
+.sp
+This routine should be the first library routine called by the application
+program. It initialises the library.
+.tableentry
+int syn_Tidy(void)
+.sp
+This routine should be called when the application finishes. It tidies
+the interface library.
+.tableentry
+int syn_BootBoard(void)
+.sp
+This routine attempts to reboot the synergy board with the code
+specified by the synergy_file option in the server configuration file.
+.tableentry
+int syn_Restart(void)
+.sp
+This routine attempts to execute the restart command on the
+synergy board.
+.tableentry
+int syn_Vector(int x_off, int y_off, int width, int operand, int opcode)
+.sp
+This routine executes a vector operation. The operand should be
+one of op_LowerByte, op_UpperByte, or op_EntireWord. The opcode should
+be one of op_plus, op_minus, op_and, op_xor, op_times, op_divide,
+op_put, op_get, op_swap, op_remap, or op_copy. The buffer should be
+set up in advance using a syn_WriteBuffer() call.
+.tableentry
+int syn_Scalar(int x_off, int y_off, int width, int height, int operand,
+int opcode, int value).
+.sp
+This routine executes a scalar operation on the window specified. The
+operand should be one of op_LowerByte etc. as before, and the operation
+should be one of op_plus etc.
+.tableentry
+int syn_Statistics(int x_off, int y_off, int width, int height,
+int operand, int *buffer)
+.sp
+This routine executes a gather-statistics command on the synergy
+board, reads the results, and stores these results in the buffer specified.
+This buffer should be an array of at least 10 integers.
+.tableentry
+int syn_Histogram(int x_off, int y_off, int width, int height, int operand,
+int *buffer)
+.sp
+This routine executes a histogram command on the synergy board and reads
+the results into the buffer specified. This buffer should be an array of
+at least 256 integers.
+.tableentry
+int syn_Convolution(int x_off, int y_off, int width, int height,
+int patch_size, int type, int *buffer)
+.sp
+This routine performs a convolution. The patch-size should be 3, 5, 7, or
+9, and the buffer should be an appropriately-sized array of integers
+used for the convolution.
+.tableentry
+int syn_Zoom(int x_off1, int y_off1, int width1, int height1, int x_off2,
+int y_off2, int width2, int height2_
+.sp
+This routine interpolates from one window to another window.
+.tableentry
+int syn_LoadInputLUT(int lut, int *buffer)
+.sp
+This routine loads the input lookup table. The lut should be in the
+range 0-3, and the buffer should contain the 256 integers to be
+used.
+.tableentry
+int syn_LoadOutputLUT(int luts, int *buffer)
+.sp
+This routine loads the output lookup table. If bit 3 of the luts argument
+is set then the buffer should contain 256 integers to be loaded into
+all three guns. If bit 3 is not set then bits 0, 1, and 2 determine
+which one(s) of the red, green or blue guns will be loaded, and the buffer
+should contain 256, 512 or 768 integers as appropriate.
+.tableentry
+int syn_LoadOverlayLUT(int *buffer)
+.sp
+This routine loads the overlay lookup table. The buffer should contain
+9 integers.
+.tableentry
+int syn_RedefineCharacter(int ch, int *buffer)
+.sp
+This routine may be used to redefine a character. The ch argument specifies
+the character to be redefined and should be in the range 0-255. The
+buffer should contain 8 integers defining the new character.
+.tableentry
+int syn_String(int x_off, int y_off, int plane, char *text)
+.sp
+This routine draws some text at the location specified within the
+corresponding plane in overlay memory. The text consists of a C string,
+i.e. a number of bytes terminated by a single '\0' character.
+.tableentry
+int syn_CopyBlock(int x_off, int y_off, int plane, int width, int height,
+int *buffer)
+.sp
+This routine performs the Synergy copyblock operation which I do not
+understand.
+.tableentry
+int syn_Scroll(int x_off, int y_off, int plane, int width, int height,
+int y_lines, int value)
+.sp
+This routine scrolls a window within overlay memory by y_lines, replacing
+any cleared pixels with the value specified.
+.tableentry
+int syn_Wipe(int x_off, int y_off, int plane, int width, int height, int value)
+.sp
+This routine sets a window within overlay memory to the value specified.
+.tableentry
+int syn_Point(int x_off, int y_off, int plane, int value)
+.sp
+This routine sets a pixel in overlay memory to a particular value.
+.tableentry
+int syn_Line(int x_off, int y_off, int plane, int x1_off, int y1_off,
+int value)
+.sp
+This routine draws a line within overlay memory between the coordinates
+specified.
+.tableentry
+int syn_StartTVGrab(void)
+.sp
+This routine causes the framestore to start digitising the incoming
+tv signal. The status of the grab may be inspected by a syn_ReadStatus()
+call, and the grab should be terminated by a syn_StopTVGrab() call before
+attempting to execute any other commands on the synergy board.
+.tableentry
+int syn_StopTVGrab(void)
+.sp
+This routine terminates a TV grab.
+.tableentry
+int syn_TVFilter(int x_off, int y_off, int width, int height,
+int frame_delay, int A_coef, int B_coef)
+.sp
+This routine causes the framestore to start digitising the incoming
+tv channel using the filter parameters specified. The status of the
+grab may be inspected by a syn_ReadStatus() call, and the grab must be
+terminated by a syn_FilterStop() call before attempting to execute any
+other commands on the synergy board.
+.tableentry
+int syn_ReinitTV(void)
+.tableentry
+int syn_SetTVReplication(int display_base, int y_display)
+.tableentry
+int syn_SetSlowScanFilterCoef(int a_coef, int b_coef)
+.tableentry
+int syn_SetFilterMode(int movie, int sequence, int lut, int channel)
+.tableentry
+int syn_SetFilterType(int ignored_pixel, int ignored_line, int type,
+int mode)
+.tableentry
+int syn_TVFormatSelect(int standard)
+.sp
+These routines control the various TV and filter parameters.
+.tableentry
+int syn_FilterStart(int x_off, int y_off, int width, int height, int type,
+int host)
+.sp
+This routine is used to commence filtering the slow scan input. The status
+of the filter may be inspected may the syn_ReadStatus() call, and the
+filter must be terminated by a syn_FilterStop() call before attempting
+to execute any other command on the synergy board.
+.tableentry
+int syn_FilterStop(void)
+.sp
+This routine is used to stop filtering the slow scan input.
+.tableentry
+int syn_CopyVideoMemory(int x_off, int y_off, int width, int height,
+int x1_off, int y1_off, int src_type, int dest_type)
+.sp
+This routine is used to copy a block of video memory.
+.tableentry
+int syn_PhotoOutput(int x_off, int y_off, int width, int height, int host)
+.sp
+This routine is used to output a window to the slow-scan output port.
+.tableentry
+int syn_Execute(int code, ...)
+.sp
+This routine may be used to execute a command on the synergy board. The
+command code should be one of com_Restart etc, as defined in the header
+file syndef.h . This command code should be followed by any additional
+arguments required. Note that if the command involves reading from or
+writing to the buffer, this must be done explicitly using the
+syn_ReadBuffer() and syn_WriteBuffer() calls.
+.tableentry
+int syn_ReadStatus(int amount, int *buffer)
+.sp
+This routine may be used to read the specified number of integers from
+the synergy board's status buffer and store them in the buffer specified.
+.tableentry
+int syn_ReadBuffer(int amount, int *buffer)
+.sp
+This routine may be used to read the current values held in the synergy
+board's video buffer. The specified number of integers are read and
+stored in the buffer specified.
+.tableentry
+int syn_WriteBuffer(int amount, int *buffer)
+.sp
+This routine may be used to write some data to the synergy board's
+video buffer. The specified number of integers are written.
+.tableentry
+int syn_WriteVideo(int first_line, int no_lines, int operand, char *data)
+.sp
+This routine can be used to transfer a large amount of data from transputer
+memory to the synergy board's video memory. The first_line argument
+specifies the offset of the first scan line, in the range 0-511. The
+number of scan lines is specified by the second argument. The operand
+argument should be one of op_LowerByte, op_UpperByte, or op_EntireWord.
+The last argument specifies the address of the buffer in transputer memory.
+If the operand is lower or upper byte the buffer should contain
+(768 * no_lines) bytes, otherwise the buffer should contain
+(768 * no_lines) short 16-bit integers.
+.tableentry
+int syn_ReadVideo(int first_line, int no_lines, int operand, char *data)
+.sp
+.endtable
+This routine is the inverse of syn_WriteVideo(), and may be used
+to transfer a large amount of data from synergy board video memory to
+transputer memory.
+.sp 2
+.ti 0
+The Library-Server Protocol
+.sp
+.par
+The /synergy device is a standard Helios server obeying the General Server
+Protocol. Hence an application opens a stream to the server, reads and
+writes to the streams, seeks within the stream to move position, and
+closes the stream when finished. The various different parts
+of the synergy board's memory are mapped onto different positions within
+the /synergy server, as follows:
+.table
+.tableentry
+0x00000000 : the command buffer
+.tableentry
+0x10000000 : the status buffer
+.tableentry
+0x20000000 : the video buffer
+.tableentry
+0x30000000 : video memory treated as words
+.tableentry
+0x40000000 : video memory, top byte only
+.tableentry
+0x50000000 : video memory, bottom byte only.
+.endtable
+.sp
+For example, consider the syn_LoadInputLUT() call in the interface library.
+This routine calls syn_WriteBuffer() to transfer the lookup table to
+the video buffer, and syn_WriteBuffer() performs a file seek to
+offset 0x20000000 and then writes 256 words at that offset. The server
+receives this seek request and hence knows that the next read or write
+refers to the video buffer, and when it receives the write request it
+transfers the data to the video buffer. The syn_LoadInputLUT() routine
+then calls syn_Execute(), which seeks to offset 0x00000000 and then writes
+data consisting of the command and its arguments. The synergy server knows
+that a write to offset 0x00000000 is actually a request to execute a
+command, so it checks that the synergy board is able to execute this
+command i.e. that it is not busy scanning, interrupts the board to inform
+it that it should execute the command, and then waits for the synergy
+board to finish.
+.par
+Reading from or writing to video memory is similar. The interface library
+seeks to the appropriate offset within the server. For example if the
+application needs to write 20 lines
+to video memory starting at scan line 10, 
+and needs to write to the top_byte only, then the library seeks to
+offset (0x40000000 + (10 * 768)) and writes (20 & 768) bytes of data.
+The server is responsible for transferring this data to the
+appropriate bits of video memory.
+.par
+The server is intelligent enough to be able to distinguish between
+ordinary commands and scanning commands. Hence it will not wait for
+a scanning command to finish, and it will not allow the execution of
+commands other than stop-scanning whilst a scan is in progress.
+.sp 2
+.ti 0
+An example program
+.par
+The code below is a typical example program running on the transputer.
+It restarts the board, assumed to be booted already, reads in all of
+the picture held in the top byte of video memory, rotates it through
+180 degrees within transputer memory, and writes it back to video memory.
+.code
+
+/*=========================================================================
+===          Synergy Interface Test Program                             ===
+===                                                                     ===
+===     Copyright (C) 1989, Perihelion Software Ltd.                    ===
+===                All Rights Reserved                                  ===
+===                                                                     ===
+===     Author : BLV, 13.1.89                                           ===
+=========================================================================*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <helios.h>
+#include "syndef.h"
+#define eq ==
+#define ne !=
+#define failwith(a) { fprintf(stderr, a); return(1); }
+
+int main(void)
+{ BYTE *buffer;
+  int i, temp;
+  BYTE *start, *end;
+  
+  if ((buffer = malloc(512 * 768)) eq (BYTE *) NULL)    
+    failwith("Failed to allocate buffer.\n")
+   
+  if (!syn_Init())
+    failwith("Failed to initialise interface library.\n")
+
+  if (!syn_Restart())
+   failwith("Failed to restart board.\n")
+    
+  printf("Reading picture.\n");
+  
+  if (!syn_ReadVideo(0, 512, op_UpperByte, buffer))
+   failwith("Failed to read video memory.\n")
+
+  printf("Picture read.\n");
+
+  start = buffer; end = (buffer + (768 * 512) - 1);
+  for (i = 0; i < (768 * 256); i++)
+   { temp = *start; *start++ = *end; *end-- = temp; }
+
+  printf("Picture inverted.\n");
+     
+  if (!syn_WriteVideo(0, 512, op_UpperByte, buffer))
+   failwith("Failed to write video memory.\n")
+  
+  printf("Picture written.\n");
+
+  if (!syn_Tidy())
+   failwith("Failed to tidy interface library.\n")
+
+  free(buffer);
+     
+  printf("Success.\n");
+  return(0);
+}
+

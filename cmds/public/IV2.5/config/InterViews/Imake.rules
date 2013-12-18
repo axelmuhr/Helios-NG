@@ -1,0 +1,347 @@
+/*
+ * Build an uninstalled program from a single source file.
+ * Good for multiple programs in the same Makefile.
+ */
+#define	SingleSimpleProgramTarget(program,locallibs,syslibs)		@@\
+SingleProgramTarget(program,program.o,locallibs,syslibs)		@@\
+									@@\
+MakeObjectFromSrc(program)
+
+/*
+ * Build an uninstalled program.  Good for multiple programs in the
+ * same Makefile.
+ */
+#define	SingleProgramTarget(program,objects,locallibs,syslibs)		@@\
+program: objects locallibs						@@\
+	@echo "linking $@"						@@\
+	-@if [ ! -w $@ ]; then $(RM) $@; else exit 0; fi		@@\
+	$(CC) -o $@ objects locallibs $(LDFLAGS) syslibs $(EXTRA_LOAD_FLAGS) @@\
+									@@\
+clean::									@@\
+	$(RM) program
+
+/*
+ * Build a program from a single source file.
+ */
+#define	SimpleProgramTarget(program)					@@\
+SRCS		= $(SRC)/program.c					@@\
+OBJS		= program.o						@@\
+ComplexProgramTarget(program)						@@\
+									@@\
+MakeObjectFromSrc(program)
+
+/*
+ * Build a program composed of several objects.
+ */
+#define	ComplexProgramTarget(program)					@@\
+PROGRAM		= program						@@\
+									@@\
+AllTarget($(AOUT))							@@\
+									@@\
+$(AOUT): $(OBJS) $(LOCAL_LIBRARIES)					@@\
+	@echo "linking $@"						@@\
+	-@if [ ! -w $@ ]; then $(RM) $@; else exit 0; fi		@@\
+	$(CC) -o $@ $(OBJS) $(LOCAL_LIBRARIES) $(LDFLAGS) $(EXTRA_LOAD_FLAGS) @@\
+									@@\
+InstallProgram($(AOUT),$(BINDIR)/$(PROGRAM))				@@\
+									@@\
+DependTarget()								@@\
+									@@\
+clean::									@@\
+	$(RM) $(AOUT)
+
+/*
+ * Make a program or library object from a source or generated file.
+ */
+#define	MakeObjectRule(dst,src,flags)					@@\
+dst.o: src.c								@@\
+	@echo "compiling src.c"						@@\
+	$(RM) $@							@@\
+	$(CC) -c flags $(CFLAGS) src.c
+
+#define	MakeObjectFromSrcFlags(file,flags)				@@\
+MakeObjectRule(file,$(SRC)/file,flags)
+
+#define	MakeObjectFromGenFlags(file,flags)				@@\
+MakeObjectRule(file,$(GEN)/file,flags)
+
+#define	MakeObjectFromSrc(file)						@@\
+MakeObjectFromSrcFlags(file,)
+
+#define	MakeObjectFromGen(file)						@@\
+MakeObjectFromGenFlags(file,)
+
+/*
+ * Generate a file from a template file.
+ */
+#define MakeGenFromTemplate(gen,template,args)				@@\
+gen:: template								@@\
+	@echo "generating gen"						@@\
+	$(RM) $@							@@\
+	$(GENCLASS) template $@ args					@@\
+	chmod 444 $@
+
+/*
+ * Make a library archive from a list of objects.
+ */
+#define	NormalLibraryTarget(libname,objlist)				@@\
+AllTarget(lib/**/libname.a)						@@\
+									@@\
+lib/**/libname.a: objlist						@@\
+	@echo "building $@"						@@\
+	$(RM) $@							@@\
+	$(AR) $@ objlist						@@\
+	$(RANLIB) $@
+
+/*
+ * Format or print troff sources.
+ */
+#define TroffSources(formatted)						@@\
+print:									@@\
+	$(TROFF) $(TROFFFLAGS) $(TROFFSRCS)				@@\
+									@@\
+format: formatted							@@\
+									@@\
+formatted: $(TROFFSRCS)							@@\
+	$(RM) formatted							@@\
+	$(TROFF) -t $(TROFFFLAGS) $(TROFFSRCS) > formatted		@@\
+									@@\
+clean::									@@\
+	$(RM) formatted
+
+/*
+ * Use cpp to generate a script.
+ */
+#if ExecableScripts		/* can use #! instead of colon */
+#define CppScriptTarget(dst,src,defs,deplist)				@@\
+dst::  src deplist							@@\
+	$(RM) $@							@@\
+	$(CPP) defs <src | \						@@\
+		sed -e '/^#  *[0-9][0-9]*  *.*$$/d' >$@			@@\
+	chmod a+x $@
+#else
+#define CppScriptTarget(dst,src,defs,deplist)				@@\
+dst::  src deplist							@@\
+	$(RM) $@							@@\
+	echo \: >$@							@@\
+	sed '1d' src | $(CPP) defs  | \					@@\
+		sed -e '/^#  *[0-9][0-9]*  *.*$$/d' >>$@		@@\
+	chmod a+x $@
+#endif
+
+/*
+ * Create directories if necessary.
+ */
+#define MakeDirectories(step,dirs)					@@\
+step::									@@\
+	$(MKDIRHIER) dirs
+
+/*
+ * Install a library.
+ */
+#define	InstallLibrary(libname,dest)					@@\
+install:: lib/**/libname.a						@@\
+	$(INSTALL) -c $(INSTLIBFLAGS) lib/**/libname.a dest		@@\
+	$(RANLIB) $(RANLIBINSTFLAGS) dest/lib/**/libname.a
+
+/*
+ * Install a non-executable file.
+ */
+#define	InstallNonExec(file,dest)					@@\
+install:: file								@@\
+	$(INSTALL) -c $(INSTALLFLAGS) file dest
+
+/*
+ * Install a program.
+ */
+#define	InstallProgram(program,dest)					@@\
+install:: program							@@\
+	$(INSTALL) -c $(INSTPGMFLAGS) $(INSTALLFLAGS) program dest	@@\
+	$(AFTERINSTALL) program
+
+/*
+ * Install multiple files under a specific step in the build.
+ */
+#define InstallMultipleDestFlags(step,list,dest,flags)			@@\
+step:: list								@@\
+	@for i in list; do \						@@\
+		(set -x; $(INSTALL) -c flags $$i dest); \		@@\
+	done
+
+#define InstallMultipleDest(step,list,dest)				@@\
+InstallMultipleDestFlags(step,list,dest,$(INSTALLFLAGS))
+
+/*
+ * Install multiple files.
+ */
+#define	InstallMultiple(list,dest)					@@\
+InstallMultipleDest(install,list,dest)
+
+#define InstallMultipleFlags(list,dest,flags)				@@\
+InstallMultipleDestFlags(install,list,dest,flags)
+
+/*
+ * Make the given dependencies.
+ */
+#define AllTarget(deps)							@@\
+all:: deps
+
+/*
+ * Find dependencies in the SRCS and add them to the Makefile.
+ */
+#define	DependTarget(moredeps)						@@\
+depend:: $(SRCS) moredeps						@@\
+	$(DEPEND) -s "# DO NOT DELETE" -- $(DEPENDCFLAGS) -- $(SRCS)
+
+/*
+ * Sweep the directory clean of garbage files.
+ */
+#define	CleanTarget()							@@\
+clean::									@@\
+	$(RM_CMD) \#*
+
+/*
+ * Build and install a program in one fell swoop.
+ */
+#define	BootstrapTarget()						@@\
+bootstrap::								@@\
+	@CPU=`$(BOOTSTRAPCPUCMD)`; export CPU; \			@@\
+	$(MAKE) IMAKE='$(IMAKESRC)/imake' Makefile; \			@@\
+	$(MAKE) IMAKE='$(IMAKESRC)/imake' Makefiles; \			@@\
+	$(MAKE) RM_CMD='$(RM_CMD)' clean; \				@@\
+	$(MAKE) EXTRA_CFLAGS='$(EXTRA_CFLAGS)'; \			@@\
+	$(MAKE) DESTDIR='$(DESTDIR)' install
+
+/*
+ * Make the Makefile using itself.
+ */
+#define	BuildMakefileTarget(imakeflags)					@@\
+Makefile::								@@\
+	-@if [ -f Makefile ]; then \					@@\
+		$(RM) Makefile.bak; \					@@\
+		$(MV) Makefile Makefile.bak; \				@@\
+	else exit 0; fi							@@\
+	$(IMAKE_CMD) -DTOPDIR=$(TOP) imakeflags
+
+#define MakefileTarget()						@@\
+BuildMakefileTarget()
+
+/*
+ * Make a MachineDep Makefile using itself.
+ */
+#define	MachineDepMakefileTarget()					@@\
+BuildMakefileTarget(-DInMachineDepSubdir -f $(SRC)/Imakefile)
+
+/*
+ * Call "make target" in each subdirectory.
+ */
+#define IntoSubdirs(name,dirs,comment,args)				@@\
+name::									@@\
+	-@for i in dirs; \						@@\
+	do \								@@\
+		if [ -d $$i ]; then \					@@\
+			echo comment; \					@@\
+			(cd $$i; $(MAKE) args name); \			@@\
+		else continue; fi; \					@@\
+	done
+
+#define MakeSubdirs(dirs)						@@\
+IntoSubdirs(all,dirs,"making all in $$i",EXTRA_CFLAGS='$(EXTRA_CFLAGS)')
+
+#define DependSubdirs(dirs)						@@\
+IntoSubdirs(depend,dirs,"depending in $$i",EXTRA_CFLAGS='$(EXTRA_CFLAGS)')
+
+#define BootstrapSubdirs(dirs)						@@\
+IntoSubdirs(bootstrap,dirs,"bootstrapping in $$i",$(BOOTSTRAPMACROS))
+
+#define InstallSubdirs(dirs)						@@\
+IntoSubdirs(install,dirs,"installing in $$i",DESTDIR='$(DESTDIR)')
+
+#define InstallConfigSubdirs(dirs)					@@\
+IntoSubdirs(install.config,dirs,"installing config files in $$i",DESTDIR='$(DESTDIR)')
+
+#define InstallIncludeSubdirs(dirs)					@@\
+IntoSubdirs(install.include,dirs,"installing include files in $$i",DESTDIR='$(DESTDIR)')
+
+#define InstallManSubdirs(dirs)						@@\
+IntoSubdirs(install.man,dirs,"installing man pages in $$i",DESTDIR='$(DESTDIR)')
+
+#define CleanSubdirs(dirs)						@@\
+IntoSubdirs(clean,dirs,"cleaning in $$i",RM_CMD='$(RM_CMD)')
+
+#define FormatSubdirs(dirs)						@@\
+IntoSubdirs(format,dirs,"formatting in $$i",)
+
+#define PrintSubdirs(dirs)						@@\
+IntoSubdirs(print,dirs,"printing in $$i",)
+
+/*
+ * Make Makefiles in each subdirectory.
+ */
+#define BuildMakefilesSubdirs(dirs,defs)				@@\
+Makefiles::								@@\
+	-@for i in dirs; \						@@\
+	do \								@@\
+		if [ -d $$i ]; then \					@@\
+			echo "Making Makefiles in $$i"; \		@@\
+			if [ -f $$i/Makefile ]; then \			@@\
+				$(RM) $$i/Makefile.bak; \		@@\
+				$(MV) $$i/Makefile $$i/Makefile.bak; \	@@\
+			fi; \						@@\
+			$(IMAKE_CMD) -DTOPDIR=../$(TOP) defs \		@@\
+				-s $$i/Makefile; \			@@\
+			(cd $$i; $(MAKE) Makefiles); \			@@\
+		else continue; fi; \					@@\
+	done
+
+#define MakefileSubdirs(dirs)						@@\
+BuildMakefilesSubdirs(dirs,-f $$i/Imakefile)
+
+/*
+ * Call "make target" in the right MachineDep subdirectory for this machine.
+ */
+#define IntoMachineDepSubdir(name,comment,args)				@@\
+name::									@@\
+	-@if [ -d $$CPU ]; then \					@@\
+		echo comment; \						@@\
+		cd $$CPU; $(MAKE) args name; \				@@\
+	else exit 0; fi
+
+#define MakeMachineDepSubdir()						@@\
+IntoMachineDepSubdir(all,"making all in $$CPU",EXTRA_CFLAGS='$(EXTRA_CFLAGS)')
+
+#define DependMachineDepSubdir()					@@\
+IntoMachineDepSubdir(depend,"depending in $$CPU",EXTRA_CFLAGS='$(EXTRA_CFLAGS)')
+
+#define InstallMachineDepSubdir()					@@\
+IntoMachineDepSubdir(install,"installing in $$CPU",DESTDIR='$(DESTDIR)')
+
+#define CleanMachineDepSubdir()						@@\
+IntoMachineDepSubdir(clean,"cleaning in $$CPU",RM_CMD='$(RM_CMD)')
+
+/*
+ * Make the Makefile in the right MachineDep subdirectory for this machine.
+ */
+#define MakefileMachineDepSubdir()					@@\
+Makefiles::								@@\
+	@echo "Making Makefiles in $$CPU"				@@\
+	-@if [ ! -d $$CPU ]; then \					@@\
+		mkdir $$CPU; \						@@\
+		chmod g+w $$CPU; \					@@\
+	else exit 0; fi							@@\
+	-@if [ -f $$CPU/Makefile ]; then \				@@\
+		$(RM) $$CPU/Makefile.bak; \				@@\
+		$(MV) $$CPU/Makefile $$CPU/Makefile.bak; \		@@\
+	else exit 0; fi							@@\
+	@$(IMAKE_CMD) -DTOPDIR=../$(TOP) -DInMachineDepSubdir \		@@\
+		-s $$CPU/Makefile
+
+/*
+ * Create the Gen subdirectory if necessary.
+ */
+#define MakefileGenSubdirs(gdir)					@@\
+Makefiles:: gdir							@@\
+									@@\
+gdir:									@@\
+	mkdir gdir							@@\
+	chmod g+w gdir

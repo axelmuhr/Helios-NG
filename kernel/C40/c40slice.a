@@ -1,0 +1,356 @@
+/*
+ * File:	c40slice.a
+ * Subsystem:	'C40 Helios executive
+ * Author:	P.A.Beskeen
+ * Date:	Aug '91
+ *
+ * Description: `C40 Helios executive support assembler functions.
+ *
+ *		This file is used in conjunction with gslice.c to provide the
+ *		timeslicer portion of the Helios 'C40 executive.
+ *
+ * RcsId: $Id: c40slice.a,v 1.7 1992/11/12 20:54:42 paul Exp $
+ *
+ * (C) Copyright 1991 Perihelion Software Ltd.
+ * 
+ * RcsLog: $Log: c40slice.a,v $
+-- Revision 1.7  1992/11/12  20:54:42  paul
+-- made C40Word/CAddress compatible with IR0 != 0
+--
+-- Revision 1.6  1992/11/12  17:14:17  paul
+-- rationalised Save/RestoreCPUState .
+--
+-- Revision 1.5  1992/09/25  09:37:18  paul
+-- changed to use gexec.m
+--
+-- Revision 1.4  1992/06/19  18:27:04  paul
+-- minor tidies and time for interrupts to occur
+--
+-- Revision 1.3  1992/05/14  10:45:27  paul
+-- make all disabling of ints use AllIntsOff/On macros
+--
+-- Revision 1.2  1992/04/21  09:54:56  paul
+-- alpha version
+--
+-- Revision 1.1  1991/12/03  11:53:02  paul
+-- Initial revision
+--
+ */
+
+
+include ../gexec.m	-- Executive manifests
+include module.m
+
+
+-- word SaveCPUState(CPURegs *cpusave);
+--
+-- Save processor context
+--
+-- SaveCPUState() saves the current CPU state in the structure it was passed.
+-- It returns a value of 0 when exiting directly from the function.
+-- If the function is `returned from' as result of RestoreCPUState()
+-- function call, then 1 is returned. This is achieved by placing a
+-- 1 into the C return register ready for a RestoreCPUState().
+--
+-- Note that R_TMP1 should not be corrupted as it may be used to save the
+-- original R_LR value for setjmp()/vfork().
+--
+-- When the SaveState is restored, interrupts will be re-enabled.
+--
+-- The header file <cpustate.h/m> holds the definition of the CPURegs structure.
+--
+-- The C40 has two versions of SaveCPUState(), the internal one (name prefixed 
+-- with an '_') assumes interrupts have already been disabled, the external one
+-- (no '_' prefix) explicitly disables interrupts. This is due to a bug in early
+-- C40 releases that can cause errors if the SP is altered while interrupts are
+-- enabled.
+
+
+-- This function is always called with interrupts globally disabled.
+--
+-- Called from C so must conform to PCS
+
+._SaveCPUState:
+	-- Passed a byte pointer to the CPU context save area.
+	-- See <cpustate.h> for order of regs in area.
+
+	-- Save original SSP position
+	ldi	R_SSP, R_ATMP
+
+	-- Get address of save area into ssp
+	C40WordAddress  R_A1	-- Convert C argument pointer to a WPTR
+	ldi	R_A1, R_SSP	-- point SSP at SaveState.CPUcontext
+
+	-- Save processor context.
+	-- CPUcontext.PC value is missed out as stack is full ascending.
+	-- - not setting this is OK as we aren't sliced.
+	push	st		-- must save status reg first
+
+	-- force a return of TRUE when restored
+	ldi	TRUE, R_A1
+
+	-- Assumes following registers are held contigously in SaveState
+
+	-- Save address registers
+	push	ar0	push	ar1
+	push	ar2	push	ar3
+	push	ar4	push	ar5
+	push	ar6	push	ar7
+
+	-- Save general purpose fp regs
+	push	r0	pushf	r0
+	push	r1	pushf	r1
+	push	r2	pushf	r2
+	push	r3	pushf	r3
+	push	r4	pushf	r4
+	push	r5	pushf	r5
+	push	r6	pushf	r6
+	push	r7	pushf	r7
+	push	r8	pushf	r8
+	push	r9	pushf	r9
+	push	r10	pushf	r10
+	push	r11	pushf	r11
+
+	-- Save misc registers
+	push	dp
+	push	ir0
+	push	ir1
+	push	bk
+	push	rs
+	push	re
+
+	bUd	R_LR			-- delayed branch
+		push	rc		-- save last reg in SaveState
+
+		-- restore SSP
+		ldi	R_ATMP, R_SSP
+
+		-- return FALSE - i.e. Not from RestoreCPUState
+		ldi	FALSE, R_A1	
+
+	-- note we don't and shouldn't save IIE, DIE, IIF or SP
+
+
+
+-- Externally callable SaveCPUState() function is same as internal fn.,
+-- but with interrupts disabled and re-enabled at end of save.
+-- This is to avoid the early C40 silicon's SP bug.
+--
+-- Called from C so must conform to PCS
+
+	Function SaveCPUState
+
+	AllIntsOff	-- disable interrupts (Guard against C40SPBUG)
+
+	-- Passed a byte pointer to the CPU context save area.
+	-- See <cpustate.h> for order of regs in area.
+
+	-- Save original SSP position
+	ldi	R_SSP, R_ATMP
+
+	-- Get address of save area into ssp
+	C40WordAddress  R_A1	-- Convert C argument pointer to a WPTR
+	ldi	R_A1, R_SSP	-- point SSP at SaveState.CPUcontext
+
+	-- Save processor context.
+	-- CPUcontext.PC value is missed out as stack is full ascending.
+	-- - not setting this is OK as we aren't sliced.
+	push	st		-- must save status reg first
+
+	-- force a return of TRUE when restored
+	ldi	TRUE, R_A1
+
+	-- Assumes following registers are held contigously in SaveState
+
+	-- Save address registers
+	push	ar0	push	ar1
+	push	ar2	push	ar3
+	push	ar4	push	ar5
+	push	ar6	push	ar7
+
+	-- Save general purpose fp regs
+	push	r0	pushf	r0
+	push	r1	pushf	r1
+	push	r2	pushf	r2
+	push	r3	pushf	r3
+	push	r4	pushf	r4
+	push	r5	pushf	r5
+	push	r6	pushf	r6
+	push	r7	pushf	r7
+	push	r8	pushf	r8
+	push	r9	pushf	r9
+	push	r10	pushf	r10
+	push	r11	pushf	r11
+
+	-- Save misc registers
+	push	dp
+	push	ir0
+	push	ir1
+	push	bk
+	push	rs
+	push	re
+	push	rc		-- save last reg in SaveState
+
+	bUd	R_LR			-- delayed branch
+		-- restore SSP
+		ldi	R_ATMP, R_SSP
+
+		AllIntsOn		-- restore interrupt mask
+
+		-- return FALSE - i.e. Not from RestoreCPUState
+		ldi	FALSE, R_A1
+
+	-- note we don't and shouldn't save IIE, DIE, IIF or SP
+
+
+
+-- void RestoreCPUState/2(CPURegs *cpusave);
+--
+-- Resume a CPU state previously saved by SaveCPUState
+--
+-- On return interrupts will be re-enabled.
+--
+-- Called from C so must conform to PCS
+
+	Function RestoreCPUState
+
+	-- Passed a byte pointer to the CPU context save area.
+	-- See <cpustate.h/m> for order of regs in area.
+
+	C40WordAddress  R_A1	-- Convert C argument pointer to a WPTR
+
+	AllIntsOff		-- disable interrupts
+	_if _defp 'C40SPBUG [
+	        -- ints off doesn't work immediately, due to pipeline
+        	-- so guard next pieces of code against C40SPBUG
+	        nop
+        	nop
+	        nop
+	]
+
+        -- Save original SSP position
+        ldi     R_SSP, R_ATMP
+
+        -- point SSP at last element of SaveState.CPUcontext
+        addi    CPURegs.LASTREG, R_A1, R_SSP
+
+        -- Restore processor context - following code assumes rising full stack
+        -- Restore misc registers
+        pop     rc
+        pop     re
+        pop     rs
+        pop     bk
+        pop     ir1
+        pop     ir0
+        pop     dp
+
+        -- Restore general purpose fp regs
+        popf    r11     pop     r11
+        popf    r10     pop     r10
+        popf    r9      pop     r9
+        popf    r8      pop     r8
+        popf    r7      pop     r7
+        popf    r6      pop     r6
+        popf    r5      pop     r5
+        popf    r4      pop     r4
+        popf    r3      pop     r3
+        popf    r2      pop     r2
+        popf    r1      pop     r1
+        popf    r0      pop     r0
+
+        -- Restore address registers
+        pop     ar7     pop     ar6
+        pop     ar4     pop     ar4     -- note dummy restore of AR5 into ar4
+        pop     ar3     pop     ar2     -- so that saved SSP isn't corrupted
+        pop     ar1     pop     ar0     -- R_ATMP == AR5
+
+        bUd     R_LR            -- branch back to SaveCPUState() caller
+                pop     st              -- must restore status reg last
+                ldi     R_ATMP, R_SSP   -- restore original SSP position
+                AllIntsOn               -- enable interrupts globally
+
+
+-- void RestoreSlicedState(CPURegs *cpusave);
+--
+-- Restore a SLICED processor context.
+--
+-- Called from C but never returns, so need not conform to PCS
+
+.RestoreSlicedState:
+
+        -- Passed a byte pointer to the CPU context save area in r0.
+        -- See <cpustate.h/m> for order of regs in area.
+
+        -- Get address of CPUcontext save area
+        C40WordAddress  R_A1, ar0       -- Convert C argument pointer to a WPTR
+
+        AllIntsOff              	-- disable interrupts
+	_if _defp 'C40SPBUG [
+		-- ints off doesn't work immediately, due to pipeline
+		-- so guard next pieces of code against C40SPBUG
+		nop
+		nop
+		nop
+	]
+
+	-- Create hand crafted interrupt stack
+	ldi	*+ar0(CPURegs.PC), ar1		-- push PC value for RETI
+	push	ar1
+	ldi	*+ar0(CPURegs.ST), ar1		-- ST
+	push	ar1
+	ldi	*+ar0(CPURegs.ADDR1), ar1	-- ar0
+	push	ar1
+	ldi	*+ar0(CPURegs.ADDR2), ar1	-- ar1
+	push	ar1
+
+	-- Save last SSP position
+	ldi	R_SSP, ar1
+
+	-- Point SSP at last element of SaveState.CPUcontext
+	addi	CPURegs.LASTREG, ar0, R_SSP
+
+	-- Restore processor context from SaveState
+	-- Following code assumes rising full stack and contigous regs in
+	-- SaveState.
+
+	-- Restore misc registers
+	pop	rc
+	pop	re
+	pop	rs
+	pop	bk
+	pop	ir1
+	pop	ir0
+	pop	dp
+
+	-- Restore general purpose fp regs
+	popf	r11	pop	r11
+	popf	r10	pop	r10
+	popf	r9	pop	r9
+	popf	r8	pop	r8
+	popf	r7	pop	r7
+	popf	r6	pop	r6
+	popf	r5	pop	r5
+	popf	r4	pop	r4
+	popf	r3	pop	r3
+	popf	r2	pop	r2
+	popf	r1	pop	r1
+	popf	r0	pop	r0
+
+	-- Restore address registers
+	pop	ar7	pop	ar6
+	pop	ar5	pop	ar4
+	pop	ar3	pop	ar2
+
+	ldi	ar1, R_SSP	-- restore previous SSP value
+
+	-- Pop registers previously stacked
+	pop	ar1
+	pop	ar0
+	pop	st
+	retiU			-- return to old slice context
+				-- enabling cache and interrupts
+
+
+
+
+-- end of C40slice.a

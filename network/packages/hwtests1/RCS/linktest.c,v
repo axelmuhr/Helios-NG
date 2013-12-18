@@ -1,0 +1,272 @@
+head	1.1;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	92.01.16.13.22.17;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@The linktest component of a hardware test suite taskforce.
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/**
+*** linktest.c
+***
+*** BLV, 6.9.91
+***
+***  The purpose of this program is to generate lots of link activity and
+***  perform checksums on the data transferred. This continues until the
+***  control program sends a terminate request. The configurer always
+***  generates pairs of these programs.
+***
+*** Arguments: argv[1] worker number, 0 => first worker of this type
+***
+*** Streams :	0	< control
+***		1	> control
+***		2,3	inherited
+***		4	< matching link program
+***		5	> matching link program
+**/
+
+#include <stdio.h>
+#include <helios.h>
+#include <nonansi.h>
+#include <time.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+#include <time.h>
+#include <sem.h>
+#include "packet.h"
+
+/**-----------------------------------------------------------------------------
+*** Macros
+**/
+		/* Stream allocation					*/
+#define	From_Control		0
+#define To_Control		1
+#define From_Partner		4
+#define To_Partner		5
+
+		/* Stack size for spawned thread.			*/
+#define		Stack_Size	2000
+
+		/* Maximum size of test messages.			*/
+#define		 XchLimit	(16 * 1024)
+
+/**-----------------------------------------------------------------------------
+*** Static variables.
+**/
+
+	/* WorkerNumber uniquely identifies this worker program. It is	*/
+	/* set up by the CDL script and used for error messages.	*/
+static int	WorkerNumber = -1;
+
+	/* Loops keeps track of how many cycles have been transmitted.	*/
+	/* Each cycle is approximately 32K of data spread over chunks	*/
+	/* of various different sizes, upto XchLimit bytes.		*/
+static int	Loops = 0;
+
+	/* The two I/O buffers are allocated statically. There is one	*/
+	/* buffer for reading from the partner and one buffer for	*/
+	/* writing to the partner.					*/
+static BYTE	ReadBuffer[XchLimit];
+static BYTE	WriteBuffer[XchLimit];
+
+	/* Lock for the C library, to allow multiple threads to perform	*/
+	/* C-level I/O.							*/
+static	Semaphore	ClibLock;
+
+/**-----------------------------------------------------------------------------
+*** Forward declarations
+**/
+	/* Two threads are spawned off to perform the communication,	*/
+	/* while the main thread waits for control messages.		*/
+static void	WriterThread(void);
+static void	ReaderThread(void);
+
+	/* usage() produces an error message if invalid arguments are	*/
+	/* supplied to this program.					*/
+static void	usage(void);
+
+/**-----------------------------------------------------------------------------
+*** Code.
+**/
+
+int main(int argc, char **argv)
+{ ExControlPacket	packet;
+
+  signal(SIGPIPE, SIG_IGN);
+
+  InitSemaphore(&ClibLock, 1);
+
+  if (argc != 2) usage();
+  WorkerNumber	= atoi(argv[1]);
+
+  if (read(From_Control, (char *) &packet, sizeof(ExControlPacket)) 
+	!= sizeof(ExControlPacket))
+   { fprintf(stderr, "linktest(%d): failed to read initial packet from control.\n",
+		WorkerNumber);
+     exit(EXIT_FAILURE);
+   }
+
+  if (packet.FnRc != ExR_Init)
+   { fprintf(stderr, "linktest(%d): invalid initial packet from control.\n",
+		WorkerNumber);
+     exit(EXIT_FAILURE);
+   }
+
+  if ((!Fork(2000, &WriterThread, 0)) ||
+      (!Fork(2000, &ReaderThread, 0)))
+   { fprintf(stderr, "linktest(%d): failed to spawn I/O threads.\n",
+		WorkerNumber);
+     exit(EXIT_FAILURE);
+   }
+
+  if (read(From_Control, (char *) &packet, sizeof(ExControlPacket))
+      != sizeof(ExControlPacket))
+   { Wait(&ClibLock);
+     fprintf(stderr, "linktest(%d): failed to get terminate packet from control.\n",
+		WorkerNumber);
+     exit(EXIT_FAILURE);
+   }
+
+  if (WorkerNumber == 0)
+   fprintf(stderr, "linktest: transmitted %d cycles.\n", Loops);
+
+  exit(EXIT_SUCCESS);
+}
+
+static void usage(void)
+{ fputs("linktest: usage, linktest <worker number>\n", stderr);
+  exit(EXIT_FAILURE);
+}
+
+/**-----------------------------------------------------------------------------
+*** WriterThread()
+***  This is spawned off from inside main(). The thread should loop forever
+***  sending various messages to the other end. Each message should consist of
+***  a checksum and some random data. The size of messages is varied in powers
+***  of 2. The thread will be aborted automatically when the Terminate packet
+***  is received and the main() thread exits.
+**/
+static void WriterThread(void)
+{ ExChecksumPacket	packet;
+  int			size;
+  int			i;
+
+  srand(clock() + time(NULL));
+
+  forever
+   { Loops++;
+
+     for (size = 1; size <= XchLimit; size *= 2)
+      { 	/* Generate a buffer full of random data and	*/
+		/* calculate the checksum.			*/
+	packet.Checksum	= 0;
+        for (i = 0; i < size; i++)
+         { WriteBuffer[i]	 = rand() & 0x0FF;
+	   packet.Checksum	+= WriteBuffer[i];
+	 }
+
+		/* Send the checksum and the data.		*/
+        if (write(To_Partner, (char *) &packet, sizeof(ExChecksumPacket))
+		!= sizeof(ExChecksumPacket))
+	 goto error;
+	if (write(To_Partner, (char *) WriteBuffer, size) != size)
+	 goto error;
+      }
+   }
+
+	/* This point is reached if there has been some sort of		*/
+	/* communication error. This could be a real error, or it could	*/
+	/* be a race condition when terminating.			*/
+error:
+
+	/* Sleep for a while. If there was a race condition during	*/
+	/* termination then the program will be exiting at this time	*/
+	/* and this thread will never be reactivated. If the error	*/
+	/* occurred in the middle of the test then the message will	*/
+	/* be displayed after a two seconds delay.			*/
+  Delay(2 * OneSec);
+
+	/* There appears to have been a real error, which should be	*/
+	/* reported.							*/
+  Wait(&ClibLock);
+  fprintf(stderr, "linktest(%d): error writing to partner\n", WorkerNumber);
+  exit(EXIT_FAILURE);
+}
+
+/**-----------------------------------------------------------------------------
+*** ReaderThread()
+***  This is also spawned off from within main. Its job is to receive
+***  packets from the WriterThread() in the partner program and check
+***  the checksums. Since the packets can be fairly large a fullread()
+***  routine is used.
+**/
+
+static int full_read(int stream, char *buff, int amount_arg)
+{ int	result;
+  int	amount = amount_arg;
+
+  while (amount > 0)
+   { result	 = read(stream, buff, amount);
+     if (result <= 0) return(-1);
+     amount	-= result;
+     buff	 = &(buff[result]);
+   }
+
+	/* Successfully read all the requested data.			*/
+  return(amount_arg);
+}
+
+static void ReaderThread(void)
+{ ExChecksumPacket	packet;
+  int			size;
+  int			i;
+
+  forever
+   { for (size = 1; size <= XchLimit; size *= 2)
+      { if (full_read(From_Partner, (char *) &packet, sizeof(ExChecksumPacket))
+		!= sizeof(ExChecksumPacket))
+	 goto error;
+	if (full_read(From_Partner, ReadBuffer, size) != size)
+	 goto error;
+
+	for (i = 0; i < size; i++)
+	 packet.Checksum -= ReadBuffer[i];
+
+	if (packet.Checksum != 0)
+	 { Wait(&ClibLock);
+	   fprintf(stderr, "linktest(%d): CHECKSUM FAILURE, size %d\n",
+		WorkerNumber, size);
+	   Signal(&ClibLock);
+	 }
+      }		/* sizes loop		*/
+   }		/* Terminate loop	*/
+
+
+error:
+  Delay(2 * OneSec);
+
+  Wait(&ClibLock);
+  fprintf(stderr, "linktest(%d): error reading from partner\n", WorkerNumber);
+  exit(EXIT_FAILURE);
+}
+
+@

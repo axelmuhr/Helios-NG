@@ -1,0 +1,405 @@
+head	1.6;
+access;
+symbols
+	Helios_1_3_1:1.6
+	Helios_C40_1_3_Official_Release:1.5
+	Alenia_release:1.5
+	Helios1_3:1.5
+	C40_Field_Test_2:1.5
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.6
+date	93.08.12.16.45.32;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.09.17.16.14.11;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.07.03.09.39.16;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.07.03.09.26.01;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.12.02.15.15.28;	author martyn;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.26.19.02.48;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@fixed compile time warnings (for C40)
+@
+text
+@/****************************************************************/
+/* File: putback.c                                              */
+/*                                                              */
+/* Routines to manage the unreading and rereading of unlimited  */
+/* sections of text.                                            */
+/*                                                              */
+/* Author: NHG 19-Feb-87                                        */
+/****************************************************************/
+#ifdef __TRAN
+static char *RcsId = "$Id: putback.c,v 1.5 1992/09/17 16:14:11 paul Exp nickc $ Copyright (C) Perihelion Software Ltd.";
+#endif
+  
+#include "ampp.h"
+#include <string.h>
+  
+#define DBPB 0
+
+#define trace if(traceflags&db_putback)_trace
+
+PUBLIC BYTE *pbstack;
+PUBLIC BYTE *pbspos;
+PUBLIC BYTE *pbsbase;
+PRIVATE INT pbssize = 50000;
+
+PUBLIC FILE *infd;
+
+PUBLIC void initpb()
+{
+#ifdef MWC
+   pbstack = (BYTE *)lmalloc(pbssize);
+#else
+#ifdef IBMPC
+   pbstack = (BYTE *)malloc((int)pbssize);
+#endif
+   pbstack = (BYTE *)malloc((int)pbssize);
+#endif
+
+   if( pbstack == NULL ) error("Cannot allocate put back stack");
+   pbspos = pbsbase = pbstack+pbssize;
+/*_trace("pbstack: %x %x %x",pbstack,pbsbase,pbspos);*/
+}
+
+/********************************************************/
+/* pbchar                                               */
+/* pbstr                                                */
+/*                                                      */
+/* Unread a single character, and a string              */
+/*                                                      */
+/********************************************************/
+
+PUBLIC void pbchar(UBYTE ch)
+{
+#if DBPB
+	trace("put back %8x %8x %2x '%c'",pbsbase,pbspos,
+		(WORD)ch,(UBYTE)(' '<=ch&&ch<='~'?ch:'.'));
+#endif
+        if( pbspos == pbstack ) 
+        {	
+	        _trace("1 pbstack: %x %x %x",pbstack,pbsbase,pbspos);
+        	error("Put back stack full");
+	}
+        *(--pbspos) = ch;
+}
+
+PUBLIC void pbstr(BYTE *s)
+{
+        int size = strlen(s);
+	pbspos -= size;        
+        if( pbspos <= pbstack ) 
+        {
+        	_trace("2 pbstack: %x %x %x",pbstack,pbsbase,pbspos);
+        	error("Put back stack full");
+        }
+#if DBPB
+	trace("put back string '%s'",s);
+#endif
+	memcpy(pbspos,s,size);
+}
+
+/********************************************************/
+/* savepb                                               */
+/* setpb                                                */
+/*                                                      */
+/* Routines to save and restore the putback buffer.     */
+/* Used to save state during includes.                  */
+/********************************************************/
+
+PUBLIC BYTE *savepb()
+{
+        BYTE *res = pbsbase;
+        pbsbase = pbspos;
+#if DBPB
+        trace("Savepb %8x %8x",res,pbsbase);
+#endif
+        return res;
+}
+
+PUBLIC void setpb(BYTE *newpbsbase)
+{
+#if DBPB
+        trace("Setpb %8x",newpbsbase);
+#endif
+        pbsbase = newpbsbase;
+}
+
+
+PUBLIC INT
+get_char( FILE * fd )
+{
+  static int	saw_nl = 0;
+  INT		ch;
+
+  
+  ch = getc( fd );
+
+  if (saw_nl)    
+    {
+      saw_nl = 0;
+      
+      ++in_line;
+    }
+  
+  if (ch == '\n')
+    saw_nl = 1;
+  
+  return ch;
+  
+} /* get_char */
+
+
+/********************************************************/
+/* pbrdch                                               */
+/*                                                      */
+/* Read a character from the put-back buffer, or from   */
+/* the standard input if it is empty                    */
+/*                                                      */
+/********************************************************/
+
+PUBLIC INT pbrdch()
+{
+        INT ch;
+        if( pbspos >= pbsbase )
+	  ch = get_char(infd);
+        else
+	  ch = *(pbspos++);
+
+#if DBPB
+        trace("rdch %8x %8x %2x '%c'",pbsbase,pbspos,
+		(WORD)ch,(UBYTE)(' '<=ch&&ch<='~'?ch:'.'));
+#endif
+        return ch;
+}
+
+/********************************************************/
+/* pbdef                                                */
+/*                                                      */
+/* given a charbuf containing some text, this routine   */
+/* simply pushes it back, backwards, onto the putback   */
+/* stack.                                               */
+/*                                                      */
+/********************************************************/
+
+PUBLIC void pbdef(struct List *def)
+{
+        struct Charbuf *buf = (struct Charbuf *)(def->Head);
+
+        while( buf->node.Next != NULL )
+        {
+                BYTE *s = buf->text;
+		WORD size = buf->size;
+		
+                if( buf->size < 0 || buf->size > 1000000 )
+                {
+                	_trace("def = %x buf = %x buf->size = %x",def,buf,buf->size);
+                	error("Invalid def buffer");
+                }
+                
+                pbspos -= size;
+                
+                if( pbspos == pbstack ) 
+                {
+                	_trace("def = %x buf = %x buf->size = %x",def,buf,buf->size);
+                	_trace("3 pbstack: %x %x %x",pbstack,pbsbase,pbspos);
+                	error("Put back stack full");
+                }
+
+		memcpy(pbspos,s,(int)size);
+		
+                buf = (struct Charbuf *)(buf->node.Next);
+        }
+}
+
+/********************************************************/
+/* pbnum                                                */
+/*                                                      */
+/* push back a numerical value                          */
+/*                                                      */
+/********************************************************/
+
+PUBLIC void pbnum(INT n)
+{
+        INT m = n<0?-n:n;
+        do {
+                pbchar((UBYTE)('0' + (m%10)));
+                m = m/10;
+        } while ( m != 0 );
+        if( n < 0 ) pbchar(c_minus);
+}
+
+/********************************************************/
+/* pbhex                                                */
+/*                                                      */
+/* push back a hexadecimal value preceeded by a #       */
+/*                                                      */
+/********************************************************/
+
+PUBLIC void pbhex(INT n)
+{
+        do {
+                INT d = n & 0xF;
+                n = (n >> 4) & 0x0FFFFFFFL;
+                pbchar((UBYTE)(d<10 ? d+'0' : d-10+'A'));
+        }
+        while( n != 0 );
+        pbchar(c_hash);
+}
+@
+
+
+1.5
+log
+@fixed for non ANSI compilation
+@
+text
+@d9 4
+a12 2
+static char *RcsId = "$Id: putback.c,v 1.4 1992/07/03 09:39:16 nickc Exp paul $ Copyright (C) Perihelion Software Ltd.";
+
+d14 2
+a15 1
+
+d35 1
+a35 1
+   pbstack = (BYTE *)malloc(pbssize);
+d51 1
+a51 2
+PUBLIC void pbchar(ch)
+UBYTE ch;
+d65 1
+a65 2
+PUBLIC void pbstr(s)
+BYTE *s;
+d98 1
+a98 2
+PUBLIC setpb(newpbsbase)
+BYTE *newpbsbase;
+d108 1
+a108 2
+get_char( fd )
+FILE * fd;
+d163 1
+a163 2
+PUBLIC void pbdef(def)
+struct List *def;
+d187 1
+a187 1
+		memcpy(pbspos,s,size);
+d200 1
+a200 2
+PUBLIC void pbnum(n)
+INT n;
+d217 1
+a217 2
+PUBLIC void pbhex(n)
+INT n;
+d220 1
+a220 1
+                int d = n & 0xF;
+@
+
+
+1.4
+log
+@improved line number counting
+@
+text
+@d9 1
+a9 1
+static char *RcsId = "$Id: putback.c,v 1.3 1992/07/03 09:26:01 nickc Exp nickc $ Copyright (C) Perihelion Software Ltd.";
+d108 2
+a109 1
+get_char( FILE * fd )
+@
+
+
+1.3
+log
+@added support for line number calculations
+@
+text
+@d9 1
+a9 1
+static char *RcsId = "$Id: putback.c,v 1.2 1991/12/02 15:15:28 martyn Exp nickc $ Copyright (C) Perihelion Software Ltd.";
+d110 2
+a111 1
+  INT	ch;
+d113 2
+a114 1
+  ch = getc( infd );
+d116 7
+d124 2
+a125 2
+    ++in_line;		/* XXX - inaccurate as line number should increase after new line! */
+
+@
+
+
+1.2
+log
+@finally removed ORION
+@
+text
+@d9 1
+a9 1
+static char *RcsId = "$Id: putback.c,v 1.1 1990/09/26 19:02:48 paul Exp martyn $ Copyright (C) Perihelion Software Ltd.";
+d107 15
+d133 5
+a137 2
+        if( pbspos >= pbsbase ) ch = getc(infd);
+        else ch = *(pbspos++);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d9 1
+a9 1
+static char *RcsId = "$Id$ Copyright (C) Perihelion Software Ltd.";
+a15 5
+
+#ifdef ORION
+#define memcpy(d,s,z) bcopy(s,d,z) 
+/* #define memcpy(d,s,z) {int i; for(i=0;i<z;i++)d[i]=s[i]; } */
+#endif
+@

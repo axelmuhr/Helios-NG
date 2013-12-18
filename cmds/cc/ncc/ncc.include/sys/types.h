@@ -1,0 +1,167 @@
+/* @(#)types.h	1.2.1.1	(ULTRIX)	5/31/89 */
+
+/************************************************************************
+ *									*
+ *			Copyright (c) 1984 - 1989 by			*
+ *		Digital Equipment Corporation, Maynard, MA		*
+ *			All rights reserved.				*
+ *									*
+ *   This software is furnished under a license and may be used and	*
+ *   copied  only  in accordance with the terms of such license and	*
+ *   with the  inclusion  of  the  above  copyright  notice.   This	*
+ *   software  or  any  other copies thereof may not be provided or	*
+ *   otherwise made available to any other person.  No title to and	*
+ *   ownership of the software is hereby transferred.			*
+ *									*
+ *   This software is  derived  from  software  received  from  the	*
+ *   University    of   California,   Berkeley,   and   from   Bell	*
+ *   Laboratories.  Use, duplication, or disclosure is  subject  to	*
+ *   restrictions  under  license  agreements  with  University  of	*
+ *   California and with AT&T.						*
+ *									*
+ *   The information in this software is subject to change  without	*
+ *   notice  and should not be construed as a commitment by Digital	*
+ *   Equipment Corporation.						*
+ *									*
+ *   Digital assumes no responsibility for the use  or  reliability	*
+ *   of its software on equipment which is not supplied by Digital.	*
+ *									*
+ ************************************************************************/
+
+/* ------------------------------------------------------------------------
+ * Modification History: /sys/h/types.h
+ *
+ * 02-Mar-1989	Todd M. Katz		TMK0001
+ *	Added volatile type definitions: vu_long, vu_short, vu_char,
+ *	v_long, v_short, and v_char.
+ *
+ *  1-Feb-89 -- jmartin
+ *	typedef s_char
+ *
+ * 15-Jan-88	lp
+ *	Merge of final 43BSD changes.
+ * 
+ * 31-August-1987 -- Mark Parenti
+ *	Add definitions needed for POSIX compliance
+ *	
+ * 27-April-1987 -- Larry Cohen
+ *	Modify the typedef "fd_set" to accomodate 64 file descriptors.
+ *
+ * 	David L Ballenger, 8-Mar-1985
+ * 0002	Add types for System V compatibility.
+ *
+ * 23 Oct 84 -- jrs
+ *	Add ifdef so we can be nested without problem
+ *	Derived from 4.2BSD, labeled:
+ *		types.h 6.2	84/06/09
+ *
+ * -----------------------------------------------------------------------
+ */
+
+#ifndef _TYPES_
+#define	_TYPES_
+/*
+ * Basic system types and major/minor device constructing/busting macros.
+ */
+
+/* major part of a device */
+#define	major(x)	((int)(((unsigned)(x)>>8)&0377))
+
+/* minor part of a device */
+#define	minor(x)	((int)((x)&0377))
+
+/* make a device number */
+#define	makedev(x,y)	((dev_t)(((x)<<8) | (y)))
+
+typedef	unsigned char	u_char;
+typedef	unsigned short	u_short;
+typedef	unsigned int	u_int;
+typedef	unsigned int	uint;		/* sys V compatibility */
+typedef	unsigned long	u_long;
+typedef	unsigned short	ushort;		/* sys III compat */
+typedef
+#ifdef mips
+	signed
+#endif mips
+		char	s_char;
+
+typedef	volatile char		v_char;
+typedef	volatile short		v_short;
+typedef	volatile long		v_long;
+typedef	volatile unsigned char	vu_char;
+typedef	volatile unsigned short	vu_short;
+typedef	volatile unsigned long	vu_long;
+
+#ifdef vax
+typedef	struct	_physadr { int r[1]; } *physadr;
+typedef	struct	label_t	{
+	int	val[14];
+} label_t;
+#endif vax
+
+#ifdef mips
+typedef	struct	_physadr { int r[1]; } *physadr;
+/*
+ * WARNING:
+ * this must match the definition of kernel jmpbuf's in machine/pcb.h
+ */
+typedef	struct	label_t	{
+	int	val[12];
+} label_t;
+#endif mips
+
+typedef	struct	_quad { long val[2]; } quad;
+typedef	long	daddr_t;
+typedef	char *	caddr_t;
+typedef	u_long	ino_t;
+typedef u_long	gno_t;
+typedef short	cnt_t;			/* sys V compatibility */
+typedef	long	swblk_t;
+
+#ifndef _SIZE_T
+#define _SIZE_T
+typedef unsigned size_t;
+#endif
+
+typedef	int	time_t;
+typedef	short	dev_t;
+typedef	int	off_t;
+typedef long	paddr_t;		/* sys V compatibility */
+typedef long	key_t;			/* sys V compatibility */
+typedef	int	clock_t;		/* POSIX compliance    */
+typedef u_short	mode_t;			/* POSIX compliance    */
+typedef short	nlink_t;		/* POSIX compliance    */
+typedef short	uid_t;			/* POSIX compliance    */
+typedef int	pid_t;			/* POSIX compliance    */
+typedef short	gid_t;			/* POSIX compliance    */
+
+#define	NBBY	8		/* number of bits in a byte */
+/*
+ * Select uses bit masks of file descriptors in longs.
+ * These macros manipulate such bit fields (the filesystem macros use chars).
+ * FD_SETSIZE may be defined by the user, but the default here
+ * should be >= NOFILE (param.h).
+ */
+#ifndef	FD_SETSIZE
+#define	FD_SETSIZE	64
+#endif	FD_SETSIZE
+
+/* How many things we'll allow select to use. 0 if unlimited */
+#define MAXSELFD	64
+typedef long	fd_mask;
+#define NFDBITS	(sizeof(fd_mask) * NBBY)	/* bits per mask (power of 2!)*/
+#define NFDSHIFT 5				/* Shift based on above */
+#ifndef howmany
+#define	howmany(x, y)	(((x)+((y)-1))/(y))
+#endif howmany
+
+typedef	struct fd_set {
+	fd_mask	fds_bits[howmany(FD_SETSIZE, NFDBITS)];
+} fd_set;
+
+#define	FD_SET(n, p)	((p)->fds_bits[(n)/NFDBITS] |= (1 << ((n) % NFDBITS)))
+#define	FD_CLR(n, p)	((p)->fds_bits[(n)/NFDBITS] &= ~(1 << ((n) % NFDBITS)))
+#define	FD_ISSET(n, p)	((p)->fds_bits[(n)/NFDBITS] & (1 << ((n) % NFDBITS)))
+#define FD_ZERO(p)	bzero((char *)(p), sizeof(*(p)))
+
+#endif _TYPES_

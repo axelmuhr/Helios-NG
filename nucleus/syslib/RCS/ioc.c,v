@@ -1,0 +1,1252 @@
+head	1.14;
+access;
+symbols
+	Helios_1_3_1:1.14
+	Helios_C40_1_3_Official_Release:1.13
+	Alenia_release:1.13
+	Helios1_3:1.13
+	C40_Field_Test_2:1.13
+	C40_Field_Test_R1:1.12
+	Helios13_beta:1.12
+	Helios1_2_2:1.7
+	Helios1_2_2Beta:1.7
+	Helios1_2_1:1.7
+	Helios1_2:1.6
+	V1_2Beta0:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.14
+date	93.07.09.13.36.54;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.09.04.09.52.06;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.05.02.10.43.46;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.05.02.10.41.10;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.05.01.13.14.40;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.04.28.09.03.41;	author paul;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.04.27.16.14.36;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.01.16.11.44.24;	author nick;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.11.28.17.31.38;	author nick;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.11.28.11.22.42;	author nick;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.01.15.25.26;	author nick;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.10.19.11.05.01;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.05.12.52.23;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.12.07.35;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@IOC message operations
+@
+
+
+1.14
+log
+@fixed conflicts with C++
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--                     H E L I O S   N U C L E U S                      --
+--                     ---------------------------                      --
+--                                                                      --
+--            Copyright (C) 1987,1990, Perihelion Software Ltd.         --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- syslib/ioc.c								--
+--                                                                      --
+--	Passive handle operations which are all sent to the IOC.	--
+--									--
+--                                                                      --
+--	Author:  NHG 16/8/87						--
+--		 NHG 03/8/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId:	 %W%	%G% Copyright (C) 1987, Perihelion Software Ltd.*/
+/* $Id: ioc.c,v 1.13 1992/09/04 09:52:06 nickc Exp nickc $ */
+
+#define _in_ioc
+
+#include "sys.h"
+
+/*--------------------------------------------------------
+-- SetupStream						--
+--							--
+-- Initialize the stream structure from the given 	--
+-- open reply message. This routine has to be a little	--
+-- careful since it may be used to re-initialize an	--
+-- existing stream in ReOpen, Bind, Connect etc.	--
+--							--
+--------------------------------------------------------*/
+
+static bool SetupStream( Stream *stream, MCB *mcb )
+{
+	IOCReply1 *rep = (IOCReply1 *)mcb->Control;
+	Port server = mcb->MsgHdr.Reply;
+
+	if( (mcb->MsgHdr.ContSize*sizeof(word)) < (sizeof(IOCReply1)-sizeof(word)) ) return false;
+		
+	stream->Type = rep->Type;
+	stream->Flags = Flags_Stream|rep->Flags;
+
+	if ( server == NullPort )
+	{
+		FreePort( stream->Server );
+		stream->Server = rep->Object;
+	}
+	else 
+	{
+		if( stream->Server != server ) FreePort(stream->Server);
+		stream->Server = server;
+		stream->Flags |= Flags_Server;
+
+		/* pipes do not have a server despite returning a port on open */
+		if( stream->Type == Type_Pipe ) stream->Flags ^= Flags_Server;
+
+		if( (server & Port_Flags_Remote) != 0 )
+			stream->Flags |= Flags_Remote;
+	}
+
+	stream->Access = rep->Access;
+	stream->Reply = mcb->MsgHdr.Dest;
+	if(mcb->MsgHdr.FnRc >= Err_Null ) stream->FnMod = mcb->MsgHdr.FnRc;
+	stream->Timeout = stream->Flags&Flags_Fast?mcb->Timeout:IOCTimeout;
+
+
+	strcpy(stream->Name,&mcb->Data[rep->Pathname]);
+	
+	if( (stream->Type == Type_Pseudo) && (stream->Flags & Flags_OpenOnGet) )
+		ReOpen(stream);	
+
+	return true;
+}
+
+/*--------------------------------------------------------
+-- Open							--
+--							--
+-- Open a Stream to the named object.			--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC Stream *
+Open(
+     Object *	object,
+     string	name,
+     word	mode )
+{
+	word rc = Err_Null;
+	Stream *stream = NULL;
+	MCB *mcb;
+	IOCReply1 *rep;
+	word stlen;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Open(%O,%N,%x)",object,name,mode);
+#endif
+
+	if( CheckObject(object,C_Locate) != Err_Null ) return Null(Stream);
+
+	reply = NewPort();
+
+	mcb = NewMsgBuf(0);
+	rep = (IOCReply1 *)mcb->Control;
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP|FG_Open|object->FnMod);
+
+	MarshalCommon(mcb,object,name);
+
+	MarshalWord(mcb,mode);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	stlen = sizeof(Stream) + (word)strlen(mcb->Data+rep->Pathname) + SafetyMargin;
+
+	stream = (Stream *)Malloc(stlen);
+
+	if( stream == NULL ) 
+	{
+		rc = EC_Error|SS_SysLib|EG_NoMemory|EO_Stream;
+		goto Done;
+	}
+	else memclr( (void *)stream, (int)stlen );
+
+	if( SetupStream( stream, mcb ) )
+	{
+		stream->Flags |= mode&Flags_SaveMode;
+		InitSemaphore( &stream->Mutex, 1 );
+		stream->Pos = 0;
+	}
+
+	AddStream( stream );	
+
+	rc = Err_Null;
+	
+	if( mode & Flags_Append ) Seek(stream, S_End, 0);
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("Open: %E stream: %S",rc,stream);
+#endif
+	FreeMsgBuf(mcb);
+
+	if( rc < Err_Null ) FreePort(reply);
+
+	object->Result2 = rc;
+	return stream;
+}
+
+/*--------------------------------------------------------
+-- Locate						--
+--							--
+-- Find the named object and allocate an object struct	--
+-- for it.						--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC Object *
+Locate(
+       Object *	object,
+       STRING	name )
+{
+	word rc = Err_Null;
+	Object *obj = Null(Object);
+	MCB *mcb;
+	IOCReply1 *rep;
+	word oblen;
+	Port reply;
+	word fnmod = 0;
+
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Locate(%O,%N)",object,name);
+#endif
+	/* Locate can be called with a null object pointer */
+	
+	if( object != NULL ) 
+	{	
+		if( CheckObject(object,C_Locate) != Err_Null )
+		  {
+		    return NULL;
+		  }
+		
+		fnmod = object->FnMod;
+	}
+
+	reply = NewPort();
+
+	mcb = NewMsgBuf(0);
+	rep = (IOCReply1 *)mcb->Control;
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP|FG_Locate|fnmod);
+
+	MarshalCommon(mcb,object,name);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null )
+	  {
+	    goto Done;
+	  }
+
+	oblen = sizeof(Object) + (word)strlen(mcb->Data+rep->Pathname) + SafetyMargin;
+
+	obj = (Object *)Malloc(oblen);
+	
+	if( obj == NULL )
+	{
+		rc = EC_Error|SS_SysLib|EG_NoMemory|EO_Object;
+
+		goto Done;
+	}
+	else memclr( (void *)obj, (int)oblen );
+
+	obj->Type    = rep->Type;
+	obj->Flags   = rep->Flags;
+	obj->Access  = rep->Access;
+	obj->Reply   = reply;
+	obj->FnMod   = rc & SS_Mask;
+	obj->Timeout = IOCTimeout;
+	
+	strcpy(obj->Name,mcb->Data+rep->Pathname);
+
+	AddObject( obj );
+
+	rc = Err_Null;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("Locate: %E object: %O",rc,obj);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Locate: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+
+	FreeMsgBuf(mcb);
+
+	if( object != Null(Object) ) object->Result2 = rc;
+
+	if( rc < Err_Null ) FreePort(reply);
+
+	return obj;
+}
+
+/*--------------------------------------------------------
+-- Create						--
+--							--
+-- General purpose interface to the create function	--
+-- may be used to create files, name table names, load	--
+-- code, or perform any other "creation" type operation.--
+-- The function creates a named object of the given type--
+-- using the data structure of the given size.		--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC Object *
+Create(
+       Object *	object,
+       string	name,
+       word	type,
+       word	size,
+       byte *	data )
+{
+	word rc = Err_Null;
+	Object *obj = Null(Object);
+	MCB *mcb;
+	IOCReply1 *rep;
+	word oblen;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Create(%O,%N,%T,%d,%P)",object,name,type,size,data);
+#endif
+
+	if ( CheckObject(object,C_Locate) != Err_Null )
+	  {
+	    return NULL;
+	  }
+
+	reply = NewPort();
+
+	mcb = NewMsgBuf(0);
+	rep = (IOCReply1 *)mcb->Control;
+	
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP|FG_Create|object->FnMod);
+
+	MarshalCommon(mcb,object,name);
+
+	MarshalWord(mcb,type);
+	MarshalWord(mcb,size);
+	MarshalOffset(mcb);
+	MarshalData(mcb,size,data);
+
+	mcb->Timeout = object->Timeout;
+	
+	/* IOdebug( "Create: sending message" ); */
+	
+	if ( (rc = IOCMsg(mcb, NULL)) < Err_Null )
+	  {
+	    /* IOdebug( "Create: message send failed" ); */
+	    
+	    goto Done;
+	  }
+	
+	/* IOdebug( "Create: message sent" ); */
+	
+	oblen = sizeof(Object) + (word)strlen(mcb->Data+rep->Pathname) + SafetyMargin;
+
+	obj = (Object *)Malloc(oblen);
+	
+	if ( obj == NULL )
+	  {
+	    rc = EC_Error|SS_SysLib|EG_NoMemory|EO_Object;
+		
+	    goto Done;
+	  }	
+	else memclr( (void *)obj, (int)oblen );
+
+	obj->Type    = rep->Type;
+	obj->Flags   = rep->Flags;
+	obj->Access  = rep->Access;
+	obj->Reply   = reply;
+	obj->FnMod   = rc & SS_Mask;
+	obj->Timeout = IOCTimeout;
+	
+	strcpy(obj->Name,mcb->Data+rep->Pathname);
+
+	AddObject( obj );
+
+	rc = Err_Null;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("Create: %E object: %O",rc,obj);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Create: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+
+	FreeMsgBuf(mcb);
+
+	if( rc < Err_Null ) FreePort(reply);
+
+	object->Result2 = rc;
+	
+	return obj;	
+}
+
+/*--------------------------------------------------------
+-- ObjectInfo						--
+--							--
+-- Obtain any information stored about this object	--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+ObjectInfo(
+	   Object *	object,
+	   STRING	name,
+	   byte *	info )
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("ObjectInfo(%O,%N,%P)",object,name,info);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+	
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_ObjectInfo|object->FnMod);
+
+	MarshalCommon(mcb,object,name);
+
+	if( (rc = IOCMsg(mcb,info)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("ObjectInfo: %E infosize %d",rc,mcb->MsgHdr.DataSize);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("ObjectInfo: Non-Null Reply port %x",mcb->MsgHdr.Reply);	
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+	
+}
+
+/*--------------------------------------------------------
+-- ServerInfo						--
+--							--
+-- Obtain any information from the server, the object   --
+-- serves merely to identify the server.		--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+ServerInfo(
+	   Object *	object,
+	   byte *	info )
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	Port reply;
+#ifdef SYSDEB
+	SysDebug(ioc)("ServerInfo(%O,%P)",object,info);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+	
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_ServerInfo|object->FnMod);
+
+	MarshalCommon(mcb,object,NULL);
+
+	if( (rc = IOCMsg(mcb,info)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("ServerInfo: %E infosize %d",rc,mcb->MsgHdr.DataSize);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("ServerInfo: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- Link							--
+--							--
+-- Establish a link to the object "to" under the	--
+-- name "name".						--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+Link(
+     Object *	object,
+     string	name,
+     Object *	to )
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	Port reply;
+#ifdef SYSDEB
+	SysDebug(ioc)("Link(%O,%N,%O)",object,name,to);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_Link|object->FnMod);
+
+	MarshalCommon(mcb,object,name);
+	MarshalString(mcb,to->Name);
+	MarshalCap(mcb,&to->Access);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("Link: %E",rc);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Link: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- SetDate						--
+--							--
+-- Set the datestamp on the named object to the given   --
+-- value.						--
+-- At present this routine only sets the Modified date	--
+-- on the object.					--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+SetDate(
+	Object *	object,
+	STRING		name,
+	DateSet *	dates )
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("SetDate(%O,%N)",object,name);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_SetDate|object->FnMod);
+
+	MarshalCommon(mcb,object,name);
+	MarshalDate(mcb,dates->Creation);
+	MarshalDate(mcb,dates->Access);
+	MarshalDate(mcb,dates->Modified);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("SetDate: %E",rc);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("SetDate: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- Protect						--
+--							--
+-- Set the access matrix of the the named object.	--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+Protect(
+	Object *	object,
+	STRING		name,
+	Matrix		matrix )
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Protect(%O,%N,%X)",object,name,matrix);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_Protect|object->FnMod);
+
+	MarshalCommon(mcb,object,name);
+	MarshalWord(mcb,matrix);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("Protect: %E",rc);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Protect: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- Revoke						--
+--							--
+-- Revoke all capabilities for the given object, the	--
+-- object structure will be re-initialized with a new	--
+-- capability for the given object.			--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+Revoke( Object * object )
+{
+	word rc = Err_Null;
+	MCB *mcb;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Revoke(%O)",object);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_Revoke|object->FnMod);
+
+	MarshalCommon(mcb,object,NULL);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+	object->Access = *(Capability *)mcb->Control;
+
+    Done:
+#ifdef SYSDEB
+	SysDebug(ioc)("Revoke: %E",rc);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Revoke: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- Delete						--
+--							--
+-- Delete the named object.				--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD
+Delete(
+       Object *	object,
+       STRING	name )
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Delete(%O,%N)",object,name);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_Delete|object->FnMod);
+
+	MarshalCommon(mcb,object,name);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+
+    Done:
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Delete: %E",rc);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Delete: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- Rename						--
+--							--
+-- Rename the object called "from" relative to object   --
+-- as "to" relative to object. Both paths must be on    --
+-- the same server. In general this only works for	--
+-- filing systems.					--
+--							--
+--------------------------------------------------------*/
+
+PUBLIC word Rename(Object *object, string from, string to)
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Rename(%O,%N,%N)",object,from,to);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_Rename|object->FnMod);
+
+	MarshalCommon(mcb,object,from);
+	MarshalString(mcb,to);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	rc = Err_Null;
+
+    Done:
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Rename: %E",rc);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Rename: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+/*--------------------------------------------------------
+-- Refine						--
+--							--
+-- Refine the access allowed by the object's capability --
+--							--
+--------------------------------------------------------*/
+
+PUBLIC WORD Refine(Object *object, AccMask mask)
+{
+	word rc = Err_Null;
+	MCB *mcb ;
+	IOCReply2 *rep;
+	Port reply;
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Refine(%O,%A)",object,mask);
+#endif
+
+	if( (rc = CheckObject(object,C_Locate)) != Err_Null ) return rc;
+
+	reply = object->Reply;
+	
+	mcb = NewMsgBuf(0);
+
+	InitMCB(mcb,MsgHdr_Flags_preserve,
+		MyTask->IOCPort,reply,FC_GSP+FG_Refine|object->FnMod);
+
+	MarshalCommon(mcb,object,NULL);
+	MarshalWord(mcb,mask);
+
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+	rep = (IOCReply2 *)mcb->Control;
+
+	object->Access = rep->Cap;	/* copy new capability in */
+
+	rc = Err_Null;
+
+    Done:
+
+#ifdef SYSDEB
+	SysDebug(ioc)("Refine: %E",rc);
+	if( mcb->MsgHdr.Reply != NullPort ) SysDebug(error)("Refine: Non-Null Reply port %x",mcb->MsgHdr.Reply);
+#endif
+	if( mcb->MsgHdr.Reply != NullPort ) FreePort(mcb->MsgHdr.Reply);
+	FreeMsgBuf(mcb);
+
+	object->Result2 = rc;
+	
+	return rc;
+}
+
+@
+
+
+1.13
+log
+@removed compile time warnings
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.12 1992/05/02 10:43:46 nickc Exp nickc $ */
+d206 1
+a206 1
+	obj = Malloc(oblen);
+@
+
+
+1.12
+log
+@oops, bit of debugging left in from previous delta
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.11 1992/05/02 10:41:10 nickc Exp nickc $ */
+d84 5
+a88 4
+PUBLIC Stream *Open(object,name,mode)
+Object *object;
+string name;
+word mode;
+d160 4
+a163 3
+PUBLIC Object *Locate(object,name)
+Object *object;
+STRING name;
+d256 7
+a262 6
+PUBLIC Object *Create(object,name,type,size,data)
+Object *object;
+string name;
+word type;
+word size;
+byte *data;
+d356 5
+a360 4
+PUBLIC WORD ObjectInfo(object,name,info)
+Object *object;
+STRING name;
+byte *info;
+d408 4
+a411 3
+PUBLIC WORD ServerInfo(object,info)
+Object *object;
+byte *info;
+d457 5
+a461 3
+PUBLIC WORD Link(object,name,to)
+Object *object, *to;
+string name;
+d511 5
+a515 4
+PUBLIC WORD SetDate(object,name,dates)
+Object *object;
+STRING name;
+DateSet *dates;
+d563 5
+a567 4
+PUBLIC WORD Protect(object,name,matrix)
+Object *object;
+STRING name;
+Matrix matrix;
+d615 2
+a616 2
+PUBLIC WORD Revoke(object)
+Object *object;
+d662 4
+a665 3
+PUBLIC WORD Delete(object,name)
+Object *object;
+STRING name;
+@
+
+
+1.11
+log
+@added a bit of debugging
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.10 1992/05/01 13:14:40 nickc Exp nickc $ */
+a341 2
+	
+	IOdebug( "Create: finished" );
+@
+
+
+1.10
+log
+@minor cosmetic changes
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.9 1992/04/28 09:03:41 paul Exp nickc $ */
+d271 1
+d294 3
+a296 1
+	if ( (rc = IOCMsg(mcb,NULL)) < Err_Null )
+d298 2
+d303 2
+d343 1
+a343 1
+	return obj;
+d345 1
+@
+
+
+1.9
+log
+@removed debugging
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.7 1991/01/16 11:44:24 nick Exp nickc $ */
+d271 4
+a274 1
+	if( CheckObject(object,C_Locate) != Err_Null ) return NULL;
+d293 5
+a297 2
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+
+d301 7
+a307 5
+	if( obj == NULL )
+	{
+		rc = EC_Error|SS_SysLib|EG_NoMemory|EO_Object;
+		goto Done;
+	}	
+d310 5
+a314 5
+	obj->Type = rep->Type;
+	obj->Flags = rep->Flags;
+	obj->Access = rep->Access;
+	obj->Reply = reply;
+	obj->FnMod = rc & SS_Mask;
+@
+
+
+1.8
+log
+@hmm, temporary delta whilst debugging
+@
+text
+@d171 1
+a171 2
+	IOdebug( "LOCATE: o = %x (%s), name = %x (%s)", object, object->Name, name, name );
+	
+a180 2
+		    IOdebug( "LOCATE: CheckObject failed" );
+		    
+a196 2
+	IOdebug( "LOCATE: common part marshalled (%s)", name );
+	
+a198 2
+	    IOdebug( "LOCATE: IOCMsg failed" );
+	    
+a209 2
+		IOdebug( "LOCATE: out of mem" );
+		
+a213 2
+	IOdebug( "LOCATE: structure cleared" );
+	
+a222 2
+	IOdebug( "LOCATE: strcopied" );
+	
+a224 2
+	IOdebug( "LOCATE: obj added" );
+	
+a239 2
+	IOdebug( "LOCATE: finished" );
+	
+@
+
+
+1.7
+log
+@Fast flag added to cause streams to base timeouts on Locate/Open round-trip
+time rather than IOCTimeout, which is 20 seconds.
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.6 90/11/28 17:31:38 nick Exp $ */
+d116 1
+a116 1
+	stlen = sizeof(Stream) + strlen(mcb->Data+rep->Pathname) + SafetyMargin;
+d125 1
+a125 1
+	else memclr( (void *)stream, stlen );
+d171 2
+d177 1
+d180 7
+a186 1
+		if( CheckObject(object,C_Locate) != Err_Null ) return NULL;
+d200 8
+a207 1
+	if( (rc = IOCMsg(mcb,NULL)) < Err_Null ) goto Done;
+d209 1
+a209 1
+	oblen = sizeof(Object) + strlen(mcb->Data+rep->Pathname) + SafetyMargin;
+d212 1
+d216 3
+d221 1
+a221 1
+	else memclr( (void *)obj, oblen );
+d223 7
+a229 5
+	obj->Type = rep->Type;
+	obj->Flags = rep->Flags;
+	obj->Access = rep->Access;
+	obj->Reply = reply;
+	obj->FnMod = rc & SS_Mask;
+d231 1
+d234 2
+d238 2
+d255 2
+d309 1
+a309 1
+	oblen = sizeof(Object) + strlen(mcb->Data+rep->Pathname) + SafetyMargin;
+d317 1
+a317 1
+	else memclr( (void *)obj, oblen );
+@
+
+
+1.6
+log
+@bugs introduced by previous fix to SetupStream fixed
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.5 90/11/28 11:22:42 nick Exp Locker: nick $ */
+d66 1
+a66 1
+	stream->Timeout = mcb->Timeout;
+@
+
+
+1.5
+log
+@SetupStream must not zero Pos, now done explicitly in Open
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.4 90/11/01 15:25:26 nick Exp Locker: nick $ */
+d35 1
+a35 1
+static void SetupStream( Stream *stream, MCB *mcb )
+d40 1
+a40 1
+	if( (mcb->MsgHdr.ContSize*sizeof(word)) < (sizeof(IOCReply1)-sizeof(word)) ) return;
+d74 1
+d127 6
+a132 4
+	SetupStream( stream, mcb );
+	stream->Flags |= mode&Flags_SaveMode;
+	InitSemaphore( &stream->Mutex, 1 );
+	stream->Pos = 0;
+@
+
+
+1.4
+log
+@Create now takes timeout out of object, it also initializes FnMod and
+Timeout fields in Object structure.
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.3 90/10/19 11:05:01 nick Exp $ */
+a67 1
+	stream->Pos = 0;
+d129 2
+a130 1
+	
+@
+
+
+1.3
+log
+@safety margin added to sizes of Stream and Object structures
+@
+text
+@d19 1
+a19 1
+/* $Id: ioc.c,v 1.2 90/09/05 12:52:23 nick Exp Locker: nick $ */
+d273 1
+a273 1
+	mcb->Timeout = LoadTimeout;
+d291 2
+@
+
+
+1.2
+log
+@SetupStream now checks for reply size, only sets FnMod if FnRc is >= Err_Null
+@
+text
+@d19 1
+a19 1
+/* $Id$ */
+d116 1
+a116 1
+	stlen = sizeof(Stream) + strlen(mcb->Data+rep->Pathname) + 1;
+d190 1
+a190 1
+	oblen = sizeof(Object) + strlen(mcb->Data+rep->Pathname) + 1;
+d277 1
+a277 1
+	oblen = sizeof(Object) + strlen(mcb->Data+rep->Pathname);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 1
+a19 5
+/* $Id$
+ *
+ * $Log$
+ *
+ */
+d39 3
+a41 1
+	
+d65 1
+a65 1
+	stream->FnMod = mcb->MsgHdr.FnRc;
+@

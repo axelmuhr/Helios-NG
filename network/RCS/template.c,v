@@ -1,0 +1,348 @@
+head	1.2;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2_Fault:1.2
+	Helios1_2_2_Native:1.2
+	Helios1_2_2_native_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	91.03.01.17.18.00;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.15.10.39;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@Various files were left checked out before, cleaning up.
+@
+text
+@/*------------------------------------------------------------------------
+--									--
+--			H E L I O S					--
+--			-----------					--
+--									--
+--		Copyright (C) 1990, Perihelion Software Ltd.		--
+--			All Rights Reserved.				--
+--									--
+--	template.c							--
+--		  Template for the network device drivers.		--
+--									--
+--	Author : BLV, 15.8.90						--
+--									--
+------------------------------------------------------------------------*/
+
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/template.c,v 1.1 90/09/12 15:10:39 jon Exp Locker: bart $";
+
+#define	ResetDriver 1
+
+#pragma -s1		/* switch off stack checking			*/
+#pragma -f0		/* switch off vector stack			*/
+#pragma -g0		/* and do not put the names into the code	*/
+
+#include <syslib.h>
+#include <device.h>
+#include <codes.h>
+#include <root.h>
+#include <gsp.h>
+#include <module.h>
+#include <stdarg.h>
+#include <string.h>
+#include "private.h"
+#include "rmlib.h"
+#include "netaux.h"
+
+#ifdef Malloc
+#undef Malloc
+#endif
+
+/**
+*** Machine independent routines.
+**/
+static void	DeviceOperate(DCB *, DriverRequest *);
+static word	DeviceClose(DCB *);
+
+/**
+*** Machine specific routines
+**/
+#if ResetDriver
+static void	driver_Initialise(	NetworkDCB *, DriverRequest *);
+static void	driver_Reset(		NetworkDCB *, DriverRequest *);
+static void	driver_Analyse(		NetworkDCB *, DriverRequest *);
+static void	driver_TestReset(	NetworkDCB *, DriverRequest *);
+static void	driver_Boot(		NetworkDCB *, DriverRequest *);
+static void	driver_ConditionalReset(NetworkDCB *, DriverRequest *);
+#else
+static void	driver_Initialise(	NetworkDCB *, DriverRequest *);
+static void	driver_MakeLinks(	NetworkDCB *, DriverRequest *);
+static void	driver_TestLinks(	NetworkDCB *, DriverRequest *);
+static void	driver_ObtainProcessors(NetworkDCB *, DriverRequest *);
+static void	driver_MakeInitialLinks(NetworkDCB *, DriverRequest *);
+static void	driver_FreeProcessors(	NetworkDCB *, DriverRequest *);
+#endif
+
+DCB	*DevOpen(Device *dev, NetworkDCB *network_dcb)
+{
+  network_dcb->DCB.Device	= dev;
+  network_dcb->DCB.Operate	= &DeviceOperate;
+  network_dcb->DCB.Close	= &DeviceClose;
+  return(&(network_dcb->DCB));  
+}
+
+static void DeviceOperate(DCB *device, DriverRequest *request)
+{ NetworkDCB	*network_dcb = (NetworkDCB *) device;
+
+  switch(request->FnRc)
+   {
+   	case	ND_Initialise	: 
+   		driver_Initialise(network_dcb, request); break;
+
+#if ResetDriver
+	case	ND_Reset	:
+		driver_Reset(network_dcb, request); break;
+	case	ND_Analyse	:
+		driver_Analyse(network_dcb, request); break;
+	case	ND_TestReset	:
+		driver_TestReset(network_dcb, request); break;
+	case	ND_Boot		:
+		driver_Boot(network_dcb, request); break;	
+	case	ND_ConditionalReset :
+		driver_ConditionalReset(network_dcb, request); break;
+#else
+	case	ND_MakeLinks	:
+		driver_MakeLinks(network_dcb, request); break;
+	case	ND_TestLinks	:
+		driver_TestLinks(network_dcb, request); break;
+	case	ND_ObtainProcessors :
+		driver_ObtainProcessors(network_dcb, request); break;
+	case	ND_MakeInitialLinks :
+		driver_MakeInitialLinks(network_dcb, request); break;
+	case	ND_FreeProcessors :
+		driver_FreeProcessors(network_dcb, request); break;
+#endif
+
+	default	:
+		request->FnRc = EC_Error + SS_NetServ + EG_WrongFn;
+   }
+}
+
+static word DeviceClose(DCB *device)
+{ 
+  return(Err_Null);
+}
+
+/**
+*** Access to routines in the network server, if needed
+**/
+static void driver_report(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+  
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->report))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+static void driver_fatal(NetworkDCB *device, char *format, ...)
+{ va_list	args;
+  NetworkFuncs	*Functions = device->Functions;
+  int		arg1, arg2, arg3, arg4, arg5;
+  
+   va_start(args, format);
+   arg1 = va_arg(args, int);
+   arg2 = va_arg(args, int);
+   arg3 = va_arg(args, int);
+   arg4 = va_arg(args, int);
+   arg5 = va_arg(args, int);
+   va_end(args);
+   (*(Functions->fatal))(format, arg1, arg2, arg3, arg4, arg5);
+}
+
+static RmProcessor driver_LookupProcessor(NetworkDCB *device, char *name)
+{ RmNetwork	Network = device->Network;
+  NetworkFuncs	*Functions  = device->Functions;
+  word		temp;
+  
+  temp = (*(Functions->LookupProcessor))(Network, name);
+  return((RmProcessor) temp);
+}
+
+static	word	driver_rexec(NetworkDCB *device, RmProcessor processor,
+		Object *code, Environ *env, word delay)
+{ NetworkFuncs	*Functions = device->Functions;
+  word		temp;
+  
+  temp = (*(Functions->rexec))(processor, code, env, delay);
+  return(temp);
+}
+  
+static word driver_BuildConfig(NetworkDCB *device, RmProcessor source,
+	RmProcessor dest, int destlink, Config **config_vec, word *confsize)
+{ NetworkFuncs	*Functions	= device->Functions;
+  word		temp;
+  
+  temp = (*(Functions->BuildConfig))(source, dest, destlink, config_vec, confsize);
+  return(temp);
+}
+
+static word driver_StartNetworkAgent(NetworkDCB *device, RmProcessor processor)
+{ NetworkFuncs	*Functions	= device->Functions;
+  word		temp;
+  
+  temp = (*(Functions->StartNetworkAgent))(processor);
+  return(temp);
+}
+
+static word driver_StopNetworkAgent(NetworkDCB *device, RmProcessor processor)
+{ NetworkFuncs	*Functions	= device->Functions;
+  word		temp;
+  
+  temp = (*(Functions->StopNetworkAgent))(processor);
+  return(temp);
+}
+
+/**
+*** The hardware specific routines. These are documented separately.
+**/
+#if ResetDriver
+
+/**
+*** This routine should examine the various processors specified by
+*** the hardware facility and fill in the slot inside the ProcessorEntry
+*** structure. In particular, the flags field should be initialised to
+*** tell the network server approximately what the device driver is capable
+*** of.
+**/
+static void	driver_Initialise(NetworkDCB *device, DriverRequest *request)
+{ 
+}
+
+/**
+*** Reset the processor or processors specified in the request. With some
+*** hardware, notably the Parsytec machines, this may involve sorting the
+*** processors in a suitable order so that the reset really can happen.
+**/
+static void	driver_Reset(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** Analyse the processor(s) specified. This is not actually used at
+*** present, but I may have to put it in again at a later stage.
+**/
+static void	driver_Analyse(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** With same hardware it may or may not be possible to reset a particular
+*** processor or group of processors. For example, with the tram reset
+*** scheme a processor reset is only possible if all the affected processors
+*** should be reset. This routine merely checks whether or not the reset
+*** is possible, it does not actually do the reset.
+**/
+static void	driver_TestReset(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** Some device drivers may indicate that a special bootstrap is needed.
+*** If so this routine is called. Note that the reset will not be called,
+*** so this routine has to do its own reset.
+**/
+static void	driver_Boot(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** If the device driver cannot guarantee a reset then this routine may
+*** be called. It is similar to TestReset() above, but will do the
+*** actual reset if possible.
+**/
+static void driver_ConditionalReset(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+#else
+/**
+*** Initialising the configuration hardware. This routine is called only
+*** when the Network Server starts up. It should do any nasty things
+*** like setting up the hardware, and rearranging the links.
+**/
+static void	driver_Initialise(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+static void	driver_MakeInitialLinks(NetworkDCB *device, 
+					DriverRequest *request)
+{
+}
+
+/**
+*** Make the links for all the processors specified in the request. Do not
+*** worry about enabling/disabling links or anything like that, because the
+*** Network Server will have done that already. If the processors concerned
+*** include native ones matters are slightly more complicated, and the
+*** native application may have to do its own synchronisation.
+**/
+static void	driver_MakeLinks(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+/**
+*** Test whether or not the interconnections requested are possible.
+*** Do not actually modify the hardware.
+**/
+static void	driver_TestLinks(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+static void driver_ObtainProcessors(NetworkDCB *device, DriverRequest *request)
+{
+}
+
+static void	driver_FreeProcessors(NetworkDCB *device, 
+					DriverRequest *request)
+{
+}
+
+#endif
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d16 1
+a16 1
+static char *rcsid = "$Header$";
+@

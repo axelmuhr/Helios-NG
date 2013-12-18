@@ -1,0 +1,213 @@
+head	1.5;
+access;
+symbols
+	Helios_1_3_1:1.4
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.5
+date	93.12.20.12.08.57;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	93.08.12.11.01.02;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.11.24.12.13.50;	author nick;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.02.13.16.15.03;	author nick;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.02.13.16.06.51;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@fixed compile time warnings (ARM world)
+@
+text
+@#include <device.h>
+#include <syslib.h>
+#include <nonansi.h>
+#include <queue.h>
+#include <sem.h>
+#include <codes.h>
+#include <attrib.h>
+
+#include "ttydev.h"
+
+typedef struct
+{
+	DCB		dcb;
+	Stream		*read;
+	Stream		*write;
+} TermDCB;
+
+word
+DoRead(TermDCB *dcb, TermReq *req)
+{
+	word timeout = req->DevReq.Timeout;
+	word evil = timeout == -1;
+	word tstep = OneSec / 40;
+	word actual = 0;
+
+	while (	
+		((actual = Read(dcb->read, (char *)req->Buf, req->Size, 0)) == 0)
+		&&
+		(evil || timeout >= 0)
+	      )
+	{
+		Delay(tstep);
+		timeout -= tstep;
+	}
+
+	return actual;	
+}
+
+void DevOperate(TermDCB *dcb, TermReq *req)
+{
+	switch(req->DevReq.Request)
+	{
+	case FG_Read:
+/*		IOdebug("Terminal Read %x %d",req->Buf,req->Size); */
+		req->Actual = DoRead(dcb, req);
+		req->DevReq.Result = 0;
+		break;		
+		
+	case FG_Write:
+/*		IOdebug("Terminal Write buf %x size %d",req->Buf,req->Size); */
+		req->Actual = Write(dcb->write, (char *)req->Buf, req->Size, req->DevReq.Timeout);
+		req->DevReq.Result = 0;
+		break;
+		
+	case FG_SetInfo:
+/*		IOdebug("Terminal SetInfo called"); */
+		req->DevReq.Result = -1;
+		return;
+
+	case FG_GetInfo:
+/*		IOdebug("Terminal GetInfo called"); */
+		req->DevReq.Result = -1;
+		return;
+
+	default:
+		req->Actual = 0;
+		req->DevReq.Result = EC_Error + SS_Device + EG_WrongFn;
+		break;
+	}
+	(*req->DevReq.Action)(dcb,req);
+	return;
+}
+
+word DevClose(TermDCB *dcb)
+{
+	Free(dcb);
+	return (0);
+}
+
+
+TermDCB *DevOpen(MPtr dev, TermDeviceInfo *info)
+{
+	TermDCB *dcb;
+	
+	dcb = (TermDCB *)Malloc(sizeof(TermDCB));
+	
+   	if( dcb == NULL ) return NULL;
+
+	dcb->read = info->read;
+	dcb->write = info->write;
+
+	if ( (dcb->read == NULL) || (dcb->write == NULL) )
+	{
+		Free (dcb);
+		return (NULL);
+	}
+		
+	dcb->dcb.Device = dev;
+	dcb->dcb.Operate = DevOperate;
+	dcb->dcb.Close = DevClose;
+
+	return (dcb);
+}
+@
+
+
+1.4
+log
+@fixed compile time warnings
+@
+text
+@d27 1
+a27 1
+		((actual = Read(dcb->read, req->Buf, req->Size, 0)) == 0)
+d51 1
+a51 1
+		req->Actual = Write(dcb->write, req->Buf, req->Size, req->DevReq.Timeout);
+d85 1
+a85 1
+	dcb = Malloc(sizeof(TermDCB));
+@
+
+
+1.3
+log
+@Device argument to OpenDev converted to MPtr.
+@
+text
+@d21 4
+a24 4
+	int timeout = req->DevReq.Timeout;
+	int evil = timeout == -1;
+	int tstep = OneSec / 40;
+	int actual = 0;
+a40 3
+	TermInfoReq *ireq = (TermInfoReq *)req;
+	TermInfo *info = &ireq->TermInfo;
+	
+@
+
+
+1.2
+log
+@made directory-structure independent
+@
+text
+@d84 1
+a84 1
+TermDCB *DevOpen(Device *dev, TermDeviceInfo *info)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d9 1
+a9 1
+#include "../tty/ttydev.h"
+@

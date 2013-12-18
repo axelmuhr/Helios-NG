@@ -1,0 +1,278 @@
+.TH IMB 4 "May 23, 1989"
+.SH NAME
+imb \- Device driver for Inmos B008 Motherboard
+.SH CONFIG
+.B "device imb0 at atio ? csr 0x150 dmachan 1 irq 3 priority 3"
+
+Up to 2 devices (
+.I imb0 
+and 
+.I imb1
+) may be configured. Switches on the board
+set up the 
+.I csr, 
+which can be 0x150, 0x200 or 0x300. The dma channel 
+.I dmachan,
+which 
+can be 0, 1 or 3, and the interrupt request channel 
+.I irq,
+which can be 3 or 5,
+can either be set by the driver or by switches on the board, depending on
+the model of B008.
+
+The device can either be configured in the kernel, or loaded as a loadable 
+driver by using the
+.B imb_load
+command. In this case the config information must be set up in the file
+.I imb_config.
+
+.SH AVAILABILITY
+Sun386i systems only.
+
+.SH SYNOPSIS
+.nf
+.nh
+.ft B
+#include <sys/imbio.h>
+.PP
+.ft B
+fd     = open( device_pathname, flags );
+result = close( fd );
+result = read( fd, buffer, number_of_bytes );
+result = write( fd, buffer, number_of_bytes );
+result = ioctl( fd, command [, \fIarg\fB ] );
+result = select( width, read_fds, write_fds, exception_fds, timeout )
+.ft R
+
+.SH DESCRIPTION
+.LP
+The 
+.I imb
+device driver is a character based device driver, produced by K-par Systems 
+Ltd., to allow the Inmos B008 Transputer Motherboard to be used
+on a Sun 386i.  
+
+Reading and writing can be done either directly to the
+link adaptors on the board, or by DMA. The default is to use link adaptors,
+but this can be changed by an 
+.BR ioctl (2).
+
+The 
+.BR select (2)
+function is fully supported with these drivers.  
+An exception is considered to have occurred if the error flag on the
+board has been asserted.
+
+Only one user may have a device open at a time. If a user
+attempts to 
+.BR open (2)
+a device already opened by another user the
+open will fail with
+.B errno
+set to EBUSY.
+On the first open of the device by a user DMA is enabled and abort
+on error is cleared. On subsequent opens there is no change in these
+parameters. The only flags supported on the 
+.BR open (2)
+call are
+.B O_RDONLY,
+.B O_WRONLY 
+and
+.B O_RDWR.
+
+All the calls take the standard parameters defined in the System
+Calls Manual and will
+not be described further.  Error messages returned in
+.B errno
+conform to the standard error codes defined in
+.I <errno.h> .
+
+Before the driver can be used the initialisation program 
+.I imbinit
+must be run.
+The name under which it is run is in fact a password,
+which is tied to the 
+.B hostid 
+and may have an expiry date.
+For loadable drivers this is normally run automatically by 
+.I imb.script
+when the driver is loaded;  for drivers built into the kernel
+the file
+.I /etc/rc.local
+should be edited to run the program at system boot time.
+Passwords can be obtained from K-par Systems Ltd.,
+telephone: +44 272 252290, email: imb@k\-par.uucp.
+
+.SH IOCTLS
+.B imb
+responds to the following
+.BR ioctl s,
+defined in
+.B <sys/imbio.h>.
+.TP
+.SB IMB_RESET
+The argument is ignored.
+This performs a reset on the board. It will fail with 
+.B errno
+set to EIO if there is a read or write in progress.
+
+.TP
+.SB IMB_ANALYSE
+The argument is ignored.
+This performs a reset on the board with analyse asserted. 
+It will fail with 
+.B errno
+set to EIO if there is a read or write in progress.
+
+.TP
+.SB IMB_ENABLE_ERRORS
+The argument is ignored.
+This causes any reads or writes to abort if the error location on the
+board becomes asserted. This can be used to prevent the driver hanging in
+a read or write due to a transputer halting as a result of an error.
+The default setting is 
+.I not
+to abort on error.
+
+.TP
+.SB IMB_DISABLE_ERRORS
+The argument is ignored.
+This causes the state of the error location on the board to be ignored.
+This can cause the driver to hang in a read or write if an error on the
+transputer causes the transputer to halt. (See
+.B IMB_ENABLE_ERRORS
+above).
+
+.TP
+.SB IMB_INPUT_PENDING
+The argument is a pointer to an 
+.B int.
+On return, the
+.B int
+will contain 1 if the board has data ready to send to the Sun, and 0
+otherwise.
+
+.TP
+.SB IMB_OUTPUT_READY
+The argument is a pointer to an 
+.B int.
+On return, the
+.B int
+will contain 1 if the board if the board is ready to receive data and 0
+otherwise.
+
+.TP
+.SB IMB_ERROR
+The argument is a pointer to an 
+.B int.
+On return, the
+.B int
+will contain 1 if the error location on the board is 
+.I set
+, and 0 otherwise.
+
+.TP
+.SB IMB_TIMEOUT
+The argument is a pointer to an 
+.B int,
+which should contain a timeout, in tenths of a second, to be used
+when doing reads and writes. 
+.B Note
+that dma reads and writes cannot be timed out once initiated.
+
+.TP
+.SB IMB_DMA
+The argument is a pointer to an 
+.B int.
+The
+.B int
+should take one of the following values (defined in 
+.B <sys/imbio.h>
+) :
+.RS
+.TP 25
+.SB IMB_DMA_OFF
+if DMA is not to be used for any transfers.
+.TP
+.SB IMB_DMA_READWRITE
+if DMA is to be used for both reads and writes.
+
+.TP
+.SB IMB_DMA_READ
+if DMA is to be used for reads only.
+.TP
+.SB IMB_DMA_WRITE
+if DMA is to be used for writes only.
+.RE
+.IP
+.I Note:
+DMA is never used for small transfers (typically less than 80 bytes)
+as it is not worth the extra overhead of setting up the transfer. Also
+it will not be used if there is already DMA in progress on the channel
+(i.e. if one process is doing a DMA read at the same time as another 
+process tries to do a DMA write).
+
+.SH FILES
+.B /dev/imb[0-1]
+.br
+.B /usr/include/sys/imbio.h
+- ioctl definitions
+.br
+.B /etc/modules/imb.o
+- loadable driver
+.br
+.B /etc/modules/imb.script
+- shell script to make devices
+.br
+.B /etc/modules/imb_conf
+- config file
+.br
+.B /etc/modules/imb_load
+- shell script to load driver
+.br
+.B /etc/modules/imb_unload
+- shell script to unload driver
+.br
+.BI /etc/modules/ password
+- password encoded driver initialisation program (distributed as 
+.I imbinit).
+.br
+.SH DIAGNOSTICS
+.B "imb*: C012 ISR check failed (isr = *);  disabling device."
+.br
+.B "imb*: C012 OSR check failed (osr = *);  disabling device."
+
+These usually indicate that the board registers were not found at
+the expected address.
+
+.B "imb*: Error on transputer - read aborted."
+.br
+.B "imb*: Error on transputer - write aborted."
+
+These indicate that the error location become set during a
+.I read
+or
+.I write
+when
+.B IMB_ENABLE_ERRORS
+has been set by an
+.I ioctl.
+
+.B "imb*: driver not initialised"
+.br
+
+This indicates that the password encoded initialisation program
+for the host has not been run, or that the password was incorrect
+for the host id of the host machine, or that the password was out
+of date.
+.SH SEE ALSO
+.BR open (2), 
+.BR close (2), 
+.BR read (2), 
+.BR write (2), 
+.BR ioctl (2),
+.BR select (2),
+.BR modload (8).
+
+.I "Inmos IMS B008 User Guide and Reference manual"
+

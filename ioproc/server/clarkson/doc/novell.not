@@ -1,0 +1,86 @@
+From: brian@XLNVAX.NOVELL.COM (Brian Meek)
+Subject: Re: Packet Drivers Reply Some More
+Reply-To: Novell LAN Interest Group <NOVELL%SUVM@clvm.clarkson.edu>
+Organization: Clarkson
+Date: 27 Feb 90 03:03:24 GMT
+
+> >   1.  What are packet drivers, what are they used for, why?
+>
+> >Packet drivers serve two puposes: they hide the difference between PC
+> >Ethernet cards behind a software interface, and they allow multiple
+> >protocols (most often TCP/IP and Novell) access to the same Ethernet card.
+>
+> >   2.  What in the !@#$%^^&* is ECONFIG used for (e.g. WHY is it used)?
+>
+> >ECONFIG changes the format of the packet sent out on the wire.  Beyond
+> >that, I'm hazy of the details.
+>
+>    Let's fill in a couple of more details...
+>
+>    NetWare normally sends 802.3 formatted packets accross the network.  The
+>    packet driver and the public domain TCP/IP packages want an Ethernet
+>    Type 2 packet to be compatible.  There is
+>    no problems with different packet types sharing the network.  It is only
+>    a problem when they have to communicate with one another.
+>
+>    The ECONFIG utility modifies the NetWare packets to Ethernet Type 2
+>    packets.
+
+This is essentially correct, but the main problem with Novell's standard
+"802.3" packet format is that it does not contain an 802.2 LLC header.
+This packet type will be ignored by protocols that use an ethernet packet
+format (such as TCP/IP) and can therefore peacefully coexist.  However,
+when a protocol that uses 802.3 packet format expects to see the 802.2
+LLC info, the standard Novell packet can cause problems because the IPX
+header (immediately following the length/type field) is not a legal 802.2
+packet format.
+
+Generic Novell ethernet packet -
+
+   |802.3 MAC Header  | XNS / IPX Header|
+   --------------------------------------
+   |dadr | sadr | len | csum | len | etc.
+   --------------------------------------
+                        ^^^^ Checksum is not used in IPX, FFFF is placed here.
+802.2 LLC format -
+
+   |802.3 MAC Header  |  802.2 LLC Header  |  SNAP Ext.  |
+   =-----=------=-----=------=------=------=-----=-------=
+   |dadr | sadr | len | dsap | ssap | cntl | pid | etype |
+   =-----=------=-----=------=------=------=-----=-------=
+
+When an IPX packet is sent to a broadcast MAC address, the 802.2 devices
+examine the packet further...  they see the nul-checksum "FFFF" and believe
+it represents a "Global DSAP" (Destination Service Access Point) packet.
+>From that point on, the IPX packet makes no sense to the 802.2 device.
+
+When Excelan (now Novell) first wrote NetWare drivers for the LAN WorkPlace
+for DOS, we recognized the problem that 802.2 devices would have with the
+regular IPX packet format and included an optional packet format that provided
+an 802.2 header and SNAP extension... this was before the "ECONFIG" option
+was available.  ECONFIG became a necessity with the release of NetWare VMS,
+where NetWare traffic could not be retrieved by DEC's ethernet drivers without
+an 802.2 header or ethernet type field and might be required to share media
+with 802.3 devices.  With the availability of ECONFIG, Excelan dropped the
+pseudo 802.2 packet format option and made the EXOS 205T drivers
+econfigurable.
+
+The "ECONFIGed" packet looks like this:
+
+   |802.3 MAC Header  |  IPX Header...   |
+   =-----=------=-----=------=-----=-----=
+   |dadr | sadr |type | csum | len | etc.|
+   =-----=------=-----=------=-----=-----=
+                (8137)
+
+Please note that only drivers that are specifically designed to work
+with ECONFIG are usable with ECONFIG.  As Glenn said, there is not a
+problem (as far as NetWare is concerned) having both ECONFIGed and
+regular NetWare packets on the same cable.  I encourage the use of econfig
+at all times.
+
+brian
+____________________________________________________________________________
+         Brian Meek             Novell - 2180 Fortune Dr. San Jose, CA 95131
+Internet Mail: brian@novell.COM                        Phone: (408) 473-8375
+   CompuServe: 76702,346                                 FAX: (408) 433-0775

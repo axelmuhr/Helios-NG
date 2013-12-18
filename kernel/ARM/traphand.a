@@ -1,0 +1,644 @@
+-- File:	traphand.a
+-- Subsystem:	ARM executive
+-- Author:	P.A.Beskeen
+-- Date:	Oct '92
+--
+-- Description: Handlers for the processor exception traps.
+--
+--		Reset.
+--			Reset vector is usually mapped to ROM on reset by
+--			whatever memory manager in used. Its RAM vector
+--			therefore has no offical use. Helios-ARM uses it as
+--			a fast method of calling trap functions (aka the Pseudo
+--			trap interface).
+--
+--		Undefined Instruction.
+--			Taken whenever the processor detects an unknown
+--			instruction, or cannot find the relevent co-processor.
+--			Used to implement floating point emulators for example.
+--			The ARM6 has a additional bank of registers for this
+--			mode.
+--					
+--		SWI	Software Trap.
+--			Used to enter SVC mode from user mode in a controlled
+--			fashion. This allows user mode programs to request
+--			kernel functions via function numbers embedded in
+--			swi instructions.
+--
+--		Prefetch and Data Aborts.
+--			Aborts are raised by a memory management unit whenever
+--			the ARM attempts to access memory that either doesn't
+--			exist or the current mode doesn't have permission to
+--			access. Prefetch aborts are caused by the processor
+--			trying to fetch instructions, Data aborts when
+--			accessing data. The ARM6 has a additional bank of
+--			registers for this mode.
+--
+--		Address Exception.
+--			On ARM2/250/3, this is caused by accesses to memory
+--			above 0x3ffffff. ARM6 can never make this trap in
+--			32 bit address bus mode.
+--
+--		Following two handlers are held in armintr.a:
+--
+--		IRQ	Standard interrupt request.
+--
+--		FIQ	Fast interrupt request.
+--
+--
+-- RcsId: $Id: traphand.a,v 1.1 1993/08/24 08:45:33 paul Exp $
+--
+-- (C) Copyright 1992 Perihelion Software Ltd.
+--     All Rights Reserved
+--
+-- RcsLog: $Log: traphand.a,v $
+-- Revision 1.1  1993/08/24  08:45:33  paul
+-- Initial revision
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include module.m
+include arm.m
+include ARM/trap.m
+include cpustate.m
+include signal.m
+
+_if _defp '__VY86PID [
+	include ARM/vy86pid.m
+	_def '__ARM6BASED 1		-- ARM6 based platform
+]
+
+------------------------------------------------------------------------------
+-- Trap vector and stack initialisation
+
+-- Macro used to initialise exception vectors.
+-- Inserts a branch to the relevant handler into the exception vector.
+--
+-- @@@ would save space if this was re-implemented as a function.
+
+_defq 'InstallExVec['Except] [
+
+	-- Get absolute address of exception handler.
+	ldr	a1, (pc, The$Except$Addr)
+	add	a1, pc, a1	-- add address of labelref to labelref
+				-- to form absolute address of handler.
+	b	bypass_$Except$Addr
+
+The$Except$Addr:
+	-- Relative address of label from this position.
+	int	labelref(Except$_Handler)
+
+bypass_$Except$Addr:
+	-- Convert absolute address of handler into a branch instruction
+	-- to that address. The branch instruction being held in the
+	-- exception vector.
+
+	-- Adjust address so it is relative to the exception vector
+	-- and takes account of the pipeline (pc + 8).
+	sub	a1, _eval[VEC_$Except] + 8
+	mov	a1, a1 lsr 2		-- branches are word address relative
+	orr	a1, OP_AlwaysBranch	-- convert to branch instruction
+
+	-- Insert branch instruction into exception vector.
+	str	a1, (tmp, _eval[VEC_$Except])
+]
+
+
+-- void InitExceptionVectors(void);
+--
+-- Initialise each exception vector to contain a branch to the relevant
+-- exception handler.
+--
+
+	Function InitExceptionVectors
+
+	-- FIQ and IRQ handlers are in armintr.a
+	import	FIQ_Handler, IRQ_Handler
+
+	_if _defp '__ARM6BASED [
+		A6_SETPSR tmp A6_ModeMask A6_SVCMode
+	]
+
+	-- For the pseudo trap handler, just place the address of the
+	-- handler in the vector as all calling code indirects through
+	-- this vector, rather than branching through it. This saves
+	-- at least three cycles.
+
+	lea	tmp, PseudoTrap_Handler
+	str	tmp, (r0, -r0)
+
+	mov	tmp, 0		-- Set exception vector base
+
+	InstallExVec UndefinedInstruction
+	InstallExVec SWI
+	InstallExVec PrefetchAbort
+	InstallExVec DataAbort
+	InstallExVec AddressException
+	InstallExVec IRQ
+	InstallExVec FIQ	-- @@@ in a later optimisation this should be
+				-- changed to moving the entire FIQ_Handler
+				-- into VEC_FIQ
+
+	_if _defp '__ARM6BASED [
+		A6_SETPSR tmp A6_ModeMask A6_SVC26Mode
+	]
+
+	movs	pc, lr		-- return
+
+
+-- void InitExceptionStacks(void);
+--
+-- Initialise each modes separate stack registers to their default positions.
+-- All stacks used are of the Full Decending (FD) type, i.e. pushes use post
+-- decrements of the stack reg.
+
+	Function InitExceptionStacks
+
+	_if _false [ -- Not used as we need to use r13_irq as a tmp in IRQ entry
+		-- Set IRQ stack.
+		SetIRQMode
+		-- Note no access to banked regs directly after mode change.
+		mov	tmp, IRQ_stack_top + 1	-- make 32bit constant
+		sub	tmp, 1				-- adjust back
+		mov	r13_irq, tmp
+	]
+
+	_if _false [ -- No FIQ stack is now specified in system
+		-- Set FIQ stack.
+		SetFIQMode
+		-- Note no access to banked regs directly after mode change.
+		mov	tmp, FIQ_stack_top + 1	-- make 32bit constant
+		sub	tmp, 1				-- adjust back
+		mov	r13_fiq, tmp
+
+		-- Set fiq r8 to ExecRoot.
+		GetExecRoot r8_fiq
+
+		-- @@@ need to setup any other FIQ registers? (r8-r13 available)
+
+		-- Return to SVC mode.
+		SetSVCMode
+
+		-- Note no access to banked regs directly after mode change.
+		nop
+	]
+
+	-- Do not use an SVC stack - whenever a swi takes place, we
+	-- use the users stack. Aborts and undefined intruction traps
+	-- will set their own stack as required.
+
+	warning "@@@ ARM6 needs to set undef and abort mode stacks"
+
+	movs	pc, lr	-- return
+
+	
+------------------------------------------------------------------------------
+-- SWI Trap handler. This is the trap door into the SVC dimension.
+--
+-- To call a given function:
+--
+--	In User/SVC mode: From C call the trap's name the C compiler should
+--	convert the call to trap (@@@ TO BE DONE), or from assembler use
+--	'swi trapname'.
+--
+--	If the user thread has disabled interrupts, they should be aware
+--	interrupts will be re-enabled for the duration of the kernel (trap)
+--	call.
+--
+--	In SVC mode in the kernel/exec: From C or assembler simply call the
+--	name of the function (no need to go through the trap handler).
+--
+--	In SVC/IRQ/FIQ mode in interrupt handlers load the trap number (without
+--	TRAP_STDHELIOS) into the tmp register and branch through 0.
+--
+--
+-- The SWI handler is designed to be PCS complient and as low overhead as
+-- possible. A SWI instruction simply branches through the SWI vector
+-- (0x00000008), disabling IRQ's and swapping to banked registers for r13 and
+-- r14. The return address and processor mode are held in r14_svc.
+--
+-- Note that this version of the handler does not make use of any SVC
+-- stack, but instead swaps to the user stack. This is to remain PCS complient.
+--
+-- Minimum Interrupt Latency for a ARM CPU is bracketed by the time it takes
+-- to do a ldm rn, {r0-r15} type instruction which is 18 cycles. SWI's disable
+-- interrupts when they are called. A swi itself takes 3 cycles.
+-- The current cycle total for the trap handler is 19, + 3 swi cycles. This
+-- means we have exceeded the theoretical minimum interrupt latency by four
+-- cycles. This could be reduced by an explicit AllIntsOn before the pc, load,
+-- and this would keep us to the minimum latency, but add a cycle to the trap
+-- overhead. All cycle types (N & S) are assumed to be equal in this
+-- discussion, i.e. assumes static RAM.
+--
+-- Code doesn't currently check for SWI_OS_HELIOS bits as currently we don't
+-- support OS binary compatibility, or virtual OS's.
+--
+	_if _defp '__ARM6 [
+		-- Also need to check out return sequence for ARM6 as setting
+		-- the psr on return is not part of PCS. i.e should not
+		-- use movs pc, lr.
+		error "@@@ pc/psr access in trap handler will need re-code"
+	]
+
+
+	Function SWI_Handler
+						-- cycles:
+	_test _defp '__ARM6BASED [
+		-- ARM 26bit mode fixup
+		-- Reconsitute 26 bit mode compatible link register
+		mrs	tmp, spsr
+		tst	tmp, A6_ModeMask
+		and	tmp, A6_FlagMask | ModeMask
+		orr	lr, tmp
+
+		-- Force entry into 26bit mode
+		A6_SETPSR tmp A6_ModeMask A6_SVC26Mode
+
+		bne	NonUserModeTrapHandler	
+	][
+		tst	r14_svc, ModeMask		-- 1  Check mode
+		bne	NonUserModeTrapHandler		-- 1  branch if not user mode
+	]
+
+	bic	r13_svc, r14_svc, PSRFlags	-- 1  remove processor flags
+						--    and mode from return addr
+	_test _le TRAP_LASTTRAPNUMBER 256 [
+		-- if number traps <= 255 use byte load to mask OS bits
+		ldrb	tmp, (r13_svc, -4)	-- 3  get swi instruction
+	][
+		ldr	tmp, (r13_svc, -4)	-- 3  get swi instruction
+		and	tmp, tmp, SWI_TRAPMASK	-- 1  mask out all unnecessary
+	]					--    bits.
+
+	GetSWITable r13_svc			-- 1  get address of SWI jmp tab
+
+	-- @@@ If we could arrange SWI Table to be twelve bytes ahead of ldr
+	-- instruction we wouldn't need to load the address of the SWI Table,
+	-- as we could use the PC as the base reg (save one cycle). Also
+	-- have to re-arrange the swap to the user stack.
+
+	ldr	tmp, (r13_svc, tmp lsl 2)	-- 3  load address of trap fn
+
+	-- Swap to user mode sp, by saving in loc 0 of SWI table and then
+	-- loading into svc sp. Note after this we enable interrupts so the
+	-- use of location 0 should be safe.
+	stmia	r13_svc, {sp}^			-- 2  Save user mode sp
+	-- stmia must be followed by non access to banked regs due to ARM bug 
+	-- (guard banked regs access against mode change ARM bug)
+	orr	tmp, SVCMode			-- 1  Enable intr, stay in SVC
+	ldr	r13_svc, (r13_svc)		-- 3  swap to user mode stack
+
+	-- Note use of movS to reset intr. and stay in SVC mode
+	movs	pc, tmp				-- 3  jump indirect on swi table
+
+						--===
+						-- 19 trap handler cycles
+						--===
+						-- 22 (inc swi) total cycles
+
+
+-- Pseudo trap handler
+--
+-- This code should only be called from a non User mode, otherwise
+-- a data abort exception will probably occur during the trap
+-- function's execution.
+-- 
+-- Code branches to this location via the reset vector.
+-- To access this code use:
+--	mov	tmp, (TRAP_xxx & ~TRAP_STDHELIOS)
+--	mov	lr, pc
+--	ldr	pc, (r0, -r0)
+--
+-- This handler neither swaps to the user stack, nor alters the
+-- interrupt mask. It can therefore be used from any non user mode
+-- with any interrupt mask.
+--
+-- Its main use is to be called from interrupt handlers.
+--
+-- This is actually a much quicker trap interface than a SWI as loading
+-- and masking of the SWI instruction, the swap to the user stack and
+-- re-enabling of interrupts don't have to take place.
+
+	Function PseudoTrap_Handler
+
+	mov	tmp, tmp lsl 2		-- 1  convert swi number to word offset
+	add	tmp, SWI_table_base	-- 1  index into swi table
+	ldr	pc, (tmp)		-- 5  jump indirect on swi table
+--					----
+--					   7
+--					  +4  (for pseudo trap)
+--					----
+--					  11  total cycles.
+
+
+
+	-- Non user mode trap handler.
+	--
+	-- If we reach this point then a SWI was executed in SVC mode.
+	-- Any other non user mode access is probably an error.
+	--
+	-- In SVC mode, we should re-enable the IRQ interrupt disable that was
+	-- set as a result of the SWI. This means that interrupt handlers that
+	-- wish retain their current interrupt mask should use the pseudo trap
+	-- interface.
+	--
+	-- Unlike the user mode trap handler, the stack pointer is not swapped
+	-- to the user stack. Because of this we cannot use the svc_r13 as an
+	-- scratch register as it should be preserved.
+
+	Function NonUserModeTrapHandler
+
+	stmfd	sp!, {a1}			-- 2  Get a scratch reg.
+
+	bic	a1, r14_svc, PSRFlags		-- 1  remove processor flags
+						--    and mode from return addr
+	_test _le TRAP_LASTTRAPNUMBER 256 [
+		-- if number traps <= 255 use byte load to mask OS bits
+		ldrb	tmp, (a1, -4)		-- 3  get swi instruction
+	][
+		ldr	tmp, (a1, -4)		-- 3  get swi instruction
+		and	tmp, tmp, SWI_TRAPMASK	-- 1  mask out all unnecessary
+	]					--    bits.
+
+	GetSWITable a1				-- 1  get address of SWI jmp tab
+
+	-- @@@ If we could arrange SWI Table to be twelve bytes ahead of ldr
+	-- instruction we wouldn't need to load the address of the SWI Table,
+	-- as we could use the PC as the base reg (save one cycle). Also
+	-- have to re-arrange the swap to the user stack.
+
+	ldr	tmp, (a1, tmp lsl 2)		-- 3  load address of trap fn
+	ldmfd	sp!, {a1}			-- 3  restore scratch reg
+	orr	tmp, SVCMode			-- 1  Enable intr, stay in SVC
+
+
+	-- Note use of movS clears interrupt mask and stays in SVC mode
+	movs	pc, tmp				-- 3  jump indirect on swi table
+						--===
+						-- 17 trap handler cycles
+						-- +4 branch from main handler
+						-- +3 SWI instruction
+						--===
+						-- 24 total cycles
+
+
+
+------------------------------------------------------------------------------
+-- The Other Exception handlers
+
+-- Macro to save registers into threads CPU save area and then call the
+-- Executives critical error handler. It is used by most of the exception
+-- handlers to pass on the error to the executive to deal with.
+-- @@@ currently no exception handler ever returns as all errors are
+-- fatal. This means the saving of the registers is simply for debugging
+-- purposes, not to restore user state at a later date.
+
+	warning "Exception handlers totally cocked up for ARM6 - require a re-write"
+
+_defq 'CallExecErrorHandler['SignalNum 'MessageLabel 'UnRecov] [
+
+	_test _defp '__ARM6BASED [
+		-- Save user registers into threads save area.
+
+		-- Get address of current theads CPU save area.
+		GetExecRoot r13	-- Get pointer to ExecRoot into svc sp
+		ldr	r13, (r13, ExecRoot.CurrentSaveArea)
+		add	r13, SaveState.CPUcontext
+		-- r13_svc now points to threads CPU save area.
+
+		-- Save faulting PC address in CPU save area.
+		-- Assume it has already been adjusted back to point back at bad
+		-- instruction.
+		str	r14, (r13, CPURegs.R_PC)
+
+		-- Save user registers to CPU save area.
+		stmia	r13, {r0-r12}
+
+		-- Set argument 3 to point to register save area.
+		mov	a3, r13
+
+		-- Save banked user regs - sp & lr are not contigous with unbanked regs.
+		add	r13, CPURegs.R_USER_SP
+		stmia	r13, {sp, lr}^
+
+		-- Note next instruction doesn't access banked regs.
+		-- (guard banked regs access against mode change ARM bug)
+		nop
+
+		-- @@@ Should access to spsr be guarded?
+
+		-- ARM 26bit mode fixup
+		-- Reconsitute 26 bit mode compatible link register
+		mrs	tmp, spsr
+		and	tmp, A6_FlagMask | ModeMask
+		orr	lr, tmp
+
+		-- Including interrupt mask
+		mrs	tmp, spsr
+		and	tmp, A6_IntrMask
+		mov	tmp, tmp lsl 20		
+		orr	lr, tmp
+
+		-- Force entry into 26bit mode
+		A6_SETPSR tmp A6_ModeMask A6_SVC26Mode
+
+		-- Set threads priority to highest to stop time slicing.
+		GetExecRoot r13
+		mov	r0, 0
+		str	r0, (r13, ExecRoot.CurrentPri)
+
+		AllIntsOn		-- enable interrupts
+
+		-- @@@ FOLLOWING COMMENT IS ALL CHANGE FOR THE ARM6
+		-- @@@ check if exception happend within SVC/IRQ/FIQ mode. If so there
+		-- is no return possible to that thread and the system should be halted
+		-- after panic message. - need area for temporary stack as we probably
+		-- shouldn't use user stack in this situation? Currently, even if
+		-- exception happened in user mode there is still no return.
+		warning "@@@ Check for non user mode exception in exception handlers"
+
+		-- Set signal number.
+		mov	a1, SignalNum
+
+		-- Set error message to be displayed if unrecoverable.
+		lea	a2, MessageLabel
+
+		-- Set unrecoverable flag.
+		mov	a4, UnRecov
+
+		-- Swap to user mode sp, by copying user SP slot out of CPU save area
+		ldr	r13, (a3, CPURegs.R_USER_SP)
+
+		-- Jump to executives critical error handler.
+		GetExecRoot tmp
+
+		ldr	pc, (tmp, ExecRoot.CriticalErrorVector)
+	][
+		-- Save user registers into threads save area.
+
+		-- Get address of current theads CPU save area.
+		GetExecRoot r13_svc	-- Get pointer to ExecRoot into svc sp
+		ldr	r13_svc, (r13_svc, ExecRoot.CurrentSaveArea)
+		add	r13_svc, SaveState.CPUcontext
+		-- r13_svc now points to threads CPU save area.
+
+		-- @@@ Possibly check the savestate area address for validity?
+
+		-- Save faulting PC address in CPU save area.
+		-- Assume it has already been adjusted back to point back at bad
+		-- instruction.
+		str	r14_svc, (r13_svc, CPURegs.R_PC)
+
+		-- Save user registers to CPU save area.
+		stmia	r13_svc, {r0-r12}
+
+		-- Set argument 3 to point to register save area.
+		mov	a3, r13_svc
+
+		-- Save banked user regs - sp & lr are not contigous with unbanked regs.
+		add	r13_svc, CPURegs.R_USER_SP
+		stmia	r13_svc, {sp, lr}^
+
+		-- Note next instruction doesn't access banked regs.
+		-- (guard banked regs access against mode change ARM bug)
+		nop
+
+		-- Set threads priority to highest to stop time slicing.
+		GetExecRoot r13_svc
+		mov	r0, 0
+		str	r0, (r13_svc, ExecRoot.CurrentPri)
+
+		AllIntsOn		-- enable interrupts
+
+		-- @@@ check if exception happend within SVC/IRQ/FIQ mode. If so there
+		-- is no return possible to that thread and the system should be halted
+		-- after panic message. - need area for temporary stack as we probably
+		-- shouldn't use user stack in this situation? Currently, even if
+		-- exception happened in user mode there is still no return.
+		warning "@@@ Check for non user mode exception in exception handlers"
+
+		-- Set signal number.
+		mov	a1, SignalNum
+
+		-- Set error message to be displayed if unrecoverable.
+		lea	a2, MessageLabel
+
+		-- Set unrecoverable flag.
+		mov	a4, UnRecov
+
+		-- Swap to user mode sp, by copying user SP slot out of CPU save area
+		ldr	r13_svc, (a3, CPURegs.R_USER_SP)
+
+		-- Jump to executives critical error handler.
+		GetExecRoot tmp
+
+		ldr	pc, (tmp, ExecRoot.CriticalErrorVector)
+	]
+]
+
+
+-- Undefined Instruction Exception Handler.
+--
+-- Entered in SVC mode with IRQ interrupts disabled.
+-- r13 and r14 registers have been swapped to the SVC mode bank.
+--
+-- @@@ This exception handler will have to change in future to support
+-- FPU emulation.
+
+UndefinedInstruction_Handler:
+
+	CallExecErrorHandler SIGILL UndefinedInstructionMsg TRUE
+
+	b	UndefinedInstruction_Handler	-- should never return
+
+
+-- Prefetch Abort Exception Handler.
+--
+-- Entered in SVC mode with IRQ interrupts disabled.
+--
+PrefetchAbort_Handler:
+
+	sub	lr, 4
+
+	CallExecErrorHandler SIGSEGV PrefetchAbortMsg TRUE
+
+	b	PrefetchAbort_Handler	-- should never return
+
+
+-- Data Abort Instruction Exception Handler.
+--
+-- Entered in SVC mode with IRQ interrupts disabled.
+--
+DataAbort_Handler:
+
+	-- Adjust PC to point at instruction that caused exception, preserving
+	-- PSR flags.
+
+	sub	lr, 8			-- adjust to correct return address
+
+	CallExecErrorHandler SIGSEGV DataAbortMsg TRUE
+
+	b	DataAbort_Handler	-- should never return
+
+
+-- Address Exception Handler.
+--
+-- Entered in SVC mode with IRQ interrupts disabled.
+--
+AddressException_Handler:
+
+	-- Adjust PC to point at instruction that caused exception, preserving
+	-- PSR flags.
+	sub	lr, 4			-- adjust to correct return address
+
+	CallExecErrorHandler SIGSEGV AddressExceptionMsg TRUE
+
+	b	AddressException_Handler	-- should never return
+
+
+_if _false [
+	ResetMsg:
+		char	"Reset: branch through address 0", 0
+]
+
+UndefinedInstructionMsg:
+	char	"Undefined Instruction (FP instruction with no FPE?)", 0
+
+PrefetchAbortMsg:
+	char	"Prefetch (@PC) Abort", 0
+
+DataAbortMsg:
+	char	"Data Abort", 0
+
+AddressExceptionMsg:
+	char	"Address Exception (addr > 0x3ffffff)", 0
+
+	align
+
+
+-- int DefineExecErrorHandler(VoidFnPtr handler);
+--
+-- Attach the handler function to the executives exception vector. The function
+-- called should form the root of the syncronous run-time signal handler.
+-- i.e. any address/bus errors, div by 0, etc exceptions.
+--
+-- The function to be called has a prototype of:
+--	void ErrorFn(word signal, char *errmsg, word *regs, bool unrecoverable);
+--
+-- Called from C so must conform to PCS
+
+	Function DefineExecErrorHandler
+
+	GetExecRoot tmp
+
+	-- Save exec's error handler fn in ExecRoot.
+	-- Above exception handlers will jump to this function
+	-- when they need to deliver some bad news.
+	str	a1, (tmp, ExecRoot.CriticalErrorVector)
+
+	movs	pc, lr		-- return
+
+
+
+-- End of armtraps.a

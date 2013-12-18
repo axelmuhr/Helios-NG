@@ -1,0 +1,4687 @@
+head	1.25;
+access;
+symbols
+	beta_release:1.7;
+locks; strict;
+comment	@ * @;
+
+
+1.25
+date	93.07.27.15.04.19;	author nickc;	state Exp;
+branches;
+next	1.24;
+
+1.24
+date	93.07.27.14.48.07;	author nickc;	state Exp;
+branches;
+next	1.23;
+
+1.23
+date	93.07.27.09.24.06;	author nickc;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	93.07.07.09.53.55;	author nickc;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	93.07.06.14.15.44;	author nickc;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	93.04.28.10.07.15;	author nickc;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	93.03.19.10.32.24;	author nickc;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	93.03.18.16.20.57;	author nickc;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	93.03.17.16.27.14;	author nickc;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	93.03.08.18.02.39;	author nickc;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.12.17.09.17.42;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.12.04.10.36.34;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.12.03.19.04.53;	author nickc;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.12.03.16.22.44;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.11.04.17.35.39;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.10.02.11.24.30;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.07.29.12.49.16;	author nickc;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.07.13.10.08.46;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.05.13.14.27.03;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.04.03.15.24.31;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.04.03.14.32.41;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.04.03.10.06.11;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.04.03.07.39.23;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.03.31.17.51.31;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.03.26.10.59.57;	author nickc;	state Exp;
+branches;
+next	;
+
+
+desc
+@code to support Helios Source Level Debugger
+@
+
+
+1.25
+log
+@fixed typos in previous delta
+@
+text
+@/* $Id: debug.c,v 1.24 1993/07/27 14:48:07 nickc Exp nickc $ */
+/* Copyright (c) 1993 Perihelion Software Ltd. */
+
+#include "target.h"
+
+#ifdef TARGET_HAS_DEBUGGER
+
+#define DEBUG_VARS	(1<<0)
+#define DEBUG_LINES	(1<<1)
+#define DEBUG_PROCS	(1<<2)
+
+#define DEBUG_LEVEL	DEBUG_VARS
+
+#include <stdio.h>
+#include <stdarg.h>
+#ifndef __C40
+#define __C40
+#endif
+#include <module.h>
+#include <string.h>
+#include "globals.h"
+#include "builtin.h"
+#include "store.h"
+#include "aeops.h"
+#include "cg.h"
+#include "util.h"
+#include "mcdep.h"
+#include "mcdpriv.h"
+#include "xrefs.h"
+#include "codebuf.h"	/* for codebase, codep */
+#include "flowgraf.h"	/* for current_env */
+#include "bind.h"	/* for globalize_int */
+#include "regalloc.h"	/* for register_number() */
+#include "sem.h"	/* for sizeoftype() */
+#include "lex.h"	/* for curlex */
+#include "errors.h"	/* for cc_warn() etc */
+
+extern int32	hardware_register( RealRegister reg );
+
+/*
+ * class definitions.  Note that capital
+ * letters are internal types, and should
+ * not be printed in the debugging file
+ */
+
+#define CLASS_UNKNOWN	'Z'
+#define CLASS_TYPEDEF	'T'
+#define CLASS_ARGUMENT	'A'
+
+#define CLASS_GLOBAL	'g'
+#define CLASS_STATIC	's'
+#define CLASS_LOCAL	'l'
+#define CLASS_REGISTER	'r'
+
+#ifndef T_SourceInfo		/* because of a bug in module.h */
+#define T_SourceInfo		T_FileName
+#endif
+
+#ifndef sizeof_int
+#define sizeof_int 		4
+#endif
+
+#ifndef padsize
+#define padsize( n, align ) 	(-((-(n)) & (-(align))))
+#endif
+
+#ifndef streq
+#define streq( a, b )		(strcmp( a, b ) == 0)
+#endif
+
+#define DbgAlloc( type )	(type *)GlobAlloc( SU_Dbg, sizeof (type) )
+
+
+struct stdef
+  {
+    struct stdef *		next;
+    int				done;
+    TagBinder *			b;
+  }
+*stlist;
+
+typedef struct FileName
+  {
+    struct FileName *		next;
+    LabelNumber	*		lab;
+    char *			name;	
+  }
+FileName;
+
+static FileName *		filenamelist 	= NULL;
+
+typedef struct Dbg_VarList
+  {
+    struct Dbg_VarList *	next;		/* chain of allocated Dbg_VarLists		*/
+    Binder *			binder;		/* the binder associated with this variable	*/
+    char *			type;		/* a string describing the type  of the value	*/
+    char			Class;		/* a letter describing the class of the value	*/
+    int32			offset;		/* the distance from wherever of the value	*/
+    int32			size;		/* word padded size of the variable in bytes	*/
+  }
+Dbg_VarList;
+
+#define varnext_( v )		((v)->next)
+#define varbind_( v )		((v)->binder)
+#define vartype_( v )		((v)->type)
+#define varclass_( v )		((v)->Class)
+#define varoffset_( v )		((v)->offset)
+#define varsize_( v )		((v)->size)
+
+static Dbg_VarList *		dbg_varlist 	= NULL;
+static Dbg_VarList *		dbg_freevars	= NULL;
+
+typedef struct Dbg_LineList
+  {
+    struct Dbg_LineList *	next;		/* chain of allocated Dbg_LineList structures	*/
+    int32			first;		/* first line number in the sub-block		*/
+    int32			last;		/* last  line number in the sub-block		*/
+  }
+Dbg_LineList;
+
+static Dbg_LineList *		dbg_freelines	= NULL;
+
+typedef struct Dbg_Block
+  {
+    struct Dbg_Block *		next;		/* chain of alloacted Dbg_Blocks 		*/
+    struct Dbg_Block *		parent;		/* parent block of this block	 		*/
+    struct Dbg_LineList *	linelist;	/* linked list of line numbers	 		*/
+    struct Dbg_VarList *	varlist;	/* linked list of variables at this scope 	*/
+    int				block_id;	/* id used for debugging purposes		*/
+  }
+Dbg_Block;
+
+static Dbg_Block *		current_block 	= NULL;
+static Dbg_Block *		blocklist     	= NULL;
+static Dbg_Block *		dbg_freeblocks	= NULL;
+static int			current_block_id = 0;
+
+
+int 		usrdbgmask	= 0;
+char 		dbg_name[ 4 ] 	= "tla";
+Symstr *	current_proc	= NULL;
+LabelNumber *	proc_label	= NULL;
+
+static FILE *	dbfile 		= NULL;
+static int32 	lastdataloc 	= 0;
+static int32 	lastfuncloc 	= 0;
+static int32	num_args    	= 0;
+static int32 	indent 		= 0;
+
+
+#ifdef __STDC__
+static void
+dbprintf(
+	 char *	buffer,
+	 char *	fmt,
+	 ... 		)
+#else
+static void
+dbprintf( buffer, fmt, va_alist )
+  char *	buffer;
+  char *	fmt;
+  va_dcl
+#endif
+{
+  va_list a;
+	
+
+  va_start( a, fmt );
+
+  if (buffer == NULL)
+    vfprintf( dbfile, fmt, a );
+  else
+    vsprintf( buffer + strlen( buffer ), fmt, a );
+	
+  va_end( a );
+
+  return;
+
+} /* dbprintf */
+
+
+void
+#ifdef __STDC__
+db_init( char *	name )
+#else
+db_init( name )
+  char *	name;
+#endif
+{
+  char 		dbname[ 30 ];
+  char *	p = dbname;
+
+
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_PROCS))
+    cc_msg( "debugger: initialising for file %s\n", name );
+
+  strcpy( dbname, name );
+	
+  while ( *p && (*p != '.') )
+    p++;
+
+  *p = 0;
+	
+  strcat( dbname, ".dbg" );
+	
+  dbfile = fopen( dbname, "w" );
+
+  if (dbfile == NULL)
+    syserr( debug_cannot_open_output, dbname );
+
+  dbprintf( NULL, "void=#0;\n"  );
+  dbprintf( NULL, "char=#1;\n"  );
+  dbprintf( NULL, "short=-2;\n" );
+  dbprintf( NULL, "int=-4;\n"   );
+  dbprintf( NULL, "long=-4;\n"  );
+
+  dbprintf( NULL, "signed char=-1;\n" );	/* XXX changed from -2 by NC 26/3/92 */
+	
+  dbprintf( NULL, "unsigned short=#2;\n" );
+  dbprintf( NULL, "unsigned int=#4;\n"   );
+  dbprintf( NULL, "unsigned long=#4;\n"  );
+
+  dbprintf( NULL, "enum=#4;\n"   );
+  dbprintf( NULL, "float=.4;\n"  );
+  dbprintf( NULL, "double=.8;\n" );
+
+  return;
+  
+} /* db_init */
+
+
+static void
+#ifdef __STDC__
+addstdef( TagBinder * b )
+#else
+addstdef( b )
+  TagBinder *	b;
+#endif
+{
+  struct stdef *	s    = stlist;
+  int 			done = (tagbindmems_( b ) != 0);
+
+
+  while (s)
+    {
+      if (s->b == b)
+	{
+	  if (done)
+	    s->done = 1;
+
+	  return;
+	}
+
+      s = s->next;
+
+    }
+
+  stlist = (struct stdef *)global_list3( SU_Dbg, stlist, done, b );
+
+  return;
+  
+} /* addstdef */
+
+
+static int32
+#ifdef __STDC__
+db_type(
+	TypeExpr * 	x,
+	char *		buffer )
+#else
+db_type( x, buffer )
+  TypeExpr * 	x;
+  char *	buffer;
+#endif
+{
+  SET_BITMAP 	m;
+  int32		bitoff;
+  ClassMember *	pClassMember = NULL;
+  TagBinder *	b;
+  int32		n;
+  int32		size;
+  int32		padn = 0;
+            
+
+#ifdef DEBUG
+  if (x == NULL)
+    syserr( syserr_null_type_expr );
+#endif
+  
+  switch (h0_( x ))
+    {   
+    case s_typespec:
+      m = typespecmap_( x );
+
+      switch (m & -m)    /* LSB - unsigned/long etc. are higher */
+	{   
+	case bitoftype_( s_char ):
+	  if (m & bitoftype_( s_unsigned ))
+	    {
+	      dbprintf( buffer, "char" );
+	    }
+	  else
+	    {
+	      dbprintf( buffer, "signed char" );
+	    }
+	  
+	  return sizeof_char;
+	  
+	case bitoftype_( s_int ):
+	  if (m & BITFIELD)
+	    cc_rerr( "db_type <bit field> illegal - db_type(int) assumed" );
+	  
+	  if (m & bitoftype_( s_short ))
+	    {
+	      if (m & bitoftype_( s_unsigned ))
+		{
+		  dbprintf( buffer, "unsigned short" );
+		}
+	      else
+		{
+		  dbprintf( buffer, "short" );
+		}
+
+	      return sizeof_short;
+	    }
+	  else if (m & bitoftype_( s_long ))
+	    {
+	      if (m & bitoftype_( s_unsigned ))
+		{
+		  dbprintf( buffer, "unsigned long" );
+		}
+	      else
+		{
+		  dbprintf( buffer, "long" );
+		}
+	      
+	      return sizeof_long;
+	    }
+	  else 
+	    {
+	      if (m & bitoftype_( s_unsigned ))
+		{		  
+		  dbprintf( buffer, "unsigned int" );
+		}
+	      else
+		{
+		  dbprintf( buffer, "int" );
+		}
+	  
+	      return sizeof_int;
+	    }
+                    
+	case bitoftype_( s_enum ):
+#if 0
+	  b = typespectagbind_( x );
+	  pClassMember = tagbindmems_( b );
+
+	  dbprintf( buffer, "<" );
+
+	  if (*symname_( bindsym_( b )) != '<' ) 
+	    dbprintf( buffer, "$%s;", symname_( bindsym_( b ) ) );
+
+	  for (n = 0; pClassMember != NULL; pClassMember = memcdr_( pClassMember ))
+	    {
+	      dbprintf( buffer, "%s:%d;", symname_( memsv_( pClassMember ) ), n );
+	      
+	      n++;
+	    }
+	  
+	  dbprintf( buffer, ">int" );
+#endif
+	  dbprintf( buffer, "enum" );
+	  
+	  return sizeof_int;
+                    
+
+	case bitoftype_( s_double ):
+	  if (m & bitoftype_( s_short )) 
+	    {
+	      dbprintf( buffer, "float" );
+	      
+	      return sizeof_float;
+	    }
+	  else
+	    {
+	      dbprintf( buffer, "double" );
+	    }
+	  
+	  return sizeof_double;
+	  
+	  
+	case bitoftype_( s_struct ):
+	  b = typespectagbind_( x );
+	  pClassMember = tagbindmems_( b );
+
+	  addstdef( b );
+
+          if (pClassMember == NULL)
+	    {
+	      dbprintf( buffer, "$%s", symname_( bindsym_( b ) ) );
+
+	      return 0;
+	    }
+
+	  dbprintf( buffer, "\n {" );
+	  
+	  if (*symname_( bindsym_( b ) ) != '<')
+	    {
+	      dbprintf( buffer, "$%s;\n", symname_( bindsym_( b ) ) );
+	    }
+
+	  for (bitoff = n = 0; pClassMember != NULL; pClassMember = memcdr_( pClassMember ))
+	    {
+	      if (memsv_( pClassMember ) == NULL)
+		{
+		  dbprintf( buffer, "pad%d:", padn++ );
+		}
+	      else
+		{
+		  dbprintf( buffer, "%s:", symname_( memsv_( pClassMember ) ) );
+		}
+	      
+	      if (pClassMember->u.membits)
+		{   
+		  int32		k = evaluate( pClassMember->u.membits );
+
+		  
+		  size = 0;
+		  
+		  n = padsize( n, alignoftype( te_int ) );
+		  
+		  if (k == 0)
+		    k = 32 - bitoff;  /* rest of int */
+		  
+		  if (k + bitoff > 32)
+		    {
+		      size   = sizeof_int;
+		      bitoff = 0;		 /* ovflow */
+		    }
+
+		  dbprintf( buffer, "%%%d,%d", bitoff, k );
+		  
+		  bitoff += k;
+		}
+	      else
+		{
+		  if (bitoff != 0)
+		    {
+		      n     += sizeof_int;
+		      bitoff = 0;
+		    }
+		  
+		  n = padsize( n, alignoftype( memtype_( pClassMember ) ) );
+		  
+		  size = db_type( memtype_( pClassMember ), buffer );
+		}
+
+	      dbprintf( buffer, ":%d;\n  ", n );
+	      
+	      n += size;
+	    }
+
+	  dbprintf( buffer, "}" );
+	  
+	  if (bitoff != 0)
+	    {
+	      n     += sizeof_int;
+	      bitoff = 0;
+	    }
+	  
+	  return padsize( n, 4 );
+
+	  
+	case bitoftype_( s_union ):
+
+	  b = typespectagbind_( x );
+	  pClassMember = tagbindmems_( b );
+
+	  addstdef( b );
+
+          if (pClassMember == NULL)
+	    {
+	      dbprintf( buffer, "$%s", symname_( bindsym_( b ) ) );
+	      
+	      return 0;
+	    }
+
+	  dbprintf( buffer, "{" );
+
+          if (*symname_( bindsym_( b ) ) != '<')
+	    {
+	      dbprintf( buffer, "$%s;", symname_( bindsym_( b ) ) );
+	    }
+
+	  for (n = 0; pClassMember != NULL; pClassMember = memcdr_( pClassMember ))
+	    {
+	      dbprintf( buffer, "%s:", symname_( memsv_( pClassMember ) ) );
+	      
+	      n = max( n, pClassMember->u.membits ? sizeof_int : db_type( memtype_( pClassMember ), buffer ) );
+
+	      dbprintf( buffer, ":0;" );
+	    }
+
+	  dbprintf( buffer, "}" );
+
+	  return padsize( n, sizeof_int );
+              
+	case bitoftype_( s_typedefname ):
+	  dbprintf( buffer, "%s", symname_( bindsym_( typespecbind_( x ) ) ) );
+
+	  if (h0_( bindtype_( typespecbind_( x ) ) ) == t_fnap)
+	    {
+	      /*
+	       * XXX - you cannot calculate the size of a function.
+	       * Instead we asssume here that the code is actually
+	       * using a typedefed function which will then be
+	       * indirected to a pointer.  ie we assume that the
+	       * code is like this ...
+	       *
+	       * typedef void FUNC ( int arg ) ;
+	       *
+	       * void fn( FUNC * fptr ) { return fptr( 1 ); }
+	       */
+	      
+	      return sizeof_ptr;
+	    }
+	  else
+	    {
+	      return sizeoftype( bindtype_( typespecbind_( x ) ) );
+	    }
+	  
+	case bitoftype_( s_void ):
+	  dbprintf( buffer, "void" );
+	  
+	  return 0;
+
+	default:
+	  break;
+	}
+      /* drop through for now */
+
+    default:
+      syserr( debug_db_type, h0_( x ), typespecmap_( x ) );
+
+    case t_subscript:
+      n = sizeoftype( typearg_( x ) );
+      
+      if (typesubsize_( x ))
+	n *= evaluate( typesubsize_( x )) ;
+      else
+	{
+	  typesubsize_( x ) = globalize_int( 1 );
+
+	  cc_warn( "debugger: size of a [] array required, treated as [1]" );
+	}
+
+      dbprintf( buffer, "[%d]", evaluate( typesubsize_( x ) ) );
+      
+      (void) db_type( typearg_( x ), buffer );
+      
+      return n;
+            
+
+    case t_fnap:
+      dbprintf( buffer, "()" );
+
+      (void) db_type( typearg_( x ), buffer );
+      
+      return sizeof_ptr;
+	    
+
+    case t_content:
+        {
+	  TypeExpr *	x1 = typearg_( x );
+
+
+	  dbprintf( buffer, "*" );
+	  
+	  if ( (h0_( x1 ) == s_typespec) &&
+	      (
+	       (typespecmap_( x1 ) & bitoftype_( s_struct )) ||
+	       (typespecmap_( x1 ) & bitoftype_( s_union  ))
+	       )
+	      )
+	    {
+	      b = typespectagbind_( x1 );
+	      
+	      dbprintf( buffer, "$%s", symname_( bindsym_( b ) ) );
+	    }
+	  else
+	    {
+	      (void) db_type( x1, buffer );
+	    }
+
+	  return sizeof_ptr;
+	}
+    }
+
+} /* db_type */
+
+
+void
+#ifdef __STDC__
+db_tidy( void )
+#else
+db_tidy()
+#endif
+{
+  struct stdef *	s = stlist;
+
+
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_PROCS))
+    cc_msg( "debugger: tidy up\n" );
+
+  dbprintf( NULL, "\n" );
+
+  while (s)
+    {
+      if (!s->done)
+	{
+	  TagBinder *	b = s->b;
+	  TypeExpr *	x = (TypeExpr *) global_list3( SU_Dbg, s_typespec, bitoftype_( s_struct ), b );
+
+
+	  dbprintf( NULL, "__struct_%s=", symname_( bindsym_( b ) ) );
+	  
+	  (void) db_type( x, NULL );
+	  
+	  dbprintf( NULL, ";\n" );
+	}
+
+      s = s->next;
+
+    }
+
+  fclose( dbfile );
+
+  dbfile = NULL;
+  
+  return;
+  
+} /* db_tidy */
+
+
+/*
+ * Place a string in the output buffer
+ *
+ * The following code has been stolen from mip/codebuf.c
+ */
+  
+static void
+#ifdef __STDC__
+dump_name( char * name )
+#else
+dump_name( name )
+  char * name;
+#endif
+{
+  int32 	p;
+  union
+    {
+      char 	c[ 4 ];
+      int32 	i;
+    } 		w;
+
+    
+  for (p = w.i = 0; *name;)
+    {
+      int32	j;
+
+      
+#ifdef REVERSE_OBJECT_BYTE_ORDER
+      j = 3 - p;
+#else
+      j = p;
+#endif
+      w.c[ j ] = *name++;
+	
+      ++p;
+	
+      if (p == 4)
+	{
+	  outcodeword( w.i, LIT_STRING );
+	  
+	  p = w.i = 0;
+	}
+    }
+
+  outcodeword( w.i, LIT_STRING );
+  
+  return;
+  
+} /* dump_name */
+
+
+/*
+ * create an entry in the list of filenames
+ * associated with the current compilation unit
+ *
+ * Returns the label associated with the filename
+ */
+
+LabelNumber *
+#ifdef __STDC__
+debugger_filenamelabel( char * filename )
+#else
+debugger_filenamelabel( filename )
+  char * filename;
+#endif
+{
+  FileName *		f = filenamelist;
+  char *		s;
+  
+
+  while (f != NULL)
+    {
+      if (streq( filename, f->name ))
+	{
+	  return f->lab;
+	}      
+
+      f = f->next;
+    }
+
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_LINES ))
+    cc_msg( "debugger: new component file %s\n", filename );
+
+  f = DbgAlloc( FileName );
+
+  s = (char *)GlobAlloc( SU_Dbg, pad_to_word( (int32)strlen( filename ) + 1 ) );
+  
+  f->next = filenamelist;
+  f->lab  = nextlabel();
+  f->name = s;
+
+  strcpy( s, filename );
+  
+  filenamelist = f;
+
+  return f->lab;
+
+} /* filenamelable */
+
+
+/*
+ * generate SourceInfo structures
+ */
+
+static void
+#ifdef __STDC__
+genfilenames( void )
+#else
+genfilenames( )
+#endif
+{
+  FileName *	f = filenamelist;
+
+
+  while (f != NULL)
+    {
+      if (!(lab_isset_( f->lab )))
+	{
+	  LabelNumber *	copy;
+
+	  
+	  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_LINES))
+	    cc_msg( "debugger: generating SourceInfo struct : %s\n", f->name );
+
+	  setlabel( f->lab );
+
+	  /* force label's address to be offset by codebase as well, since this is a global label */
+	     
+	  f->lab->u.defn = (codep + codebase) | 0x80000000U;
+
+	  outcodeword( T_SourceInfo, LIT_NUMBER );	/* SourceInfo header	*/
+  
+	  codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Modnum + codebase + codep, NULL );
+      
+	  outcodewordaux( 0, LIT_NUMBER, NULL );	/* module number 	*/
+
+	  dump_name( f->name );
+
+	  /* we must copy this label, as it will be reused in the next function */
+	  
+	  copy = DbgAlloc( LabelNumber );
+
+	  *copy = *(f->lab);
+
+	  f->lab = copy;
+	}
+      
+      f = f->next;
+    }	
+
+  return;
+  
+} /* genfilenames */
+
+/*
+ * create the structures needed by the Helios Source
+ * Level Debugger.
+ */
+
+void
+#ifdef __STDC__
+debugger_end_of_function( void )
+#else
+debugger_end_of_function( )
+#endif
+{
+  char *	sname = symname_( current_proc );
+
+
+  if (usrdbg( DBG_PROC ))
+    {
+      int32	depth = greatest_stackdepth / 4;
+
+      
+      if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_LINES))
+	cc_msg( "debugger: generating ProcInfo structure: %s\n", sname );
+
+      setlabel( proc_label );
+      
+      /* create ProcInfo structure */
+      
+      outcodeword(    T_ProcInfo,	LIT_NUMBER );			/* ProcInfo header	*/
+      outcodeword(    codep - 4,	LIT_NUMBER );			/* size of procedure  	*/
+      outcodeword(    depth, 		LIT_NUMBER );			/* amount of stack used */
+      outcodeword(    0,		LIT_NUMBER );			/* vector stack used 	*/
+      
+      codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Modnum + codebase + codep, NULL );
+
+      outcodewordaux( 0,		LIT_NUMBER, NULL );		/* module number 	*/
+
+      outcodeword(    lastfuncloc - 4,	LIT_NUMBER );			/* offset of function   */
+      outcodeword(    0,		LIT_NUMBER );			/* reserved 1 		*/
+      outcodeword(    0,		LIT_NUMBER );			/* reserved 2 		*/
+
+      /* no need to generate a Proc structure */
+    }
+  
+  if (usrdbg( DBG_LINE ))
+    {
+      /* create any missing SourceInfo structures */
+  
+      genfilenames();
+    }
+  
+  return;
+  
+} /* debugger_end_of_function */
+
+  
+VoidStar
+#ifdef __STDC__
+dbg_notefileline( FileLine fl )
+#else
+dbg_notefileline( fl )
+  FileLine	fl;
+#endif
+{
+
+  return NULL;
+
+  use( fl );
+  
+} /* dbg_notefileline */
+
+
+void
+#ifdef __STDC__
+dbg_locvar(
+  Binder *	b,
+  FileLine	fl,
+  bool		narrow )
+#else
+dbg_locvar( b, fl, narrow )
+  Binder *	b;
+  FileLine	fl;
+  bool		narrow;
+#endif
+{
+  if (usrdbg( DBG_VAR ))
+    {
+      TypeExpr *	t = bindtype_( b );
+      char		buffer[ 1280 ];			/* XXX */
+      Dbg_VarList *	var;
+      int32		size;
+      char		Class;
+      
+      
+      if (dbg_freevars == NULL)
+	{
+	  var = DbgAlloc( Dbg_VarList );
+	}
+      else
+	{
+	  var = dbg_freevars;
+	      
+	  dbg_freevars = varnext_( dbg_freevars );
+	}
+      
+      buffer[ 0 ] = '\0';
+      
+      if (bindstg_( b ) & bitofstg_( s_typedef ))
+	{
+	  char *	name = symname_( bindsym_( b ) );
+
+	  
+	  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+	    cc_msg( "debugger: new local type $b\n", b );
+  
+	  if (*name == '<')
+	    {
+	      /* internal symbol - do not cache */
+
+	      varnext_( var ) = dbg_freevars;
+	      
+	      dbg_freevars = var;
+
+	      return;
+	    }
+
+	  db_type( t, buffer );
+	  
+	  size  = 0;
+	  Class = CLASS_TYPEDEF;
+	}
+      else
+	{
+	  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+	    cc_msg( "debugger: new %s%s variable $b (type: $t)\n",
+		   narrow ? "(narrow) " : "",
+		   num_args > 0 ? "formal" : "local",
+		   b, bindtype_( b ) );
+
+	  size = pad_to_word( db_type( bindtype_( b ), buffer ) );
+
+	  if (size < 4)
+	    size = 4;
+
+	  if (num_args > 0 && !narrow) /* narrow formals are really locals ... */
+	    {
+	      /* mark variable as being an argument variable */
+	  
+	      Class = CLASS_ARGUMENT;
+	      
+	      --num_args;
+	    }
+	  else
+	    {
+	      Class = CLASS_UNKNOWN;
+	    }
+	}
+      
+      /* prepend variable to list of un-associated vars */
+	  
+      varnext_(  var )  = dbg_varlist;
+      varbind_(  var )  = b;
+      vartype_(  var )  = strcpy( (char *)GlobAlloc( SU_Dbg, (int32) strlen( buffer ) + 1 ), buffer );
+      varclass_( var )  = Class;
+      varoffset_( var ) = 0;
+      varsize_(  var )  = size;
+
+      dbg_varlist = var;
+    }
+
+  return;
+
+  use( fl );
+  
+} /* dbg_locvar */
+
+
+/*
+ * locates the information cached for a given binder
+ */
+
+static Dbg_VarList *
+dbg_lookupvar( Binder * b )
+{
+  Dbg_VarList *	p;
+
+
+  /* check local block first */
+
+  if (current_block != NULL)
+    {
+      Dbg_Block *	parent;
+
+
+      for (p = current_block->varlist; p; p = p->next)
+	{
+	  if (p->binder == b)
+	    return p;
+	}
+
+      /* then check parents */
+
+      for (parent = current_block->parent; parent != NULL; parent = parent->parent)
+	{
+	  for (p = parent->varlist; p; p = p->next)
+	    {
+	      if (p->binder == b)
+		return p;
+	    }
+	}
+    }
+	   
+  /* then check un-associated variables */
+
+  for (p = dbg_varlist; p; p = p->next)
+    {
+      if (p->binder == b)
+	return p;
+    }
+  
+  return NULL;
+
+} /* dbg_lookupvar */
+
+
+void
+#ifdef __STDC__
+dbg_proc(
+	 Symstr *	name,
+	 TypeExpr *	type,
+	 bool 		ext,
+	 FileLine 	fl )
+#else
+dbg_proc( name, type, ext, fl )
+  Symstr *	name;
+  TypeExpr *	type;
+  bool 		ext;
+  FileLine 	fl;
+#endif
+{
+  FormTypeList *	p;
+  int32			offset = 4;
+
+  
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_LINES))
+    cc_msg( "debugger: new function: $r\n", name );
+
+  current_proc = name;
+  
+  dbprintf( NULL, "\n%s:(", symname_( name ) );
+  
+  p = typefnargs_( type );
+
+  num_args = 0;
+  
+  while (p)
+    {
+      int32	size;
+
+	  
+      dbprintf( NULL, "%s:", symname_( p->ftname ) );
+
+      size = db_type( p->fttype, NULL );
+
+      size = pad_to_word( size );
+
+      dbprintf( NULL, ":%d;", offset );
+
+      if (size < 4)
+	size = 4;
+
+      offset += size;
+
+      p = p->ftcdr;
+
+      num_args++;
+    }
+  
+  dbprintf( NULL, ")" );
+
+  (void) db_type( type, NULL );
+
+  dbprintf( NULL, ":%d=", lastfuncloc );
+
+  lastfuncloc += 4;
+
+  return;
+
+  use( ext );
+  use( fl  );
+  
+} /* dbg_proc */
+
+
+void
+#ifdef __STDC__
+dbg_type(
+	 Symstr *	name,
+	 TypeExpr *	t )
+#else
+dbg_type( name, t )
+  Symstr *	name;
+  TypeExpr *	t;
+#endif
+{
+  if (*symname_( name ) != '<')
+    {
+      dbprintf( NULL, "%s=", symname_( name ) );
+
+      (void) db_type( t, NULL );
+      
+      dbprintf( NULL, ";\n" );
+    }
+  
+  return;
+  
+} /* dbg_type */
+
+
+void
+#ifdef __STDC__
+dbg_topvar(
+	   Symstr *	name,
+	   int32 	addr,
+	   TypeExpr *	t,
+	   bool		stgclass,
+	   FileLine 	fl )
+#else
+dbg_topvar( name, addr, t, stgclass, fl )
+  Symstr *	name;
+  int32 	addr;
+  TypeExpr *	t;
+  int 		stgclass;
+  FileLine 	fl )
+#endif
+{
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+    cc_msg( "debugger: top level variable $r\n", name );
+
+  if (dataloc != lastdataloc)
+    {
+      dbprintf( NULL, "%s:", symname_( name ) );
+      
+      (void) db_type( t, NULL );
+      
+      dbprintf( NULL, ":%d:%c;\n", lastdataloc, stgclass ? CLASS_GLOBAL : CLASS_STATIC );
+      
+      lastdataloc = dataloc;
+    }
+
+  return;
+
+  use( addr );
+  use( fl   );  
+  
+} /* dbg_topvar */
+
+  
+void
+dbg_init( void )
+{
+  return;
+
+} /* dbg_init */
+
+
+static void
+add_var( Dbg_VarList * var )
+{
+  if (current_block == NULL || var == NULL)
+    {
+      syserr( debug_no_block );
+    }
+
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+    cc_msg( "debugger: adding variable $b to block %d\n",
+	   varbind_( var ), current_block->block_id );
+
+  /* remove variable from un-associated variable list */
+  
+  if (dbg_varlist == var)
+    {
+      dbg_varlist = varnext_( var );
+    }
+  else
+    {
+      Dbg_VarList *	v;
+
+
+      for (v = dbg_varlist; v; v = varnext_( v ))
+	{
+	  if (varnext_( v ) == var)
+	    break;
+	}
+
+      if (v == NULL)
+	{
+	  syserr( debug_already_associated );
+	}
+      
+      varnext_( v ) = varnext_( var );
+    }
+
+  /* add the variable to the current block's list */
+  
+  varnext_( var ) = current_block->varlist;
+
+  current_block->varlist = var;
+  
+  return;
+
+} /* add_var */
+
+
+/*
+ * adds an active line to the current block
+ */
+
+void
+debugger_add_line( int32 linenumber )
+{
+  Dbg_LineList *	l;
+
+  
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_LINES))
+    cc_msg( "debugger: adding line %ld to block %d\n", linenumber, current_block->block_id );
+  
+  if (current_block == NULL)
+    {
+      /*
+       * This can happen when some, but not all
+       * of a functions arguments are promoted to
+       * register variables - it is not important
+       * as the line we are trying to add is the closing
+       * curly parenthesis of the function
+       */
+      
+      if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_LINES))
+	cc_msg( "debugger: no block into which to add line\n" );
+      
+      return;
+    }
+
+  l = current_block->linelist;
+
+  if (l != NULL && linenumber == l->last + 1)
+    {
+      l->last = linenumber;
+    }
+  else
+    {
+      Dbg_LineList *	pNew;
+
+      
+      if (dbg_freelines == NULL)
+	{
+	  pNew = DbgAlloc( Dbg_LineList );
+	}
+      else
+	{
+	  pNew = dbg_freelines;
+
+	  dbg_freelines = dbg_freelines->next;
+	}
+      
+      pNew->next = l;
+      pNew->last = pNew->first = linenumber;
+
+      current_block->linelist = pNew;
+    }
+
+  return;
+  
+} /* debugger_add_line */
+
+  
+static void
+enter_block( void )
+{
+  Dbg_Block *	block;
+
+
+  if (dbg_freeblocks == NULL)
+    {
+      block = DbgAlloc( Dbg_Block );
+    }
+  else
+    {
+      block = dbg_freeblocks;
+
+      dbg_freeblocks = dbg_freeblocks->next;
+    }
+
+  block->next     = blocklist;
+  block->parent   = current_block;
+  block->linelist = NULL;
+  block->varlist  = NULL;
+  block->block_id = ++current_block_id;
+  
+  current_block = block;
+  blocklist     = block;
+
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & (DEBUG_LINES | DEBUG_VARS)))
+    cc_msg( "debugger: new block %d\n", block->block_id );
+
+  return;
+  
+} /* enter_block */
+
+
+static void
+leave_block( void )
+{
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & (DEBUG_LINES | DEBUG_VARS)))
+    cc_msg( "debugger: finished block %d\n", current_block->block_id );
+  
+  if (current_block == NULL)
+    syserr( debug_no_block );
+
+  current_block = current_block->parent;
+
+  return;
+    
+} /* leave_block */
+  
+
+static void
+renew_block( Binder * b )
+{
+  Dbg_Block *	block;
+
+
+  for (block = blocklist; block; block = block->next)
+    {
+      Dbg_VarList *	v;
+
+
+      for (v = block->varlist; v; v = v->next)
+	{
+	  if (v->binder == b)
+	    break;
+	}
+
+      if (v)
+	{
+	  current_block = block;
+	  return;	  
+	}      
+    }
+  
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+    cc_msg( "debugger: could not renew block for binder $b\n", b );
+
+  return;
+  
+} /* renew_block */
+
+
+void
+dbg_enterproc( void )
+{
+  if (usrdbg( DBG_ANY ))
+    {
+      enter_block();
+    }
+  
+  return;
+
+} /* dbg_enterproc */
+
+
+
+/* dbg_locvar1 is called when the location for a declaration is known. By this
+   time, things allocated in local storage have evaporated (in particular,
+   bindtype_(b). And the Symstrs for most gensyms.
+ */
+
+void
+dbg_locvar1( Binder * b )
+{
+#if 0
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+    cc_msg( "debugger: locvar1 (%s)", symname_( bindsym_( b ) ) );
+#endif
+  
+  return;
+
+  use( b );
+  
+} /* dbg_locavar1 */
+
+
+/*
+ * we now have more information about a variable - update its record
+ */
+
+static void
+update_var(
+	   Binder *		b,
+	   Dbg_VarList *	var )
+{
+  int32		addr = bindaddr_( b );
+  
+
+#ifdef DEBUG
+  if (b == NULL || var == NULL)
+    syserr( syserr_null_parameter );
+#endif
+  
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+    cc_msg( "debugger: updating $b\n", b );
+
+  switch (bindstg_( b ) & PRINCSTGBITS)
+    {
+    default:
+      syserr( debug_unknown_storage_type );
+      break;
+      
+    case bitofstg_( s_extern  ):
+      varclass_(  var ) = CLASS_GLOBAL;
+      varoffset_( var ) = lastdataloc;
+      lastdataloc      += varsize_( var );
+      
+      break;
+      
+    case bitofstg_( s_static ):
+      varclass_(  var ) = CLASS_STATIC;
+      varoffset_( var ) = lastdataloc;
+      lastdataloc      += varsize_( var );
+      
+      break;
+      
+    case bitofstg_( s_typedef ):
+      break;                   /* typedefs, statics and externs already done in locvar */
+
+    case bitofstg_( s_auto ):
+      switch (addr & BINDADDR_MASK)
+	{
+	case BINDADDR_ARG:
+	case BINDADDR_LOC:
+	  if (bindxx_( b ) != GAP)
+	    {
+	      varclass_(  var ) = CLASS_REGISTER;
+	      varoffset_( var ) = saved_regs_offsets[ register_number( bindxx_( b ) ) ];
+	    }
+	  else
+	    {
+	      varclass_(  var ) = CLASS_LOCAL;
+	      varoffset_( var ) = (bindaddr_( b ) & ~BINDADDR_MASK);
+	    }
+	  
+	  break;
+
+	default:
+	  syserr( debug_unknown_auto_storage );
+	  break;
+        }
+      break;      
+    }
+  
+  return;
+  
+} /* update_var */
+
+  
+bool
+dbg_scope(
+	  BindListList * 	pNew,
+	  BindListList * 	pOld  )
+{
+  int32 oldlevel = length( (List *)pOld );
+  int32 newlevel = length( (List *)pNew );
+  int32 entering = newlevel - oldlevel;
+  int32	nvars;
+  
+  
+  if (!usrdbg( DBG_VAR | DBG_LINE ))
+    return NO;
+
+  if (pNew == pOld)
+    return NO;
+
+  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_LINES))
+    cc_msg( "debugger: %s scope\n", entering > 0 ? "entering new" : "leaving current" );
+
+  if (entering < 0)
+    {
+      BindListList *	t = pNew;
+
+      pNew = pOld;
+      pOld = t;
+    }
+
+  nvars = 0;
+  
+  while (pNew != pOld)
+    {
+      SynBindList *	bl;
+
+      
+      if (pNew == NULL)
+	syserr( debug_bad_scope );
+
+      for (bl = pNew->bllcar; bl; bl = bl->bindlistcdr)
+        {
+	  Binder *	b = bl->bindlistcar;
+	  Dbg_VarList *	var;
+	  
+
+	  if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+	    cc_msg( "debugger: %sbinding $b\n", entering < 0 ? "un" : "", b ); 
+
+	  if ((bindstg_( b ) & b_dbgbit))
+	    {
+	      if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_VARS))
+		cc_msg( "debugger: renewing block\n" ); 
+
+	      renew_block( b );
+	    }
+	  else
+	    {
+	      var = dbg_lookupvar( b );
+
+	      if (var)
+		{
+		  if (entering < 0)
+		    {
+		      bindstg_( b ) |= b_dbgbit;
+
+		      update_var( b, var );
+		    }
+		  else
+		    {
+		      if (nvars == 0 && varclass_( var ) != CLASS_ARGUMENT)
+			{
+			  enter_block();
+			}
+		      
+		      add_var( var );
+		    }
+
+		  if (varclass_( var ) != CLASS_ARGUMENT)
+		    {
+		      nvars++;
+		    }
+		}
+	      else
+		{
+		  cc_err( "debugger: UNKNOWN variable $b at line %d\n", b, curlex.fl.l ); 
+		}	      
+	    }
+        }
+
+      pNew = pNew->bllcdr;
+    }
+
+  if (entering < 0 && nvars > 0)
+    {
+      leave_block();
+    }
+
+  return NO;
+
+} /* dbg_scope */
+
+
+static void
+print_lines( Dbg_LineList * l )
+{
+  int32		i;
+
+
+#ifdef DEBUG
+  if (l == NULL)
+    syserr( debug_null_parameter );
+#endif
+  
+  if (l->next != NULL)
+    {
+      print_lines( l->next );
+  
+      for (i = l->first; i <= l->last; i++)
+	{
+	  dbprintf( NULL, ",%d", i );
+	}
+    }
+  else
+    {
+      for (i = l->first; i < l->last; i++)
+	{
+	  dbprintf( NULL, "%d,", i );
+	}
+      
+      dbprintf( NULL, "%d", i );
+    }
+
+  /* prepend the line to the free lines list */
+  
+  l->next = dbg_freelines;
+  
+  dbg_freelines = l;
+  
+  return;
+
+} /* print_lines */
+
+
+static void
+print_variables( Dbg_VarList * var )
+{
+  char *	name;
+
+  
+  if (var == NULL)
+    return;
+
+  /* recurse down list */
+  
+  print_variables( varnext_( var ) );
+
+  /* display this variable */
+  
+  name = symname_( bindsym_( varbind_( var ) ) );
+
+  switch (varclass_( var ))
+    {
+    case CLASS_TYPEDEF:
+      dbprintf( NULL, "\n%*c %s=%s;", indent, ' ', name, vartype_( var ) );
+      break;
+
+    case CLASS_UNKNOWN:
+      syserr( debug_unresolved_var_class, name );
+      break;
+
+    case CLASS_ARGUMENT:
+      dbprintf( NULL, "\n%*c %s:%s:%d:r;", indent, ' ', name, vartype_( var ), varoffset_( var ) );
+      break;
+      
+    default:
+      dbprintf( NULL, "\n%*c %s:%s:%d:%c;", indent, ' ', name,
+	       vartype_( var ), varoffset_( var ), varclass_( var ) );
+      break;      
+    }
+	      
+  /* XXX free 'var->type' */
+
+  /* return the variable to the free list */
+
+  varnext_( var ) = dbg_freevars;
+
+  dbg_freevars = var;
+  
+  return;
+  
+} /* print_variables */
+
+
+static void
+dump_blocks( Dbg_Block * parent )
+{ 
+  Dbg_Block *	p;
+
+
+  for (p = blocklist; p != NULL; p = p->next)
+    {    
+      /* display a block with the given parent */
+      
+      if (p->parent == parent)
+	{
+	  indent++;
+	  
+	  dbprintf( NULL, "\n%*c{", indent, ' ' );
+
+	  /* display the lines occupied by this block */
+	  
+	  if (p->linelist)
+	    {
+	      print_lines( p->linelist );
+
+	      dbprintf( NULL, ";" );
+	    }
+	  
+	  /* display the variables created in this block */
+
+	  print_variables( p->varlist );
+	  
+	  /* display children of this block */
+	  
+	  dump_blocks( p );
+
+	  /* close block */
+	  
+	  dbprintf( NULL, "\n%*c}", indent, ' ' );
+	  
+	  indent--;
+	}
+    }
+
+  return;
+  
+} /* dump_blocks */
+
+
+void
+dbg_xendproc( FileLine fl )
+{
+  if (usrdbg( DBG_ANY ))
+    {
+      Dbg_Block *	p;
+
+  
+      if (debugging( DEBUG_Q ) && (DEBUG_LEVEL & DEBUG_PROCS))
+	cc_msg( "debugger: end of function\n" );
+  
+      if (blocklist == NULL)
+	syserr( debug_no_blocks );
+      
+      dump_blocks( NULL );
+
+      /* prepend blocks to free block list */
+  
+      for (p = blocklist; p->next != NULL; p = p->next)
+	;
+      
+      p->next = dbg_freeblocks;
+      
+      dbg_freeblocks = blocklist;
+      
+      /* empty list pointers */
+      
+      current_block = blocklist = NULL;
+      
+      dbprintf( NULL, "\n" );
+    }
+
+  return;
+
+  use( fl );
+  
+} /* dbg_xendproc */
+
+#endif /* TARGET_HAS_DEBUGGER */
+@
+
+
+1.24
+log
+@changed syserrs to use constant strings
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.23 1993/07/27 09:24:06 nickc Exp nickc $ */
+d1195 1
+a1195 1
+	  syserr( debug)already_associated );
+d1629 1
+a1629 1
+      syserr( syserr_unresolved_var_class, name );
+d1713 1
+a1713 1
+	syserr( syserr_no_blocks );
+@
+
+
+1.23
+log
+@fixed C++ conflicts and structure renaming clashes
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.22 1993/07/07 09:53:55 nickc Exp nickc $ */
+d209 1
+a209 1
+    syserr( "debugger: failed to open debug output file %s", dbname );
+d285 1
+d287 2
+a288 1
+    syserr( "debugger: db_type: passed a NULL TypeExpr pointer" );
+d543 1
+a543 1
+      syserr( "db_type( %ld,0x%lx )", h0_( x ), typespecmap_( x ) );
+d1169 1
+a1169 1
+      syserr( "debugger: add_block: no current block or variable" );
+d1195 1
+a1195 1
+	  syserr( "debugger: trying to add an already associated local variable" );
+d1315 1
+a1315 1
+    syserr( "debugger: leave_block: no current block" );
+d1401 2
+a1402 1
+  
+d1404 2
+a1405 1
+    syserr( "debugger: update_var: NULL parameter" );
+d1413 1
+a1413 1
+      syserr( "debugger: unknown storage type" );
+d1452 1
+a1452 1
+	  syserr( "debugger: unknown type of auto storage" );
+d1499 1
+a1499 1
+	syserr( "debugger: bad scope" );
+d1570 1
+d1572 3
+a1574 2
+    syserr( "debugger: print_lines: passed NULL line structure" );
+
+d1629 1
+a1629 1
+      syserr( "debugger: unresolved variable class for %s", name );
+d1713 1
+a1713 1
+	syserr( "debugger: function with no blocks" );
+@
+
+
+1.22
+log
+@fixed compile time warnings
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.21 1993/07/06 14:15:44 nickc Exp nickc $ */
+d278 1
+a278 1
+  TagMemList *	l;
+d354 1
+d361 1
+a361 1
+	  for (n = 0; l != 0; l = l->memcdr)
+d363 1
+a363 1
+	      dbprintf( buffer, "%s:%d;", symname_( l->memsv ), n );
+d392 1
+a392 1
+	  l = tagbindmems_( b );
+d396 1
+a396 1
+          if (l == NULL)
+d410 1
+a410 1
+	  for (bitoff = n = 0; l != NULL; l = l->memcdr)
+d412 1
+a412 1
+	      if (l->memsv == NULL)
+d418 1
+a418 1
+		  dbprintf( buffer, "%s:", symname_( l->memsv ) );
+d421 1
+a421 1
+	      if (l->u.membits)
+d423 1
+a423 1
+		  int32		k = evaluate( l->u.membits );
+d451 1
+a451 1
+		  n = padsize( n, alignoftype( l->memtype ) );
+d453 1
+a453 1
+		  size = db_type( l->memtype, buffer );
+d475 1
+a475 1
+	  l = tagbindmems_( b );
+d479 1
+a479 1
+          if (l == NULL)
+d493 1
+a493 1
+	  for (n = 0; l != NULL; l = l->memcdr)
+d495 1
+a495 1
+	      dbprintf( buffer, "%s:", symname_( l->memsv ) );
+d497 1
+a497 1
+	      n = max( n, l->u.membits ? sizeof_int : db_type( l->memtype, buffer ) );
+@
+
+
+1.21
+log
+@fixed to cope with new revision of compiler
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.20 1993/04/28 10:07:15 nickc Exp nickc $ */
+d36 1
+a39 9
+#ifdef __CC_NORCROFT
+#pragma -v3
+#endif
+extern void cc_rerr( const char * format, ... );
+extern void syserr(  const char * format, ... );
+#ifdef __CC_NORCROFT
+#pragma -v0
+#endif
+
+d97 1
+a97 1
+    char			class;		/* a letter describing the class of the value	*/
+d106 1
+a106 1
+#define varclass_( v )		((v)->class)
+d619 1
+a619 1
+	  TypeExpr *	x = global_list3( SU_Dbg, s_typespec, bitoftype_( s_struct ), b );
+d886 1
+a886 1
+      char		class;
+d897 1
+a897 1
+	  dbg_freevars = dbg_freevars->next;
+d905 1
+d914 1
+a914 1
+	      var->next = dbg_freevars;
+d924 1
+a924 1
+	  class = CLASS_TYPEDEF;
+d943 1
+a943 1
+	      class = CLASS_ARGUMENT;
+d949 1
+a949 1
+	      class = CLASS_UNKNOWN;
+d955 6
+a960 5
+      var->next	  = dbg_varlist;
+      var->binder = b;
+      var->type	  = strcpy( GlobAlloc( SU_Dbg, (int32) strlen( buffer ) + 1 ), buffer );
+      var->class  = class;
+      var->size   = size;
+d1246 1
+a1246 1
+      Dbg_LineList *	new;
+d1251 1
+a1251 1
+	  new = DbgAlloc( Dbg_LineList );
+d1255 1
+a1255 1
+	  new = dbg_freelines;
+d1260 2
+a1261 2
+      new->next = l;
+      new->last = new->first = linenumber;
+d1263 1
+a1263 1
+      current_block->linelist = new;
+d1412 3
+a1414 3
+      var->class   = CLASS_GLOBAL;
+      var->offset  = lastdataloc;
+      lastdataloc += var->size;
+d1419 3
+a1421 3
+      var->class   = CLASS_STATIC;
+      var->offset  = lastdataloc;
+      lastdataloc += var->size;
+d1435 2
+a1436 2
+	      var->class  = CLASS_REGISTER;
+	      var->offset = saved_regs_offsets[ register_number( bindxx_( b ) ) ];
+d1440 2
+a1441 2
+	      var->class  = CLASS_LOCAL;
+	      var->offset = (bindaddr_( b ) & ~BINDADDR_MASK);
+d1460 2
+a1461 2
+	  BindListList * 	new,
+	  BindListList * 	old  )
+d1463 2
+a1464 2
+  int32 oldlevel = length( (List *)old );
+  int32 newlevel = length( (List *)new );
+d1472 1
+a1472 1
+  if (new == old)
+d1480 1
+a1480 1
+      BindListList *	t = new;
+d1482 2
+a1483 2
+      new = old;
+      old = t;
+d1488 1
+a1488 1
+  while (new != old)
+d1493 1
+a1493 1
+      if (new == NULL)
+d1496 1
+a1496 1
+      for (bl = new->bllcar; bl; bl = bl->bindlistcdr)
+d1526 1
+a1526 1
+		      if (nvars == 0 && var->class != CLASS_ARGUMENT)
+d1534 1
+a1534 1
+		  if (var->class != CLASS_ARGUMENT)
+d1541 1
+a1541 1
+		  cc_err( "debugger: UNKNOWN variable $b at line %ld\n", b, curlex.fl.l ); 
+d1546 1
+a1546 1
+      new = new->bllcdr;
+d1615 1
+a1615 1
+  switch (var->class)
+@
+
+
+1.20
+log
+@fixed support for FpP regs
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.19 1993/04/28 10:04:35 nickc Exp $ */
+d35 1
+d403 1
+a403 1
+          if (l == 0)
+d417 1
+a417 1
+	  for (bitoff = n = 0; l != 0; l = l->memcdr)
+d428 1
+a428 1
+	      if (l->membits)
+d430 1
+a430 1
+		  int32		k = evaluate( l->membits );
+d486 1
+a486 1
+          if (l == 0)
+d500 1
+a500 1
+	  for (n = 0; l != 0; l = l->memcdr)
+d504 1
+a504 1
+	      n = max( n, l->membits ? sizeof_int : db_type( l->memtype, buffer ) );
+d1547 1
+a1547 1
+		  cc_err( "debugger: UNKNOWN variable $b at line %ld\n", b, pp_linect ); 
+@
+
+
+1.19
+log
+@Fixed subtle Norcroft style bug
+,
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.18 1993/03/19 10:21:50 nickc Exp $ */
+d1441 1
+a1441 1
+	      var->offset = register_number( bindxx_( b ) );
+@
+
+
+1.18
+log
+@fixed bug introduced by previous delta and improved debugging messages
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.17 1993/03/18 16:20:23 nickc Exp $ */
+d514 21
+a535 2
+	  return sizeoftype( bindtype_( typespecbind_( x ) ) );
+                    
+a545 1
+      
+a548 1
+      
+d557 2
+a558 2
+	  
+	  cc_rerr( "debugger: size of a [] array required, treated as [1]" );
+d1175 2
+a1176 2
+    cc_msg( "debugger: adding variable $b (%x) to block %d\n",
+	   varbind_( var ), var, current_block->block_id );
+d1546 1
+a1546 1
+		  cc_msg( "debugger: UNKNOWN variable $b at line %d\n", b, pp_linect ); 
+d1627 1
+a1627 1
+      syserr( "debugger: unresolved variable class for %s (%x)", name, var );
+@
+
+
+1.17
+log
+@tidied up error message
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.16 1993/03/17 16:19:01 nickc Exp $ */
+d8 6
+d110 7
+d136 1
+d143 1
+d201 1
+a201 1
+  if (debugging( DEBUG_Q ))
+d599 1
+a599 1
+  if (debugging( DEBUG_Q ))
+d712 1
+a712 1
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_LINE ))
+d753 1
+a753 1
+	  if (debugging( DEBUG_Q ) && usrdbg( DBG_LINE ))
+d806 1
+a806 1
+      if (debugging( DEBUG_Q ))
+d861 2
+a862 1
+  FileLine	fl )
+d864 1
+a864 1
+dbg_locvar( b, fl )
+d867 1
+d896 1
+a896 1
+	  if (debugging( DEBUG_Q ))
+d917 5
+a921 2
+	  if (debugging( DEBUG_Q ))
+	    cc_msg( "debugger: new local variable $b\n", b );
+d928 1
+a928 1
+	  if (num_args > 0)
+d996 1
+a996 1
+  
+d1002 1
+a1002 1
+
+d1007 1
+d1027 1
+a1027 1
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_PROC ))
+d1119 1
+a1119 1
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+d1157 3
+a1159 2
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+    cc_msg( "debugger: adding variable $b to block %p\n", var->binder, current_block );
+d1165 1
+a1165 1
+      dbg_varlist = var->next;
+d1172 1
+a1172 1
+      for (v = dbg_varlist; v; v = v->next)
+d1174 1
+a1174 1
+	  if (v->next == var)
+d1183 1
+a1183 1
+      v->next = var->next;
+d1188 1
+a1188 1
+  var->next = current_block->varlist;
+d1207 2
+a1208 2
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_LINE ))
+    cc_msg( "debugger: adding line %ld to block %p\n", linenumber, current_block );
+d1220 1
+a1220 1
+      if (debugging( DEBUG_Q ) && usrdbg( DBG_LINE ))
+d1280 1
+d1285 2
+a1286 2
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_LINE | DBG_VAR ))
+    cc_msg( "debugger: new block %p\n", block );
+d1296 2
+a1297 2
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_LINE | DBG_VAR ))
+    cc_msg( "debugger: finished block %p\n", current_block );
+d1300 1
+a1300 1
+    syserr( "debugger: leave block, no current block" );
+d1333 1
+a1333 1
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+d1364 1
+a1364 1
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+a1386 3
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+    cc_msg( "debugger: updating $b\n", b );
+  
+d1390 3
+d1397 2
+a1398 2
+      return;
+
+d1404 1
+a1404 1
+      return;
+d1411 1
+a1411 1
+      return;
+d1414 1
+a1414 1
+      return;                   /* typedefs, statics and externs already done in locvar */
+a1422 2
+	      /* oh dear, the variable is held in a register */
+	      
+d1432 1
+a1432 1
+	  return;
+d1436 1
+a1436 1
+	  return;
+d1438 1
+d1441 2
+d1463 1
+a1463 1
+  if (debugging( DEBUG_Q ) && usrdbg( DBG_LINE ))
+d1490 1
+a1490 1
+	  if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+d1495 1
+a1495 1
+	      if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+d1523 3
+a1525 1
+		    nvars++;
+a1531 3
+	  
+	  if (debugging( DEBUG_Q ) && usrdbg( DBG_VAR ))
+	    cc_msg( "debugger: %sbound $b\n", entering < 0 ? "un" : "", b );
+d1597 1
+a1597 1
+  print_variables( var->next );
+d1601 2
+a1602 2
+  name = symname_( bindsym_( var->binder ) );
+	      
+d1606 1
+a1606 1
+      dbprintf( NULL, "\n%*c %s=%s;", indent, ' ', name, var->type );
+d1610 1
+a1610 1
+      syserr( "debugger: unresolved variable class for %s", name );
+d1614 1
+a1614 1
+      dbprintf( NULL, "\n%*c %s:%s:%d:r;", indent, ' ', name, var->type, var->offset );
+d1618 2
+a1619 1
+      dbprintf( NULL, "\n%*c %s:%s:%d:%c;", indent, ' ', name, var->type, var->offset, var->class );
+d1627 1
+a1627 1
+  var->next = dbg_freevars;
+d1690 1
+a1690 1
+      if (debugging( DEBUG_Q ) && usrdbg( DBG_PROC ))
+@
+
+
+1.16
+log
+@fixed register numbering to conform to new scheme
+@
+text
+@d1 2
+a2 1
+/* $Id: debug.c,v 1.15 1993/03/08 18:01:41 nickc Exp $ */
+d951 1
+a951 1
+  
+d956 1
+a956 1
+      
+d958 4
+a961 2
+	if (p->binder == b)
+	  return p;
+d968 4
+a971 2
+	    if (p->binder == b)
+	      return p;
+d973 1
+a973 1
+    }  
+d978 4
+a981 2
+    if (p->binder == b)
+      return p;
+d1503 1
+a1503 1
+		  cc_msg( "debugger: UNKNOWN VARIABLE\n" ); 
+@
+
+
+1.15
+log
+@temporarily fixed buffer overflow problem encountered when compiling /hsrc/cmds/com/test.c
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.14 1992/12/17 09:11:30 nickc Exp $ */
+d1396 1
+a1396 1
+	      var->offset = hardware_register( register_number( bindxx_( b ) ) );
+@
+
+
+1.14
+log
+@fixed calculation  of Offset field of ProcInfo structure
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.13 1992/12/04 10:36:04 nickc Exp $ */
+d399 1
+a399 1
+	  
+d855 1
+a855 1
+      char		buffer[ 280 ];			/* XXX */
+d872 1
+a872 1
+      buffer[0 ] = '\0';
+d903 1
+a903 1
+	  
+@
+
+
+1.13
+log
+@fixed calculation of label's address
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.11 1992/12/03 16:21:30 nickc Exp nickc $ */
+d745 1
+a745 1
+  
+d805 2
+a806 12
+      
+      if (is_external_code( symext_( current_proc ) ))
+	{
+	  codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Offset + codebase + codep,
+					    current_proc );
+	  outcodewordaux( 0,		LIT_NUMBER, current_proc );	/* offset of function	*/
+	}
+      else
+	{
+	  outcodeword(    0,		LIT_NUMBER );			/* offset of function => 0 */
+	}      
+      
+@
+
+
+1.12
+log
+@fixed to put a dummy value in Offset field of Procinfo structure of static functions
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.11 1992/12/03 16:21:30 nickc Exp $ */
+d742 4
+@
+
+
+1.11
+log
+@fixed to work with C40 debugger
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.10 1992/10/30 18:12:13 nickc Exp $ */
+d799 1
+a799 1
+      
+d802 3
+a804 1
+      codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Offset + codebase + codep,
+d806 6
+a812 1
+      outcodewordaux( 0,		LIT_NUMBER, current_proc );	/* offset of function	*/
+@
+
+
+1.10
+log
+@fixed to support Helios Source Debugger
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.9 1992/10/02 08:24:56 nickc Exp $ */
+d922 5
+a926 5
+      var->next		= dbg_varlist;
+      var->binder	= b;
+      var->type		= strcpy( GlobAlloc( SU_Dbg, (int32) strlen( buffer ) + 1 ), buffer );
+      var->class	= class;
+      var->size 	= size;
+d928 1
+a928 1
+      dbg_varlist	= var;
+d938 41
+d1149 4
+a1152 2
+	syserr( "debugger: trying to add an already associated local variable" );
+
+d1178 1
+a1178 1
+    cc_msg( "debugger: add line %ld, (block = %p)\n", linenumber, current_block );
+d1278 32
+a1322 27
+/*
+ * locates the information cached for a given binder
+ */
+
+static Dbg_VarList *
+dbg_lookupvar( Binder * b )
+{
+  Dbg_VarList *	p;
+
+
+  /* check local block first */
+  
+  if (current_block != NULL)
+    for (p = current_block->varlist; p; p = p->next)
+      if (p->binder == b)
+	return p;
+
+  /* then check un-associated variables */
+  
+  for (p = dbg_varlist; p; p = p->next)
+    if (p->binder == b)
+      return p;
+
+  return NULL;
+
+} /* dbg_lookupvar */
+
+d1400 1
+a1400 1
+	      var->offset = local_address( b );
+d1411 1
+a1411 1
+} /* update_loc */
+d1432 1
+a1432 1
+    cc_msg( "debugger: new scope, entering = %ld\n", entering );
+a1457 3
+	  if ((bindstg_( b ) & b_dbgbit))
+	    continue;
+
+d1459 1
+a1459 1
+	    cc_msg( "debugger: %sbinding $b\n", entering < 0 ? "un" : "", b );
+d1461 4
+a1464 1
+	  var = dbg_lookupvar( b );
+d1466 3
+a1468 1
+	  if (var)
+d1470 3
+a1472 1
+	      if (entering < 0)
+d1474 15
+a1488 1
+		  bindstg_( b ) |= b_dbgbit;
+d1490 2
+a1491 1
+		  update_var( b, var );
+d1495 2
+a1496 10
+		  if (nvars == 0 && var->class != CLASS_ARGUMENT)
+		    {
+		      enter_block();
+		    }
+		  
+		  add_var( var );
+		}
+
+	      if (var->class != CLASS_ARGUMENT)
+		nvars++;
+d1498 3
+d1510 1
+a1510 1
+		  
+a1573 4
+    case CLASS_ARGUMENT:
+      /* do not print arguments */
+      break;
+
+d1582 4
+d1588 1
+@
+
+
+1.9
+log
+@fixed some compile time warnings
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.8 1992/07/27 16:31:12 nickc Exp $ */
+d789 2
+a791 1
+
+d808 2
+a809 16
+      
+      /* create Proc structure */
+      
+      if (debugging( DEBUG_Q ))
+	cc_msg( "debugger: generating Proc structure for: %s\n", sname );
+      
+      setlabel( proc_label );
+      
+      outcodeword(    T_Proc,		LIT_NUMBER );			/* Proc header		*/
+      
+      codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Ref + codebase + codep,
+					    current_proc );
+      
+      outcodewordaux( 0,		LIT_NUMBER, current_proc );	/* RPTR to func start	*/
+      
+      dump_name( sname );
+@
+
+
+1.8
+log
+@added processor type definition for module.h inclusion
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.7 1992/05/13 14:27:03 nickc Exp nickc $ */
+d59 1
+d61 3
+d65 1
+d847 2
+d945 2
+d1013 3
+d1077 3
+d1303 2
+d1634 2
+@
+
+
+1.7
+log
+@ammended to work with new version of mcdpriv.h
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.6 1992/04/03 15:24:31 nickc Exp nickc $ */
+d9 3
+@
+
+
+1.6
+log
+@removed all warning generated by Norcroft compiler
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.5 1992/04/03 14:32:41 nickc Exp nickc $ */
+d135 1
+a135 1
+void
+d141 1
+a141 1
+void
+d215 1
+a215 1
+void
+d248 1
+a248 1
+int32
+@
+
+
+1.5
+log
+@now working
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.4 1992/04/03 10:06:11 nickc Exp nickc $ */
+d23 2
+d26 11
+d128 4
+a131 4
+static int 	lastdataloc 	= 0;
+static int 	lastfuncloc 	= 0;
+static int	num_args    	= 0;
+static int 	indent 		= 0;
+d248 1
+a248 1
+int
+d260 1
+a260 1
+  int 		bitoff;
+d263 3
+a265 3
+  int 		n;
+  int		size;
+  int		padn = 0;
+d405 1
+a405 1
+		  int	k = evaluate( l->membits );
+d505 1
+a505 1
+      syserr( "db_type( %d,0x%x )", h0_( x ), typespecmap_( x ) );
+d512 1
+a512 1
+	n *= evaluate( typesubsize_( x ));
+d632 1
+a632 1
+      int	j;
+d693 1
+a693 1
+  s = (char *)GlobAlloc( SU_Dbg, pad_to_word( strlen( filename ) + 1 ) );
+d775 1
+a775 1
+      int	depth = greatest_stackdepth / 4;
+d927 1
+a927 1
+      var->type		= strcpy( GlobAlloc( SU_Dbg, strlen( buffer ) + 1 ), buffer );
+d955 1
+a955 1
+  int			offset = 4;
+d971 1
+a971 1
+      int	size;
+d1083 1
+a1083 1
+    cc_msg( "debugger: adding variable $b to block %x\n", var->binder, current_block );
+d1130 1
+a1130 1
+    cc_msg( "debugger: add line %d, (block = %x)\n", linenumber, current_block );
+d1207 1
+a1207 1
+    cc_msg( "debugger: new block %x\n", block );
+d1218 1
+a1218 1
+    cc_msg( "debugger: finished block %x\n", current_block );
+@
+
+
+1.4
+log
+@very nearly there
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.3 1992/04/03 07:39:23 nickc Exp nickc $ */
+d24 6
+d31 3
+d165 1
+a165 1
+    cc_msg( "debugger: initialising for file %s", name );
+d228 1
+a228 1
+  stlist = (struct stdef *)global_list3( SU_Other, stlist, done, b );
+a234 2
+/* still to do here are the divisions into unsigned and long */
+
+d572 1
+a572 1
+	  TypeExpr *	x = global_list3( SU_Other, s_typespec, bitoftype_( s_struct ), b );
+d675 1
+a675 1
+  if (debugging( DEBUG_Q ))
+d716 1
+a716 1
+	  if (debugging( DEBUG_Q ))
+a758 3
+  
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger: generating ProcInfo structure: %s\n", sname );
+d760 3
+a762 1
+  /* create ProcInfo structure */
+a763 6
+  outcodeword(    T_ProcInfo,			LIT_NUMBER );			/* ProcInfo header	*/
+  outcodeword(    codep - 4,			LIT_NUMBER );			/* size of procedure  	*/
+  outcodeword(    greatest_stackdepth / 4, 	LIT_NUMBER );			/* amount of stack used */
+  outcodeword(    0,				LIT_NUMBER );			/* vector stack used 	*/
+  
+  codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Modnum + codebase + codep, NULL );
+d765 2
+a766 7
+  outcodewordaux( 0,				LIT_NUMBER, NULL );		/* module number 	*/
+  
+  codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Offset + codebase + codep, current_proc );
+  
+  outcodewordaux( 0,				LIT_NUMBER, current_proc );	/* offset of function	*/
+  outcodeword(    0,				LIT_NUMBER );			/* reserved 1 		*/
+  outcodeword(    0,				LIT_NUMBER );			/* reserved 2 		*/
+d768 1
+a768 1
+  /* create Proc structure */
+d770 33
+a802 2
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger: generating Proc structure for: %s\n", sname );
+d804 3
+a806 3
+  setlabel( proc_label );
+
+  outcodeword(    T_Proc,			LIT_NUMBER );			/* Proc header		*/
+d808 2
+a809 9
+  codexrefs = (CodeXref *) global_list3( SU_Other, codexrefs, X_Debug_Ref + codebase + codep, current_proc );
+  
+  outcodewordaux( 0,				LIT_NUMBER, current_proc );	/* RPTR to func start	*/
+
+  dump_name( sname );
+
+  /* create any missing SourceInfo structures */
+  
+  genfilenames();
+a840 5
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger:  local var $b\n", b );
+  
+  cc_msg( "debugger:  local var $b\n",b );
+  
+d844 5
+a848 1
+
+d850 5
+a854 1
+      if (bindstg_( b ) & bitofstg_( s_typedef ))
+d856 3
+a858 1
+	  dbg_type( bindsym_( b ), t );
+d860 4
+a863 1
+      else if (num_args > 0)
+d865 1
+a865 1
+	  /* skip arguments - they are not local variables */
+d867 15
+a881 1
+	  cc_msg( "debugger: skipping $b\n",b );
+d883 2
+a884 1
+	  --num_args;
+d888 2
+a889 3
+	  char		buffer[ 80 ];			/* XXX */
+	  Dbg_VarList *	var;
+	  int32		size;
+d891 4
+d896 1
+a896 1
+	  if (dbg_freevars == NULL)
+d898 5
+a902 1
+	      var = DbgAlloc( Dbg_VarList );
+d906 1
+a906 3
+	      var = dbg_freevars;
+	      
+	      dbg_freevars = dbg_freevars->next;
+d908 3
+a910 9
+	  
+	  /* local to a proc */
+	  
+	  if (debugging( DEBUG_Q ))
+	    cc_msg( "note loc var $b\n", b );
+
+	  buffer[0 ] = '\0';
+	  
+	  size = pad_to_word( db_type( bindtype_( b ), buffer ) );
+d912 5
+a916 2
+	  if (size < 4)
+	    size = 4;
+d918 1
+a918 9
+	  /* prepend variable to list of un-associated vars */
+	  
+	  var->next	= dbg_varlist;
+	  var->binder	= b;
+	  var->type	= strcpy( GlobAlloc( SU_Dbg, strlen( buffer ) + 1 ), buffer );
+	  var->class	= CLASS_UNKNOWN;
+	  var->size 	= size;
+	  dbg_varlist	= var;
+        }
+d945 2
+a946 2
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger: new function: %s\n", name );
+d1006 1
+a1006 1
+      
+d1034 2
+a1035 4
+#if 0
+  if (dump_info)
+    dbprintf( NULL, "dbg_topvar %s @@ %d\n", symname_( name ), dataloc );
+#endif
+d1043 1
+a1043 1
+      dbprintf( NULL, ":%d:%c;\n", lastdataloc, stgclass ? 'g' : 's' );
+d1069 2
+a1070 2
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger: adding variable $b to current block\n", var->binder );
+d1116 1
+a1116 1
+  if (debugging( DEBUG_Q ))
+d1121 12
+a1132 1
+      syserr( "debugger: add_line: no block available" );
+a1173 3
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger: new block\n" );
+
+d1193 3
+d1204 1
+a1204 1
+  if (debugging( DEBUG_Q ))
+d1213 1
+a1213 2
+  
+  
+a1239 3
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger: locating variable $b\n", b );
+  
+d1266 2
+a1267 2
+  /*
+    if (debugging( DEBUG_Q ))
+d1269 1
+a1269 1
+    */
+d1288 2
+a1289 4
+  if (debugging( DEBUG_Q ))
+    cc_msg( "debugger: updating variable $b\n", b );
+
+  cc_msg( "debugger: updating variable $b\n", b );
+a1314 3
+      if (debugging( DEBUG_Q ))
+	cc_msg( "debugger: typedefs already displayed\n" );
+      
+a1320 3
+	  syserr( "debugger: should not need local info of an argument" );
+	  return;
+
+d1357 1
+a1357 1
+  if (!usrdbg( DBG_VAR ))
+d1363 1
+a1363 1
+  if (debugging( DEBUG_Q ))
+d1393 1
+a1393 1
+	  if (debugging( DEBUG_Q ))
+a1395 2
+	  cc_msg( "checking scope of $b\n", b );
+	  
+d1408 1
+a1408 1
+		  if (nvars == 0)
+d1415 3
+a1417 2
+	      
+	      nvars++;
+d1471 46
+d1518 1
+d1520 1
+a1532 3
+	  Dbg_VarList *		v;
+
+	  
+d1537 2
+d1546 1
+a1546 22
+	  /* display the variables of this block */
+
+	  for (v = p->varlist; v;)
+	    {
+	      Dbg_VarList *	tmp;
+
+	      
+	      dbprintf( NULL, "\n%*c %s:%s:%d:%c;",
+		       indent,
+		       ' ',
+		       symname_( bindsym_( v->binder ) ),
+		       v->type,
+		       v->offset,
+		       v->class );
+
+	      /* return the variable to the free list */
+	      
+	      tmp = dbg_freevars->next;
+	      
+	      dbg_freevars = v;
+	      
+	      v = v->next;
+d1548 1
+a1548 4
+	      dbg_freevars->next = tmp;
+
+	      /* XXX free 'dbg_freevars->type' */
+	    }
+d1554 2
+d1575 1
+a1575 1
+      if (debugging( DEBUG_Q ))
+d1598 1
+a1598 1
+  
+@
+
+
+1.3
+log
+@almost working now ...
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.2 1992/03/31 17:51:31 nickc Exp nickc $ */
+d3 4
+a17 1
+#include "target.h"
+d24 5
+a28 1
+#ifdef TARGET_HAS_DEBUGGER
+d60 1
+a60 1
+static FileName *		filenamelist = NULL;
+d62 1
+a62 1
+typedef struct Dbg_LocList
+d64 2
+a65 2
+    struct Dbg_LocList *	next;		/* pointer to next in chain of Dbg_LocLists	*/
+    Binder *			binder;		/* the binder assocaited with the variable	*/
+d69 1
+d71 1
+a71 3
+Dbg_LocList;
+
+static Dbg_LocList *		dbg_loclist = NULL;
+d73 2
+a74 7
+typedef struct Dbg_VarList
+  {
+    struct Dbg_VarList *	next;		/* chain of allocated Dbg_VarLists		*/
+    Binder *			var;		/* the binder associated with this variable	*/
+    Dbg_LocList *		loc;		/* the location of this variable		*/
+  }
+Dbg_VarList;
+d80 1
+a80 1
+    int32			last;		/* last line number in the dub-block		*/
+d84 2
+d88 4
+a91 4
+    struct Dbg_Block *		next;		/* chain of alloacted Dbg_Blocks */
+    struct Dbg_Block *		parent;		/* parent block of this block	 */
+    struct Dbg_LineList *	linelist;	/* linked list of line numbers	 */
+    struct Dbg_VarList *	varlist;	/* linked list of variables at this scope */
+d95 3
+a97 2
+static Dbg_Block *		current_block = NULL;
+static Dbg_Block *		blocklist     = NULL;
+d100 2
+a101 2
+int 		usrdbgmask;
+char 		dbg_name[ 4 ] = "tla";
+a103 2
+FILE *		dbfile = NULL;
+
+d105 4
+a109 3
+static int 	lastdataloc = 0;
+static int 	lastfuncloc = 0;
+static int	num_args    = 0;
+d155 2
+a156 13
+#if TRAN
+  if (usrdbg( DBG_ANY ))
+    {
+      extern int export_statics;
+
+
+      var_dump_info   = 1;
+      debug_notify    = 5;
+      var_sort_locals = 0;
+
+      export_statics = TRUE;
+    }
+#endif
+d259 8
+a266 1
+	  dbprintf( buffer, "char" );
+d276 8
+a283 1
+	      dbprintf( buffer, "short" );
+d289 8
+a296 1
+	      dbprintf( buffer, "long" );
+d300 10
+a309 2
+
+	  dbprintf( buffer, "int" );
+d311 2
+a312 1
+	  return sizeof_int;
+d365 1
+a365 1
+	  dbprintf( buffer, "{" );
+d369 1
+a369 1
+	      dbprintf( buffer, "$%s;", symname_( bindsym_( b ) ) );
+d418 1
+a418 1
+	      dbprintf( buffer, ":%d;", n );
+d473 1
+a473 1
+	case bitoftype_(s_void):
+d555 3
+a587 217
+void
+#ifdef __STDC__
+db_bindlist(
+	    SynBindList *	l,
+	    int 		arglist )
+#else
+db_bindlist( l, arglist )
+  SynBindList *	l;
+  int 		arglist;
+#endif
+{
+  SynBindList *	x;
+  int 		offset = 8;
+  int 		size;
+
+
+  for (x = l; x != NULL ; x = x->bindlistcdr)
+    {
+      Binder *	b = x->bindlistcar;
+
+
+      if (arglist ||
+	  (bindstg_( b ) & bitofstg_( s_auto )))
+	{
+	  dbprintf( NULL, "%s:", symname_( bindsym_( b ) ) );
+	  
+	  size = db_type( b->bindtype, NULL );
+	  
+	  size = pad_to_word( size );
+	  
+	  if (size < 4)
+	    size = 4;
+	      
+	  if (arglist)
+	    {
+	      dbprintf( NULL, ":%d;", offset );
+	      
+	      offset += size;
+	    }
+	  else
+	    {
+	      offset += size;
+	      
+	      dbprintf( NULL, ":%d;", -offset );
+	    }
+	}
+      else if (bindstg_( b ) & bitofstg_( s_static ))
+	{
+	  dbprintf( NULL, "%s:", symname_( bindsym_( b ) ) );
+	  
+	  (void) db_type( b->bindtype, NULL );
+	  
+	  dbprintf( NULL, ":%d:s;", bindaddr_( b ) );
+	}
+    }
+  
+  return;
+  
+} /* db_bindlist */
+
+
+
+void
+#ifdef __STDC__
+db_blockstart( Cmd * x )
+#else
+db_blockstart( x )
+  Cmd *	x;
+#endif
+{
+  CmdList *	cl        = cmdblk_cl_( x );
+  SynBindList *	bl        = cmdblk_bl_( x );
+  int 		startline = x->fileline.l;
+  int 		endline   = startline;	
+  int 		i;
+
+  
+  dbprintf( NULL, "\n" );
+
+  indent++;
+
+  for (i = 0; i < indent; i++)
+    dbprintf( NULL, " " );
+
+  dbprintf( NULL, "{%d", startline );
+
+  while (cl != NULL)
+    {
+      Cmd *	cmd = cmdcar_( cl );
+
+      
+      endline = cmd->fileline.l;
+      
+      dbprintf( NULL, ",%d", endline );
+      
+      switch (h0_( cmd ))
+	{
+	default:
+	  break;
+		
+	case s_if:
+	  if (h0_( cmd2c_( cmd ) ) != s_block)
+	    {
+	      dbprintf( NULL, ",%d", cmd2c_( cmd )->fileline.l );
+	    }
+	  
+	  if (cmd3c_( cmd ) != 0 &&
+	      h0_( cmd3c_( cmd )) != s_block)
+	    {
+	      dbprintf( NULL, ",%d", cmd3c_( cmd )->fileline.l );
+	    }
+	  break;
+			
+	case s_do:
+	  cmd = cmd1c_( cmd );
+	  goto doloop;
+	  
+	case s_for:
+	  cmd = cmd4c_( cmd );
+
+	doloop:
+	  if (h0_( cmd ) != s_block)
+	    dbprintf( NULL, ",%d", cmd->fileline.l );
+	}
+      
+      cl = cdr_( cl );
+    }
+  
+  dbprintf( NULL, ";" );
+  
+  dbprintf( NULL, "\n" );
+  
+  indent++;
+  
+  for (i = 0; i < indent; i++)
+    dbprintf( NULL, " " );
+  
+  db_bindlist( bl, 0 );
+  
+  return;
+  
+} /* db_block_start */
+
+
+void
+#ifdef __STDC__
+db_blockend( Cmd * x )
+#else
+db_blockend( x )
+  Cmd *	x;
+#endif
+{
+  indent -= 2;
+  
+  dbprintf( NULL, "};\n" );
+  
+  return;
+  
+} /* db_blockend */
+
+
+void
+#ifdef __STDC__
+db_static( DeclRhsList * d )
+#else
+db_static( d )
+  DeclRhsList *	d;
+#endif
+{
+  int 		stat = 0;
+  SET_BITMAP 	stg  = d->declstg;
+
+  
+  if (stg & b_fnconst)
+    return;
+	
+  switch (stg & -stg)
+    {
+    case bitofstg_( s_typedef ):
+      dbprintf( NULL, "%s=", symname_( d->declname ) );
+      
+      (void) db_type( d->decltype, NULL );
+      
+      dbprintf( NULL, ";\n" );
+      
+      break;
+		
+    default:
+      syserr( "debugger: db_static(0x%x)", stg );
+
+    case bitofstg_( s_auto ):
+      break;
+	    
+    case bitofstg_( s_static ):
+      stat = 1;
+      /* drop through */
+      
+    case bitofstg_( s_extern ):
+      if (!(d->declstg & b_undef))
+	{
+	  dbprintf( NULL, "%s:", symname_( d->declname ) );
+	  
+	  (void) db_type( d->decltype, NULL );
+	  
+	  dbprintf( NULL, ":%d:%c;\n", dataloc, stat ? 's' : 'g' );
+	  
+	  break;
+	}
+      
+      break;
+    }
+  
+  return;
+  
+} /* db_static */
+
+
+d668 3
+d805 1
+a805 7
+#if 0
+  if (dump_info)
+    dbprintf( NULL, "dbg_notefileline %d %s\n", fl.l, fl.f );
+#endif
+#if 0
+  cc_msg( "line %d\n", fl.l );
+#endif
+d823 1
+a823 1
+    cc_msg( "debugger:  local var (%s)\n", symname_( bindsym_( b ) ) );
+d825 2
+d838 4
+d847 1
+a847 1
+	  Dbg_LocList *	loc = DbgAlloc( Dbg_LocList );
+d849 12
+a861 1
+	  
+d874 1
+a874 14
+	  if (bindstg_( b ) & bitofstg_( s_static ))
+	    {
+	      loc->class  = 's';
+	      loc->offset = lastdataloc;
+
+	      lastdataloc += size;
+	    }
+	  else
+	    {
+	      /* class and position unknown at this point in time */
+	      
+	      loc->class	= 'z';
+	      loc->offset	= 0;
+	    }
+d876 6
+a881 4
+	  loc->next	= dbg_loclist;
+	  loc->binder	= b;
+	  loc->type	= strcpy( GlobAlloc( SU_Dbg, strlen( buffer ) + 1 ), buffer );
+	  dbg_loclist	= loc;
+d909 3
+d1028 1
+a1028 3
+add_var(
+	Binder * 	b,
+	Dbg_LocList *	loc )
+d1030 7
+a1036 1
+  Dbg_VarList *		v;
+d1038 1
+d1040 1
+a1040 1
+  if (current_block == NULL)
+d1042 1
+a1042 1
+      syserr( "debugger: add_block: no current block" );
+d1044 10
+d1055 5
+a1059 1
+  v = DbgAlloc( Dbg_VarList );
+d1061 3
+a1063 3
+  v->next = current_block->varlist;
+  v->var  = b;
+  v->loc  = loc;
+d1065 1
+a1065 1
+  current_block->varlist = v;
+d1070 2
+a1071 1
+  
+d1098 2
+a1099 1
+      Dbg_LineList *	new = DbgAlloc( Dbg_LineList );
+d1101 7
+d1109 3
+d1126 1
+a1126 1
+  Dbg_Block *	b;
+d1131 11
+a1141 2
+  
+  b = DbgAlloc( Dbg_Block );
+d1143 4
+a1146 4
+  b->next     = blocklist;
+  b->parent   = current_block;
+  b->linelist = NULL;
+  b->varlist  = NULL;
+d1148 2
+a1149 2
+  current_block = b;
+  blocklist     = b;
+d1176 4
+a1179 1
+  enter_block(); 
+d1185 1
+d1187 1
+a1187 2
+ * locates the information cached
+ * for a given binder
+d1190 1
+a1190 1
+static Dbg_LocList *
+d1193 2
+a1194 1
+  Dbg_LocList *	p;
+d1196 9
+d1206 5
+a1210 2
+  for (p = dbg_loclist; p; p = p->next)
+    if (p->binder == b) return p;
+d1225 2
+a1226 1
+  if (debugging( DEBUG_Q ))
+d1228 2
+a1229 1
+
+d1235 4
+d1240 1
+a1240 1
+update_loc(
+d1242 1
+a1242 1
+	   Dbg_LocList *	loc )
+d1247 8
+d1261 7
+d1269 6
+a1274 1
+    case bitofstg_( s_extern  ):
+d1276 3
+d1293 2
+a1294 2
+	      loc->class  = 'r';
+	      loc->offset = hardware_register( register_number( bindxx_( b ) ) );
+d1298 2
+a1299 2
+	      loc->class  = 'l';
+	      loc->offset = local_address( b );
+d1354 1
+a1354 1
+	  Dbg_LocList *	loc;
+d1361 1
+a1361 1
+	    cc_msg( "debugger: unbinding $b\n", b );
+d1363 3
+a1365 1
+	  loc = dbg_lookupvar( b );
+d1367 1
+a1367 1
+	  if (loc)
+a1370 5
+		  if (nvars == 0)
+		    {
+		      leave_block();
+		    }
+		  
+d1373 1
+a1373 1
+		  update_loc( b, loc );
+d1382 1
+a1382 1
+		  add_var( b, loc );
+d1392 5
+a1396 6
+  /*
+   * Return YES here to ask the local code-generator
+   * to notify us the code location of where these declarations start/end,
+   * resulting in a call to dbg_addcodep(NULL, codeaddr).
+   */
+
+d1429 6
+a1435 2
+  /* XXX - free l */
+
+a1452 1
+	  Dbg_LineList *	l;
+a1453 1
+	  int32			i;
+d1469 1
+a1469 1
+	  for (v = p->varlist; v; v = v->next)
+d1471 3
+d1475 18
+a1492 4
+		       indent, ' ', symname_( bindsym_( v->var ) ),
+		       v->loc->type,
+		       v->loc->offset,
+		       v->loc->class );
+d1513 3
+a1515 2
+  if (blocklist == NULL)
+    syserr( "debugger: function with no blocks" );
+d1517 8
+a1524 3
+  dump_blocks( NULL );
+
+  /* XXX - free blocklist */
+d1526 1
+a1526 1
+  current_block = blocklist = NULL;
+d1528 13
+a1540 1
+  dbprintf( NULL, "\n" );
+@
+
+
+1.2
+log
+@first stage of Helios Debuuger Support
+@
+text
+@d1 1
+a1 1
+/* $Id: debug.c,v 1.1 1992/03/26 10:59:57 nickc Exp nickc $ */
+d6 1
+d18 2
+d24 1
+a24 1
+#define T_SourceInfo	T_FileName
+a26 2
+#define LAYOUT
+
+d31 1
+a31 1
+#define streq( a, b )	(strcmp( a, b ) == 0)
+d34 1
+a34 4
+static int 	indent 		= 0;
+Symstr *	current_proc	= NULL;
+LabelNumber *	proc_label	= NULL;
+
+a35 1
+FILE *		dbfile = NULL;
+d39 3
+a41 3
+    struct stdef *	next;
+    int			done;
+    TagBinder *		b;
+d47 3
+a49 3
+    struct FileName *	next;
+    LabelNumber	*	lab;
+    char *		name;	
+d53 42
+a94 1
+FileName *		filenamelist = NULL;
+d97 4
+a101 1
+char 		dbg_name[ 4 ] = "tla";
+d103 1
+d105 2
+d112 1
+d117 2
+a118 1
+dbprintf( fmt, va_alist )
+d127 5
+a132 2
+  vfprintf( dbfile, fmt, a );
+	
+d180 5
+a184 5
+  dbprintf( "void=#0;\n"  );	
+  dbprintf( "char=#1;\n"  );
+  dbprintf( "short=-2;\n" );
+  dbprintf( "int=-4;\n"   );
+  dbprintf( "long=-4;\n"  );	
+d186 1
+a186 1
+  dbprintf( "signed char=-1;\n" );	/* XXX changed from -2 by NC 26/3/92 */
+d188 7
+a194 7
+  dbprintf("unsigned short=#2;\n");
+  dbprintf("unsigned int=#4;\n");
+  dbprintf("unsigned long=#4;\n");
+
+  dbprintf( "enum=#4;\n"   );
+  dbprintf( "float=.4;\n"  );
+  dbprintf( "double=.8;\n" );
+a202 42
+db_tidy( void )
+#else
+db_tidy()
+#endif
+{
+  struct stdef *	s = stlist;
+
+
+#ifdef LAYOUT
+  dbprintf( "\n" );
+#endif
+
+  while (s)
+    {
+      if (!s->done)
+	{
+	  TagBinder *	b = s->b;
+	  TypeExpr *	x = global_list3( SU_Other, s_typespec, bitoftype_( s_struct ), b );
+
+
+	  dbprintf( "__struct_%s=", symname_( bindsym_( b ) ) );
+	  
+	  db_type( x );
+	  
+	  dbprintf( ";\n" );
+	}
+
+      s = s->next;
+
+    }
+
+  fclose( dbfile );
+
+  dbfile = NULL;
+  
+  return;
+  
+} /* db_tidy */
+
+
+void
+#ifdef __STDC__
+d238 3
+a240 1
+db_type( TypeExpr * x )
+d242 3
+a244 2
+db_type( x )
+  TypeExpr * x;
+d256 3
+d267 2
+a268 1
+	  dbprintf( "char" );
+d277 1
+a277 1
+	      dbprintf( "short" );
+d283 1
+a283 1
+	      dbprintf( "long" );
+d287 2
+a289 2
+	  dbprintf( "int" );
+	  
+d296 1
+a296 1
+	  dbprintf( "<" );
+d299 1
+a299 1
+	    dbprintf( "$%s;", symname_( bindsym_( b ) ) );
+d303 1
+a303 1
+	      dbprintf( "%s:%d;", symname_( l->memsv ), n );
+d308 1
+a308 1
+	  dbprintf( ">int" );
+d310 1
+a310 1
+	  dbprintf( "enum" );
+d318 1
+a318 1
+	      dbprintf( "float" );
+d324 1
+a324 1
+	      dbprintf( "double" );
+d338 1
+a338 1
+	      dbprintf( "$%s", symname_( bindsym_( b ) ) );
+a341 1
+                    
+d343 1
+a343 1
+	  dbprintf( "{" );
+d345 4
+a348 2
+	  if (*symname_( bindsym_( b ) ) != '<') 
+	    dbprintf( "$%s;", symname_( bindsym_( b ) ) );
+d354 1
+a354 1
+		  dbprintf( "pad%d:", padn++ );
+d358 1
+a358 1
+		  dbprintf( "%s:", symname_( l->memsv ) );
+d378 2
+a379 2
+		  
+		  dbprintf( "%%%d,%d", bitoff, k );
+d393 1
+a393 1
+		  size = db_type( l->memtype );
+d395 2
+a397 2
+	      dbprintf( ":%d;", n );
+	      
+d401 1
+a401 1
+	  dbprintf( "}" );
+d421 1
+a421 1
+	      dbprintf( "$%s", symname_( bindsym_( b ) ) );
+d425 2
+a426 2
+                    
+	  dbprintf( "{" );
+d428 4
+a431 2
+          if ( *symname_(bindsym_(b)) != '<') 
+	    dbprintf( "$%s;", symname_( bindsym_( b ) ) );
+d435 1
+a435 1
+	      dbprintf( "%s:", symname_( l->memsv ) );
+d437 3
+a439 3
+	      n = max( n, l->membits ? sizeof_int : db_type( l->memtype ) );
+	      
+	      dbprintf( ":0;" );
+d442 1
+a442 1
+	  dbprintf( "}" );
+d447 1
+a447 1
+	  dbprintf( "%s", symname_( bindsym_( typespecbind_( x ) ) ) );
+d452 2
+a453 1
+	  dbprintf( "void" );
+d477 2
+a478 2
+      
+      dbprintf( "[%d]", evaluate( typesubsize_( x ) ) );
+d480 1
+a480 1
+      db_type( typearg_( x ) );
+d486 3
+a488 3
+      dbprintf( "()" );
+      
+      db_type( typearg_( x ) );
+d498 1
+a498 1
+	  dbprintf( "*" );
+d509 1
+a509 1
+	      dbprintf( "$%s", symname_( bindsym_( b ) ) );
+d513 1
+a513 1
+	      db_type( x1 );
+d525 40
+d587 3
+a589 1
+	  dbprintf( "%s:", symname_( bindsym_( b ) ) );
+a590 1
+	  size = db_type( b->bindtype );
+d593 3
+d598 1
+a598 4
+	      dbprintf( ":%d;", offset );
+	      
+	      if (size < 4)
+		size = 4;
+a603 3
+	      if (size < 4)
+		size = 4;
+	      
+d606 1
+a606 1
+	      dbprintf( ":%d;", -offset );
+d611 1
+a611 1
+	  dbprintf( "%s:", symname_( bindsym_( b ) ) );
+d613 1
+a613 1
+	  db_type( b->bindtype );
+d615 1
+a615 1
+	  dbprintf( ":%d:s;", bindaddr_( b ) );
+a623 33
+void
+#ifdef __STDC__
+db_proc(
+	Binder *	proc,
+	SynBindList *	formals,
+	TypeExpr *	type )
+#else
+db_proc( proc, formals, type )
+  Binder *	proc;
+  SynBindList *	formals;
+  TypeExpr *	type;
+#endif
+{
+#ifdef LAYOUT
+  dbprintf("\n");
+#endif
+
+  dbprintf( "%s:(", symname_( bindsym_( proc ) ) );
+
+  db_bindlist( formals, 1 );
+
+  dbprintf( ")" );
+
+  db_type( type );
+
+  dbprintf( ":%d=", dataloc );
+
+  lastdataloc = dataloc + 4;
+
+  return;
+  
+} /* db_proc */
+
+d640 1
+a640 2
+#ifdef LAYOUT
+  dbprintf( "\n" );
+d645 1
+a645 2
+    dbprintf( " " );
+#endif
+d647 1
+a647 1
+  dbprintf( "{%d", startline );
+d656 1
+a656 1
+      dbprintf( ",%d", endline );
+d666 1
+a666 1
+	      dbprintf( ",%d", cmd2c_( cmd )->fileline.l );
+d672 1
+a672 1
+	      dbprintf( ",%d", cmd3c_( cmd )->fileline.l );
+d685 1
+a685 1
+	    dbprintf( ",%d", cmd->fileline.l );
+d691 1
+a691 1
+  dbprintf( ";" );
+d693 1
+a693 2
+#ifdef LAYOUT
+  dbprintf( "\n" );
+d698 1
+a698 2
+    dbprintf( " " );
+#endif
+a714 1
+#ifdef LAYOUT
+a715 1
+#endif
+d717 1
+a717 1
+  dbprintf( "};\n" );
+d742 1
+a742 1
+      dbprintf( "%s=", symname_( d->declname ) );
+d744 1
+a744 1
+      db_type( d->decltype );
+d746 1
+a746 1
+      dbprintf( ";\n" );
+d763 1
+a763 1
+	  dbprintf( "%s:", symname_( d->declname ) );
+d765 1
+a765 1
+	  db_type( d->decltype );
+d767 1
+a767 1
+	  dbprintf( ":%d:%c;\n", dataloc, stat ? 's' : 'g' );
+d787 1
+d789 4
+d839 1
+d841 4
+d860 1
+a860 1
+  f = (FileName *)GlobAlloc( SU_Other, sizeof (FileName) );
+d862 1
+a862 1
+  s = (char *)GlobAlloc( SU_Other, pad_to_word( strlen( filename ) + 1 ) );
+d882 1
+d884 3
+d913 1
+a913 1
+	  copy = (LabelNumber *)GlobAlloc( SU_Other, sizeof (LabelNumber) );
+d933 1
+d935 3
+d996 1
+a996 1
+    dbprintf( "dbg_notefileline %d %s\n", fl.l, fl.f );
+d998 3
+a1000 1
+
+d1009 1
+a1009 1
+  Binder *	name,
+d1012 2
+a1013 2
+dbg_locvar( name, fl )
+  Binder *	name;
+d1017 56
+a1072 4
+#if 0
+  if (dump_info)
+    dbprintf( "dbg_locvar %s @@ %d\n", symname_( bindsym_( name ) ), dataloc );
+#endif
+d1083 1
+a1083 1
+	 TypeExpr *	t,
+d1087 1
+a1087 1
+dbg_proc( name, t, ext, fl )
+d1089 1
+a1089 1
+  TypeExpr *	t;
+d1094 4
+d1100 28
+a1127 4
+#if 0
+  if (dump_info)
+    dbprintf( "dbg_proc %s @@ %d\n", symname_( name ), dataloc );
+#endif
+d1129 8
+d1155 1
+a1155 1
+      dbprintf( "%s=", symname_( name ) );
+d1157 1
+a1157 1
+      db_type( t );
+d1159 1
+a1159 1
+      dbprintf( ";\n" );
+d1186 1
+a1186 1
+    dbprintf( "dbg_topvar %s @@ %d\n", symname_( name ), dataloc );
+d1191 1
+a1191 1
+      dbprintf( "%s:", symname_( name ) );
+d1193 1
+a1193 1
+      db_type( t );
+d1195 1
+a1195 1
+      dbprintf( ":%d:%c;\n", lastdataloc, stgclass ? 'g' : 's' );
+d1206 114
+d1322 2
+d1325 18
+a1342 1
+}
+d1344 8
+d1353 1
+a1353 1
+dbg_init( void )
+d1355 3
+d1359 53
+a1411 1
+}
+d1413 1
+d1415 94
+a1508 1
+dbg_scope( BindListList * new, BindListList * old  )
+d1510 47
+a1556 2
+  return FALSE;
+}
+d1558 38
+d1599 11
+d1611 2
+a1612 1
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 2
+a2 6
+/* $Id: debug.c,v 1.1 90/09/13 17:09:56 nick Exp $ */
+#ifdef __old
+#include "cchdr.h"
+#include "AEops.h"
+#include "cg.h"
+#include "util.h"
+d5 1
+a5 1
+#else
+d13 6
+a18 3
+#include <stdio.h>
+#include <stdarg.h>
+#endif
+d20 2
+a21 3
+#ifdef __STDC__
+#undef va_alist
+#define va_alist ...
+d26 2
+a27 2
+#define sizeof_int 4
+#define padsize(n,align) (-((-(n)) & (-(align))))
+d29 8
+a36 2
+extern int dataloc;
+static int indent = 0;
+d38 1
+a38 1
+FILE *dbfile = NULL;
+d41 14
+a54 7
+{
+	struct stdef	*next;
+	int		done;
+	TagBinder	*b;
+} *stlist;
+
+#ifndef __old
+d56 1
+a56 1
+int usrdbgmask;
+d58 1
+a58 1
+char dbg_name[4] = "tla";
+d60 1
+a60 1
+static int lastdataloc = 0;
+d62 1
+a62 1
+#endif
+d66 4
+a69 1
+void dbprintf( char *fmt, ... )
+d71 4
+a74 2
+void dbprintf(fmt, va_alist )
+char *fmt;
+d77 1
+a77 1
+	va_list a;
+d79 2
+a80 1
+	va_start(a,fmt);
+d82 1
+a82 1
+	vfprintf(dbfile,fmt,a);
+d84 6
+a89 2
+	va_end(a);
+}
+d91 7
+a97 2
+db_init(name)
+char *name;
+d99 13
+a111 2
+	char dbname[30];
+	char *p = dbname;
+d113 2
+a114 9
+#ifndef	__old
+	if( usrdbg(DBG_ANY) )
+	{
+		extern int export_statics;
+		var_dump_info = 1;
+		debug_notify = 5;
+		var_sort_locals = 0;
+		export_statics = TRUE;
+	}
+d117 1
+a117 1
+	strcpy(dbname,name);
+d119 4
+a122 2
+	while ( *p && (*p != '.') ) p++;
+	*p = 0;
+d124 1
+a124 1
+	strcat(dbname,".dbg");
+d126 4
+a129 1
+	dbfile = fopen(dbname,"w");
+d131 5
+a135 5
+	dbprintf("void=#0;\n");	
+	dbprintf("char=#1;\n");
+	dbprintf("short=-2;\n");	
+	dbprintf("int=-4;\n");	
+	dbprintf("long=-4;\n");	
+d137 1
+a137 1
+	dbprintf("signed char=-2;\n");
+d139 12
+a150 8
+	dbprintf("unsigned short=#2;\n");
+	dbprintf("unsigned int=#4;\n");
+	dbprintf("unsigned long=#4;\n");
+
+	dbprintf("enum=#4;\n");	
+	dbprintf("float=.4;\n");
+	dbprintf("double=.8;\n");
+}
+d152 4
+d157 1
+d159 3
+a161 1
+	struct stdef *s = stlist;
+d163 1
+a163 1
+	dbprintf("\n");
+d165 4
+a168 1
+	while( s )
+d170 9
+a178 9
+		if( !s->done )
+		{
+			TagBinder *b = s->b;
+			TypeExpr *x = global_list3(SU_Other,s_typespec,bitoftype_(s_struct),b);
+			dbprintf("__struct_%s=",_symname(bindsym_(b)));
+			db_type(x);
+			dbprintf(";\n");
+		}
+		s = s->next;
+d180 13
+a192 2
+	fclose(dbfile);
+}
+d194 7
+a200 2
+void addstdef(b)
+TagBinder *b;
+d202 3
+a204 2
+	struct stdef *s = stlist;
+	int done = (tagbindmems_(b) != 0);
+d206 3
+a208 1
+	while( s )
+d210 4
+a213 6
+		if( s->b == b )
+		{
+			if( done ) s->done = 1;
+			return;
+		}
+		s = s->next;
+d216 10
+a225 3
+	stlist = (struct stdef *)global_list3(SU_Other,stlist,done,b);
+	
+}
+d228 8
+a235 2
+int db_type(x)
+TypeExpr *x;
+d237 7
+a243 6
+    SET_BITMAP m;
+    int bitoff;
+    TagMemList *l;
+    TagBinder *b;
+    int n, size;
+    int padn=0;
+d245 2
+a246 1
+    switch (h0_(x))
+d248 29
+a276 23
+         case s_typespec:
+            m = typespecmap_(x);
+            switch (m & -m)    /* LSB - unsigned/long etc. are higher */
+            {   
+                case bitoftype_(s_char):
+                    dbprintf("char");
+                    return 1;
+                    
+                case bitoftype_(s_int):
+                    if (m & BITFIELD)
+                      cc_rerr("db_type <bit field> illegal - db_type(int) assumed");
+                    if (m & bitoftype_(s_short))
+                    {
+                    	dbprintf("short");
+                    	return 2;
+                    }
+                    else if (m & bitoftype_(s_long))
+                    {
+                    	dbprintf("long");
+                    	return 4;
+                    }
+		    dbprintf("int");
+		    return 4;
+d278 1
+a278 1
+                case bitoftype_(s_enum):
+d280 15
+a294 10
+                    b = typespectagbind_(x);
+                    dbprintf("<");
+                    if( *symname_(bindsym_(b)) != '<' ) 
+                    	dbprintf("$%s;",symname_(bindsym_(b)));
+                    for ( n=0; l != 0; l = l->memcdr)
+                    {
+                        dbprintf("%s:%d;",symname_(l->memsv),n);
+                        n++;
+                    }
+                    dbprintf(">int");
+d296 3
+a298 2
+		    dbprintf("enum");
+                    return 4;
+d300 28
+a327 5
+                case bitoftype_(s_double):
+                    if (m & bitoftype_(s_short)) 
+                    { dbprintf("float"); return 4; }
+                    else dbprintf("double");
+                    return 8;
+d329 81
+a409 9
+                case bitoftype_(s_struct):
+                    b = typespectagbind_(x);
+                    l = tagbindmems_(b);
+		    addstdef(b);
+                    if( l == 0 )
+                    {
+                    	dbprintf("$%s",symname_(bindsym_(b)));
+			return 0;
+                    }
+d411 17
+a427 51
+                    dbprintf("{");
+                    if( *symname_(bindsym_(b)) != '<' ) 
+                    	dbprintf("$%s;",symname_(bindsym_(b)));
+                    for (bitoff=n=0; l != 0; l = l->memcdr)
+                    {
+                        if( l->memsv == NULL ) dbprintf("pad%d:",padn++);
+                        else dbprintf("%s:",symname_(l->memsv));
+			
+                    	if (l->membits)
+                        {   
+                            int k = evaluate(l->membits);
+                            size = 0;
+                            n = padsize(n, alignoftype(te_int));
+                            if (k == 0) k = 32-bitoff;  /* rest of int */
+                            if (k+bitoff > 32) size=sizeof_int, bitoff = 0; /* ovflow */
+                            dbprintf("%%%d,%d",bitoff,k);
+                            bitoff += k;
+                        }
+                        else
+                        {   if (bitoff != 0) n += sizeof_int, bitoff = 0;
+                            n = padsize(n, alignoftype(l->memtype));
+                            size =  db_type(l->memtype);
+                        }
+                        dbprintf(":%d;",n);
+                        n += size;
+                    }
+                    dbprintf("}");
+                    if (bitoff != 0) n += sizeof_int, bitoff = 0;
+                    return padsize(n,4);
+                    
+                case bitoftype_(s_union):
+                    b = typespectagbind_(x);
+                    l = tagbindmems_(b);
+		    addstdef(b);
+                    if( l == 0 )
+                    {
+                    	dbprintf("$%s",symname_(bindsym_(b)));
+			return 0;
+                    }
+                    
+                    dbprintf("{");
+                    if( *symname_(bindsym_(b)) != '<' ) 
+                    	dbprintf("$%s;",symname_(bindsym_(b)));
+                    for (n=0; l != 0; l = l->memcdr)
+                    {
+                    	dbprintf("%s:",symname_(l->memsv));
+                        n = max(n, l->membits ? sizeof_int : db_type(l->memtype));
+                        dbprintf(":0;");
+                    }
+                    dbprintf("}");
+                    return padsize(n,sizeof_int);
+d429 4
+a432 3
+                case bitoftype_(s_typedefname):
+		    dbprintf("%s",symname_(bindsym_(typespecbind_(x))));
+                    return sizeoftype(bindtype_(typespecbind_(x)));
+d434 31
+a464 17
+                case bitoftype_(s_void):
+                    dbprintf("void");
+                    return 0;
+
+                default: break;
+            }
+            /* drop through for now */
+        default:
+            syserr("db_type(%d,0x%x)", h0_(x), typespecmap_(x));
+        case t_subscript:
+            n = sizeoftype(typearg_(x));
+            if (typesubsize_(x)) n *= evaluate(typesubsize_(x));
+            else typesubsize_(x) = globalize_int(1),
+                 cc_rerr("size of a [] array required, treated as [1]");
+            dbprintf("[%d]",evaluate(typesubsize_(x)));
+            db_type(typearg_(x));
+            return n;
+d466 7
+a472 4
+        case t_fnap:
+	    dbprintf("()");
+	    db_type(typearg_(x));
+	    return 4;
+d474 2
+a475 1
+        case t_content:
+d477 22
+a498 16
+        	TypeExpr *x1 = typearg_(x);
+		dbprintf("*");
+		if
+		(
+			(h0_(x1) == s_typespec) &&
+			(
+				(typespecmap_(x1) & bitoftype_(s_struct)) ||
+				(typespecmap_(x1) & bitoftype_(s_union))
+			)
+		)
+		{
+			b = typespectagbind_(x1);
+			dbprintf("$%s",symname_(bindsym_(b)));
+	    	}
+		else db_type(x1);
+		return 4;
+d501 19
+a519 1
+}
+d521 3
+a524 7
+db_bindlist(l,arglist)
+SynBindList *l;
+int arglist;
+{
+	SynBindList *x;
+	int offset = arglist?8:(ssp*4);
+	int size;
+d526 28
+a553 1
+	for( x = l; x != NULL ; x = x->bindlistcdr )
+d555 5
+a559 26
+		Binder *b = x->bindlistcar;
+		if( arglist || (bindstg_(b) & bitofstg_(s_auto)) )
+		{
+			dbprintf("%s:",symname_(bindsym_(b)));
+			size = db_type(b->bindtype);
+			size = pad_to_word(size);
+			if( arglist )
+			{
+				dbprintf(":%d;",offset);
+				if( size < 4 ) size = 4;
+				offset += size;
+			}
+			else
+			{
+				if( use_vecstack && size > 8 ) size = 4;
+				else if( size < 4 ) size = 4;
+				offset += size;
+				dbprintf(":%d;",-offset);
+			}
+		}
+		else if( bindstg_(b) & bitofstg_(s_static) )
+		{
+			dbprintf("%s:",symname_(bindsym_(b)));
+			db_type(b->bindtype);
+			dbprintf(":%d:s;",bindaddr_(b));
+		}
+d561 6
+a566 1
+}
+d568 12
+a579 4
+db_proc(proc,formals,type)
+Binder *proc;
+SynBindList *formals;
+TypeExpr *type;
+d582 1
+a582 1
+	dbprintf("\n");
+d584 24
+a607 7
+	dbprintf("%s:(",symname_(bindsym_(proc)));
+	db_bindlist(formals,1);
+	dbprintf(")");
+	db_type(type);
+	dbprintf(":%d=",dataloc);
+#ifndef __old
+	lastdataloc = dataloc + 4;
+d609 6
+a614 1
+}
+d616 1
+a616 9
+db_blockstart(x)
+Cmd *x;
+{
+	CmdList *cl = cmdblk_cl_(x);
+	SynBindList *bl = cmdblk_bl_(x);
+	int startline = x->fileline.l;
+	int endline = startline;	
+	int i;
+	
+d618 6
+a623 3
+	dbprintf("\n");
+	indent++;
+	for( i=0; i<indent ; i++ ) dbprintf(" ");
+d626 1
+a626 1
+	dbprintf("{%d",startline);
+d628 10
+a637 1
+	while( cl != NULL )
+d639 2
+a640 6
+		Cmd *cmd = cmdcar_(cl);
+		endline = cmd->fileline.l;
+		dbprintf(",%d",endline);
+		switch( h0_(cmd) )
+		{
+		default: break;
+d642 12
+a653 6
+		case s_if:
+			if( h0_(cmd2c_(cmd)) != s_block )
+				dbprintf(",%d",cmd2c_(cmd)->fileline.l);
+			if( cmd3c_(cmd) != 0 && h0_(cmd3c_(cmd)) != s_block )
+				dbprintf(",%d",cmd3c_(cmd)->fileline.l);
+			break;
+d655 10
+a664 7
+		case s_do:	cmd = cmd1c_(cmd);	goto doloop;
+		case s_for:	cmd = cmd4c_(cmd);
+		doloop:
+			if( h0_(cmd) != s_block )
+				dbprintf(",%d",cmd->fileline.l);
+		}
+		cl = cdr_(cl);
+d666 6
+a671 1
+	dbprintf(";");
+d673 14
+a686 6
+	dbprintf("\n");
+	indent++;
+	for( i=0; i<indent ; i++ ) dbprintf(" ");
+#endif	
+	db_bindlist(bl,0);
+}
+d688 7
+a694 2
+db_blockend(x)
+Cmd *x;
+d697 1
+a697 1
+	indent-=2;
+d699 7
+a705 2
+	dbprintf("};\n");
+}
+d707 7
+a713 2
+db_static(d)
+DeclRhsList *d;
+d715 2
+a716 2
+	int stat = 0;
+	SET_BITMAP stg = d->declstg;
+d718 3
+a720 1
+	if( stg & b_fnconst ) return;
+d722 10
+a731 7
+	switch( stg & -stg )
+	{
+	case bitofstg_(s_typedef):
+		dbprintf("%s=",symname_(d->declname));
+		db_type(d->decltype);
+		dbprintf(";\n");
+		break;
+d733 5
+a737 4
+        default:
+		syserr("db_static(0x%x)", stg);
+        case bitofstg_(s_auto):
+		break;
+d739 148
+a886 10
+        case bitofstg_(s_static): stat = 1;
+        case bitofstg_(s_extern):
+            if (!(d->declstg & b_undef))
+	    {
+		dbprintf("%s:",symname_(d->declname));
+		db_type(d->decltype);
+		dbprintf(":%d:%c;\n",dataloc,stat?'s':'g');
+		break;
+	    }
+            break;
+d888 79
+a966 1
+}
+a967 1
+#ifndef __old
+d969 10
+a978 1
+VoidStar dbg_notefileline(FileLine fl)
+d980 9
+a988 2
+/*	if( dump_info ) dbprintf("dbg_notefileline %d %s\n",fl.l,fl.f); */
+}
+d990 14
+a1003 3
+void dbg_locvar(name, fl)
+        Binder   *name;
+        FileLine fl;
+d1005 2
+d1008 2
+a1009 1
+	if( dump_info ) dbprintf("dbg_locvar %s @@ %d\n",symname_(bindsym_(name)),dataloc);
+d1011 30
+a1040 1
+}
+d1042 16
+a1057 1
+void dbg_proc(Symstr *name, TypeExpr *t, bool ext, FileLine fl)
+d1060 2
+a1061 1
+	if( dump_info ) dbprintf("dbg_proc %s @@ %d\n",symname_(name),dataloc);
+d1063 27
+d1092 2
+a1093 1
+void dbg_type(Symstr *name, TypeExpr *t)
+d1095 1
+a1095 6
+	if( *symname_(name) != '<' )
+	{
+		dbprintf("%s=",symname_(name));
+		db_type(t);
+		dbprintf(";\n");
+	}
+d1098 2
+a1099 2
+void dbg_topvar(Symstr *name, int32 addr, TypeExpr *t, int stgclass,
+                FileLine fl)
+d1101 1
+a1101 10
+#if 0
+	if( dump_info ) dbprintf("dbg_topvar %s @@ %d\n",symname_(name),dataloc);
+#endif
+	if( dataloc != lastdataloc )
+	{
+		dbprintf("%s:",symname_(name));
+		db_type(t);
+		dbprintf(":%d:%c;\n",lastdataloc,stgclass?'g':'s');
+		lastdataloc = dataloc;
+	}
+d1104 1
+a1104 1
+#endif
+@

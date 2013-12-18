@@ -1,0 +1,753 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                      H E L I O S   K E R N E L                       --
+--                      -------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- utilasm.a								--
+--                                                                      --
+--									--
+--                                                                      --
+--	Author:  NHG 28/7/87						--
+--                                                                      --
+--------------------------------------------------------------------------
+--	sccsid %W% %G% Copyright (C) 1987, Perihelion Software Ltd.	--
+
+include basic.m
+include procs.m
+include structs.m
+include debug.m
+include memory.m
+include root.m
+include module.m -- for autolib
+
+_if _not _defp 'helios.TRAN [
+	include cpustate.m
+]
+
+_if _defp 'helios.arm [
+	include arm.m
+]
+
+_if _defp 'helios.C40 [
+	include c40.m
+]
+
+-- disable stubs
+_defq Malloc.stubflag 1
+_def 'Free.stubflag 1
+_def 'FreeStop.stubflag 1
+
+
+----------------------------------------------------------
+-- setjmp						--
+-- longjmp						--
+--							--
+-- Long distance jumps for C				--
+--							--
+----------------------------------------------------------
+
+_test _defp 'helios.arm [
+
+	Function setjmp
+
+	-- a1 points at env save area
+	stmia	a1!, {v1-v5, sl, sp, dp, fp, lr}
+
+	mov	a1,#0		-- return 0 (immediate return)
+	movs	pc,lr
+
+	--------------------------------------------------------------------
+
+	Function longjmp
+
+	-- a1 points at env save area, a2 is value to return
+	ldmia	a1!, {v1-v5, sl, sp, dp, fp, lr}
+
+	mov	r0,a2		-- return longjump arg
+	movs	pc,lr
+][
+	---------------------------------------------------------------------
+
+	_test _defp 'helios.C40	[
+
+		Function setjmp
+
+		-- a1 points at env save area
+		-- Restore state at this point
+		patchinstr(PATCHC40MASK24ADD,
+			shift(-2, codestub(.SaveCPUState)),
+			br	0)
+
+		-- use straight branch so that bUd from SaveCPUState returns
+		-- directly to caller
+
+	---------------------------------------------------------------------
+
+		Function longjmp
+
+		-- a1 points at env save area, a2 is value to return
+
+		-- update CPU save state with value to return
+		ldi	R_A1, R_ATMP
+		C40WordAddress R_ATMP
+		sti	R_A2, *+R_ATMP(CPURegs.A1)
+
+		-- @@@ This code doesn't unwind the stack
+		-- @@@ so may loose the memory alloc'ed for auto stack extension
+
+		-- Restore state at this point
+		-- RestoreCPUState2 forces return to original setjmp caller
+		patchinstr(PATCHC40MASK24ADD,
+			shift(-2,codestub(.RestoreCPUState)),
+			br	0)
+
+	][
+		------------------------------------------------------------
+
+		proc setjmp
+		[
+			word	buf		-- 2 word jump buffer
+		]
+		[]
+		[
+			ldl 0			-- return link
+			buf stnl 0		-- save in offset 0
+		
+			ldlp 0 			-- my workspace address
+
+			buf stnl 1		-- save in offset 1
+
+			ldc 0			-- result is 0
+		]
+
+		------------------------------------------------------------
+
+		proc longjmp
+		[
+			word	buf		-- jump buffer
+			word	res		-- result
+		]
+		[]
+		[
+			if[ ceq0 res ]		-- ensure rc is not 0
+			[
+				ldc 1
+				store res
+			]
+
+			res			-- return code
+			buf ldnl 0		-- code ptr
+			buf ldnl 1		-- and workspace
+			gajw			-- swap to workspace of setjmp
+			rev			-- dispose of old value
+			stl 0			-- plant return link
+			rev			-- return code on top
+			ret			-- and return to setjmp's caller
+		]
+	]
+]
+
+
+_if _defp 'helios.TRAN		-- transputer specific functions
+[
+----------------------------------------------------------
+-- _cputime						--
+--							--
+-- get clock value in 100Hz ticks, at either priority	--
+--							--
+----------------------------------------------------------
+
+proc _cputime
+[]
+[]
+[
+	if[ ldpri ]
+	[
+		ldc 0
+		ldtimer
+		ldc 4 lmul		-- to 16 microsecond ticks
+		ldc 625 ldiv		-- to 100 Hz ticks
+		return
+	]
+	ldtimer				-- in microseconds
+	ldc 10000 div			-- to 100 Hz ticks
+]
+
+----------------------------------------------------------
+-- ldtimer						--
+--							--
+-- get current value of processor timer of given pri.	--
+--							--
+----------------------------------------------------------
+
+proc _ldtimer
+[
+	word	pri
+	word	res		-- use already stacked slot
+]
+[]
+[
+	test[ ceq0 pri ]
+	[
+		-- get hi pri timer
+		hipri
+		[
+			ldtimer
+			store res
+		]
+	]
+	-- else low pri timer
+	[
+		ldtimer
+		store res
+	]
+	res
+]
+
+----------------------------------------------------------
+-- _operate						--
+--							--
+-- Apply a transputer operand to a set of args		--
+-- This should be compiled in-line by most compilers.	--
+--							--
+----------------------------------------------------------
+
+proc _operate
+[
+	word		op
+	word		a
+	word		b
+	word		c
+]
+[
+	
+]
+[
+	return		-- ignore for now
+]
+
+
+proc Accelerate
+[
+	word		carrier		-- fast RAM carrier
+	word		func		-- function to run
+	word		nargs		-- number of arg bytes
+	word		arg0		-- first argument
+]
+[
+	word		wptr		-- pointer to entry workspace
+	word		disp		-- pointer to procs display
+]
+[
+--	carrier adc -Memory.sizeof
+--	store carrier
+
+	carrier Carrier.Addr
+	carrier Carrier.Size add	-- stack top
+
+	ldnlp -3			-- display space
+	store disp
+	
+	disp				-- step down from display
+	nargs sub			-- space for args
+	ldnlp -2			-- linkage space
+	store wptr			-- save it
+
+	ptr arg0			-- source
+	wptr ldnlp 2			-- dest
+	nargs				-- bytes to move
+	move				-- and copy
+	
+	ldc ..accret-2 ldpi
+	wptr stnl 0			-- return address
+
+	disp				-- module table pointer
+	wptr stnl 1			-- set display
+	
+	ldl _ModTab ldnl 0		-- module table
+	disp stnl 0
+
+	carrier Carrier.Addr		-- vsp
+	disp stnl 1
+
+	ldlp 0
+	disp stnl 2			-- and old wsp
+
+	func				-- function to call
+	wptr				-- its workspace
+
+	gajw				-- swap into fast ram
+	rev				-- get rid of old wsp
+	gcall				-- and enter function
+
+..accret:
+	ajw -4			-- back to entry frame
+	ldl 1			-- display
+	ldnl 2			-- old wsp
+
+	gajw			-- switch back
+
+	rev			-- get result on top
+
+	return			-- and quit
+]
+
+
+--------------------------------------------------------------------------
+--                                                                      --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- bytblt                                                               --
+-- ======                                                               --
+--      Two dimensional block move                                      --
+--                                                                      --
+--      Author: CHRG 9/10/87						--
+--                                                                      --
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------    
+--------------------------------------------------------------------------
+-- UPDATES :                                                            --
+--------------------------------------------------------------------------
+
+
+proc bytblt
+
+[
+	word	source		--address of source array
+	word 	dest		--destination array
+	word	sourceix	--source index
+	word	destix		--destination index
+	word 	sourcestride	--stride of source array
+	word	deststride	--stride of destination array
+	word	length		--no. of rows to move
+	word	width		--width in bytes of each row to copy
+	word	op		--operation
+]
+[
+	word	root
+]
+
+[
+	
+_def '_t4bytblt 1
+_if _defp '_t4bytblt
+[
+	GetRoot store root
+
+	if[ ceq [root Root.MachineType] [ldc 414]  ]
+	[
+		-- T414 version of move2dall only
+		if[ cne0 op ] return
+
+		while[ cne0 length ]		-- for each row
+		[
+			source			-- load source address
+			dest			-- load dest address
+			width			-- row width
+			move			-- and move it
+
+			source sourcestride sum	-- advance to next line of source
+			store source
+
+			dest deststride sum	-- advance to next line of dest
+			store dest
+
+			length adc -1		-- decrement length
+			store length
+		]
+
+		return
+	]
+] -- t4bytblt
+
+-- T800 BYTE BLITTER
+
+	if [ceq op [ldc 0]]
+	[
+	  	sourcestride
+		deststride
+		length
+		move2dinit
+		sourceix
+		source
+		bsub
+		destix
+		dest
+		bsub
+		width
+		move2dall
+		return
+	]
+	if [ceq op [ldc 1]]
+	[
+	  	sourcestride
+		deststride
+		length
+		move2dinit
+		sourceix
+		source
+		bsub
+		destix
+		dest
+		bsub
+		width
+		move2dnonzero
+		return
+	]
+	if [ceq op [ldc 2]]
+	[
+	  	sourcestride
+		deststride
+		length
+		move2dinit
+		sourceix
+		source
+		bsub
+		destix
+		dest
+		bsub
+		width
+		move2dzero
+		return
+	]
+	
+-- Return
+] -- End of bytblt
+] -- end of transputer specific functions
+
+
+_if _defp 'helios.arm
+[
+	-- ARM specific bytblt clone
+	-- Jamie (who wrote it) claims it can be optimised 'quite a bit'.
+	-- NEVER TESTED!
+
+        --    2-dimensional block copy                        > bytblt/s
+        --       (c) 1990, Active Book Company, Cambridge, United Kingdom.
+        -- ---------------------------------------------------------------------
+        -- void bytblt(
+        --             byte *source,     /* pointer to source array */
+        --             byte *dest,       /* pointer to destination array */
+        --             word  sourceix,   /* index into source array */
+        --             word  destix,     /* index into destination array */
+        --             word  sstride,    /* stride of source array */
+        --             word  dstride,    /* stride of destination array */
+        --             word  length,     /* number of rows to copy */
+        --             word  width,      /* width of each row */
+        --             word  op          /* operation code */
+        --            )
+        --
+        -- "source" and "dest" point to 2-dimensional byte arrays with row
+        -- widths of "sstride" and "dstride" respectively. "sourceix" and
+        --"destix" indicate the starting points within these arrays of a
+        -- block of "length" by "width" bytes. "op" indicates how the data
+        -- will be copied:
+        -- "op" == 0 => move all bytes
+        --         1 => move non-zero bytes only
+        --         2 => move zero bytes only
+        --
+        --
+        --       <--- sstride --->               <---- dstride ---->
+        --       +---------------+               +-----------------+
+        --       |               |               |                 |
+        --       |               |               |    Y-------+    | <--+
+        --       |   X-------+   | <--+          |    |       |    |    |
+        --       |   |       |   |    |          |    |       |    |    |
+        --       |   |       |   |    |          |    |       |    |  length
+        --       |   |       |   |  length       |    |       |    |    |
+        --       |   |       |   |    |          |    |       |    |    |
+        --       |   |       |   |    |          |    +-------+    | <--+
+        --       |   +-------+   | <--+          |    <-width->    |
+        --       |   <-width->   |               |                 |
+        --       |               |               |                 |
+        --       +---------------+               +-----------------+
+        --
+        -- Assuming point X = (4,3) in the source array
+        --      and point Y = (5,2) in the destination array
+        --
+        --       "sourceix" = (4 + (3 * sstride))
+        --       "destix"   = (5 + (2 * dstride))
+        --
+        -- The algorithm used by the Transputer instruction is as follows:
+        --
+        --       sptr = source + sourceix --
+        --       dptr = dest + destix --
+        --       for (loop = 1-- (loop < length)-- loop++)
+        --        {
+        --         copy "width" bytes from "sptr" to "dptr"
+        --         sptr += sstride --
+        --         dptr += dstride --
+        --        }
+        --
+        -- PCS conformant function "bytblt"
+        -- in:   a1         = source array pointer
+        --       a2         = destination array pointer
+        --       a3         = source index
+        --       a4         = destination index
+        --       [sp + &00] = source stride
+        --       [sp + &04] = destination stride
+        --       [sp + &08] = length
+        --       [sp + &0C] = width
+        --       [sp + &10] = operation
+        --
+        -- out:  a1,a2,a3,a4,ip undefined
+        --       v1,v2,v3,v4,v5,dp,sl,fp,sp preserved
+
+	Function bytblt
+
+        MOV     ip,sp
+        STMFD   sp!,{v1,v2,v3,v4,v5,dp,fp,ip,lk,pc}
+        SUB     fp,ip,#04
+        CMP     sp,sl
+	patchinstr(patcharmjp, labelref(.__stack_overflow),
+	        BLLT    0)
+
+        -- We should try to use word copies wherever possible.
+        -- (Unfortunately the data is byte aligned)
+        -- We should try to avoid branches.
+
+        LDMIA   ip,{v1,v2,v3,v4,v5}
+        -- a1 = source array byte pointer (source)
+        -- a2 = destination array byte pointer (dest)
+        -- a3 = starting byte index into source array (sourceix)
+        -- a4 = starting byte index into destination array (destix)
+        -- v1 = byte width of source array (sstride)
+        -- v2 = byte width of destination array (dstride)
+        -- v3 = number of rasters to copy (length)
+        -- v4 = number of bytes per raster (width)
+        -- v5 = operation to be performed (op)
+
+        CMP     v3,#00000000           -- check for zero number of rasters
+        CMPNE   v4,#00000000           -- check for zero raster width
+        BEQ     bytblt_done             -- then nothing to copy
+
+        ADD     a1,a1,a3                -- initial source byte address
+        ADD     a2,a2,a4                -- initial destination byte address
+
+        CMP     v5,#01
+        BEQ     bytblt_loop_non_zero    -- == &01 then non-zero bytes only
+        BCS     bytblt_loop_zero        -- == &02 then zero bytes only
+
+bytblt_loop:
+        -- copy "v4" bytes from "a1" to "a2"
+        MOV     a3,v4                   -- initial loop count
+bytblt_inner_loop:
+        LDRB    a4,(a1,a3)              -- load source byte
+        STRB    a4,(a2,a3)              -- and store into destination
+
+        SUBS    a3,a3,#01               -- byte copied
+        BNE     bytblt_inner_loop
+
+        ADD     a1,a1,v1                -- step onto next source raster
+        ADD     a2,a2,v2                -- step onto next destination raster
+
+        SUBS    v3,v3,#01               -- completed raster, so check for end...
+        BNE     bytblt_loop             -- and around again if not finished
+        LDMEA   fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+        -- This loop copies only non-zero bytes
+bytblt_loop_non_zero:
+        -- copy "v4" non-zero bytes from "a1" to "a2"
+        MOV     a3,v4                   -- initial loop count
+bytblt_inner_loop_non_zero:
+        LDRB    a4,(a1,a3)              -- load source byte
+        TEQ     a4,#00                  -- is this byte zero?
+        STRNEB  a4,(a2,a3)              -- and store into destination if not
+
+        SUBS    a3,a3,#01               -- byte copied
+        BNE     bytblt_inner_loop_non_zero
+
+        ADD     a1,a1,v1                -- step onto next source raster
+        ADD     a2,a2,v2                -- step onto next destination raster
+
+        SUBS    v3,v3,#01               -- completed raster, so check for end...
+        BNE     bytblt_loop_non_zero    -- and around again if not finished
+        LDMEA   fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+        -- This loop copies only zero bytes
+bytblt_loop_zero:
+        -- copy "v4" zero bytes from "a1" to "a2"
+        MOV     a3,v4                   -- initial loop count
+bytblt_inner_loop_zero:
+        LDRB    a4,(a1,a3)              -- load source byte
+        TEQ     a4,#00                  -- is this byte zero?
+        STREQB  a4,(a2,a3)              -- and store into destination if so
+
+        SUBS    a3,a3,#01               -- byte copied
+        BNE     bytblt_inner_loop_zero
+
+        ADD     a1,a1,v1                -- step onto next source raster
+        ADD     a2,a2,v2                -- step onto next destination raster
+
+        SUBS    v3,v3,#01               -- completed raster, so check for end...
+        BNE     bytblt_loop_zero        -- and around again if not finished
+bytblt_done:
+        LDMEA   fp,{v1,v2,v3,v4,v5,dp,fp,sp,pc}^
+
+        ----------------------------------------------------------------------
+]
+
+
+---------------------------------------------------------------------
+
+-- Process exit code
+
+_test _defp 'helios.arm [
+	Function _ProcExit
+
+	-- v1 was seeded with stack base in CreateProcess()
+	mov a1,v1			-- a1 should point to base of stack
+	-- jmp to C process exit fn
+	patchinstr(patcharmjp, labelref(.__ProcExit),
+		b 0)
+][
+	_test _defp 'helios.C40 [
+		procsym['._ProcExit]
+	._ProcExit:
+		ldi	R_V1, R_A1
+		patchinstr(PATCHC40MASK24ADD,
+			shift(-2, labelref(.__ProcExit)),
+			br	0)
+	][
+	._ProcExit:
+		ajw	-4
+		ldl	1
+		ldnl	2
+		ldl	1
+		ldnl	1
+		ldl	1
+		call	.__ProcExit
+	]
+]
+
+_if _defp 'helios.C40
+[
+Function _grab_module
+--
+--	MPtr _grab_module( VoidFnPtr p, Module * m )
+--
+-- Upon Entry:
+--      R_A1	function pointer
+--      R_A2	C pointer to module structure
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--	R_A1	Word pointer to module structure of module containing 'p'
+--              Memory pointed to by R_A2 will have had a copy of this
+--		module structure placed in it.
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, RC, RE, RS, ST
+--
+-- Purpose
+-- 	Locates the module structure of the module that contains function 'p'
+--	and returns a pointer to this structure, as well as copying the structure
+--	into the memory provided, (so that the structure can be accessed from C).
+--
+	LDHI	T.Module >> 16,		R_T1		-- This is the magic word that 
+	OR	T.Module & 0xffff,	R_T1		-- indicates the start of a module
+	LDI	R_A1,			R_ATMP		-- copy function pointer
+gm_loop1:
+	 CMPI	*\--R_ATMP(1),		R_T1		-- scan backwards
+	Bne	gm_loop1				-- loop until magic word found
+	LDI	R_ATMP,			R_A1result	-- load return value
+	LSH3	-2,	R_A2,		R_ADDR1		-- convert C byte offset to word offset
+	ADDI	R_BASE,			R_ADDR1		-- convert word offset to word address
+	LDI	(Module.sizeof / 4) - 1,RC		-- initialise loop counter
+	RPTB	gm_loop2				-- copy loop
+	 LDI	*R_ATMP++(1),		R_A2		-- load word from sourve
+gm_loop2:
+	 STI	R_A2,			*R_ADDR1++(1)	-- store word in destination
+	Bu	R_LR					-- return
+--
+-- end of _grab_module
+--
+
+Function _copy_module
+--
+--	void _copy_module( MPtr m, MPtr d )
+--
+-- Upon Entry:
+--      R_A1	Word pointer to start of module
+--      R_A2	Word pointer to destination of copy
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--		Memory pointed to by R_A2 will contain a copy of the module
+--
+-- Corrupts
+--	R_ATMP, R_ADDR1, RS, RE, RC, ST
+--
+-- Purpose
+-- 	Copies the module pointed to by R_A1 (presumably obtained as a result
+--	of a call to _grab_module() ), into the area of memory pointed to by
+--	R_A2.  It is the caller's responsibilty to make sure that there is
+--	enough memory to hold a copy of the module.
+--
+	LDI	R_A1,		R_ATMP				-- get source address into address register
+	LDI	R_A2,		R_ADDR1				-- get destination address
+	LDI	*+R_ATMP( Module.Size ),	RC		-- initialise loop counter
+	LSH	-2,		RC				-- adjust for words
+	SUBI	1,		RC				-- pre-decrement counter
+	RPTB	cm_loop1					-- start loop
+	 LDI	*R_ATMP++(1),	R_A1				-- load word from source
+cm_loop1:			
+	 STI	R_A1,		*R_ADDR1++(1)			-- store word in destination
+	Bu	R_LR						-- return
+--
+-- end of _copy_module
+--
+
+Function _init_module
+--
+--	void _init_module( MPtr m, int )
+--
+-- Upon Entry:
+--      R_A1	Word pointer to start of module
+--      R_A2	Value to pass to init routines
+--	R_LR	return address
+--	R_BASE	base address of data RAM
+--
+-- Upon Exit
+--		Module init routines will have been called
+--
+-- Corrupts
+--	R_ATMP, R_ADDR2, ST
+--
+-- Purpose
+-- 	Calls (in sequence) the init routines of the indicated
+--	module, passing, as their only argument, the value given
+--	in R_A2.
+--
+	LDI	R_LR,		R_ADDR4				-- save return address
+	LDI	R_A1,		R_ADDR2				-- get module address
+	LDI	R_A2,		R_A1				-- load argument register
+	LDI	*++R_ADDR2( Module.Init ),	R_A2		-- get offset of first init routine
+	Beq	R_LR						-- iff offset is 0 then return
+im_loop:
+	LSH	-2,		R_A2				-- convert to word offset
+	ADDI	R_A2,		R_ADDR2				-- add offset to pointer
+	ADDI3	1,		R_ADDR2,	R_ATMP		-- next word is start of init code
+	LAJu	R_ATMP						-- call init routine
+	   NOP
+	   NOP
+	   NOP
+	LDI	*R_ADDR2,	R_A2				-- get offset of next init routine
+	Bne	im_loop						-- if not 0 then continue loop
+	Bu	R_ADDR4						-- return
+--
+-- end of _init_module
+--
+
+]
+
+
+-- End of utilasm.a

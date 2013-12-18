@@ -1,0 +1,134 @@
+#------------------------------------------------------------------------------
+# Helios generic make system - NATIVE HOST MAKEFILE -
+#-----------------------------------------------------------------------------
+# SUN4 Host specific make rules to make NATIVE HOST version of server component.
+#
+# File: /HSRC/ioproc/server/SUN4/makefile
+#
+# This file contains ALL the definitions and rules that are
+# required to make a NATIVE HOST version of this component.
+# IT IS NOT COMPLIMENTARY TO THE GENERIC VERSION.
+#
+# This makefile is always executed within this host specific subdir.
+# All host specific source files should be kept here.
+# All intermediate, object and binary files should be made in here.
+#
+# SccsId: %W% %G%
+# RcsId: $Id: makefile,v 1.23 1993/10/27 12:16:33 bart Exp $
+#		(C) Copyright 1990 Perihelion Software
+#
+# WARNING: assumes you are using GNUmake.
+#-----------------------------------------------------------------------------
+
+InProcMake = TRUE
+
+include ../makefile
+
+sys 	  = /usr/include
+SUN = $(HSRC)/$(COMPONENT)/sun
+
+HOSTCC = cc
+HOSTCFLAGS := -pipe -O1 -DHOSTISBIGENDIAN -D$(HHOST) -D__$(HPROC) -D__HELIOS$(HPROC) $(HOSTCFLAGS)
+
+
+#-----------------------------------------------------------------------------
+# Note all final targets here
+
+XTARGETS = server hydra hydramon serverwinxv serverwinsv serverwinxaw \
+		serverwinxt
+
+Xdefault : $(XTARGETS)
+
+Xinstall : $(XTARGETS)
+	   $(CP) server $(HPROD)/server.sun4
+	   $(CP) serverwinxv $(HPROD)/serverwinxv.sun4
+	   $(CP) serverwinsv $(HPROD)/serverwinsv.sun4
+	   $(CP) serverwinxaw $(HPROD)/serverwinxaw.sun4
+	   $(CP) serverwinxt $(HPROD)/serverwinxt.sun4
+	   $(CP) hydra $(HPROD)/hydra.sun4
+	   $(CP) hydramon $(HPROD)/hydramon.sun4
+	   $(TOUCH) Xinstall
+Xclean	:
+
+
+# Note all sources
+XSOURCES	= $(XSOURCES.win) \
+                  $(XSOURCES.co) \
+                  $(XSOURCES.odd)
+
+XSOURCES.win	= serversv.c serverxv.c serverxaw.c serverxt.c
+XSOURCES.co     = colib.c 
+
+XSOURCES.odd	= makefile ioserv.bm helios.ico helios1.ico
+
+# Object files
+
+XOBJECTS 	= $(XOBJECTS.win) \
+	          $(XOBJECTS.co) \
+		  $(SERVOBJ) \
+		  $(LINKOBJS) \
+                  $(HYDRAOBJ) \
+                  $(HYDRAMON)
+
+
+XOBJECTS.win   = $(XSOURCES.win:.c=.o) 
+XOBJECTS.co    = $(XSOURCES.co:.c=.o)
+
+
+$(XOBJECTS) : helios.h
+
+#-----------------------------------------------------------------------------
+# Native Host targets and their dependencies:
+
+# uncomment if you have compiler or makedepend generated dependencies
+#include depends
+
+HOSTCFLAGS := $(HOSTCFLAGS) -I. -I$(SUN) -I/usr/openwin/include -Ikludge
+
+helios.h: $(GENHEADERS.c)
+	cat $(sys)/stdio.h $(sys)/sys/types.h $(sys)/ctype.h $(sys)/setjmp.h \
+	$(sys)/sys/time.h $(sys)/errno.h $(sys)/sys/socket.h \
+	$(sys)/sys/times.h $(sys)/signal.h $(sys)/fcntl.h \
+	$(sys)/unistd.h $(sys)/sys/stat.h $(sys)/sys/param.h \
+	$(sys)/sys/file.h $(sys)/memory.h $(sys)/sys/vfs.h \
+	$(sys)/netinet/in.h $(sys)/netdb.h $(sys)/sys/un.h \
+	$(sys)/dirent.h  $(sys)/termio.h $(sys)/pwd.h $(sys)/sys/wait.h\
+	$(HSRC)/$(COMPONENT)/sun/sunlocal.h \
+	$(GENHEADERS.c) \
+	> helios.h
+
+colib_link = -Bstatic colib.o -ltermcap -llwp
+colib.o : colib.c
+	$(HOSTCC) -c $(HOSTCFLAGS) -D$(HHOST) -DLWP $(HSRC)/$(COMPONENT)/sun/colib.c
+
+parsy.o : $(HSRC)/$(COMPONENT)/parsy/parsy.c
+	$(HOSTCC) -c $(HOSTCFLAGS) -D$(HHOST) $(HSRC)/$(COMPONENT)/parsy/parsy.c
+
+par_link.o :  $(HSRC)/$(COMPONENT)/parsy/par_link.c
+	$(HOSTCC) -c $(HOSTCFLAGS) -D$(HHOST)  $(HSRC)/$(COMPONENT)/parsy/par_link.c
+
+server : helios.h $(SERVOBJ) $(XOBJECTS.co) $(LINKOBJS)
+	$(HOSTCC) -Bstatic -o $@ $(SERVOBJ) \
+                            $(LINKOBJS) $(colib_link)
+#	su -c "chown root server ; chmod 04755 server"
+
+
+serverwinxv : serverxv.o
+	$(HOSTCC) -o $@ serverxv.o -lxview -lX11 -lolgx
+
+serverwinxt : serverxt.o
+	$(HOSTCC) -o $@ serverxt.o -lX11 -lXt -lXaw -lXmu -lXext -lm -ltermcap
+
+serverwinxaw : serverxaw.o
+	$(HOSTCC) -o $@ serverxaw.o -lX11 -lXt -lXaw -lXmu -lXext -lm
+
+serverwinsv : serversv.o
+	$(HOSTCC) -Bstatic -o $@ serversv.o -lsuntool -lsunwindow -lpixrect
+
+hydra : $(HYDRAOBJ) $(LINKOBJS)
+	$(HOSTCC) -Bstatic -o $@ $(HYDRAOBJ) $(LINKOBJS) 
+
+hydramon : $(HYDRAMON)
+	$(HOSTCC) -Bstatic -o $@ $(HYDRAMON)
+
+#-----------------------------------------------------------------------------

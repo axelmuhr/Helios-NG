@@ -1,0 +1,1579 @@
+head	1.12;
+access;
+symbols;
+locks; strict;
+comment	@ * @;
+
+
+1.12
+date	94.05.03.15.55.57;	author nickc;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	94.04.18.15.21.09;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	94.04.18.15.06.24;	author tony;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	94.01.31.13.53.11;	author tony;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	93.12.14.15.36.58;	author tony;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	93.12.14.14.19.22;	author tony;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.12.13.16.53.42;	author tony;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	93.12.13.16.32.46;	author tony;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	93.12.13.12.26.16;	author tony;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.12.13.11.54.20;	author tony;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	93.12.13.11.51.01;	author tony;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	93.12.13.11.43.55;	author tony;	state Exp;
+branches;
+next	;
+
+
+desc
+@Functions which create a rom disk file (when compiled with -DHELIOS)
+@
+
+
+1.12
+log
+@added support for SUN4
+@
+text
+@
+/*
+ *		ROM DISK FUNCTIONS
+ */
+
+/*
+ *   If a romdisk directory has been specified, then we create a romdisk
+ * from the files found in that directory's tree.  If a romdisk file is
+ * specified, we call the romdisk by that name. otherwise we use the
+ * default.
+ *
+ *   Note that, if a romdisk directory is not specified but a romdisk file
+ * is, then we tacitly assume that the specified file is a valid romdisk.
+ * Also, we add a romdisk file to the nucleus even if a rom disk server is
+ * not specified in the (possibly mistaken) belief that the user knows what
+ * he is doing.
+ */
+
+#ifdef UNIX
+
+#include "/usr/include/stdio.h"
+#include "/usr/include/stdlib.h"
+#include "/usr/include/string.h"
+
+#include "/usr/include/sys/types.h"
+
+#include "/usr/include/dirent.h"
+
+#include "/usr/include/sys/stat.h"
+
+#include "/hsrc/include/memory.h"
+#include "/hsrc/include/nonansi.h"
+#include "/hsrc/include/servlib.h"
+#include "/hsrc/include/syslib.h"
+#include "/hsrc/include/queue.h"
+#include "/hsrc/include/gsp.h"
+#include "/hsrc/include/module.h"
+
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#endif
+
+#else
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <memory.h>
+#include <nonansi.h>
+#include <syslib.h>
+#include <queue.h>
+#include <gsp.h>
+#include <servlib.h>
+
+#include <module.h>
+
+#endif	/* UNIX */
+
+#include "defs.h"
+#include "externs.h"
+
+int	NodeNumber = 1;
+
+/*
+ * To Build a Rom Disk
+ *
+ *	If writing the rom disk to a file, output an Image Header.
+ *
+ *	Place a Module Header at the top of the file.
+ *	
+ *	Calculate the number of entries in the rom disk by starting at
+ * the starting directory and finding every file and directory.
+ *
+ *	Starting at the given directory place the DirNode and ObjNode
+ * headers into the romdisk with a pointer to the objects contents in the
+ * 'Contents' field.  (The first (root) DirNode will have its name set to
+ * the given root name.)
+ *
+ *	Output the modules.
+ *
+ */
+
+#define NoWriteMask	(~(AccMask_W * 0x01010101))
+
+#define MyDefDirMatrix	DefDirMatrix
+#define MyDefFileMatrix	(DefFileMatrix & NoWriteMask)
+
+#ifndef WORD
+typedef long		word;
+typedef unsigned char	ubyte;
+#endif
+
+int	WriteRomDiskFile;
+FILE *	RomDiskFp = NULL;
+
+FILE *	RomInFp = NULL;
+
+word	ObjectOffset = 0;	/* offset to where the file */
+				/* starts in the rom disk   */
+
+void output_node (ObjNode 	node)
+{
+	chars_to_image ((ubyte *)(&node), sizeof (ObjNode));
+	
+	/* write to rom disk file if reqd */
+	if (WriteRomDiskFile)
+	{
+		fwrite ((void *)(&node), 1, sizeof (ObjNode), RomDiskFp);
+	}
+
+	NodeNumber++;
+}	
+
+void romfile_patch_space (int	n_bytes)
+{
+	if (!WriteRomDiskFile)	return;
+
+	while (n_bytes--)
+	{
+		putc ('\0', RomDiskFp);
+	}
+}
+
+#ifdef __HELIOS
+
+
+int find_entries (char *	dir_name)
+{
+	Object *	o = Locate (CurrentDir, dir_name);
+	Stream *	s;
+
+	DirEntry *	entry;
+	DirEntry *	cur;
+
+	int	i;
+	word	size = 0;
+	int	number_of_entries;
+
+	int	n = 0;
+
+	if (o == Null (Object))
+	{
+		sysbuild_error ("Unknown directory %s", dir_name);
+
+		return 0;
+	}
+
+	if ((o -> Type & Type_Flags) == Type_Stream)
+	{
+		return 0;
+	}
+
+	s = Open (o, Null (char), O_ReadOnly);
+
+	if (s == Null (Stream))
+	{
+		Close (o);
+
+		sysbuild_error ("Failed to open directory %s", dir_name);
+	}
+
+	size = GetFileSize (s);
+
+	if (size == 0)
+	{
+		Close (s);
+		Close (o);
+
+		return 0;
+	}
+
+	entry = (DirEntry *)(Malloc (size));
+
+	if (entry == Null (DirEntry))
+	{
+		Close (s);
+		Close (o);
+
+		return 0;
+	}
+
+	if (Read (s, (byte *)(entry), size, -1) != size)
+	{
+		sysbuild_error ("Error reading directory %s", dir_name);
+	}
+
+	number_of_entries = (int) size / (sizeof (DirEntry));
+
+	n += number_of_entries - 2;	/* take of . and .. */
+
+	for (i = 0, cur = entry; i < number_of_entries; i++, cur++)
+	{
+		char	this_entry[IOCDataMax];
+
+		strcpy (this_entry, dir_name);
+		strcat (this_entry, "/");
+		strcat (this_entry, cur -> Name);
+
+		if (strequ_(cur -> Name, ".") || strequ_(cur -> Name, ".."))
+		{
+			/* ignore myself and parent */
+			continue;
+		}
+
+		if (cur -> Type == Type_Directory)
+		{
+			/* found new directory entry, so recurse */
+			n += find_entries (this_entry);
+		}
+	}
+
+	Free (entry);
+	Close (s);
+	Close (o);
+
+	return n;
+}
+
+
+int output_lower_nodes (char *	dir_name)
+{
+	Object *	o = Locate (CurrentDir, dir_name);
+	Stream *	s;
+
+	DirEntry *	entry;
+	DirEntry *	cur;
+
+	ObjNode		objnode;
+
+	word	size;
+
+	int	number_of_entries;
+
+	int	i;
+
+	if (o == Null (Object))
+	{
+		sysbuild_error ("Unknown directory %s", dir_name);
+	}
+
+	if ((o -> Type & Type_Flags) == Type_Stream)
+	{
+		return SYSBUILD_OK;
+	}
+
+	s = Open (o, Null (char), O_ReadOnly);
+
+	if (s == Null (Stream))
+	{
+		Close (o);
+
+		sysbuild_error ("Failed to open directory %s", dir_name);
+	}
+
+	size = GetFileSize (s);
+
+	if (size == 0)
+	{
+		Close (s);
+		Close (o);
+
+		return SYSBUILD_OK;
+	}
+
+	entry = (DirEntry *)(Malloc (size));
+
+	if (entry == Null (DirEntry))
+	{
+		Close (s);
+		Close (o);
+
+		return SYSBUILD_FAIL;
+	}
+
+	if (Read (s, (byte *)(entry), size, -1) != size)
+	{
+		sysbuild_error ("Error reading directory %s", dir_name);
+	}
+
+	number_of_entries = (int) size / (sizeof (DirEntry));
+
+	for (i = 0, cur = entry; i < number_of_entries; i++, cur++)
+	{
+		char		this_entry[IOCDataMax];
+
+		strcpy (this_entry, dir_name);
+		strcat (this_entry, "/");
+		strcat (this_entry, cur -> Name);
+
+		if (strequ_(cur -> Name, ".") || strequ_(cur -> Name, ".."))
+		{
+			/* ignore myself and parent */
+			continue;
+		}
+
+		if (cur -> Type == Type_Directory)
+		{
+			InitNode (&objnode,
+				  cur -> Name,
+				  (int) swap (Type_Directory),
+				  0,
+				  swap (MyDefDirMatrix));
+
+			((DirNode *)&objnode) -> Nentries = swap ((word) number_of_entries - 2);
+
+			output_node (objnode);
+
+			output_lower_nodes (this_entry);
+		}
+		else if (cur -> Type == Type_File)
+		{
+			InitNode (&objnode,
+				  cur -> Name,
+				  (int) swap (Type_File),
+				  0,
+				  swap (MyDefDirMatrix));
+
+			objnode.Size = swap (getfilesize (this_entry));
+
+			/*
+			 * Patch the address of code.  The offset from
+ 			 * the beginning of the romdisk.
+			 */
+
+			(&objnode.Size)[1] = swap (ObjectOffset);
+
+			ObjectOffset += objnode.Size;
+
+			output_node (objnode);
+		}
+		else
+		{
+			sysbuild_warning ("%s neither file nor directory", 
+						this_entry);
+		}
+	}
+
+	Free (entry);
+	Close (s);
+	Close (o);
+
+	return SYSBUILD_OK;
+}
+
+int output_nodes (char *	root_name,
+		  char *	dir_name)
+{
+	Object *	o = Locate (CurrentDir, dir_name);
+	Stream *	s;
+
+	DirEntry *	entry;
+
+	ObjNode		objnode;
+
+	word	size;
+
+	memset (&objnode, 0, sizeof (ObjNode));
+
+	sysbuild_debug ("output_nodes (%s, %s)\n", root_name, dir_name);
+
+	if (o == Null (Object))
+	{
+		sysbuild_error ("Unknown directory %s", dir_name);
+
+		return SYSBUILD_FAIL;
+	}
+
+	if ((o -> Type & Type_Flags) == Type_Stream)
+	{
+		return SYSBUILD_OK;
+	}
+
+	s = Open (o, Null (char), O_ReadOnly);
+
+	if (s == Null (Stream))
+	{
+		Close (o);
+
+		sysbuild_error ("Failed to open directory %s", dir_name);
+	}
+
+	size = GetFileSize (s);
+
+	if (size == 0)
+	{
+		Close (s);
+		Close (o);
+
+		return SYSBUILD_OK;
+	}
+
+	entry = (DirEntry *)(Malloc (size));
+
+	if (entry == Null (DirEntry))
+	{
+		Close (s);
+		Close (o);
+
+		return SYSBUILD_FAIL;
+	}
+
+	if (Read (s, (byte *)(entry), size, -1) != size)
+	{
+		sysbuild_error ("Error reading directory %s", dir_name);
+	}
+
+	InitNode (&objnode,
+		  root_name,
+		  (int) swap (Type_Directory),
+		  0,
+		  swap (MyDefDirMatrix));
+
+	((DirNode *)(&objnode)) -> Nentries = swap ((size / sizeof (DirEntry)) - 2);
+
+	output_node (objnode);
+
+	Free (entry);
+	Close (s);
+	Close (o);
+
+	return (output_lower_nodes (dir_name));
+}
+
+int output_file (char *	file_name)
+{
+	word	size;
+	int	extra;
+
+	if ((RomInFp = fopen (file_name, "rb")) == NULL)
+	{
+		sysbuild_error ("Failed to open %s", file_name);
+
+		return SYSBUILD_FAIL;
+	}
+
+	size = GetFileSize (Heliosno (RomInFp));
+
+	extra = (size & 3) ? 4 - ((int)size & 3) : 0;
+
+	sysbuild_info ("\t\t[file: %s; size: 0x%08lx]", file_name, size);
+
+	/* write out the file to the image */
+	file_to_image (RomInFp, (int) size, file_name);
+
+	if (WriteRomDiskFile)
+	{
+		/* write out file to separate rom disk file */
+		fseek (RomInFp, 0, SEEK_SET);
+
+		while (size--)
+		{
+			putc (getc (RomInFp), RomDiskFp);
+		}
+	}
+
+	align_image ();
+	romfile_patch_space (extra);
+
+	fclose (RomInFp);  RomInFp = NULL;
+
+	return SYSBUILD_OK;
+}
+
+
+int output_objects (char *	dir_name)
+{
+	Object *	o = Locate (CurrentDir, dir_name);
+	Stream *	s;
+
+	DirEntry *	entry;
+	DirEntry *	cur;
+
+	int	i;
+	int	size = 0;
+	int	number_of_entries;
+
+	if (o == Null (Object))
+	{
+		sysbuild_error ("Unknown directory %s", dir_name);
+	}
+
+	if ((o -> Type & Type_Flags) == Type_Stream)
+	{
+		return SYSBUILD_OK;
+	}
+
+	s = Open (o, Null (char), O_ReadOnly);
+
+	if (s == Null (Stream))
+	{
+		Close (o);
+
+		sysbuild_error ("Failed to open directory %s", dir_name);
+	}
+
+	size = (int) GetFileSize (s);
+
+	if (size == 0)
+	{
+		return SYSBUILD_OK;
+	}
+
+	entry = (DirEntry *)(Malloc (size));
+
+	if (entry == Null (DirEntry))
+	{
+		Close (s);
+		Close (o);
+
+		return SYSBUILD_FAIL;
+	}
+
+	if (Read (s, (byte *)(entry), size, -1) != size)
+	{
+		sysbuild_error ("Error reading directory %s", dir_name);
+	}
+
+	number_of_entries = size / (sizeof (DirEntry));
+
+	for (i = 0, cur = entry; i < number_of_entries; i++, cur++)
+	{
+		char	this_entry[IOCDataMax];
+
+		strcpy (this_entry, dir_name);
+		strcat (this_entry, "/");
+		strcat (this_entry, cur -> Name);
+
+		if (strequ_(cur -> Name, ".") || strequ_(cur -> Name, ".."))
+		{
+			/* ignore myself and parent */
+			continue;
+		}
+
+		if (cur -> Type == Type_Directory)
+		{
+			/* found new directory entry, so recurse */
+			if ((output_objects (this_entry)) == SYSBUILD_FAIL)
+			{
+				return SYSBUILD_FAIL;
+			}
+		}
+		else if (cur -> Type == Type_File)
+		{
+			output_file (this_entry);
+		}
+		else
+		{
+			sysbuild_warning ("%s neither file nor directory",
+						this_entry);
+		}
+	}
+
+	Free (entry);
+	Close (s);
+	Close (o);
+
+	return SYSBUILD_OK;
+}
+
+#else	/* In Unix World */
+
+int getdirsize (char *	dir_name)
+{
+	DIR *	dirp;
+
+	struct dirent *	dir_entry;
+
+	int	entries = 0;
+
+	if ((dirp = opendir (dir_name)) == NULL)
+	{
+		sysbuild_warning ("Unable to open directory %s", dir_name);
+
+		return -1;
+	}
+	
+	while ((dir_entry = readdir (dirp)) != NULL)
+	{
+		if (  strequ_(dir_entry -> d_name, ".")
+		   || strequ_(dir_entry -> d_name, ".."))
+		{
+			continue;
+		}
+
+		entries++;
+	}
+
+	return entries;
+}
+
+int find_entries (char *	dir_name)
+{
+	struct stat	statbuf;
+	int		size;
+
+	char *	this_entry;
+	char *	tailp;
+	char	pathname[IOCDataMax];
+	int	pos;
+
+	sysbuild_debug ("find_entries (%s)", dir_name);
+
+	if (stat (dir_name, &statbuf) != 0)
+	{
+		sysbuild_error ("find_entries () - Failed to stat directory %s", dir_name);
+
+		return 0;
+	}
+
+	size = statbuf.st_size;
+
+	pos = strlen (dir_name) - 1;	 /* points to last char in string */
+	while (pos != 0 && dir_name[pos] != '/')
+	{
+		pos--;
+	}
+	if (dir_name[pos] == '/')	pos++;
+
+	this_entry = &(dir_name[pos]);
+
+	sysbuild_debug ("find_entries (%s) - this_entry = %s", dir_name, this_entry);
+
+	strcpy (pathname, dir_name);
+	strcat (pathname, "/");
+
+	tailp = &(pathname[strlen(pathname)]);
+
+	if (size == 0)
+	{
+		return 0;
+	}
+
+	if (S_ISREG (statbuf.st_mode))
+	{
+		sysbuild_debug ("%s is a regular file", dir_name);
+		return 1;
+	}
+	else if (S_ISDIR (statbuf.st_mode))
+	{
+		DIR *	dirp;
+
+		struct dirent *	dir_entry;
+
+		int	n = 0;
+
+		sysbuild_debug ("find_entries () - %s is a directory", dir_name);
+
+		if ((dirp = opendir (dir_name)) == NULL)
+		{
+			sysbuild_error ("Failed to open %s", dir_name);
+
+			return 0;
+		}
+
+		while ((dir_entry = readdir (dirp)) != NULL)
+		{
+			if (  strequ_(dir_entry -> d_name, ".")
+			   || strequ_(dir_entry -> d_name, ".."))
+			{
+				/* ignore myself and parent */
+				continue;
+			}
+
+			strcpy (tailp, dir_entry -> d_name);
+
+			sysbuild_debug ("find_entries () - pathname = %s", pathname);
+
+			n += find_entries (pathname);
+		}
+
+		closedir (dirp);
+
+		return n;
+	}
+	else
+	{
+		sysbuild_error ("%s neither directory or regular file", dir_name);
+
+		return 0;
+	}
+}
+
+/* UNIX WORLD */
+int output_lower_nodes (char *	dir_name,
+			int	is_root)	/* Is this directory the root ? */
+{
+	struct stat	statbuf;
+	int		size;
+
+	char *	this_entry;
+	char *	tailp;
+	char	pathname[IOCDataMax];
+	int	pos;
+
+	ObjNode		objnode;
+
+	memset ((void *)(&objnode), 0, sizeof (ObjNode));
+
+	sysbuild_debug( "@@output_lower_nodes (%s)", dir_name);
+
+	if (stat (dir_name, &statbuf) != 0)
+	{
+		sysbuild_error ("output_lower_nodes () - Failed to stat directory %s", dir_name);
+
+		return 0;
+	}
+
+	size = statbuf.st_size;
+
+	if (size == 0)
+	{
+		return SYSBUILD_OK;
+	}
+
+	size += (size & 3) ? (4 - (size & 3)) : 0;
+
+	pos = strlen (dir_name) - 1;	 /* points to last char in string */
+	while (pos != 0 && dir_name[pos] != '/')
+	{
+		pos--;
+	}
+	if (dir_name[pos] == '/')	pos++;
+
+	this_entry = &(dir_name[pos]);
+
+	sysbuild_debug ("output_lower_nodes (%s) - this_entry = %s", dir_name, this_entry);
+
+	strcpy (pathname, dir_name);
+	strcat (pathname, "/");
+
+	tailp = &(pathname[strlen(pathname)]);
+
+	if (S_ISREG (statbuf.st_mode))
+	{
+		/* regular file */
+
+		strcpy (objnode.Name, this_entry);
+		objnode.Type = swap (Type_File);
+		objnode.Flags = 0;
+		objnode.Matrix = swap (MyDefDirMatrix);
+
+		objnode.Size = swap (size);
+
+		(&objnode.Size)[1] = swap (ObjectOffset);
+
+		ObjectOffset += size;
+
+		output_node (objnode);
+
+		return SYSBUILD_OK;
+	}
+	else if (S_ISDIR (statbuf.st_mode))
+	{
+		DIR *	dirp;
+
+		struct dirent *	dir_entry;
+
+		int	n = 0;
+
+		if (!is_root)
+		{
+			/*
+			 * The root directory has already been done by
+			 * output_nodes () (with its name changed.
+			 */
+			strcpy (objnode.Name, this_entry);
+			objnode.Type = swap (Type_Directory);
+			objnode.Flags = 0;
+			objnode.Matrix = swap (MyDefDirMatrix);
+
+			((DirNode *)(&objnode)) -> Nentries = swap (getdirsize (dir_name));
+
+			if (swap (objnode.Size) == -1)
+			{
+				return 0;
+			}
+
+			output_node (objnode);
+		}
+
+		if ((dirp = opendir (dir_name)) == NULL)
+		{
+			sysbuild_error ("Failed to open %s", dir_name);
+
+			return SYSBUILD_FAIL;
+		}
+
+		while ((dir_entry = readdir (dirp)) != NULL)
+		{
+			if (  strequ_(dir_entry -> d_name, ".")
+			   || strequ_(dir_entry -> d_name, ".."))
+			{
+				/* ignore myself and parent */
+				continue;
+			}
+
+			strcpy (tailp, dir_entry -> d_name);
+			if (output_lower_nodes (pathname, FALSE) == SYSBUILD_FAIL)
+			{
+				return SYSBUILD_FAIL;
+			}
+		}
+
+		closedir (dirp);
+
+		return n;
+	}
+	else
+	{
+		sysbuild_error ("%s neither directory or regular file", dir_name);
+
+		return SYSBUILD_FAIL;
+	}
+}
+
+/* UNIX WORLD */
+int output_nodes (char *	root_name,
+		  char *	dir_name)
+{
+	struct stat	statbuf;
+
+	ObjNode 	objnode;
+
+	sysbuild_debug ("@@output_nodes (%s, %s)", root_name, dir_name);
+
+	memset ((void *)(&objnode), 0, sizeof (ObjNode));
+
+	if (stat (dir_name, &statbuf) != 0)
+	{
+		sysbuild_error ("output_nodes () - Failed to stat directory %s", dir_name);
+
+		return SYSBUILD_FAIL;
+	}
+
+	if (!S_ISDIR (statbuf.st_mode))
+	{
+		sysbuild_error ("%s not a directory", dir_name);
+	
+		return SYSBUILD_FAIL;
+	}
+
+	strcpy (objnode.Name, root_name);
+	objnode.Type = swap (Type_Directory);
+	objnode.Flags = 0;
+	objnode.Matrix = swap (MyDefDirMatrix);
+
+	((DirNode *)(&objnode)) -> Nentries = swap (getdirsize (dir_name));
+
+	if (swap (objnode.Size) == -1)
+	{
+		return SYSBUILD_FAIL;
+	}
+
+	output_node (objnode);
+
+	return (output_lower_nodes (dir_name, TRUE));
+}
+
+int output_file (char *	file_name)
+{
+	struct stat	statbuf;
+
+	int	size;
+	int	extra;
+
+	if (stat (file_name, &statbuf) != 0)
+	{
+		sysbuild_error ("output_file () - Failed to stat %s", file_name);
+
+		return SYSBUILD_FAIL;
+	}
+
+	if ((RomInFp = fopen (file_name, "rb+")) == NULL)
+	{
+		sysbuild_error ("Failed to open %s", file_name);
+
+		return SYSBUILD_FAIL;
+	}
+
+	size = statbuf.st_size;
+
+	extra = (size & 3) ? (4 - (size & 3)) : 0;
+
+	sysbuild_info ("\t\t[file: %s; size: 0x%08lx]", file_name, size);
+
+	file_to_image (RomInFp, size, file_name);
+
+	if (WriteRomDiskFile)
+	{
+		/* write out file to separate rom disk file */
+		fseek (RomInFp, 0, SEEK_SET);
+
+		while (size--)
+		{
+			putc (getc (RomInFp), RomDiskFp);
+		}
+	}
+
+	align_image ();
+	romfile_patch_space (extra);
+
+	fclose (RomInFp); RomInFp = NULL;
+
+	return SYSBUILD_OK;
+}
+
+int output_objects (char *	dir_name)
+{
+	struct stat	statbuf;
+	int		size;
+
+	char *	this_entry;
+	char *	tailp;
+	char	pathname[IOCDataMax];
+	int	pos;
+
+	if (stat (dir_name, &statbuf) != 0)
+	{
+		sysbuild_error ("output_objects () - Failed to stat directory %s", dir_name);
+
+		return 0;
+	}
+
+	size = statbuf.st_size;
+
+	if (size == 0)
+	{
+		return SYSBUILD_OK;
+	}
+
+	size += (size & 3) ? (4 - (size & 3)) : 0;
+
+	pos = strlen (dir_name) - 1;	 /* points to last char in string */
+	while (pos != 0 && dir_name[pos] != '/')
+	{
+		pos--;
+	}
+	if (dir_name[pos] == '/')	pos++;
+
+	this_entry = &(dir_name[pos]);
+
+	sysbuild_debug ("output_lower_nodes (%s) - this_entry = %s", dir_name, this_entry);
+
+	strcpy (pathname, dir_name);
+	strcat (pathname, "/");
+
+	tailp = &(pathname[strlen(pathname)]);
+
+	if (S_ISREG (statbuf.st_mode))
+	{
+		/* regular file */
+
+		output_file (dir_name);
+
+		return SYSBUILD_OK;
+	}
+	else if (S_ISDIR (statbuf.st_mode))
+	{
+		DIR *	dirp;
+
+		struct dirent *	dir_entry;
+
+		if ((dirp = opendir (dir_name)) == NULL)
+		{
+			sysbuild_error ("Failed to open %s", dir_name);
+
+			return 0;
+		}
+
+		while ((dir_entry = readdir (dirp)) != NULL)
+		{
+			if (  strequ_(dir_entry -> d_name, ".")
+			   || strequ_(dir_entry -> d_name, ".."))
+			{
+				/* ignore myself and parent */
+				continue;
+			}
+
+			strcpy (tailp, dir_entry -> d_name);
+			if (output_objects (pathname) == SYSBUILD_FAIL)
+			{
+				return SYSBUILD_FAIL;
+			}
+		}
+
+		closedir (dirp);
+
+		return SYSBUILD_OK;
+	}
+	else
+	{
+		sysbuild_error ("%s neither directory or regular file", dir_name);
+
+		return SYSBUILD_FAIL;
+	}
+}
+
+#endif
+
+
+int buildromdisk (char *	root_name,
+		  char *	dir_name,
+		  char *	romdisk_name)
+{
+	ImageHdr	ihdr;
+/*	struct Module	modhdr; */
+	ubyte *		modhdr;
+	int		modhdrsize;
+
+	Module *	modp;
+
+	int	entries;
+
+	ubyte * module_start;
+
+	sysbuild_debug ("buildromdisk (%s, %s, %s)\n", root_name, dir_name, romdisk_name);
+
+	if (WriteRomDiskFile)
+	{
+		if ((RomDiskFp = fopen (romdisk_name, "wb+")) == NULL)
+		{
+			sysbuild_warning ("Failed to open rom disk file %s\n", romdisk_name);
+
+			WriteRomDiskFile = FALSE;
+		}
+	}
+
+	/*
+	 * The size of the Module Header structure is different for different
+	 * processors.  60 for C40/ARM's, 56 for TRAN's.
+	 */
+	modhdrsize = sizeof (struct Module);
+#ifdef __SMT
+	/* compiled to run on ARM's/C40's, only need to change size if for TRAN */
+	if (strequ_(ConfigData.processor, "TRAN"))
+	{
+		modhdrsize -= 4;
+	}
+#else
+	/* compiled to run on TRAN's, need to change size for ARM's and C40's */
+	if (strequ_(ConfigData.processor, "ARM") || strequ_(ConfigData.processor, "C40"))
+	{
+		modhdrsize += 4;
+	}
+#endif
+
+	modhdr = (ubyte *)(malloc (modhdrsize));
+	memset ((void *)modhdr, 0, modhdrsize);
+
+	 /*  Find number of entries */
+	if ((entries = find_entries (dir_name)) == 0)
+	{
+		return SYSBUILD_FAIL;
+	}
+
+	entries++;	/* add one for the root node */
+
+	sysbuild_debug ("Found %d entries", entries);
+
+	/* Output patch space for ImageHdr ... */
+	romfile_patch_space (sizeof (ImageHdr));
+
+	/* Output patch space for Module Header */
+	module_start = ImagePtr;
+	patch_space (modhdrsize);
+	romfile_patch_space (modhdrsize);
+
+	/*
+	 * Calculate where the first object in the romdisk will go.
+	 * Address is calculated with respect to the rom disk, not
+	 * the image file.
+	 */
+	ObjectOffset = ((word) entries * sizeof (ObjNode))
+			+ modhdrsize;
+
+	output_nodes (root_name, dir_name);
+
+	output_objects (dir_name);
+
+	align_image ();
+
+	/*
+	 * Patch the size part of ImageHdr and Module Header.
+	 */
+
+	if (WriteRomDiskFile)
+	{
+		ihdr.Magic = 0;
+		ihdr.Flags = 0;
+		ihdr.Size = swap (ObjectOffset);
+
+		fseek (RomDiskFp, 0, SEEK_SET);
+
+		fwrite ((void *)(&ihdr), 1, sizeof (ImageHdr), RomDiskFp);
+	}
+
+	modp = (Module *)(modhdr);
+
+	modp -> Type  		= swap (T_RomDisk);
+	modp -> Size  		= swap (ObjectOffset - sizeof (struct Module));
+	strcpy (modp -> Name,	  ConfigData.romdisk_file);
+	modp -> Id   		= swap (ModuleNumber);
+	modp -> Version		= swap (0x201);
+	modp -> MaxData		= 0;
+	modp -> Init		= 0;
+
+	do_patch (module_start, modhdr, modhdrsize);
+
+	if (WriteRomDiskFile)
+	{
+		fwrite ((void *)(modhdr), 1, modhdrsize, RomDiskFp);
+
+		fclose (RomDiskFp);
+		RomDiskFp = NULL;
+	}
+
+	return SYSBUILD_OK;
+}
+
+void add_romdisk ()
+{
+	ubyte *	mod_start = ImagePtr;	/* start of rom disk */
+
+	int	mod_offset = ImageSize;	/* for info only */
+
+	if (ConfigData.romdisk_dir[0] == '\0')
+	{
+		sysbuild_debug ("add_romdisk () - romdisk_dir not specified");
+
+		if (ConfigData.romdisk_file[0] != '\0')
+		{
+			/* Rom disk file already made */
+			add_module (ConfigData.romdisk_file);
+		}
+		return;
+	}
+
+	if (ConfigData.romdisk_write == 'Y')
+	{
+		WriteRomDiskFile = 1;
+
+		sysbuild_info ("%s - ", ConfigData.romdisk_file);
+	}
+	else
+	{
+		WriteRomDiskFile = 0;
+
+		sysbuild_info ("[internal romdisk] - ", ConfigData.romdisk_file);
+	}
+
+	buildromdisk (ConfigData.romdisk_root,
+		      ConfigData.romdisk_dir,
+		      ConfigData.romdisk_file);
+
+	patch_vector (mod_start);
+
+	sysbuild_info ("\t\toffset: 0x%08lx;\tsize: 0x%08lx",
+				mod_offset, ObjectOffset);
+
+	return;
+}
+
+#ifdef SUN4
+void ___typeof( void ) {}
+void ___assert( void ) {}
+#endif
+@
+
+
+1.11
+log
+@fixed compile time warnings (C40)
+@
+text
+@d39 4
+d1164 4
+@
+
+
+1.10
+log
+@*** empty log message ***
+@
+text
+@d184 1
+a184 1
+	number_of_entries = size / (sizeof (DirEntry));
+d277 1
+a277 1
+	number_of_entries = size / (sizeof (DirEntry));
+d297 1
+a297 1
+				  swap (Type_Directory),
+d301 1
+a301 1
+			((DirNode *)&objnode) -> Nentries = swap (number_of_entries - 2);
+d311 1
+a311 1
+				  swap (Type_File),
+d406 1
+a406 1
+		  swap (Type_Directory),
+d435 1
+a435 1
+	extra = (size & 3) ? 4 - (size & 3) : 0;
+d440 1
+a440 1
+	file_to_image (RomInFp, size, file_name);
+d493 1
+a493 1
+	size = GetFileSize (s);
+d1070 1
+a1070 1
+	ObjectOffset =    (entries * sizeof (ObjNode))
+@
+
+
+1.9
+log
+@*** empty log message ***
+@
+text
+@d19 21
+a39 1
+#ifdef __HELIOS
+d44 2
+d51 1
+d54 2
+a84 3
+#define DEFAULT_ROMDISK_FILE "romdisk.fil"
+#define DEFAULT_ROMDISK_ROOT "romdisk"
+
+d121 1
+a121 15
+word getfilesize (char *	file_name)
+{
+	FILE *	fp;
+	word	size;
+
+	if ((fp = fopen (file_name, "r")) == NULL)
+	{
+		sysbuild_warning ("Failed to open %s", file_name);
+
+		return -1;
+	}
+
+	size = GetFileSize (Heliosno (fp));
+
+	fclose (fp);
+a122 4
+	size += (size & 3) ? (4 - (size & 3)) : 0;
+
+	return size;
+}
+a232 2
+	sysbuild_debug ("output_lower_nodes (%s)", dir_name);
+
+d297 1
+a297 1
+				  Type_Directory,
+d299 1
+a299 1
+				  MyDefDirMatrix);
+d301 1
+a301 1
+			((DirNode *)&objnode) -> Nentries = number_of_entries - 2;
+d311 1
+a311 1
+				  Type_File,
+d313 1
+a313 1
+				  MyDefDirMatrix);
+d315 1
+a315 1
+			objnode.Size = getfilesize (this_entry);
+d322 1
+a322 1
+			(&objnode.Size)[1] = ObjectOffset;
+d361 2
+d406 1
+a406 1
+		  Type_Directory,
+d408 1
+a408 2
+		  MyDefDirMatrix);
+	((DirNode *)(&objnode)) -> Nentries = (size / sizeof (DirEntry)) - 2;
+d410 2
+d429 2
+d437 2
+d444 1
+d557 441
+d1003 5
+a1007 1
+	struct Module	modhdr;
+d1017 1
+a1017 1
+		if ((RomDiskFp = fopen (romdisk_name, "wb")) == NULL)
+d1025 22
+d1062 2
+a1063 2
+	patch_space (sizeof (struct Module));
+	romfile_patch_space (sizeof (struct Module));
+d1071 1
+a1071 1
+			+ sizeof (struct Module);
+d1087 1
+a1087 1
+		ihdr.Size = ObjectOffset;
+d1094 11
+a1104 12
+	modhdr.Type  		= T_RomDisk;
+	modhdr.Size  		=   ObjectOffset
+				  - sizeof (struct Module);
+	strcpy (modhdr.Name,	  ConfigData.romdisk_file);
+	modhdr.Id   		= ModuleNumber;
+	modhdr.Version		= 0x201;
+	modhdr.MaxData		= 0;
+	modhdr.Init		= 0;
+#ifdef __SMT
+	modhdr.MaxCodeP		= 0;
+#endif
+	do_patch (module_start, (ubyte *)(&modhdr), sizeof (struct Module));
+d1108 1
+a1108 1
+		fwrite ((void *)(&modhdr), 1, sizeof (struct Module), RomDiskFp);
+d1125 2
+d1135 1
+a1135 1
+	if (ConfigData.romdisk_file[0] == '\0')
+d1137 3
+a1139 1
+		strcpy (ConfigData.romdisk_file, DEFAULT_ROMDISK_FILE);
+d1141 3
+d1145 1
+a1145 3
+	if (ConfigData.romdisk_root[0] == '\0')
+	{
+		strcpy (ConfigData.romdisk_root, DEFAULT_ROMDISK_ROOT);
+a1147 2
+	WriteRomDiskFile = (ConfigData.romdisk_write == 'Y');
+
+a1153 1
+	sysbuild_info ("%s - ", ConfigData.romdisk_file);
+a1159 29
+#else
+
+#include <stdio.h>
+
+#include "defs.h"
+#include "externs.h"
+
+/*
+ * We can only make up a new romdisk file from within a Helios world
+ */
+
+void add_romdisk ()
+{
+	if (ConfigData.romdisk_dir[0] == '\0')
+	{
+		if (ConfigData.romdisk_file[0] != '\0')
+		{
+			/* Rom disk file already made */
+			add_module (ConfigData.romdisk_file);
+		}
+		return;
+	}
+	else
+	{
+		sysbuild_error ("Only able to create romdisk from within Helios");
+	}
+}
+
+#endif
+@
+
+
+1.8
+log
+@Removed increment of offset when writing to a file.  The rom disk
+server now handles the extra increment if the Image Header is part of
+the rom disk file.
+@
+text
+@d99 1
+a99 1
+int getfilesize (char *	file_name)
+d129 1
+a129 1
+	int	size = 0;
+d159 3
+d223 1
+a223 1
+	int	size;
+d254 3
+d350 1
+a350 1
+	int	size;
+d379 3
+d418 1
+a418 1
+	int	size;
+@
+
+
+1.7
+log
+@A rom disk file specified without a directory now gets added to the
+nucleus.
+@
+text
+@a82 8
+		if (node.Type == Type_File)
+		{
+			/*
+			 * When writing to files add increment the offset
+			 * to take account of the Image Header.
+			 */
+			(&(node.Size))[1] += sizeof (ImageHdr);
+		}
+d313 1
+a646 2
+
+	sysbuild_info ("Building rom disk");
+@
+
+
+1.6
+log
+@Fixed an info message
+@
+text
+@d600 3
+a602 1
+	/* Patch the size part of ImageHdr and Module Header */
+d616 2
+a617 1
+	modhdr.Size  		= ObjectOffset;
+d647 5
+a651 1
+		/* No romdisk directory - well that was easy */
+d697 5
+@
+
+
+1.5
+log
+@added info message into add_romdisk
+@
+text
+@d556 1
+a556 1
+	sysbuild_debug ("buildrom (%s, %s, %s)\n", root_name, dir_name, romdisk_name);
+@
+
+
+1.4
+log
+@Removed T_RomDisk definition
+@
+text
+@d640 2
+d667 4
+@
+
+
+1.3
+log
+@Changed #include "module.h" to <module.h>
+@
+text
+@a28 1
+
+a29 4
+
+#ifndef T_RomDisk
+# define T_RomDisk	0x60fb60fbl
+#endif
+@
+
+
+1.2
+log
+@Changed #ifdef HELIOS to #ifdef __HELIOS
+@
+text
+@d30 1
+a30 1
+#include "module.h"	/* MY module.h (MINE, MINE, MINE!!!!) */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 1
+a19 1
+#ifdef HELIOS
+@

@@ -1,0 +1,1572 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                H E L I O S   V E C T O R   L I B R A R Y             --
+--                -----------------------------------------             --
+--                                                                      --
+--             Copyright (C) 1992, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- t8vlibf.a								--
+--                                                                      --
+--	Single precision vector library routines.			--
+--                                                                      --
+--	Author:  BLV 12/10/92						--
+--                                                                      --
+--------------------------------------------------------------------------
+
+include basic.m
+include procs.m
+include structs.m
+include debug.m
+include module.m
+
+--{{{  description
+--
+-- These library routines are intended to provide optimal or
+-- near-optimal vector facilities. It is assumed that code and stack
+-- are held in on-chip RAM, but that data is held in external memory.
+-- For example, two ldl instructions are used in preference to an ldl
+-- followed by a dup because the former takes one fewer instruction byte
+-- and, with on-chip stack, gives the same performance.
+-- Worst case cycle times are assumed for the floating point calculations.
+--
+-- Variations of the standard macros are used to eliminate unnecessary
+-- instructions such as ajw -0, and to remove names etc. from the code.
+--
+-- The main comments are to the right of the actual code, as follows:
+--			A B C		fA fB fC	cycles
+--
+-- The first three fields indicate the state of the integer stack.
+-- The next three give the floating point stack. Finally there is an
+-- indication of the cycle requirements for this code:
+--	9        : nine cycles plus a memory access. The memory access time
+--		   can usually be ignored because as I understand loading
+--		   or storing a floating point number blocks the CPU as
+--		   well as the FPU. However nine or more cycles should
+--		   be spent on integer arithmetic before the next floating
+--		   point operation.
+--	-1	 : this integer operation takes 1 cycle.
+--	-1 -> -1 : integer operations have completed, and have taken one
+--		   extra cycle over and above the required amount.
+--	-1 -> 2  : integer operations have completed but the floating point
+--		   unit is busy for another two cycles.
+--
+
+--}}}
+--{{{  myproc macro,  no local variables
+-- procedure definitions
+
+_defq 'myproc[proc_name 'proc_args 'proc_body]
+[
+_report [Defining procedure proc_name]
+        _defq 'word[''arg_name]
+        [
+                _def arg_name [_nlocals]
+                _set '_nlocals _add _nlocals 1
+        ]
+        _defq 'float[''arg_name]
+        [
+                _def arg_name [_nlocals]
+                _set '_nlocals _add _nlocals 1
+        ]
+	_defq 'double[''arg_name]
+	[
+		_def arg_name [_nlocals]
+		_set '_nlocals _add _nlocals 2
+	]
+        align
+        _set '_nlocals 2	-- link + display
+        proc_args
+.$proc_name:
+        proc_body
+        ret
+        _undef 'word _undef 'double _undef 'float
+        _defq 'word[''arg_name] [_undef arg_name]
+	_defq 'float[''arg_name] [_undef arg_name]
+	_defq 'double[''arg_name] [_undef arg_name]
+        proc_args
+        _undef 'word _undef 'double _undef 'float
+]
+
+--}}}
+--{{{  myproc2 macro, local variables
+_defq 'myproc2[proc_name 'proc_args 'proc_locals 'proc_body]
+[
+_report [Defining procedure proc_name]
+        _defq 'word[''arg_name]
+        [
+                _def arg_name [_nlocals]
+                _set '_nlocals _add _nlocals 1
+        ]
+	_defq 'float[''arg_name]
+	[
+		_def arg_name [_nlocals]
+		_set '_nlocals _add _nlocals 1
+	]
+	_defq 'double[''arg_name]
+	[
+		_def arg_name [_nlocals]
+		_set '_nlocals _add _nlocals 2
+	]
+        align
+	_set '_nlocals 0
+	proc_locals
+	_set '_sfsize _nlocals
+        _set '_nlocals  _add _nlocals 2			-- link + display
+        proc_args
+.$proc_name:
+	ajw -_sfsize
+        proc_body
+	ajw _sfsize
+        ret
+        _undef 'word _undef 'float _undef 'double
+        _defq 'word[''arg_name] [_undef arg_name]
+        _defq 'float[''arg_name] [_undef arg_name]
+	_defq 'double[''arg_name] [_undef arg_name]
+	proc_locals
+        proc_args
+        _undef 'word _undef 'float _undef 'double
+]
+--}}}
+
+StartModule t8vlibf.a -1 1
+
+--{{{  statics
+static
+[
+	extern	func	VfAdd
+	extern	func	VfSub
+	extern	func	VfMul
+	extern	func	VfDiv
+	extern	func	VfsAdd
+	extern	func	VfsSub
+	extern	func	VfsMul
+	extern	func	VfsDiv
+	extern	func	VfAddScalar
+	extern	func	VfSubScalar
+	extern	func	VfMulScalar
+	extern	func	VfDivScalar
+	extern	func	VfRecScalar
+	extern	func	VfsAddScalar
+	extern	func	VfsSubScalar
+	extern	func	VfsMulScalar
+	extern	func	VfsDivScalar
+	extern	func	VfsRecScalar
+	extern	func	VfMulAdd
+	extern	func	VfsMulAdd
+	extern	func	VfCopy
+	extern	func	VfsCopy
+	extern	func	VfFill
+	extern	func	VfsFill
+	extern	func	VfMax
+	extern	func	VfAmax
+	extern	func	VfMin
+	extern	func	VfAmin
+	extern	func	VfsMax
+	extern	func	VfsAmax
+	extern	func	VfsMin
+	extern	func	VfsAmin
+	extern	func	VfSum
+	extern	func	VfProd
+	extern	func	VfsSum
+	extern	func	VfsProd
+	extern	func	VfDot
+	extern	func	VfsDot	
+]
+--}}}
+
+--{{{  vector-vector operations
+--{{{  VfAdd
+myproc VfAdd [ word n word x word y ]
+[
+.VfAdd_start:			-- A B C	fA  fB fC	cycles
+	ldl n			-- n
+	cj .VfAdd_end		--
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldl y			-- y x		*x
+	ldl y			-- y y x	*x
+	fpldnladdsn		-- y x		(*x + *y)	 9
+	adc 4			-- (y+4) x	(*x + *y)	-1
+	stl y			-- x		(*x + *y)	-1
+	ldl x			-- x x		(*x + *y)	-2
+	adc 4			-- (x+4) x	(*x + *y)	-1
+	stl x			-- x		(*x + *y)	-1
+	ldl n			-- n x		(*x + *y)	-2
+	adc -1			-- (n-1) x	(*x + *y)	-2 (nfix)
+	stl n			-- x		(*x + *y)	-1 -> -2
+	fpstnlsn
+	j .VfAdd_start		-- descheduling point, n cannot be preserved
+.VfAdd_end:	
+]
+--}}}
+--{{{  VfSub
+myproc VfSub [ word n word x word y ]
+[
+.VfSub_start:
+	ldl n			-- n
+	cj .VfSub_end		-- n
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldl y			-- y x		*x
+	ldl y			-- y y x	*x
+	fpldnlsn		-- y x		*y *x
+	fpsub			-- y x		(*x - *y)	 9
+	adc 4			-- (y+4) x	*y *x		-1
+	stl y			-- x		*y *x		-1
+	ldl x			-- x x		(*x - *y)	-2
+	adc 4			-- (x+4) x	(*x - *y)	-1
+	stl x			-- x		(*x - *y)	-1
+	ldl n			-- n x		(*x - *y)	-2
+	adc -1			-- (n-1) x	(*x - *y)	-2
+	stl n			-- x		(*x - *y)	-1 -> -2
+	fpstnlsn		
+	j .VfSub_start
+.VfSub_end:
+]
+--}}}
+--{{{  VfMul
+	-- In this routine the test for loop termination is done after
+	-- the floating point calculation has been initiated, but before
+	-- the result is stored in memory. This may result in an excess
+	-- operation but minimises wasted time in the loop.
+myproc VfMul [ word n word x word y ]
+[
+.VfMul_start:			-- A B C	fA  fB fC	cycles
+	ldl x			-- x
+	fpldnlsn		-- 		*x
+	ldl y			-- y 		*x
+	fpldnlmulsn		-- 		(*x * *y)	18
+	ldl n			-- n		(*x * *y)	-2
+	ldl n			-- n n		(*x * *y)	-2
+	cj .VfMul_end		-- n		(*x * *y)	-2
+	adc -1			-- (n-1)	(*x * *y)	-2
+	stl n			--		(*x * *y)	-1
+	ldl x			-- x		(*x * *y)	-2
+	ldl y			-- y x		(*x * *y)	-2
+	adc 4			-- (y+4) x	(*x * *y)	-1
+	stl y			-- x		(*x * *y)	-1
+	ldl x			-- x x		(*x * *y)	-2
+	adc 4			-- (x+4) x	(*x * *y)	-1
+	stl x			-- x		(*x * *y)	-1	-> -1
+	fpstnlsn		-- 
+	j .VfMul_start		-- descheduling point, n cannot be preserved
+.VfMul_end:	
+]
+--}}}
+--{{{  VfDiv
+	-- Division is implemented in the same way as multiplication,
+myproc VfDiv [ word n word x word y ]
+[
+.VfDiv_start:			-- A B C	fA  fB fC	cycles
+	ldl x			-- x
+	fpldnlsn		-- 		*x
+	ldl y			-- y 		*x
+	fpldnlsn		-- 		*y *x
+	fpdiv			-- 		(*x / *y)	28
+	ldl n			-- n		(*x / *y)	-2
+	ldl n			-- n n		(*x / *y)	-2
+	cj .VfDiv_end		-- n		(*x / *y)	-2
+	adc -1			-- (n-1)	(*x / *y)	-2
+	stl n			--		(*x / *y)	-1
+	ldl x			-- x		(*x / *y)	-2
+	ldl y			-- y x		(*x / *y)	-2
+	adc 4			-- (y+4) x	(*x / *y)	-1
+	stl y			-- x		(*x / *y)	-1
+	ldl x			-- x x		(*x / *y)	-2
+	adc 4			-- (x+4) x	(*x / *y)	-1
+	stl x			-- x		(*x / *y)	-1 -> 9
+	fpstnlsn		--
+	j .VfDiv_start		-- descheduling point, n cannot be preserved
+.VfDiv_end:	
+]
+--}}}
+--{{{  VfsAdd
+myproc VfsAdd [ word n word x word x_stride word y word y_stride]
+[
+	ldl x_stride		-- convert float strides to byte strides
+	ldc 4			-- * 4 to allow for negative strides
+	prod			-- rather than << 2
+	stl x_stride
+	ldl y_stride
+	ldc 4
+	prod
+	stl y_stride
+	align
+
+.VfsAdd_start:			-- A B C	fA  fB fC	cycles
+	ldl n			-- n
+	cj .VfsAdd_end		-- n
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldl y			-- y x		*x
+	ldl y			-- y y x	*x
+	fpldnladdsn		-- y x		(*x + *y)	 9
+	ldl y_stride		-- ys y x	(*x + *y)	-2
+	add			-- (y+ys) x	(*x + *y)	-1
+	stl y			-- x		(*x + *y)	-1
+	ldl x			-- x x		(*x + *y)	-2
+	ldl x_stride		-- xs x x	(*x + *y)	-2
+	add 			-- (x+xs) x	(*x + *y)	-1
+	stl x			-- x		(*x + *y)	-1
+	ldl n			-- n x		(*x + *y)	-2
+	adc -1			-- (n-1) x	(*x + *y)	-2 (nfix)
+	stl n			-- x		(*x + *y)	-1 -> -6
+	fpstnlsn
+	j .VfsAdd_start		-- descheduling point, n cannot be preserved
+.VfsAdd_end:	
+]
+--}}}
+--{{{  VfsSub
+myproc VfsSub [ word n word x word x_stride word y word y_stride]
+[
+	ldl x_stride		-- convert float strides to byte strides
+	ldc 4
+	prod
+	stl x_stride
+	ldl y_stride
+	ldc 4
+	prod
+	stl y_stride
+	align
+
+.VfsSub_start:
+	ldl n			-- n
+	cj .VfsSub_end		-- n
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldl y			-- y x		*x
+	ldl y			-- y y x	*x
+	fpldnlsn		-- y x		*y *x
+	fpsub			-- y x		(*x - *y)	 9
+	ldl y_stride		-- ys y x	(*x - *y)	-2
+	add			-- (y+ys) x	*y *x		-1
+	stl y			-- x		*y *x		-1
+	ldl x			-- x x		(*x - *y)	-2
+	ldl x_stride		-- xs x x	(*x - *y)	-2
+	add			-- (x+xs) x	(*x - *y)	-1
+	stl x			-- x		(*x - *y)	-1
+	ldl n			-- n x		(*x - *y)	-2
+	adc -1			-- (n-1) x	(*x - *y)	-2
+	stl n			-- x		(*x - *y)	-1 -> -6
+	fpstnlsn		
+	j .VfsSub_start
+.VfsSub_end:
+]
+--}}}
+--{{{  VfsMul
+myproc VfsMul [ word n word x word x_stride word y word y_stride]
+[
+	ldl x_stride		-- convert float strides to byte strides
+	ldc 4
+	prod
+	stl x_stride
+	ldl y_stride
+	ldc 4
+	prod
+	stl y_stride
+	align
+
+.VfsMul_start:			-- A B C	fA  fB fC	cycles
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldl y			-- y x 		*x
+	fpldnlmulsn		-- x		(*x * *y)	18
+	ldl n			-- n x		(*x * *y)	-2
+	ldl n			-- n n x	(*x * *y)	-2
+	adc -1			-- (n-1) n x	(*x * *y)	-2
+	stl n			-- n x		(*x * *y)	-1
+	cj .VfsMul_end		-- x		(*x * *y)	-2
+	ldl y			-- y x		(*x * *y)	-2
+	ldl y_stride		-- ys y x	(*x * *y)	-2
+	add			-- (y+ys) x	(*x * *y)	-1
+	stl y			-- x		(*x * *y)	-1
+	ldl x			-- x x		(*x * *y)	-2
+	ldl x_stride		-- xs x x	(*x * *y)	-2
+	add			-- (x+xs) x	(*x * *y)	-1
+	stl x			-- x		(*x * *y)	-1 -> -3
+	fpstnlsn		--
+	j .VfsMul_start		-- descheduling point, n cannot be preserved
+.VfsMul_end:	
+]
+--}}}
+--{{{  VfsDiv
+myproc VfsDiv [ word n word x word x_stride word y word y_stride]
+[
+	ldl x_stride		-- convert float strides to byte strides
+	ldc 4
+	prod
+	stl x_stride
+	ldl y_stride
+	ldc 4
+	prod
+	stl y_stride
+	align
+
+.VfsDiv_start:			-- A B C	fA  fB fC	cycles
+	ldl x			-- x
+	fpldnlsn		-- 		*x
+	ldl y			-- y 		*x
+	fpldnlsn		-- 		*y *x
+	fpdiv			-- 		(*x / *y)	28
+	ldl n			-- n		(*x / *y)	-2
+	ldl n			-- n n		(*x / *y)	-2
+	adc -1			-- (n-1) n	(*x / *y)	-2
+	stl n			-- n		(*x / *y)	-1
+	cj .VfsDiv_end		-- 		(*x / *y)	-2
+	ldl x			-- x		*y *x		-2
+	ldl y			-- y x		(*x / *y)	-2
+	ldl y_stride		-- ys y x	(*x / *y)	-2
+	add			-- (y+ys) x	(*x / *y)	-1
+	stl y			-- x		(*x / *y)	-1
+	ldl x			-- x x		(*x / *y)	-2
+	ldl x_stride		-- xs x x	(*x / *y)	-2
+	add			-- (x+xs) x	(*x / *y)	-1
+	stl x			-- x		(*x / *y)	-1 -> 5
+	fpstnlsn		--
+	j .VfsDiv_start		-- descheduling point, n cannot be preserved
+.VfsDiv_end:	
+]
+--}}}
+--}}}
+--{{{  vector-scalar operations
+--{{{  VfAddScalar
+myproc VfAddScalar [ double value word n word x]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	align
+
+.VfAddScalar_start:
+	ldl n			-- n
+	cj .VfAddScalar_end	-- 
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldlp value		-- &val x	*x
+	fpldnladdsn		-- x		(*x + val)	 9
+	ldl x			-- x x		(*x + val)	-2
+	adc 4			-- (x+4) x	(*x + val)	-1
+	stl x			-- x		(*x + val)	-1
+	ldl n			-- n x		(*x + val)	-2
+	adc -1			-- (n-1) x	(*x + val)	-2
+	stl n			-- x		(*x + val)	-1 -> 0
+	fpstnlsn
+	j .VfAddScalar_start
+.VfAddScalar_end:
+]
+--}}}
+--{{{  VfSubScalar
+myproc VfSubScalar [ double value word n word x]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	align
+
+.VfSubScalar_start:
+	ldl n			-- n
+	cj .VfSubScalar_end	--
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldlp value		-- &val x	*x
+	fpldnlsn		-- x		val *x
+	fpsub			-- x		(*x - val)	9
+	ldl x			-- x x		(*x - val)	-2
+	adc 4			-- (x+4) x	(*x - val)	-1
+	stl x			-- x		(*x - val)	-1
+	ldl n			-- n x		(*x - val)	-2
+	adc -1			-- (n-1) x	(*x - val)	-2
+	stl n			-- x		(*x - val)	-1 -> 0
+	fpstnlsn
+	j .VfSubScalar_start
+.VfSubScalar_end:
+]
+--}}}
+--{{{  VfMulScalar
+myproc VfMulScalar [ double value word n word x]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	align
+
+.VfMulScalar_start:
+	ldl x			-- x
+	fpldnlsn		--		*x
+	ldlp value		-- &val		*x
+	fpldnlmulsn		--		(*x * val)	18
+	ldl n			-- n		(*x * val)	-2
+	ldl n			-- n n		(*x * val)	-2
+	cj .VfMulScalar_end	-- n		(*x * val)	-2
+	adc -1			-- (n-1)	(*x * val)	-2
+	stl n			--		(*x * val)	-1
+	ldl x			-- x		(*x * val)	-2
+	ldl x			-- x x		(*x * val)	-2
+	adc 4			-- (x+4) x	(*x * val)	-1
+	stl x			-- x		(*x * val)	-1 -> 3
+	fpstnlsn		-- 
+	j .VfMulScalar_start
+.VfMulScalar_end:
+]
+--}}}
+--{{{  VfDivScalar
+myproc VfDivScalar [ double value word n word x]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	align
+
+.VfDivScalar_start:
+	ldl x			-- x
+	fpldnlsn		--		*x
+	ldlp value		-- &val		*x
+	fpldnlsn		--		val *x
+	fpdiv			--		(*x / val)	28
+	ldl n			-- n		(*x / val)	-2
+	ldl n			-- n n		(*x / val)	-2
+	cj .VfDivScalar_end	-- n		(*x / val)	-2
+	adc -1			-- (n-1)	(*x / val)	-2
+	stl n			--		(*x / val)	-1
+	ldl x			-- x		(*x / val)	-2
+	ldl x			-- x x		(*x / val)	-2
+	adc 4			-- (x+4) x	(*x / val)	-1
+	stl x			-- x		(*x / val)	-1 -> 13
+	fpstnlsn		--
+	j .VfDivScalar_start
+.VfDivScalar_end:
+]
+--}}}
+--{{{  VfRecScalar
+myproc VfRecScalar [ double value word n word x]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	align
+
+.VfRecScalar_start:
+	ldlp value		-- &val		
+	fpldnlsn		--		val
+	ldl x			-- x		val
+	fpldnlsn		--		*x val
+	fpdiv			--		(val / *x)	28
+	ldl n			-- n		(val / *x)	-2
+	ldl n			-- n n		(val / *x)	-2
+	cj .VfRecScalar_end	-- n		(val / *x)	-2
+	adc -1			-- (n-1)	(val / *x)	-2
+	stl n			--		(val / *x)	-1
+	ldl x			-- x		(val / *x)	-2
+	ldl x			-- x x		(val / *x)	-2
+	adc 4			-- (x+4) x	(val / *x)	-1
+	stl x			-- x		(val / *x)	-1 -> 13
+	fpstnlsn		--
+	j .VfRecScalar_start
+.VfRecScalar_end:
+]
+--}}}
+--{{{  VfsAddScalar
+myproc VfsAddScalar [ double value word n word x word stride ]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	ldl stride		-- float -> byte stride
+	ldc 4
+	prod
+	stl stride
+
+	align
+.VfsAddScalar_start:
+	ldl n			-- n
+	cj .VfsAddScalar_end	-- 
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldlp value		-- &val x	*x
+	fpldnladdsn		-- x		(*x + val)	 9
+	ldl x			-- x x		(*x + val)	-2
+	ldl stride		-- xs x x	(*x + val)	-2
+	add			-- (x+xs) x	(*x + val)	-1
+	stl x			-- x		(*x + val)	-1
+	ldl n			-- n x		(*x + val)	-2
+	adc -1			-- (n-1) x	(*x + val)	-2
+	stl n			-- x		(*x + val)	-1 -> -2
+	fpstnlsn
+	j .VfsAddScalar_start
+.VfsAddScalar_end:
+]
+--}}}
+--{{{  VfsSubScalar
+myproc VfsSubScalar [ double value word n word x word stride ]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	ldl stride		-- float -> byte stride
+	ldc 4
+	prod
+	stl stride
+
+	align
+.VfsSubScalar_start:
+	ldl n			-- n
+	cj .VfsSubScalar_end	--
+
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		*x
+	ldlp value		-- &val x	*x
+	fpldnlsn		-- x		val *x
+	fpsub			-- x		(*x - val)	9
+	ldl x			-- x x		(*x - val)	-2
+	ldl stride		-- xs x x	(*x - val)	-2
+	add			-- (x+xs) x	(*x - val)	-1
+	stl x			-- x		(*x - val)	-1
+	ldl n			-- n x		(*x - val)	-2
+	adc -1			-- (n-1) x	(*x - val)	-2
+	stl n			-- x		(*x - val)	-1 -> -2
+	fpstnlsn
+	j .VfsSubScalar_start
+.VfsSubScalar_end:
+]
+--}}}
+--{{{  VfsMulScalar
+myproc VfsMulScalar [ double value word n word x word stride ]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	ldl stride		-- float -> byte stride
+	ldc 4
+	prod
+	stl stride
+
+	align
+.VfsMulScalar_start:
+	ldl x			-- x
+	fpldnlsn		--		*x
+	ldlp value		-- &val		*x
+	fpldnlmulsn		--		(*x * val)	18
+	ldl n			-- n		(*x * val)	-2
+	ldl n			-- n n		(*x * val)	-2
+	cj .VfsMulScalar_end	-- n		(*x * val)	-2
+	adc -1			-- (n-1)	(*x * val)	-2
+	stl n			--		(*x * val)	-1
+	ldl x			-- x		(*x * val)	-2
+	ldl x			-- x x		(*x * val)	-2
+	ldl stride		-- xs x x	(*x * val)	-2
+	add			-- (x+xs) x	(*x * val)	-1
+	stl x			-- x		(*x * val)	-1 -> 1
+	fpstnlsn		-- 
+	j .VfsMulScalar_start
+.VfsMulScalar_end:
+]
+--}}}
+--{{{  VfsDivScalar
+myproc VfsDivScalar [ double value word n word x word stride ]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	ldl stride		-- float->byte stride
+	ldc 4
+	prod
+	stl stride
+
+	align
+.VfsDivScalar_start:
+	ldl x			-- x
+	fpldnlsn		--		*x
+	ldlp value		-- &val		*x
+	fpldnlsn		--		val *x
+	fpdiv			--		(*x / val)	28
+	ldl n			-- n		(*x / val)	-2
+	ldl n			-- n n		(*x / val)	-2
+	cj .VfsDivScalar_end	-- n		(*x / val)	-2
+	adc -1			-- (n-1)	(*x / val)	-2
+	stl n			--		(*x / val)	-1
+	ldl x			-- x		(*x / val)	-2
+	ldl x			-- x x		(*x / val)	-2
+	ldl stride		-- xs x x	(*x / val)	-2
+	add			-- (x+xs) x	(*x / val)	-1
+	stl x			-- x		(*x / val)	-1 -> 11
+	fpstnlsn		--
+	j .VfsDivScalar_start
+.VfsDivScalar_end:
+]
+--}}}
+--{{{  VfsRecScalar 
+myproc VfsRecScalar [ double value word n word x word stride ]
+[
+	ldlp value		-- double->single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	ldl stride		-- float -> byte stride
+	ldc 4
+	prod
+	stl stride
+
+	align
+.VfsRecScalar_start:
+	ldlp value		-- &val		
+	fpldnlsn		--		val
+	ldl x			-- x		val
+	fpldnlsn		--		*x val
+	fpdiv			--		(val / *x)	28
+	ldl n			-- n		(val / *x)	-2
+	ldl n			-- n n		(val / *x)	-2
+	cj .VfsRecScalar_end	-- n		(val / *x)	-2
+	adc -1			-- (n-1)	(val / *x)	-2
+	stl n			--		(val / *x)	-1
+	ldl x			-- x		(val / *x)	-2
+	ldl x			-- x x		(val / *x)	-2
+	ldl stride		-- xs x x	(val / *x)	-2
+	add			-- (x+4) x	(val / *x)	-1
+	stl x			-- x		(val / *x)	-1 -> 11
+	fpstnlsn		--
+	j .VfsRecScalar_start
+.VfsRecScalar_end:
+]
+--}}}
+--}}}
+--{{{  vector-scalar multiply
+myproc VfMulAdd [ double value word n word x word y]
+[
+	ldlp value		-- double -> float
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+
+	align
+.VfMulAdd_start:
+	ldlp value		-- &val
+	fpldnlsn		--		val
+	ldl y			-- y		val
+	fpldnlmulsn		--		(*y * val)	18
+	ldl n			-- n		(*y * val)	-2
+	ldl n			-- n n		(*y * val)	-2
+	cj .VfMulAdd_end	-- n		(*y * val)	-2
+	adc -1			-- (n-1)	(*y * val)	-2
+	stl n			--		(*y * val)	-1
+	ldl y			-- y		(*y * val)	-2
+	adc 4			-- (y++)	(*y * val)	-1
+	stl y			-- 		(*y * val)	-1
+	ldl x			-- x		(*y * val)	-2
+	ldl x			-- x x		(*y * val)	-2 -> 1
+	fpldnladdsn		-- x		*x + (*y * val)  6
+	ldl x			-- x x 		 " "		-2
+	adc 4			-- (x++) x	 " "		-1
+	stl x			-- x		 " "		-1 -> 2
+	fpstnlsn		--
+	j .VfMulAdd_start
+.VfMulAdd_end:
+]
+
+myproc VfsMulAdd [ double value word n word x word x_stride word y word y_stride]
+[
+	ldlp value		-- double -> float
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+	ldl x_stride		-- float stride -> byte stride
+	ldc 4
+	prod
+	stl x_stride
+	ldl y_stride		-- and again
+	ldc 4
+	prod
+	stl y_stride
+
+	align
+.VfsMulAdd_start:
+	ldlp value		-- &val
+	fpldnlsn		--		val
+	ldl y			-- y		val
+	fpldnlmulsn		--		(*y * val)	18
+	ldl n			-- n		(*y * val)	-2
+	ldl n			-- n n		(*y * val)	-2
+	cj .VfsMulAdd_end	-- n		(*y * val)	-2
+	adc -1			-- (n-1)	(*y * val)	-2
+	stl n			--		(*y * val)	-1
+	ldl y			-- y		(*y * val)	-2
+	ldl y_stride		-- ys y		(*y * val)	-2
+	add			-- (y+ys)	(*y * val)	-1
+	stl y			-- 		(*y * val)	-1
+	ldl x			-- x		(*y * val)	-2
+	ldl x			-- x x		(*y * val)	-2 -> -1
+	fpldnladdsn		-- x		*x + (*y * val)  6
+	ldl x			-- x x 		 " "		-2
+	ldl x_stride		-- xs x x	 " "		-2
+	add			-- (x+xs) x	 " "		-1
+	stl x			-- x		 " "		-1 -> 0
+	fpstnlsn		--
+	j .VfsMulAdd_start
+.VfsMulAdd_end:
+]
+
+--}}}
+--{{{  vector copying
+	-- Copy can be done with a 1-D block move. Note that the size has
+	-- to be in bytes and must be in A...
+myproc VfCopy [ word n word x word y]
+[
+	ldl n			-- n
+	ldc 4			-- 4 n
+	prod			-- (4*n), size in bytes
+	stl n			--
+	ldl y			-- y
+	ldl x			-- x y 
+	ldl n			-- (4*n) x y
+	move
+]
+
+	-- Copying with a stride can be done using 2d move, with each row
+	-- being a single float number.
+myproc VfsCopy [ word n word x word x_stride word y word y_stride]
+[
+	ldl y_stride		-- ys
+	ldc 4			-- 4 ys
+	prod			-- (4*ys)
+	ldl x_stride		-- xs (4*ys)
+	ldc 4			-- 4 xs (4*ys)
+	prod			-- (4*xs) (4*ys)
+	ldl n			-- n (4*xs) (4*ys)
+	move2dinit
+
+	ldl y			-- y (source)
+	ldl x			-- x y
+	ldc 4			-- 4 x y
+	move2dall
+]
+--}}}
+--{{{  vector initialisation
+	-- Filling can be done most easily using a bytblt
+myproc VfFill [ double value word n word x]
+[
+	ldlp		value		-- convert double->single
+	fpldnldb
+	fpur64tor32
+	ldlp		value
+	fpstnlsn
+
+	ldc 0			-- 0		source stride = 0
+	ldc 4			-- 4 0		dest stride = 4
+	ldl n			-- n 4 0
+	move2dinit
+
+	ldlp value		-- &val		source of copy
+	ldl x			-- x &val	dest of copy
+	ldc 4			-- 4 x &val	width of row
+	move2dall
+]
+
+myproc VfsFill [ double value word n word x word stride]
+[
+	ldlp value		-- convert double to single
+	fpldnldb
+	fpur64tor32
+	ldlp value
+	fpstnlsn
+
+	ldc 0			-- 0		source stride = 0
+	ldl stride		-- xs 0		dest stride in floats
+	ldc 4			-- 4 xs 0
+	prod			-- (4*xs) 0	dest stride in bytes
+	ldl n			-- n (4*xs) 0
+	move2dinit
+
+	ldlp value		-- &val		source of copy
+	ldl x			-- x &val	dest of copy
+	ldc 4			-- 4 x &val	width of row
+	move2dall
+]
+--}}}
+--{{{  vector maxima and minima
+--{{{  VfMax
+	-- This code is almost identical to that produced by the compiler,
+	-- except that the value of x[i] is remembered during the comparison
+	-- to avoid another array index. This saves for unsorted vectors,
+	-- but costs for sorted ones.
+myproc2 VfMax [ word n word x ]
+[ word i word result float max ]
+[
+ 	ldc 	0		-- 0
+	stl 	result		--
+	ldl	x		-- x
+	fpldnlsn		-- 		x[0]
+	ldlp max		-- &max		x[0]
+	fpstnlsn		-- 
+	ldc 1			-- 1
+	stl i			--
+
+	align
+.VfMax_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+ 	cj .VfMax_end
+
+	ldl i			-- i
+	ldl x			-- x i
+	fpldnlsni		-- 		x[i]
+	fpdup			--		x[i] x[i]
+	ldlp max		-- &max		x[i] x[i]
+	fpldnlsn		-- 		max x[i] x[i]
+	fpgt			-- (x[i]>max)?  x[i]
+	cj .VfMax_skip		--
+
+				-- (x[i] > max)
+	ldl i			-- i		x[i]
+	stl result		--		x[i]
+	ldlp max		-- &max		x[i]
+	fpstnlsn
+
+	align	
+.VfMax_skip:
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i			--
+	j .VfMax_loop
+
+.VfMax_end:
+	ldl result
+]
+--}}}
+--{{{  VfsMax
+myproc2 VfsMax [ word n word x word stride ]
+[ word i word result float max ]
+[
+	ldc 0			-- 0
+	stl result		--
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		x[0]
+	ldlp max		-- &max x	x[0]
+	fpstnlsn		-- x
+	ldl stride		-- xs x
+	ldc 4			-- 4 xs x
+	prod			-- xs x			xs -> byte stride
+	dup			-- xs xs x
+	stl stride		-- xs x
+	add			-- (x+xs)
+	stl x			--
+	ldc 1			-- 1
+	stl i
+
+	align
+.VfsMax_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+	cj .VfsMax_end
+
+	ldl x			-- x
+	fpldnlsn		-- 		*x
+	fpdup			-- 		*x *x
+	ldlp max		-- &max 	*x *x
+	fpldnlsn		-- 		max *x *x
+	fpgt			--		*x
+	cj .VfsMax_skip
+
+	ldl i			-- i 		*x
+	stl result		-- 		*x
+	ldlp max		-- &max 	*x
+	fpstnlsn		-- 
+
+	align
+.VfsMax_skip:
+	ldl x			-- x
+	ldl stride		-- xs x
+	add			-- (xs + x)
+	stl x
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i
+	j .VfsMax_loop
+
+.VfsMax_end:
+	ldl result
+]
+--}}}
+--{{{  VfMin
+myproc2 VfMin [ word n word x]
+[ word i word result float min ]
+[
+ 	ldc 	0		-- 0
+	stl 	result		--
+	ldl	x		-- x
+	fpldnlsn		-- 		x[0]
+	ldlp min		-- &min		x[0]
+	fpstnlsn		-- 
+	ldc 1			-- 1
+	stl i			--
+
+	align
+.VfMin_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+ 	cj .VfMin_end
+
+	ldl i			-- i
+	ldl x			-- x i
+	fpldnlsni		-- 		x[i]
+	fpdup			--		x[i] x[i]
+	ldlp min		-- &min		x[i] x[i]
+	fpldnlsn		-- 		min x[i] x[i]
+	fprev			--		x[i] min x[i]
+	fpgt			-- (min>x[i])?  x[i]
+	cj .VfMin_skip		--
+
+				-- (min > x[i])
+	ldl i			-- i		x[i]
+	stl result		--		x[i]
+	ldlp min		-- &min		x[i]
+	fpstnlsn
+
+	align	
+.VfMin_skip:
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i			--
+	j .VfMin_loop
+
+.VfMin_end:
+	ldl result
+]
+--}}}
+--{{{  VfsMin
+myproc2 VfsMin [ word n word x word stride ]
+[ word i word result float min ]
+[
+	ldc 0			-- 0
+	stl result		--
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		x[0]
+	ldlp min		-- &min x	x[0]
+	fpstnlsn		-- x
+	ldl stride		-- xs x
+	ldc 4			-- 4 xs x
+	prod			-- xs x			xs -> byte stride
+	dup			-- xs xs x
+	stl stride		-- xs x
+	add			-- (x+xs)
+	stl x			--
+	ldc 1			-- 1
+	stl i
+
+	align
+.VfsMin_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+	cj .VfsMin_end
+
+	ldl x			-- x
+	fpldnlsn		-- 		*x
+	fpdup			-- 		*x *x
+	ldlp min		-- &min		*x *x
+	fpldnlsn		-- 		min *x *x
+	fprev			-- 		*x min *x
+	fpgt			--		*x
+	cj .VfsMin_skip
+
+	ldl i			-- i 		*x
+	stl result		-- 		*x
+	ldlp min		-- &min		*x
+	fpstnlsn		-- 
+
+	align
+.VfsMin_skip:
+	ldl x			-- x
+	ldl stride		-- xs x
+	add			-- (xs + x)
+	stl x
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i
+	j .VfsMin_loop
+
+.VfsMin_end:
+	ldl result
+]
+--}}}
+--{{{  VfAmax
+myproc2 VfAmax [ word n word x]
+[ word i word result float max ]
+[
+ 	ldc 	0		-- 0
+	stl 	result		--
+	ldl	x		-- x
+	fpldnlsn		-- 		x[0]
+	fpuabs
+	ldlp max		-- &max		x[0]
+	fpstnlsn		-- 
+	ldc 1			-- 1
+	stl i			--
+
+	align
+.VfAmax_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+ 	cj .VfAmax_end
+
+	ldl i			-- i
+	ldl x			-- x i
+	fpldnlsni		-- 		x[i]
+	fpuabs			--		x[i]
+	fpdup			--		x[i] x[i]
+	ldlp max		-- &max		x[i] x[i]
+	fpldnlsn		-- 		max x[i] x[i]
+	fpgt			-- (x[i]>max)?  x[i]
+	cj .VfAmax_skip		--
+
+				-- (x[i] > max)
+	ldl i			-- i		x[i]
+	stl result		--		x[i]
+	ldlp max		-- &max		x[i]
+	fpstnlsn
+
+	align	
+.VfAmax_skip:
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i			--
+	j .VfAmax_loop
+
+.VfAmax_end:
+	ldl result
+]
+--}}}
+--{{{  VfsAmax
+myproc2 VfsAmax [ word n word x word stride ]
+[ word i word result float max ]
+[
+	ldc 0			-- 0
+	stl result		--
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		x[0]
+	fpuabs			--		x[0]
+	ldlp max		-- &max x	x[0]
+	fpstnlsn		-- x
+	ldl stride		-- xs x
+	ldc 4			-- 4 xs x
+	prod			-- xs x			xs -> byte stride
+	dup			-- xs xs x
+	stl stride		-- xs x
+	add			-- (x+xs)
+	stl x			--
+	ldc 1			-- 1
+	stl i
+
+	align
+.VfsAmax_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+	cj .VfsAmax_end
+
+	ldl x			-- x
+	fpldnlsn		-- 		*x
+	fpuabs			--		*x
+	fpdup			-- 		*x *x
+	ldlp max		-- &max 	*x *x
+	fpldnlsn		-- 		max *x *x
+	fpgt			--		*x
+	cj .VfsAmax_skip
+
+	ldl i			-- i 		*x
+	stl result		-- 		*x
+	ldlp max		-- &max 	*x
+	fpstnlsn		-- 
+
+	align
+.VfsAmax_skip:
+	ldl x			-- x
+	ldl stride		-- xs x
+	add			-- (xs + x)
+	stl x
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i
+	j .VfsAmax_loop
+
+.VfsAmax_end:
+	ldl result
+]
+--}}}
+--{{{  VfAmin
+myproc2 VfAmin [ word n word x]
+[ word i word result float min ]
+[
+ 	ldc 	0		-- 0
+	stl 	result		--
+	ldl	x		-- x
+	fpldnlsn		-- 		x[0]
+	fpuabs			--		x[0]
+	ldlp min		-- &min		x[0]
+	fpstnlsn		-- 
+	ldc 1			-- 1
+	stl i			--
+
+	align
+.VfAmin_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+ 	cj .VfAmin_end
+
+	ldl i			-- i
+	ldl x			-- x i
+	fpldnlsni		-- 		x[i]
+	fpuabs			--		x[i]
+	fpdup			--		x[i] x[i]
+	ldlp min		-- &min		x[i] x[i]
+	fpldnlsn		-- 		min x[i] x[i]
+	fprev			--		x[i] min x[i]
+	fpgt			-- (min>x[i])?  x[i]
+	cj .VfAmin_skip		--
+
+				-- (min > x[i])
+	ldl i			-- i		x[i]
+	stl result		--		x[i]
+	ldlp min		-- &min		x[i]
+	fpstnlsn
+
+	align	
+.VfAmin_skip:
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i			--
+	j .VfAmin_loop
+
+.VfAmin_end:
+	ldl result
+]
+--}}}
+--{{{  VfsAmin
+myproc2 VfsAmin [ word n word x word stride]
+[ word i word result float min ]
+[
+	ldc 0			-- 0
+	stl result		--
+	ldl x			-- x
+	ldl x			-- x x
+	fpldnlsn		-- x		x[0]
+	fpuabs			-- x		x[0]
+	ldlp min		-- &min x	x[0]
+	fpstnlsn		-- x
+	ldl stride		-- xs x
+	ldc 4			-- 4 xs x
+	prod			-- xs x			xs -> byte stride
+	dup			-- xs xs x
+	stl stride		-- xs x
+	add			-- (x+xs)
+	stl x			--
+	ldc 1			-- 1
+	stl i
+
+	align
+.VfsAmin_loop:
+	ldl n			-- n
+	ldl i			-- i n
+	gt			-- (n > i)
+	cj .VfsAmin_end
+
+	ldl x			-- x
+	fpldnlsn		-- 		*x
+	fpuabs			--		*x
+	fpdup			-- 		*x *x
+	ldlp min		-- &min		*x *x
+	fpldnlsn		-- 		min *x *x
+	fprev			-- 		*x min *x
+	fpgt			--		*x
+	cj .VfsAmin_skip
+
+	ldl i			-- i 		*x
+	stl result		-- 		*x
+	ldlp min		-- &min		*x
+	fpstnlsn		-- 
+
+	align
+.VfsAmin_skip:
+	ldl x			-- x
+	ldl stride		-- xs x
+	add			-- (xs + x)
+	stl x
+	ldl i			-- i
+	adc 1			-- (i+1)
+	stl i
+	j .VfsAmin_loop
+
+.VfsAmin_end:
+	ldl result
+]
+--}}}
+--}}}
+--{{{  vector dot products
+--{{{  VfDot()
+myproc2 VfDot [ word n word x word y]
+[ float result ]
+[
+	fpldzerosn		--		0.0
+	ldlp result		-- &res		0.0
+	fpstnlsn		--
+
+	align
+.VfDot_start:
+	ldl x			-- x
+	fpldnlsn		--		*x
+	ldl y			-- y		*x
+	fpldnlmulsn		--		(*x * *y)	18
+	ldl n			-- n		(*x * *y)	-2
+	ldl n			-- n n		(*x * *y)	-2
+	cj .VfDot_end		-- n		(*x * *y)	-2
+	adc -1			-- (n-1)	(*x * *y)	-2
+	stl n			--		(*x * *y)	-1
+	ldl x			-- x		(*x * *y)	-2
+	adc 4			-- (x+4)	(*x * *y)	-1
+	stl x			--		(*x * *y)	-1
+	ldlp result		-- &res		(*x * *y)	-1 -> 4
+	fpldnladdsn		-- 		(res + (*x * *y)) 6
+	ldl y			-- y 		  " "		-2
+	adc 4			-- (y+4) 	  " "		-1
+	stl y			-- 		  " "		-1
+	ldlp result		-- &res		  " "		-1 -> 1
+	fpstnlsn
+	j .VfDot_start
+
+.VfDot_end:
+	ldlp result
+	fpldnlsn		-- sadly this will block while the
+				-- multiplication finished
+]
+--}}}
+--{{{  VfsDot()
+myproc2 VfsDot [ word n word x word x_stride word y word y_stride]
+[ float result]
+[
+	fpldzerosn		--		0.0
+	ldlp result		-- &res		0.0
+	fpstnlsn		--
+	ldl x_stride		-- float strides -> byte strides
+	ldc 4
+	prod
+	stl x_stride
+	ldl y_stride
+	ldc 4
+	prod
+	stl y_stride
+
+	align
+.VfsDot_start:
+	ldl x			-- x
+	fpldnlsn		--		*x
+	ldl y			-- y
+	fpldnlmulsn		--		(*x * *y)	18
+	ldl n			-- n		(*x * *y)	-2
+	ldl n			-- n n		(*x * *y)	-2
+	cj .VfsDot_end		-- n		(*x * *y)	-2
+	adc -1			-- (n-1)	(*x * *y)	-2
+	stl n			--		(*x * *y)	-1
+	ldl x			-- x		(*x * *y)	-2
+	ldl x_stride		-- xs x		(*x * *y)	-2
+	add			-- (x + xs)	(*x * *y)	-1
+	stl x			--		(*x * *y)	-1
+	ldlp result		-- &res		(*x * *y)	-1 -> 2
+	fpldnladdsn		--		(res + (*x * *y)) 6
+	ldl y			-- y		 " "		-2
+	ldl y_stride		-- ys y		 " "		-2
+	add			-- (y+ys)	 " "		-1
+	stl y			--		 " "		-1
+	ldlp result		-- &res		 " "		-1 -> -1
+	fpstnlsn
+	j .VfsDot_start
+
+.VfsDot_end:
+	ldlp result
+	fpldnlsn
+]
+--}}}
+--}}}
+--{{{  vector sums and products
+myproc2 VfSum [ word n word x]
+[ float result ]
+[
+	fpldzerosn		--		0.0
+	ldlp result		-- &res		0.0
+	fpstnlsn		
+
+	align
+.VfSum_start:
+	ldl n			-- n
+	ldl n			-- n n
+	cj .VfSum_end		-- n
+	ldlp result		-- &res n
+	fpldnlsn		-- n		res
+	ldl x			-- x n		res
+	ldl x			-- x x n	res
+	fpldnladdsn		-- x n		(res + *x)	6
+	adc 4			-- (x+4) n	(res + *x)	-1
+	stl x			-- n		(res + *x)	-1
+	adc -1			-- (n-1)	(res + *x)	-2
+	stl n			--		(res + *x)	-1
+	ldlp result		-- &res		(res + *x)	-1 -> 0
+	fpstnlsn
+	j .VfSum_start
+
+.VfSum_end:
+	ldlp result
+	fpldnlsn
+]
+
+myproc2 VfsSum [ word n word x word stride]
+[ float result ]
+[
+	fpldzerosn		--		0.0
+	ldlp result		-- &res		0.0
+	fpstnlsn
+	ldl stride		-- float stride -> byte stride
+	ldc 4
+	prod
+	stl stride
+
+	align
+.VfsSum_start:
+	ldl n			-- n
+	ldl n			-- n n
+	cj .VfSum_end		-- n
+	ldlp result		-- &res n
+	fpldnlsn		-- n		res
+	ldl x			-- x n		res
+	ldl x			-- x x n	res
+	fpldnladdsn		-- x n		(res + *x)	6
+	ldl stride		-- xs x n	(res + *x)	-2
+	add			-- (x + xs) n	(res + *x)	-1
+	stl x			-- n		(res + *x)	-1
+	adc -1			-- (n-1)	(res + *x)	-2
+	stl n			--		(res + *x)	-1
+	ldlp result		--		(res + *x)	-1 -> -2
+	fpstnlsn
+	j .VfsSum_start
+
+.VfsSum_end:
+	ldlp result
+	fpldnlsn
+]
+
+.V_Number1:
+byte #00,#00,#80,#3f		-- 1.0
+
+myproc2 VfProd [ word n word x ]
+[ float result ]
+[
+	ldc .V_Number1 - 2	-- get 1.0 from the code
+	ldpi
+	fpldnlsn
+	ldlp result
+	fpstnlsn
+
+	align	
+.VfProd_start:
+	ldlp result		-- &res
+	fpldnlsn		-- 		res
+	ldl x			-- x		res
+	fpldnlmulsn		--		(res * *x)	18
+	ldl n			-- n		(res * *x)	-2
+	ldl n			-- n n		(res * *x)	-2
+	cj .VfProd_end		-- n		(res * *x)	-2
+	adc -1			-- (n-1)	(res * *x)	-2
+	stl n			--		(res * *x)	-1
+	ldl x			-- x		(res * *x)	-2
+	adc 4			-- (x+4)	(res * *x)	-1
+	stl x			--		(res * *x)	-1
+	ldlp result		-- &res		(res * *x)	-1 -> 4
+	fpstnlsn
+	j .VfProd_start
+
+.VfProd_end:
+	ldlp result
+	fpldnlsn
+]
+
+myproc2 VfsProd [ word n word x word stride]
+[ float result ]
+[
+	ldc .V_Number1 - 2	-- get 1.0 from the code
+	ldpi
+	fpldnlsn
+	ldlp result
+	fpstnlsn
+	ldl stride		-- float stride -> byte stride
+	ldc 4
+	prod
+	stl stride
+
+	align
+.VfsProd_start:
+	ldlp result		-- &res
+	fpldnlsn		--		res
+	ldl x			-- x		res
+	fpldnlmulsn		--		(res * *x)	18
+	ldl n			-- n		(res * *x)	-2
+	ldl n			-- n n		(res * *x)	-2
+	cj .VfsProd_end		-- n		(res * *x)	-2
+	adc -1			-- (n-1)	(res * *x)	-2
+	stl n			--		(res * *x)	-1
+	ldl x			-- x		(res * *x)	-2
+	ldl stride		-- xs x		(res * *x)	-2
+	add			-- (x+xs)	(res * *x)	-1
+	stl x			--		(res * *x)	-1
+	ldlp result		-- &res		(res * *x)	-1 -> -2
+	fpstnlsn
+	j .VfsProd_start
+
+.VfsProd_end:
+	ldlp result
+	fpldnlsn
+]
+--}}}
+
+EndModule

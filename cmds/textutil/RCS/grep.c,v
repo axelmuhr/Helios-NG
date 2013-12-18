@@ -1,0 +1,330 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	94.05.12.13.40.05;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.07.12.15.28.22;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.16.31;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.26.08;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@general purpose file search program
+,
+@
+
+
+1.4
+log
+@fixed compile time warnings for ARM world
+@
+text
+@/* grep - search for a pattern 		Author: Martin C. Atkins */
+#ifdef __TRAN
+static char *rcsid = "$Header: /users/nickc/RTNucleus/cmds/textutil/RCS/grep.c,v 1.3 1993/07/12 15:28:22 nickc Exp nickc $";
+#endif
+/*
+ *	Search files for a regular expression
+ *
+ *<-xtx-*>cc -o grep grep.c -lregexp
+ */
+
+/*
+ *	This program was written by:
+ *		Martin C. Atkins,
+ *		University of York,
+ *		Heslington,
+ *		York. Y01 5DD
+ *		England
+ *	and is released into the public domain, on the condition
+ *	that this comment is always included without alteration.
+ *
+ *	The program was modified by Andy Tanenbaum.
+ */
+
+/* Modified CHRG : 3:3:88 : Perihelion Software				     */
+/* PAB 1/8/88 */
+
+#include "regexp.h"
+#include <string.h>
+#include <helios.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+void pline(char *, int, char *);
+int getline(char *, int);
+void done(int);
+
+#define MAXLINE (1024)
+
+int status = 1;
+char *progname;
+int pmflag = 1;		/* print lines which match */
+int pnmflag = 0;	/* print lines which don't match */
+int nflag = 0;		/* number the lines printed */
+int args;
+FILE *instream = stdin;
+
+
+void regerror(char *s )
+{
+  fprintf(stderr,"grep: %s\n", s);
+}
+
+
+/*
+ *	This routine actually matches the file
+ */
+void
+match(
+      char *name,
+      regexp *exp )
+{
+  char buf[MAXLINE];
+  int lineno = 0;
+  char nochars;
+
+  while( (nochars = getline(&buf[0],MAXLINE)) != 0) {
+	char *cr = strchr(&buf[0],'\n');
+	lineno++;
+
+	if(cr == 0) {
+		fprintf(stderr,"Line too long in ");
+		fprintf(stderr,name == 0 ? "stdin\n":"%s\n",name);
+	} else
+		*cr = '\0';
+
+	if(regexec(exp,&buf[0], TRUE)) { /* TRUE believed to enable beginnning of line searches */
+		if(pmflag)
+			pline(name,lineno,buf);
+		if(status != 2)
+			status = 0;
+	} 
+	else if(pnmflag)
+		pline(name,lineno,buf);
+  }
+}
+
+void
+pline(
+      char *name,
+      int lineno,
+      char buf[] )
+{
+  if(name && args > 3) printf("%s:",name);
+  if(nflag) printf("%d:", lineno);
+  printf("%s\n",buf);
+}
+
+
+int
+getline(
+	char *buf,
+	int size )
+{
+  char *initbuf = buf, c;
+
+  while (1) {
+	c = (char)getc(instream);
+  	*(buf++) = c;
+	if (c == (char)EOF)  		return(0);
+
+  	if (buf - initbuf == size - 1) 	return((int)(buf - initbuf));
+
+  	if (c == '\n')  		return((int)(buf - initbuf));
+
+  }
+}
+
+void
+done(int n)
+{
+  fflush(stdout);
+  exit(n);
+}
+
+
+void Usage(void)
+{
+  fprintf(stderr,"Usage: grep [-v] [-n] [-s] [-e] < expression > [<file> ...]\n");
+  done(2);
+}
+
+int
+main(
+     int argc,
+     char *argv[] )
+{
+  regexp *exp;
+  char **argp = &argv[1];
+
+  /* setvbuf(stdin,(char *)NULL,_IONBF,0);    unbuffered input stream 	*/
+  /* setvbuf(stdout,(char *)NULL,_IONBF,0);  unbuffered output stream 	*/
+
+  args = argc;
+  progname = argv[0];
+  while(*argp != 0 && argp[0][0] == '-') {
+	args--;			/* flags don't count */
+	switch(argp[0][1]) {
+	case 'v':
+		pmflag = 0;
+		pnmflag = 1;
+		break;
+	case 'n':
+		nflag++;
+		break;
+	case 's':
+		pmflag = pnmflag = 0;
+		break;
+	case 'e':
+		argp++;
+		goto out;
+	default:
+		Usage();
+	}
+	argp++;
+  }
+out:
+  if(*argp == 0) Usage();
+
+  if((exp = regcomp(*argp++)) == NULL) {
+  	fprintf(stderr,"grep: regcomp failed\n");
+	done(2);
+  }
+  if(*argp == 0) {
+	instream = stdin;
+	match((char *)0,exp);
+  }
+  else
+	while(*argp != (char *)NULL) {
+
+		if(strcmp(*argp,"-") == 0) {
+			instream = stdin;
+			match("-",exp);
+		}
+		else {
+			if( (instream = fopen(*argp, "r")) == (FILE *)NULL) {
+				fprintf(stderr,"Can't open ");
+				fprintf(stderr,*argp);
+				fprintf(stderr,"\n");
+				status = 2;
+			} else {
+				match(*argp,exp);
+				fclose(instream);
+			}
+		}
+		argp++;
+	}
+  done(status);
+}
+
+@
+
+
+1.3
+log
+@fixed compile time warnings
+@
+text
+@d2 3
+a4 3
+
+static char *rcsid = "$Header: /hsrc/cmds/textutil/RCS/grep.c,v 1.2 1990/08/23 10:16:31 james Exp nickc $";
+
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d3 1
+a3 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/grep.c,v 1.1 90/08/22 16:26:08 james Exp Locker: james $";
+a32 1
+void match(char *, regexp *);
+a34 1
+void Usage(void);
+d48 6
+d58 3
+a60 3
+match(name, exp)
+char *name;
+regexp *exp;
+a86 6
+void regerror(s)
+char *s;
+{
+  fprintf(stderr,"grep: %s\n", s);
+}
+
+d88 4
+a91 4
+pline(name, lineno, buf)
+char *name;
+int lineno;
+char buf[];
+d98 5
+a102 3
+int getline(buf, size)
+char *buf;
+int size;
+d119 1
+a119 2
+done(n)
+int n;
+d125 7
+d133 3
+a135 3
+main(argc,argv)
+int argc;
+char *argv[];
+a197 6
+}
+
+void Usage(void)
+{
+  fprintf(stderr,"Usage: grep [-v] [-n] [-s] [-e] < expression > [<file> ...]\n");
+  done(2);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d3 1
+a3 1
+static char rcsid[] = "$Header$";
+@

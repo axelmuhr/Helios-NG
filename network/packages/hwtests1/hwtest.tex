@@ -1,0 +1,209 @@
+\documentstyle{article}
+\title{Helios 1.3 Hardware Reliability Test Program}
+\author{Bart Veer \\ PSL-HEL-BLV-92-009.1}
+\date{}
+
+\begin{document}
+\maketitle
+
+This simple hardware test program was developed as part of the Helios
+fault tolerance work, in an attempt to measure the long-term reliability
+of existing hardware. The aim is to detect failures within some of the
+various components that make up a processor node in a multiprocessor network.
+For example the test program can detect corruption of single bits of
+memory caused by alpha radiation, cosmic particles, etc.
+
+The test program is not intended to identify failures in existing
+hardware, for example a failure in the floating point unit which means
+that one bit in the result is always set. Instead it assumes that the
+hardware platform being used is reliable but subject to sporadic failures,
+once every few weeks or months depending on the size of the network.
+The frequency of such sporadic failures is not really known and is
+clearly rather hard to measure. Failures are assumed to be soft, in other
+words one-off events such as an alpha particle zapping a bit in memory,
+rather than hard failures such as the permanent failure of one bit in
+memory or an entire memory chip.
+
+In addition to hardware testing the program can be used to check
+the behaviour of Helios. In particular it serves to test the taskforce
+mapping and execution facilities of the Resource Management library 
+and the long-term stability of the nucleus, as the program is typically
+run for hours or days on end.
+
+\section{The Testing}
+
+When the program is run it examines the current network, obtains all
+suitable processors, and then constructs a taskforce to run on all
+the available processors. There will be one component, internally
+multi-threaded, for every processor. Each such component performs
+some or all of the following tests:
+
+\begin{description}
+\item [links] For every link on this processor which is connected to another
+processor owned by the test program, there will be a pair of communication
+channels to the program on the other end. The test program will continually
+transmit data on one channel and receive it on the other. Packets start
+with eight bytes of random data and double, going up to 16K. The first word of
+the transfer consists of a checksum of the remaining data.
+\item [on-chip memory] The program determines the amount of on-chip
+memory that is available and obtains it. This memory is initialised with
+random data and then checksummed at regular intervals.
+\item [off-chip memory] Similarly the program determines the amount of
+off-chip memory, in other words SRAM and DRAM. Again it determines the
+amount of memory available, making certain that the link testing
+threads have allocated their buffers first. Care is taken that the system
+is left with at least 50K of memory for message buffering and so on.
+The obtained memory is again filled with random data and checksummed
+at regular intervals.
+\end{description}
+
+Only a single program is used to perform all the testing. This program
+is identical to the {\tt hwtest} program itself, but given suitable
+arguments.
+
+In addition to the above checking the program performs some testing
+of Helios. In particular it keeps track of the following:
+
+\begin{enumerate}
+\item The size of the port table. If this grows by more than two then
+a warning will be reported immediately.
+\item The size of the free pool. If this drops below 25K a warning will
+be generated.
+\item The trace vector. If the kernel generates any traces then these
+will be reported.
+\item The kernel buffer count. If this exceeds the maximum count currently
+seen then a warning will be generated.
+\end{enumerate}
+
+The aim of these tests is to detect internal problems in Helios,
+particularly ones related to long-term stability.
+
+\section{Logging}
+
+The test program generates a logfile. By default this is \newline
+{\tt /helios/local/tests/hwtests1/hwtest.log}, but an alternative logfile
+can be specified using the environment variable \verb+HWTEST_LOGFILE+.
+The start of this logfile consists of summary information:
+
+\begin{enumerate}
+\item Total amount of link traffic transferred, in gigabytes, megabytes,
+and kilobytes.
+\item Number of link failures detected.
+\item Total amount of on-chip memory that has been tested. These
+unit are on a per-hour basis, in other words the number of gigabytes
+tested for an entire hour, then the number of megabytes tested for
+an entire hour, finally the number of kilobytes.
+\item Number of on-chip memory errors detected.
+\item Total amount of off-chip memory that has been test, again in
+gigabyte hours, megabyte hours, and kilobyte hours.
+\item Number of off-chip memory errors detected.
+\end{enumerate}
+
+This summary information will be followed by a log of the actual
+testing performed, in chronological order. Every time the test is run
+some data will be appended to the end of the log.
+
+\section{Command line Arguments}
+
+The {\tt hwtest} program takes the following arguments:
+
+\begin{description}
+\item [{\tt -v}] Verbose. In addition to the normal logging information
+sent to the logfile the program will output detailed results from all
+the components. This information will be sent to {\tt stderr}.
+\item [{\tt -d}] Detach. The taskforce will be run in the background,
+provided that the user's session remains. If the user logs out then
+the taskforce will be aborted automatically.
+\item [{\tt -m}] Memory interval. This option should be followed by
+a time interval in seconds. By default the test program performs a
+complete checksum of all on-chip and off-chip memory every ten seconds.
+An alternative interval can be specified if desired. For example an
+interval of 0 forces continuous memory checking, whereas a larger
+interval allows for more link traffic to be generated and checksummed.
+\item [{\tt -nl}] No link checking. This option disables the link
+checking. 
+\item [{\tt -nm}] No memory checking. This option disables the off-chip
+memory checking.
+\item [{\tt -nf}] No fast memory checking. This option disables the
+testing of on-chip memory.
+\item [{\tt -c}] Perform network communication testing as well as
+the hardware testing. If this option is enabled then the controller
+generates large quantities of communication in addition to the
+communication across the links. The aim is to stress-test the
+message passing code, particularly single and double buffering,
+under low memory and high communication activity conditions.
+\item [time] The user should specify the duration of the test run.
+If three arguments are given then this is interpreted as days, hours
+and minutes. If only two arguments are given then this is interpreted
+as hours and minutes. If only one argument is given then the program
+only runs for the specified number of minutes.
+\end{description}
+
+For example to run the test overnight the following command line could
+be used:
+
+\begin{verbatim}
+  hwtest 14 0
+\end{verbatim}
+
+To perform link testing only over a weekend, generating verbose output,
+the following command line could be used:
+
+\begin{verbatim}
+  hwtest -v -nf -nm 2 15 0
+\end{verbatim}
+
+\section{Internal Arguments}
+
+When run from the command line the {\tt hwtest} program examines the
+network, obtains all suitable processors, and creates a taskforce.
+This taskforce consists of a number of copies of the {\tt hwtest}
+program, with the id \verb+<hwtest>+ to allow these copies to determine
+that they are running as part of the taskforce. These taskforce components
+take the following arguments:
+
+\begin{description}
+\item [days] always present, 0 if the user did not specify otherwise.
+\item [hours] ditto.
+\item [minutes] ditto.
+\item [{\tt -l0.4}] communicate with another component running on
+the processor attached to link 0. Use channel 4 to receive data from
+that component and channel 5 to send data to that component. If the
+{\tt -nl} option was specified by the user then there will not be any
+of these arguments.
+\item [{\tt -nm}] do not check off-chip memory, as per the command line
+argument.
+\item [{\tt -nf}] do not check on-chip memory, as per the command
+line argument.
+\item [{\tt -m20}] the interval between successive memory checks in
+seconds, as per the command line argument.
+\item [{\tt -c8.20}] Run as the controller, responsible for collecting
+the results at the end of the run and updating the log file. In this
+case the controller interacts with a further eight components, in other
+words the test is running on nine processors. Channel 20 is used to
+receive data from the first worker, channel 21 is used to send data to the
+first worker, and so on. Each worker that is not running as a controller
+uses {\tt stdin} to read from the controller and {\tt stdout} to write
+to the controller.
+\item [{\tt -C}] Perform communication stress testing.
+\end{description}
+
+\section{Possible Enhancements}
+
+There should be another part of the test program responsible for the
+floating point unit of a processor. This takes up a significant amount
+of the silicon area on most chips and should be tested. The rest of the
+processor chip, for example instruction pipelines, ALUs, caches, are
+exercised simply by running Helios and the test program, though not tested
+exhaustively. However the floating point unit is rarely exercised by
+Helios.
+
+Some work may be needed to cope with unusual memory layouts where the
+various blocks of memory are not necessarily contiguous. Currently the
+program will only allocate and checksum the single largest block of
+free memory, not a collection of blocks, which causes problems when
+memory is fragmented.
+
+\end{document}
+
+

@@ -1,0 +1,119 @@
+/*
+ * Name:	MG 2a
+ *		Iconify the MG window using Leo Schwab's iconify() routine.
+ * Last Edit:	07-Jan-88	mic@emx.utexas.edu
+ * Created:	04-Jan-88	mic@emx.utexas.edu
+ */
+
+#ifdef	DO_ICONIFY
+
+#include <exec/types.h>
+#include <exec/memory.h>
+#include <intuition/intuition.h>
+#include "iconify.h"
+#undef	TRUE
+#undef	FALSE
+#include "def.h"
+
+/*
+ * Simple Mg 2a icon image.  We need a more imaginative one.
+ */
+
+UWORD mg2a[160] = {
+/* Bit Plane #0 */
+
+   0x0000,0x0000,0x0000,0x0000,
+   0x3fff,0xffff,0xffff,0xf000,
+   0x3fff,0xffff,0xffff,0xf000,
+   0x3c00,0x0000,0x0000,0xf000,
+   0x3cc1,0x8f80,0x0000,0xf000,
+   0x3ce3,0x9ce0,0x0000,0xf000,
+   0x3cf7,0xb800,0x0000,0xf000,
+   0x3cff,0xb9e0,0x0000,0xf000,
+   0x3cfb,0xb8e0,0x0000,0xf000,
+   0x3ce3,0x9ce3,0xf000,0xf000,
+   0x3ce3,0x8fe7,0x3800,0xf000,
+   0x3c00,0x0000,0x39f8,0xf000,
+   0x3c00,0x0000,0xf01c,0xf000,
+   0x3c00,0x0003,0x80fc,0xf000,
+   0x3c00,0x0007,0x3b1c,0xf000,
+   0x3c00,0x0007,0xf9ee,0xf000,
+   0x3c00,0x0000,0x0000,0xf000,
+   0x3fff,0xffff,0xffff,0xf000,
+   0x3fff,0xffff,0xffff,0xf000,
+   0x0000,0x0000,0x0000,0x0000,
+
+/* Bit Plane #1 */
+
+   0xffff,0xffff,0xffff,0xfc00,
+   0xffff,0xffff,0xffff,0xfc00,
+   0xf000,0x0000,0x0000,0x3c00,
+   0xf000,0x0000,0x0000,0x3c00,
+   0xf040,0x8000,0x0000,0x3c00,
+   0xf020,0x8420,0x0000,0x3c00,
+   0xf010,0x8800,0x0000,0x3c00,
+   0xf000,0x8820,0x0000,0x3c00,
+   0xf020,0x8820,0x0000,0x3c00,
+   0xf020,0x8420,0x1000,0x3c00,
+   0xf020,0x8021,0x0800,0x3c00,
+   0xf000,0x0000,0x0808,0x3c00,
+   0xf000,0x0000,0x1004,0x3c00,
+   0xf000,0x0000,0x8004,0x3c00,
+   0xf000,0x0001,0x0804,0x3c00,
+   0xf000,0x0000,0x0802,0x3c00,
+   0xf000,0x0000,0x0000,0x3c00,
+   0xf000,0x0000,0x0000,0x3c00,
+   0xffff,0xffff,0xffff,0xfc00,
+   0xffff,0xffff,0xffff,0xfc00
+};
+
+static struct Image iconimg = {		/*  Icon Image  */
+ 	0, 0,
+	54, 20, 2,
+	NULL,	/* filled in later */
+	0x3, 0,
+	NULL
+};
+
+/*
+ * Iconify MG's window using tthide(), iconify(), and ttshow().
+ */
+
+int tticon(f, n)
+{
+	static UWORD	iconX = 0, iconY = 0;
+	UWORD		*chipbitmap;
+	struct Image	*chipimg;
+	extern short	toggling;
+	extern APTR	AllocMem();
+
+	/* copy the bitmap into chip memory */
+	if (NULL == (chipbitmap = (UWORD * )
+		AllocMem((ULONG) sizeof(mg2a), MEMF_CHIP | MEMF_PUBLIC))) {
+		ewprintf("Can't allocate image bitmap");
+		return FALSE;
+	}
+	bcopy((char *)mg2a, (char *)chipbitmap, (int) sizeof(mg2a));
+
+	/* copy the image structure too */
+	if (NULL == (chipimg = (struct Image *)
+		AllocMem((ULONG) sizeof(iconimg), MEMF_CHIP | MEMF_PUBLIC))) {
+		FreeMem(chipbitmap, (ULONG) sizeof(iconimg));
+		ewprintf("Can't allocate image structure");
+		return FALSE;
+	}
+	bcopy((char *)&iconimg, (char *)chipimg, (int) sizeof(iconimg));
+	chipimg->ImageData = chipbitmap;
+
+	/* hide the window, display the icon, then redisplay the window */
+	tthide(FALSE);	/* not resizing */
+
+	iconify(&iconX, &iconY, chipimg->Width, chipimg->Height, NULL,
+		(APTR) chipimg, (int) ICON_IMAGE); /* iconify	*/
+	FreeMem(chipimg, (ULONG) sizeof(iconimg));
+	FreeMem(chipbitmap, (ULONG) sizeof(mg2a));
+
+	ttshow(FALSE);	/* no resize */
+	return TRUE;
+}
+#endif DO_ICONIFY

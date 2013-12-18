@@ -1,0 +1,499 @@
+head	1.10;
+access;
+symbols
+	Helios_1_3_1:1.5
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.10
+date	94.03.08.14.04.36;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	94.02.08.11.23.14;	author vlsi;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	94.01.26.15.03.00;	author vlsi;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	94.01.13.16.00.15;	author nickc;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.12.17.15.43.14;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	93.08.08.16.46.40;	author paul;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	93.07.13.11.48.49;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.07.13.11.44.13;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.09.04.14.35.57;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.10.08.16.16.44;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@rename disas.c armdisas.c
+@
+
+
+1.10
+log
+@fixed compile time warnings
+@
+text
+@/*> c.disass <*/
+/*---------------------------------------------------------------------------*/
+/* Simple ARM disassembler                                                   */
+/*---------------------------------------------------------------------------*/
+/* RcsId: $Id: armdisas.c,v 1.9 1994/02/08 11:23:14 vlsi Exp nickc $ */
+
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdlib.h>
+
+#if defined(SUN4) || defined(RS6000) /* FIXME : we need a native Helios-ARM version of clxlib.a */
+#include "disass.h" /* currently held in "armltd.binaries/include" */
+#else
+#include "ARMshape.h"
+#endif
+
+#ifdef RS6000
+typedef unsigned int uint;
+#endif
+
+#define whoami	"disass"
+
+#ifndef TRUE
+#define TRUE (1 == 1)
+#define FALSE (1 == 0)
+#endif
+
+/*---------------------------------------------------------------------------*/
+
+int pcsregs = TRUE;		/* TRUE == display PCS register aliases */
+
+#if defined(SUN4) || defined(RS6000)
+char *ARM_regnames[] = {"a1","a2","a3","a4","v1","v2","v3","v4","v5","dp","sl", "fp", "ip", "sp", "lr", "pc"} ;
+char *ARM_rawnames[] = {"r0","r1","r2","r3","r4","r5","r6","r7","r8","r9","r10","r11","r12","r13","r14","pc"} ;
+
+static char *local_decode(dis_cb_type type,int32 offset,unsigned32 address,int width,void *arg,char *buffer)
+{
+ /* We provide no more decoding at the moment */
+ return(buffer) ;
+}
+
+static void disassemble(unsigned long instruction,unsigned long pc,int flag)
+{
+ static char buffer[256] ; /* disassembly line */
+
+ disass_32or26((unsigned32)instruction,(unsigned32)pc,buffer,NULL,local_decode,TRUE) ;
+ printf(buffer) ;
+ return ;
+}
+#else
+extern void disassemble(unsigned long instruction,unsigned long pc,int flag);
+#endif
+
+#ifdef HOSTISBIGENDIAN
+int swap(int *x) {
+		char	*from = (char *)x;
+		char	to[4];
+
+		to[0] = from[3];
+		to[1] = from[2];
+		to[2] = from[1];
+		to[3] = from[0];
+
+		return(*((int *)to));
+}
+#endif
+
+unsigned int readhex(char *cptr)
+{
+ unsigned int value = 0x00000000 ;
+ int loop ;
+
+#ifdef DEBUG
+ printf("HEX string \"%s\"\n",cptr) ;
+#endif
+ 
+ if ((cptr == NULL) || (*cptr == '\0'))
+  {
+   fprintf(stderr,"%s: NULL hex number given\n",whoami) ;
+   exit(3) ;
+  }
+
+ for (loop = 0; (loop < 8); loop++)
+  {
+   if (*cptr == '\0')
+    break ;
+
+   *cptr = toupper(*cptr) ;
+
+#ifdef DEBUG
+   printf("HEX character '%c'\n",*cptr) ;
+#endif
+
+   if (((*cptr < '0') || (*cptr > '9')) && ((*cptr < 'A') || (*cptr > 'F')))
+    {
+     fprintf(stderr,"%s: invalid HEX digit given\n",whoami) ;
+     exit(3) ;
+    }
+
+   value = ((value << 4) | ((*cptr <= '9') ? (*cptr - '0') : ((*cptr - 'A') + 10))) ;
+   cptr++ ;
+  }
+
+ if (*cptr != '\0')
+  {
+   fprintf(stderr,"%s: Too many HEX digits given\n",whoami) ;
+   exit(3) ;
+  }
+
+#ifdef DEBUG
+ printf("HEX value &%08X\n",value) ;
+#endif
+
+ return(value) ;
+}
+
+/*---------------------------------------------------------------------------*/
+/* return a printable character for the specified byte in the number */
+
+static char byte(int bnum,unsigned int val)
+{
+ char retval = ((val & (0xFF << (8 * bnum))) >> (8 * bnum)) ;
+ /* Only return 7bit printable characters */
+ return(((retval < ' ') || (retval >= 0x7F)) ? '.' : retval) ;
+}
+
+/*---------------------------------------------------------------------------*/
+
+int readword(FILE *inf,unsigned int *value)
+{
+	return((fread((char *)value,sizeof(unsigned int),1,inf) == 1) ? 0 : -1);
+}
+
+/*---------------------------------------------------------------------------*/
+
+int main(int argc,char **argv)
+{
+ FILE		*inf = stdin ;
+ int		loop ;
+ char		*cptr ;
+ unsigned int	value ;
+ unsigned int	baseaddress = 0x00000000 ;
+ int		baseaddressgiven = FALSE ;
+ unsigned int	endaddress = 0x00000000 ;
+ unsigned int	foffset = 0x00000000 ;
+
+ for (loop=1; (loop < argc); loop++)
+  {
+   if (argv[loop][0] == '-')
+    {
+     switch (tolower(argv[loop][1]))
+      {
+       case 'b' : if (argv[loop][2] == '\0')
+                   cptr = argv[++loop] ;
+                  else
+                   cptr = &argv[loop][2] ;
+
+                  baseaddress = readhex(cptr) ;
+                  baseaddressgiven = TRUE ;
+                  break ;
+                  
+       case 's' : if (argv[loop][2] == '\0')
+                   cptr = argv[++loop] ;
+                  else
+                   cptr = &argv[loop][2] ;
+
+                  foffset = readhex(cptr) ;
+                  break ;
+                  
+	case 'p':
+		pcsregs = TRUE;
+		break;
+
+	case 'r':
+		pcsregs = FALSE;
+		break;
+
+       case 'h' : printf("%s: ARM binary disassembler v1.1\n",whoami) ;
+                  printf("options:\n") ;
+		  printf("-h           : this help message\n");
+		  printf("-p           : use PCS register aliases (default)\n");
+          printf("-r           : use raw ARM register names\n");
+                  printf("-b <address> : Specify the base address to use.\n") ;
+                  printf("-s <offset>  : Specify a start offset within the image file\n") ;
+                  printf("<imagefile>  : An ARM binary image file.\n") ;
+                  printf("\nNOTE: If the \"-b\" flag is used the disassembly address will always start\n") ;
+                  printf("      at this value, otherwise it will start at the \"-s\" offset.\n") ;
+                  printf("\n") ;
+
+       default  : printf("Usage: %s [-h] [-p] [-r] [-b<address>] [-s<offset>] <imagefile>\n",whoami) ;
+                  exit(1) ;
+      }
+    }
+   else
+    {
+     /* open specified input file */
+     if ((inf = fopen(argv[loop],"r")) == NULL)
+      {
+       fprintf(stderr,"%s: cannot open input file\n",whoami) ;
+       exit(2) ;
+      }
+    }
+  }
+ /* end of argument processing */
+
+ if (foffset != 0)
+  {
+   if (fseek(inf,foffset,1) != 0)
+    {
+     fprintf(stderr,"%s: failed to seek to starting offset\n",whoami) ;
+     exit(4) ;
+    }
+   /* It is probably nicer having the "baseaddress" as specified */
+   if (!baseaddressgiven)
+    baseaddress += foffset ;
+  }
+
+#if defined(SUN4) || defined(RS6000)
+ if (pcsregs)
+  disass_setregnames(ARM_regnames,NULL) ;
+ else
+  disass_setregnames(ARM_rawnames,NULL) ;
+#endif
+
+ /* disassemble from the current point in the file */
+ while (readword(inf,&value) == 0)
+  {
+#ifdef HOSTISBIGENDIAN
+    value = swap((int *)&value);
+#endif
+   printf("%08X : ",baseaddress) ;
+   printf("%c%c%c%c ",byte(0,value),byte(1,value),byte(2,value),byte(3,value)) ;
+   printf(": %08X : ",value) ;
+
+   disassemble(value,baseaddress,TRUE) ;
+   putchar('\n') ;
+   baseaddress += 4 ;
+
+   /* when we are looking at the "text" segment of a file, we must
+    * terminate at the correct point
+    */
+   if ((endaddress != 0x00000000) && (endaddress <= baseaddress))
+    break ;
+  }
+  
+ fclose(inf) ;
+ exit(0) ;
+}
+
+/*---------------------------------------------------------------------------*/
+/*> EOF c.disass <*/
+@
+
+
+1.9
+log
+@The fp and sl register names were swapped.
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.9 1994/02/07 11:38:34 jsmith Exp $ */
+d9 2
+d51 2
+@
+
+
+1.8
+log
+@Changed to use ARM Ltd clx disassembler for host versions.
+NOTE: We need a Helios naive version of clxlib.a
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.7 1994/01/13 16:00:15 nickc Exp $ */
+d32 1
+a32 1
+char *ARM_regnames[] = {"a1","a2","a3","a4","v1","v2","v3","v4","v5","dp","fp","sl","ip","sp","lr","pc"} ;
+@
+
+
+1.7
+log
+@Fixed "uint" declaration.
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.6 1993/12/17 15:43:14 nickc Exp nickc $ */
+d10 3
+d14 1
+d16 1
+a16 1
+#ifndef uint
+d22 5
+d29 21
+a49 1
+int pcsregs = FALSE;		/* TRUE == display PCS register aliases */
+d117 1
+a117 1
+static char byte(int bnum,uint val)
+d171 5
+a175 1
+       case 'h' : printf("%s: ARM binary disassembler v1.0\n",whoami) ;
+d178 2
+a179 1
+		  printf("-p           : use PCS register aliases\n");
+d187 1
+a187 1
+       default  : printf("Usage: %s [-h] [-p] [-b<address>] [-s<offset>] <imagefile>\n",whoami) ;
+d214 8
+@
+
+
+1.6
+log
+@fixed compile time error
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.5 1993/08/08 16:46:40 paul Exp nickc $ */
+d11 4
+@
+
+
+1.5
+log
+@cleaned up
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.2 1992/09/04 14:35:57 paul Exp $ */
+d180 1
+a180 1
+	value = swap(&value);
+@
+
+
+1.4
+log
+@fixed minor compile time error
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.3 1993/07/13 11:44:13 nickc Exp nickc $ */
+d19 10
+a28 11
+unsigned int swap( unsigned int * x)
+  {
+    char	*from = (char *)x;
+    char	to[4];
+
+    to[0] = from[3];
+    to[1] = from[2];
+    to[2] = from[1];
+    to[3] = from[0];
+    
+    return(*((int *)to));
+@
+
+
+1.3
+log
+@applied changes found in Helios.ARM source tree
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.2 1992/09/04 14:35:57 paul Exp $ */
+d19 11
+a29 10
+int swap(int *x) {
+		char	*from = (char *)x;
+		char	to[4];
+
+		to[0] = from[3];
+		to[1] = from[2];
+		to[2] = from[1];
+		to[3] = from[0];
+
+		return(*((int *)to));
+@
+
+
+1.2
+log
+@add -p option to display PCS register aliases
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armdisas.c,v 1.1 1991/10/08 16:16:44 paul Exp $ */
+d18 9
+d28 4
+d95 1
+a95 1
+ return((fread((char *)value,sizeof(unsigned int),1,inf) == 1) ? 0 : -1) ;
+d179 3
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d5 1
+a5 1
+/* RcsId: $Id: armobjdis.c,v 1.1 1991/10/08 16:04:23 paul Exp $ */
+d16 3
+d121 5
+a125 1
+       case 'h' : printf("%s: ARM binary disassembler v0.12\n",whoami) ;
+d127 2
+d131 1
+a131 1
+                  printf("<imagefile>    : An ARM binary image file.\n") ;
+d135 2
+a136 1
+       default  : printf("Usage: %s [-h] [-b<address>] [-s<offset>] <imagefile>\n",whoami) ;
+@

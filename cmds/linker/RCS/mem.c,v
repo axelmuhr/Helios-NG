@@ -1,0 +1,284 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.4
+	Helios_C40_1_3_Official_Release:1.4
+	Alenia_release:1.4
+	C40_Field_Test_2:1.4
+	C40_Field_Test_R1:1.3;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	92.10.01.10.03.26;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.10.18.15.18.06;	author paul;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.10.09.08.47.51;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.10.22.15.46.52;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@fixed compile time warnings
+@
+text
+@/****************************************************************/
+/* Helios Linker                                                */
+/*								*/
+/* File: mem.c                                                  */
+/*                                                              */
+/*                                                              */
+/* Author: NHG 19-Feb-87                                        */
+/****************************************************************/
+/* RcsId: $Id: mem.c,v 1.3 1991/10/18 15:18:06 paul Exp nickc $ */
+
+#include "link.h"
+
+#define trace if(traceflags&db_mem)_trace
+
+PUBLIC  WORD  heapsize;      /* amount of heap memory used   */
+
+PRIVATE VMRef vmheap;      /* virtual heap         */
+
+PRIVATE VMRef codeseg;      /* start of current segment   */
+
+PUBLIC WORD codesize;      /* amount of code memory used   */
+
+#define HEAPDELTA   20000
+
+#ifndef __STDC__
+VoidStar malloc();
+#endif
+
+#define MALLOC(n) (UBYTE *)malloc(n)
+
+
+/********************************************************/
+/* initmem                                              */
+/*                                                      */
+/* initialise memory system                             */
+/********************************************************/
+
+PUBLIC void initmem()
+{
+   (void)VMInit(NULL,(int)vmpagesize,1000);
+   
+   codeseg = VMPage();
+   vmheap = VMPage();
+   codesize = 0;
+}
+
+/********************************************************/
+/* alloc                                                */
+/*                                                      */
+/* allocate n bytes from the heap                       */
+/********************************************************/
+
+PUBLIC void *
+alloc( INT n )
+{
+  UBYTE *v;
+
+  v = MALLOC((int)n);
+
+  if( v == NULL ) error("Cannot get local heap space");
+  
+  heapsize += n;
+   
+  return v;
+}
+
+/********************************************************/
+/* newcode                                              */
+/*                                                      */
+/* allocates and initialise a new code structure        */
+/*                                                      */
+/********************************************************/
+
+extern WORD lineno;
+
+PUBLIC VMRef
+newcode(
+	WORD type,
+	WORD size,
+	WORD vtype,
+	WORD loc,
+	WORD value )
+{
+   Code *p;
+   VMRef v;
+   
+   (void)codeptr();   /* ensure there is space */
+   
+   v = VMalloc(sizeof(Code),codeseg);
+   
+   p = VMAddr(Code,v);
+      
+        trace("newcode: %8x : %3ld %3ld %3ld %8lx",p,type,size,vtype,value);
+        p->type = (byte)type;
+        p->size = (byte)size;
+        p->vtype = (byte)vtype;
+        p->loc = loc;
+        p->value.fill = value;
+   codesize += sizeof(Code);
+   
+        VMDirty(v);
+
+   return v;
+}
+
+PUBLIC VMRef codeptr()
+{   
+   /* if this would be the last code entry in the segment, get a   */
+   /* new block and add a OBJNEWSEG entry.            */
+
+   if( VMleft(codeseg) < sizeof(Code)*2 )
+   {
+      VMRef newseg = VMPage();
+      VMRef v = VMalloc(sizeof(Code),codeseg);
+      Code *codetop = VMAddr(Code,v);
+                
+                if( NullRef(newseg) ) error("Cannot get code segement");
+
+      codetop->type = OBJNEWSEG;
+      codetop->size = 0;
+      codetop->vtype = 0;
+      codetop->value.v = newseg;
+      codetop->loc = -1;
+
+      codesize += sizeof(Code);
+      
+      trace("code extension: %lx",codeseg);
+   
+           VMDirty(v);
+      
+      codeseg = newseg;
+   }
+
+   return VMnext(codeseg);
+}
+
+extern VMRef
+VMNew( int size )
+{
+   VMRef v;
+
+   size = wordlen(size);
+
+   v = VMalloc(size,vmheap);
+   
+   if( NullRef(v) ) 
+   {
+      vmheap = VMPage();
+      v = VMalloc(size,vmheap);
+   }
+
+        VMDirty(v);
+
+   return v;
+}
+@
+
+
+1.3
+log
+@simplified by removing MWC/IBMPC confusion
+@
+text
+@d9 1
+a9 1
+/* RcsId: $Id: mem.c,v 1.2 1991/10/09 08:47:51 paul Exp paul $ */
+d53 2
+a54 6
+#ifdef __STDC__
+PUBLIC void *alloc(n)
+#else
+PUBLIC VoidStar alloc(n)
+#endif
+INT n;
+d56 1
+a56 3
+        UBYTE *v;
+
+   v = MALLOC((int)n);
+d58 1
+a58 1
+   if( v == NULL ) error("Cannot get local heap space");
+d60 3
+a62 1
+   heapsize += n;
+d64 1
+a64 1
+   return v;
+d76 7
+a82 5
+PUBLIC VMRef newcode(type,size,vtype,loc, value)
+WORD value;
+WORD type;
+WORD size,vtype;
+WORD loc;
+d137 2
+a138 2
+extern VMRef VMNew(size)
+int size;
+@
+
+
+1.2
+log
+@NickC's changes for the 'C40 + some bug fixes
+@
+text
+@d9 1
+a9 1
+/* RcsId: $Id: mem.c,v 1.3 1991/08/30 16:11:38 nickc Exp nickc $ */
+a24 8
+#ifdef MWC
+UBYTE *lmalloc();
+#define MALLOC(n) (UBYTE *)lmalloc(n)
+#else
+#ifdef IBMPC
+UBYTE *getml();
+#define MALLOC(n) (UBYTE *)getml(n)
+#else
+d28 1
+d30 1
+a30 2
+#endif
+#endif
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d9 1
+a9 1
+/* RcsId: $Id$ */
+d119 1
+a119 1
+   /* new block and add a t_newseg entry.            */
+d129 1
+a129 1
+      codetop->type = t_newseg;
+@

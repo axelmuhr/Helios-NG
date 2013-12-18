@@ -1,0 +1,511 @@
+Helios Generic Assembler Format
+===============================
+
+P A Beskeen
+Aug 91
+
+
+Helios defines a standard generic assembler syntax and set of directives
+that are portable across different processor implementations. Only the
+processor specific opcodes and object code patches differ from version
+to version. The implementation of the assembler is designed to allow it
+to be easily re-targeted at new processor architectures.
+
+The assembler is usually sandwiched between the AMPP assembler macro
+preprocessor and the Helios linker. The assembler therefore includes no support
+for macros and the directives are designed to support the generic Helios
+object format (GHOF). Although Common Object File Format (COFF) support may
+be added at a later date.
+
+
+Running the Assembler
+---------------------
+
+The assembler is called "as" when running on Helios, when running as a
+cross development tool under unix, its name is prefixed by the abbreviated
+name of the CPU. For instance the TMS320C40 version is called "c40as" and the
+ARM version is called "armas".
+
+as [-h] [-o objectfile] [sourcefiles]
+
+
+Options:
+
+	-h		prints "as" usage information.
+
+	-o objectfile	defines the object file to create,
+			otherwise output is to stdout
+
+	sourcefiles	a white space delimited list of source files to
+			read in and assemble. If this list is empty then
+			stdin is used for input.
+
+
+General Directives
+------------------
+
+These directives insert constants into the read only code area of the program.
+If you wish to define alterable static data areas then use the predefined
+AMPP macros described later.
+
+ codeconst ::=		<constexpr> | <patch> | <stringconst>
+
+ codeconstlist ::=	<codeconst> | (<codeconst> ',' <codeconstlist>)
+
+
+ word <codeconstlist>
+ int <codeconstlist>
+ long <codeconstlist>
+				Insert word sized (32 bit)constant(s) into
+				the code.
+
+ byte <codeconstlist>
+ char <codeconstlist>
+				Insert byte sized (8 bit)constant(s) into
+				the code.
+
+ short <codeconstlist>
+				Insert short sized (16 bit) constant(s)
+				into the code.
+
+ wordblock <ns_constexpr> ',' <codeconstlist>
+ blkw  <ns_constexpr> ',' <codeconstlist>
+ 				Insert block of <constexpr> words into code
+				area. Unused words are zero filled.
+				An error will be raised if the constants take
+				up more space than defined by <constexpr>.
+				Blkw is a synonym for wordblock.
+
+ byteblock <ns_constexpr> ',' <codeconstlist>
+ blkb  <ns_constexpr> ',' <codeconstlist>
+ 				Insert block of <constexpr> bytes into code
+				area. Unused bytes are zero filled.
+				An error will be raised if the constants take
+				up more bytes than defined by <constexpr>.
+				Blkb is a synonym for byteblock.
+
+ shortblock <ns_constexpr> ',' <codeconstlist>
+ blks  <ns_constexpr> ',' <codeconstlist>
+ 				Insert block of <constexpr> shorts into code
+				area. Unused shorts are zero filled.
+				An error will be raised if the constants take
+				up more shorts than defined by <constexpr>.
+				Blks is a synonym for shortblock.
+
+ space <ns_constexpr>
+ bss <ns_constexpr>
+				Insert <ns_constexpr> number of zero bytes into
+				the code. Bss is a synonym for space.
+
+ align [<ns_constexpr>]
+				Align code to a four byte boundary, otherwise
+				align to the next <ns_constexpr> byte boundary.
+				Space created is filled with zeros. Note that
+				an alignment of 0 is taken as 4.
+
+
+
+Module Data Area Generation Directives
+--------------------------------------
+
+ data  <name> ',' <constexpr>
+				Add named item into static data area of module
+				with its size in bytes defined by <constexpr>.
+
+ common <name> ',' <constexpr>
+				Define or re-defined a named static data area
+				of at least <size> bytes.
+
+ codetable <name>
+				Add named fn into module code table.
+
+
+
+Linker Directives
+-----------------
+
+ module [<constexpr>]
+				Start a new module. A constant value of -1, 0
+				or no module number constant will allow the
+				module number to be defined at link time.
+				This should be the case unless you are
+				defining a shared library module, in which
+				case the value is taken to be the fixed slot
+				number for the library.
+
+ export <name>
+ global <name>
+				Allow external access to this data or function
+				symbol. If the symbol is a label, then make the
+				label visible in the object code. The global
+				directive is a synonym for export.
+
+ ref <name>
+				Force a Reference to a shared library. This
+				directive makes sure that this module
+				will be linked with a particular shared library.
+				The name is actually a label within that
+				library. Every library automatically defines
+				and exports a label of the form:
+					 '<libname>.library'
+				The .ref should reference this label, for
+				example to reference the posix library use:
+					ref Posix.library
+				This directive can be used for instance,
+				to force a servers code to be linked with
+				a shared library, when the library may be
+				required by a dynamically loaded device
+				driver.
+
+ init
+				Add following subroutine's code into module
+				initialisation chain.
+
+ patchinstr '(' <instrpatch> ',' <patch> ',' <machine_op> ')'
+				Patch the <machine_op> in a cpu specific
+				manor defined by the <instrpatch>. The data
+				to patch into the instruction is provided by
+				the <patch>.
+
+				This enables you to place a linker defined
+				constant (such as this modules slot number)
+				directly into a machine instruction (usually
+				the immediate data area of the instruction).
+
+@@@ describe and comment on the uses of patches (add description of module
+table system and how this allows code sharing).
+
+<patch> ::=	modsize |
+		modnum |
+		datasymb '(' <name> ')' |
+		codesymb '(' <name> ')' |
+		datamodule '(' <name> ')' |
+		labelref '(' <name> ')' |
+		byteswap '(' <patch> ')' |
+		shift '(' <constexpr> ',' <patch> ')' |
+		add '(' <constexpr> ',' <patch> ')' |
+		or '(' <constexpr> ',' <patch> ')' |
+		addrstub '(' <name> ')' |
+		codestub '(' <name> ')'
+
+instrpatch ::=
+		<constexpr> |
+		/* CPU specific patch types */
+
+
+Constant Expressions
+--------------------
+
+	constexpr ::=	<const>
+			| '(' <constexpr> ')'
+			| <constexpr> <op> <constexpr>
+
+	const ::=	['~'|'-'](<number> | <charconst> | <labelref>)
+
+	op ::=		'+' | '-' | '*' | '/' | '%' | '<<' | '>>' |
+			'^' | '&' | '''|'
+
+	labelref ::=	('A-Z'|'a-z'){'a-z'|'A-Z'|'0-9'|'.'|'_'}
+
+	Constant expressions are a subset of those allowed in the C language.
+	The numeric and	bitwise operators are identical and they have the same
+	precidence. The relational, logical, conditional and assignment
+	operators are not available. Other differences are that The symbols
+	(equivalent to C variable names) are taken to be relative addresses
+	and binary constants are allowed.
+
+	When outputting a GHOF file, a symbols value is taken to be the offset
+	from the current code position to the position defined by its label.
+	This relative definition of labels is due to Helios requiring all code
+	to be position independent. No absolute code should ever be generated
+	by the assembler. Note that expressions such as endlabel-startlabel
+	will still give the correct size of the area between the two labels.
+	If a processor has a requirement that relative branches must be
+	adjusted to take account of the pipeline, then all branches and
+	calls will automatically be adjusted when the opcode is generated.
+
+	There is a context dependent subset of constant expressions where
+	symbols cannot be used in the expression <ns_constexpr>. These
+	directives define an amount of code space dependent on the
+	value of their constant expression (such as the space directive).
+	If symbols (labels) were allowed in this context then their own
+	value might be invalidated.
+
+	Operators:
+
+		-	subtract
+		+	add
+		<<	left shift
+		>>	right shift
+		*	multiply
+		/	divide
+		%	modulo
+		&	bitwise and
+		|	bitwise or
+		^	bitwise xor
+		-	unary minus
+		~	ones complement (not)
+
+Numeric Constants
+-----------------
+
+	number ::=	<hexnumber> | <binnumber> | <decnumber>
+
+	decnumber ::=	'0-9'{'0-9'}
+
+	hexnumber ::=	'0x'('0-9'|'A-F'|'a-f'){'0-9'|'A-F'|'a-f'}
+
+	binnumber ::=	'0b'('0'|'1'){'0'|'1'}
+
+	Numeric constants can be decimal, hexadecimal or binary. 0x prefixes
+	hexadecimal numbers, 0b prefixes binary numbers, otherwise the
+	number is decimal.
+
+
+Character Constants
+-------------------
+
+	charconst ::=	'''<char>{<char>}'''	/* ''' is ASCII ' */
+
+	char ::=	. | '\'<charesc>
+
+	charesc ::=	'n' | 'r' | 'a' | 'b' | 'f' | 't' |
+			'v' | '0' | '\' | '"' | '''
+
+
+	Character constants are delimited by single quotes ('), there can be
+	between one and four characters within the quotes. 
+
+	@@@ chars packed into word or one per word?
+
+
+String Constants
+----------------
+
+	<strconst> ::= '"'{<char>}'"'
+
+	Character constants insert strings of characters into the code area.
+	If the constant is used in a 'word' directive then each character
+	will be taken as a 32 bit value, if used in a 'short' directive then
+	each character will be taken to be a 16 bit value, and if a 'byte'
+	directive is used the characters will be packed as normal into 8 bit
+	bytes. Note that the strings are NOT null terminated.
+
+
+Character Escapes
+-----------------
+
+	All the standard ANSI C character escapes can be inserted
+	into string and character constants. For example '\n' for newline,
+	"\a" for an audible alert or '\0' for a null. However the octal
+	('\0nnn') and hexadecimal ('\xnnn') character escapes are not
+	supported.
+
+
+General Assembler Format
+------------------------
+
+Two kinds of comments are supported, block comments and line comments.
+Block comments comment out all text between '/*' and '*/' and may span several
+lines. Line comments comment out the remaining space between '//' and
+the end of the line.
+
+comment ::=	<lncomment> | <blkcomment>
+
+blkcomment ::=	'/*' . '*/'
+lncomment ::=	'//' . '\n'
+
+
+The textual layout is completely free-form, multiple machine opcodes and
+directives may appear on each line. Any number of tabs, spaces and newlines
+may appear in the text. All directives and opcodes may be entered in either
+uppercase or lowercase letters, labels are however case sensitive.
+
+stat ::=	[<label>] <mnemonic>
+
+label ::=	'A-Z'|'a-z'{'A-Z'|'a-z'|'0-9'|'.'|'_'} ':'
+
+mnemonic ::=	<directives> | <opcodes>
+
+directives ::=	word | byte | short | bss | space | align | data | common |
+		codetable | global | export | module | init | ref | patchinstr
+
+opcodes ::= /* CPU specific */
+
+
+Key to Syntax Definitions
+-------------------------
+
+	::=	Rule is defined as
+	<symb>	Nonterminal rule
+	[x]	Optional rules
+	{x}	Zero or more occurances of rule
+	'a-z'	Range of possible matching terminal symbol characters
+	'chars'	Terminal symbols (''' is equivalent to a single ')
+	|	Separates alternatives
+	()	Encapsulates differing alternatives
+	.	Matches any character
+	/* */	Enclose comment
+
+
+Standard AMPP Macros
+--------------------
+
+These macros are common to all generic processor versions of Helios.
+
+ StartModule <name> <slot> <version>
+				Insert a Helios module header.
+
+ EndModule
+				Required to complete a module that was
+				started with a 'StartModule' macro.
+
+@@@ Add in notes on the macros defined in /helios/include/ampp/c40*.m
+	c40.m		- general macros
+	c40mmap.m	- C40 memory map
+	c40cpustate.m	- save state structure definitions
+
+@@@ Most other ampp macro include files have been updated... well some. Some
+can never be updated, etc - be specific here.
+
+
+@@@ Define the standard macros to auto initialise the static data area and
+be used to easily implement multi-module assembler programs.
+
+
+General Notes
+-------------
+
+SP must always have enough space to allow the machines context to be saved
+on it for timeslicing. If you must use it in a non standard fashion then be
+sure to disable interrupts for this period of time.
+
+Helios modules must always contain postion independant code. You will generate
+an error if you write absolute code that references symbols and not constants.
+
+Due to the free form nature of the assembler, In some cases the line numbers
+in error and warning reports may actually refer to syntax errors in the previous
+instruction. This is usually caused by the previous instruction being
+incompletly specified. For example, the error will occur on line of the second
+LD, not the first:
+
+		LD R0,
+
+		LD R1, 0x4
+
+In the case of syntax errors, the parser will attempt to recover by
+throwing away the parts of current instruction it has already read and
+restart parsing on the next line of input. This may lead to multiple
+syntax errors if you have split instructions over several lines.
+
+
+Compatibility Features
+----------------------
+
+Most CPU manufacturers define their own standard layout and directives.
+We try to remain compatible with these features by providing
+compatibility macros and additions to the assembler. The aim being to
+assemble all position independant code for that standard, with the minimum
+of change to the program text.
+
+For instance in the case of the Helios 'C40 assembler, line comments
+may also start with '*' or ';'. The AMPP include file
+"/helios/include/ampp/c40compat.m" contains a series of macros that
+translate between the standard Texas Instruments assembler directives
+and the Helios generic assembler directives.
+
+To remain compatible with earlier Helios assemblers, several assembler directive
+synonyms are accepted. The use of these synonyms is not encoraged and they
+may be withdrawn at a later date.
+
+		Synonym		Std Directive
+
+		global		export
+		blkb		blockbyte
+		blkw		blockword
+		blks		blockshort
+
+
+Helios TMS320C40 Assembler Specific Features
+--------------------------------------------
+
+Line comments may also start with '*' or ';'. You can only use '*' at the start
+of a line, but ';' can be used at any point in a line.
+
+@@@ Write this file!!!
+The AMPP include file "/helios/include/ampp/c40compat.m" contains a series of
+macros that translate between the standard Texas Instruments assembler
+directives and the Helios generic directives.
+
+@@@ Texas Instruction Patch types
+
+@@@ Where to get texas mneumonic doc
+
+@@@ Add other 'C40 compatibility comments here
+
+
+References
+----------
+
+GHOF: The Generic Helios Object Format description.
+
+AMPP: The Helios Assembler Macro Pre-Processor.
+
+The Helios TMS320C40 Procedure Call Standard.
+
+The Helios ARM Procedure Call Standard (similar to the Acorn RISCiX PCS).
+
+
+
+@@@ Thoughts
+------------
+
+ARM compat - lexer translates all '('/')' to '['/']' for compatibility
+with AMPP.
+
+Add list file and symbol table dump options
+
+Add in industry standard directives mnumonics ds.b, etc. Have old std
+Helios ones as synonyms.
+
+Make sizeof(int), sizeof(char) explicit sizes: Size16Bits, Size32Bits, Size8Bits
+
+Add .littleendian / .bigendian to chose how a constant is layed out in
+memory.
+
+Add error/warning directives (argument text is printed)
+
+Remove bss synonym (too confusing).
+
+Check that '_' can be used to start labels!
+
+.float / float fpexpr [,fpexpr] and fpexpr's IEEE vs texas ???
+
+
+Errors for (COFF support directives):
+	.asect
+	.bss	(or just translate into a helios data directive)
+	.data
+	.sect
+	.text	(or just ignore)
+	.usect	
+
+Need to add support for:
+	.include/.copy
+	.end
+	.field
+	.float
+
+Possible later support for (in meantime raise error)
+	.if/.else/.endif
+	.length/.width/.page/.nolist/.list/.title
+	.mlib/.mlist/.mnolist
+	.option
+	lab	.set value
+	Macro definition and expansion + args
+
+
+Add COFF object code output module - make sure all second passes are separated
+from object code format specifics.
+
+

@@ -1,0 +1,1322 @@
+*************************************************************
+*                                                           *
+*  float.a                                                  *
+*                                                           *
+*  A replacement for softfp.c                               *
+*     (Hopefully) Functionally identical but quicker        *
+*                                                           *
+*  Copyright C.G. Selwyn 1989                               *
+*                                                           *
+*     This code is almost entirely a rehacked version of    *
+*  my fpsim.a module for floating point operations in BCPL  *
+*  under TRIPOS.                                            *
+*                                                           *
+*************************************************************
+
+*
+* Define ONE of the following symbols as 0
+*
+TRIPOS   EQU      1
+NEWTRIPOS EQU     1
+AMIGADOS EQU      0
+
+CFUNC    MACRO
+         CNOP     0,4
+\@LAB1   SET      *
+         DC.B     \1,0
+         CNOP     0,4
+         DC.L     $FF00000+(*-\@LAB1)
+         ENDM
+
+         IFEQ     AMIGADOS & NEWTRIPOS
+         IDNT     "float.o"
+
+         XDEF     _fadd,_fsub,_fmul,_fdiv
+         XDEF     _fneg
+         XDEF     _dadd,_dsub,_dmul,_ddiv
+         XDEF     _dneg
+         XDEF     _d2f,_f2d
+         XDEF     _ffix,_ffixu,_fflt,_ffltu
+         XDEF     _fgr,_fgeq,_fls,_fleq,_feq,_fneq
+         XDEF     _dfix,_dfixu,_dflt,_dfltu
+         XDEF     _dgr,_dgeq,_dls,_dleq,_deq,_dneq
+*
+         XREF     raise
+         ENDC
+
+         IFEQ     TRIPOS
+         NOLIST
+         GET      'asmhdr'
+         LIST
+MSTART   DC.L     (MEND-MSTART)/4
+         DC.L     SECWORD
+         DC.B     19,'FLOAT.O            '
+
+         ENTRY    _fadd,_fsub,_fmul,_fdiv
+         ENTRY    _fneg
+         ENTRY    _dadd,_dsub,_dmul,_ddiv
+         ENTRY    _dneg
+         ENTRY    _d2f,_f2d
+         ENTRY    _ffix,_ffixu,_fflt,_ffltu
+         ENTRY    _fgr,_fgeq,_fls,_fleq,_feq,_fneq
+         ENTRY    _dfix,_dfixu,_dflt,_dfltu
+         ENTRY    _dgr,_dgeq,_dls,_dleq,_deq,_dneq
+*
+         EXTRN    raise
+
+         ENDC
+
+SIGFPE   EQU      2
+*
+*
+* Single precision equates
+*
+EXCESS   EQU      127                     Exponent excess
+HIDDEN   EQU      $800000                 Hidden bit mask
+HIDDENB  EQU      23                      Hidden bit no.
+EXPT     EQU      $7F800000               Exponent mask
+INFINITY EQU      $7F800000               Infinity
+MANT     EQU      $007FFFFF               Mantissa mask
+*
+* Double Precision equates
+*
+DEXCESS  EQU      1023                    Excess
+DHIDDEN  EQU      $100000                 Hidden bit mask
+DHIDDENB EQU      20                      Hidden bit no.
+DEXPT    EQU      $7FF00000               Exponent mask
+DINFINITY EQU     $7FF00000               Infinity
+DMANT    EQU      $000FFFFF               Mantissa mask
+*
+* General equates
+*
+SIGN     EQU      $80000000               Sign bit mask
+SIGNB    EQU      31                      Sign bit no.
+NOTSIGN  EQU      $7FFFFFFF               Everything but sign
+*
+* Single precision arithmetics
+*
+* D0 = _fsub(float D0, float D1)
+*
+* D0 <- D0 - D1
+*
+         CFUNC    '_fsub'
+_fsub    MOVEM.L  D4-D5,-(SP)
+         BCHG     #SIGNB,D1               Negate and add
+         BRA.S    FADD0
+*
+* D0 = _fadd(float D0,float D1)
+*
+* D0 <- D0 + D1
+*
+         CFUNC    '_fadd'
+_fadd    MOVEM.L  D4-D5,-(SP)
+FADD0    MOVE.L   D0,D4                   Copy arg1
+         MOVE.L   D1,D5                   and arg2
+         MOVE.L   #EXPT,D3                Exponent mask
+         AND.L    D3,D5                   In each register
+         BEQ      FAROK                   If EQ D1 = 0
+         AND.L    D3,D4                   Leave exponent
+         BNE.S    FA11                    If EQ D0 = 0
+         MOVE.L   D1,D0
+         BRA      FAROK                   If EQ ans = D1
+FA11     NOT.L    D3                      Make mantissa mask
+         BCLR     #SIGNB,D0               Remove sign bit
+         SNE.B    D2                      D2 = sign of D0
+         BCLR     #SIGNB,D1               Remove sign bit
+         SNE.B    D7                      D7 = sign of D1
+         AND.L    D3,D0                   Leave Mantissa
+         AND.L    D3,D1                   In each register
+         BSET     #HIDDENB,D0             Replace hidden bits
+         BSET     #HIDDENB,D1
+         TST.B    D2                      Make 2's comp no. of D0?
+         BEQ.S    FA1
+         NEG.L    D0
+FA1      TST.B    D7                      And D1?
+         BEQ.S    FA2
+         NEG.L    D1
+FA2      MOVE.L   D4,D7                   Copy D0 exponent
+         SUB.L    D5,D7                   Difference of exponents
+         BEQ.S    FA3                     If EQ no shift required
+         MOVEQ.L  #HIDDENB,D2
+         ASR.L    D2,D7                   Move to low byte
+         BGT.S    FA4                     If GT |D0| > |D1|
+         EXG.L    D0,D1                   Otherwise do it the other way round
+         NEG.L    D7                      Make difference +ve
+         MOVE.L   D5,D4                   D4 = non-normalised exponent of result
+FA4      CMPI.L   #HIDDENB+1,D7           Is it worth doing?
+         BLT.S    FA12                    If LT yes
+         TST.L    D0                      Is answer -ve
+         BLT.S    FA13                    If LT yes
+         MOVEQ.L  #0,D7                   Set +ve ans
+         BRA.S    FA7
+FA13     MOVE.L   #SIGN,D7                Set -ve ans
+         NEG.L    D0
+         BRA.S    FA7
+FA12     ASR.L    D7,D1                   Shift to make exp's equal
+         MOVEQ.L  #0,D7
+         ADDX.L   D7,D1                   Round it
+FA3      ADD.L    D1,D0                   = Integer result
+         BEQ.S    FA9                     0 result
+         BLT.S    FA5                     Make sign of result
+         MOVEQ.L  #0,D7                   Set +ve
+         BRA.S    FA6
+FA5      MOVE.L   #SIGN,D7                Set -ve
+         NEG.L    D0                      And negate integer result
+*
+* Normalise-Round-Normalise
+*
+FA6      MOVEQ.L  #0,D1                   For the ADDX's
+         MOVE.L   #HIDDEN*2,D2
+         MOVE.L   #HIDDEN,D3
+         CMP.L    D2,D0                   Normalised?
+         BLT.S    FA8                     If LT possibly
+         ADD.L    D3,D4                   Add 1 to exponent
+         LSR.L    #1,D0                   Only 1 shift necessary
+         ADDX.L   D1,D0                   Round
+         CMP.L    D2,D0                   Still normalised?
+         BLT.S    FA7                     If LT yes
+         LSR.L    #1,D0                   Otherwise 1 more shift
+         ADD.L    D3,D4                   Increment exponent
+         BRA.S    FA7
+*
+FA8      CMP.L    D3,D0                   Normalise upwards
+         BGE.S    FA7
+         SUB.L    D3,D4
+         LSL.L    #1,D0
+         BRA.S    FA8
+*
+FA7      TST.L    D4                      Bad exponent ?
+         BMI.S    FAUO
+         BEQ.S    FAUO                    If MI or EQ yes
+         BCLR     #HIDDENB,D0             Remove hidden result bit
+         OR.L     D4,D0                   Insert exponent
+FA14     OR.L     D7,D0                   And sign
+         BRA.S    FAROK
+*
+FAUO     MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         BRA.S    FAR
+*
+FA9      MOVEQ.L  #0,D0                   Set zero result
+FAROK
+FAR      MOVEM.L  (SP)+,D4-D5
+         RTS
+*
+* D0 = _fmul(float D0, float D1)
+*
+* D0 <- D0 * D1
+*
+         CFUNC    '_fmul'
+_fmul    MOVEM.L  D4/D6,-(SP)
+         MOVEQ.L  #0,D7                   Ready for result
+         MOVE.L   D0,D2                   Copy arg1
+         BCLR     #SIGNB,D0
+         SNE.B    D7                      D7 = Incoming sign of D0
+         MOVE.L   D1,D6                   Copy arg2
+         BCLR     #SIGNB,D1
+         SNE.B    D4                      D4 = Incoming sign of D1
+         MOVE.L   #EXPT,D3
+         AND.L    D3,D2                   Leave the exponent
+         BEQ      FM4                     If EQ res = 0
+         AND.L    D3,D6                   In each arg
+         BEQ      FM4                     If EQ res = 0
+         NOT.L    D3                      Make mantissa mask
+         AND.L    D3,D0                   Leave the mantissa
+         AND.L    D3,D1                   In each arg
+         EOR.B    D4,D7                   D7 = sign of result
+         BEQ.S    FM1
+         MOVE.L   #SIGN,D7                Set negative result
+FM1      ADD.L    D2,D6                   Intermediate exponent result
+         BSET     #HIDDENB,D0
+         BSET     #HIDDENB,D1             Replace hidden bits
+         MOVE.W   D0,D2                   Low word into D2
+         MOVE.W   D1,D3                   Low word into D3
+         SWAP     D0                      High word into D0
+         SWAP     D1                      High word into D1
+         MOVE.W   D1,D4                   And into D4
+         MULU     D0,D4                   D4 = D0H * D1H
+         MULU     D2,D1                   D1 = D1H * D0L
+         MULU     D3,D0                   D0 = D0H * D1L
+         MULU     D3,D2                   D2 = D0L * D1L
+         CLR.W    D2
+         SWAP     D2
+         ADD.L    D1,D0                   D0 = D1H*D0L + D0H*D1L
+         SWAP     D0                      Get into high word
+         MOVEQ.L  #0,D1                   Ensure high part =0
+         MOVE.W   D0,D1                   D1 = High part of D0
+         CLR.W    D0                      Clear bottom word
+         ADDX.L   D1,D4                   D0H*D1H +high(D1H*D0L+D0H*D1L)+carry
+         MOVE.W   D4,D0                   16 bit shift coming up
+         SWAP     D0                      Not bad turn of speed there
+         ADD.L    D2,D0                   Add in D0L*D1L
+*
+* Normalise-Round-Normalise
+*
+         MOVE.L   #-EXCESS,D1             Amount to adjust the exponent by
+         LSR.L    #7,D0                   Shift upper part
+         CMP.L    #HIDDEN*2,D0            Normalised?
+         BLT.S    FM5                     If LT yes
+         ADDQ.L   #1,D1                   Increment amount to add to exp
+         LSR.L    #1,D0                   Again
+FM5      MOVEQ.L  #0,D2                   Set 0 so that we just add extend
+         ADDX.L   D2,D0                   Round
+         CMP.L    #HIDDEN*2,D0            Still normalised?
+         BLT.S    FM6                     If LT yes
+         ADDQ.L   #1,D1                   Increment amount to add to exp
+         LSR.L    #1,D0                   Again
+*
+FM6      MOVEQ.L  #HIDDENB,D2
+         BCLR     D2,D0                   Remove hidden bit
+         LSL.L    D2,D1                   Shift up the mantissa change
+         ADD.L    D1,D6                   Adjust mantissa
+         BEQ.S    FMUO
+         BMI.S    FMUO                    If MI or EQ -> underflow or overflow
+         OR.L     D6,D0                   = Result
+FM7      OR.L     D7,D0                   Insert sign
+         BRA.S    FMROK                   Return to the outside world
+*
+FMUO     MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         BRA.S    FMR
+
+FM4      MOVEQ.L  #0,D0                   Zero result
+FMROK
+FMR      MOVEM.L  (SP)+,D4/D6
+         RTS
+*
+* D0 = _fdiv(float D0, float D1)
+*
+* D0 <- D0 / D1
+*
+*  By the non-restorative shift & subtract method
+*
+         CFUNC    '_fdiv'
+_fdiv    MOVEM.L  D4/D6,-(SP)
+         MOVE.L   D0,D2
+         MOVE.L   D1,D3
+         MOVE.L   #EXPT,D6
+         AND.L    D6,D2                   Get exponent of arg1
+         BEQ      FD2                     If EQ ans = 0
+         AND.L    D6,D3                   And arg2
+         BEQ      FDUO                    If EQ -> divide by Zero
+         SUB.L    D3,D2                   Exponent of result
+         ADD.L    #EXCESS*HIDDEN,D2       Replace excess
+         MOVE.L   D0,D4
+         EOR.L    D1,D4                   Find sign of result
+         ANDI.L   #SIGN,D4                Mask all but sign bit
+         NOT.L    D6                      Make mantissa mask
+         BCLR     #SIGNB,D6
+         AND.L    D6,D0                   Mask all but mantissa
+         AND.L    D6,D1
+         BSET     #HIDDENB,D0             And replace hidden bits
+         BSET     #HIDDENB,D1
+         MOVEQ.L  #0,D3                   Initialise answer
+*
+         MOVEQ.L  #25,D6                  26 loops
+FD0      SUB.L    D1,D0                   Subtract bottom from top
+         BLT.S    FD9                     If LT -> can't do it this time
+FD01     ADD.L    D3,D3                   Otherwise double answer
+         ADD.L    D0,D0                   And numerator
+         BSET     #0,D3                   Set new bit
+         DBRA     D6,FD0                  Next bit
+         BRA.S    FD02
+*
+FD00     ADD.L    D1,D0                   Add bottom to new top
+         BGT.S    FD01                    If GT ok
+FD9      ADD.L    D3,D3                   Otherwise double answer
+         ADD.L    D0,D0                   And numerator
+         DBRA     D6,FD00                 Next bit
+*
+* Normalise-Round-Normalise
+*
+FD02     CMPI.L   #HIDDEN*4,D3            How many shifts
+         BLT.S    FD1                     If LT only 1
+         LSR.L    #2,D3                   Otherwise shift 2 places
+         BRA.S    FD4
+FD1      SUBI.L   #HIDDEN,D2              Adjust exponent
+         LSR.L    #1,D3
+FD4      MOVEQ.L  #0,D6                   For the ADDX
+         ADDX.L   D6,D3                   Round
+         CMPI.L   #HIDDEN*2,D3            Still normalised?
+         BLT.S    FD03                    If LT yes
+         LSR.L    #1,D3                   Shift one more
+         ADDI.L   #HIDDEN,D2              And adjust exponent
+FD03     TST.L    D2                      Bad answer?
+         BEQ.S    FDUO
+         BMI.S    FDUO
+         BCLR     #HIDDENB,D3             Remove hidden bit
+         OR.L     D3,D2                   Insert mantissa into answer
+         MOVE.L   D2,D0
+FD04     OR.L     D4,D0                   And the sign
+         BRA.S    FDROK
+FD2      MOVEQ.L  #0,D0                   Set zero result
+         BRA.S    FDROK
+*
+FDUO     MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+*         BRA      FDR
+*
+FDROK
+FDR      MOVEM.L  (SP)+,D4/D6
+         RTS
+*
+* D0 = _fneg( float D0 )
+*
+* D0 <- -D0
+*
+         CFUNC    '_fneg'
+_fneg    BCHG     #SIGNB,D0
+         RTS
+*
+* Single precision compare
+*
+* D0 <- _fcmp( float D0, float D1 )
+*
+* D0 <- D0 > D1? 1:
+*       D0 = D1? 0: -1
+*
+         CFUNC    '_fcmp'
+_fcmp    TST.L    D0                   Is DST -ve
+         BLT.S    FC1                  If LT yes
+         CMP.L    D1,D0                Compare with at least D0 +ve
+         BGT.S    FC2
+         BLT.S    FC3
+         MOVEQ.L  #0,D0
+         RTS
+FC1      TST.L    D1                   Is src -ve as well
+         BGE.S    FC3                  If GE ne no -> DST < SRC
+FC4      CMP.L    D0,D1                Compare two -ve's
+         BGT.S    FC2
+         BLT.S    FC3
+         MOVEQ.L  #0,D0
+         RTS
+FC2      MOVEQ.L  #1,D0
+         RTS
+FC3      MOVEQ.L  #-1,D0
+         RTS
+*
+* D0 = _fgr(float D0, float D1)
+*
+* D0 <- D0 > D1 ? 1: 0
+*
+         CFUNC    '_fgr'
+_fgr     BSR      _fcmp
+         TST.L    D0
+         BGT.S    FCTRUE
+         BRA.S    FCFALSE
+*
+* D0 = _fgeq(float D0, float D1)
+*
+* D0 <- D0 >= D1 ? 1: 0
+*
+         CFUNC    '_fgeq'
+_fgeq    BSR      _fcmp
+         TST.L    D0
+         BGE.S    FCTRUE
+         BRA.S    FCFALSE
+*
+* D0 = _fls(float D0, float D1)
+*
+* D0 <- D0 < D1 ? 1: 0
+*
+         CFUNC    '_fls'
+_fls     BSR      _fcmp
+         TST.L    D0
+         BLT.S    FCTRUE
+         BRA.S    FCFALSE
+*
+* D0 = _fleq(float D0, float D1)
+*
+* D0 <- D0 <= D1 ? 1: 0
+*
+         CFUNC    '_fleq'
+_fleq    BSR      _fcmp
+         TST.L    D0
+         BLE.S    FCTRUE
+         BRA.S    FCFALSE
+*
+* D0 = _feq(float D0, float D1)
+*
+* D0 <- D0 == D1 ? 1: 0
+*
+         CFUNC    '_feq'
+_feq     BSR      _fcmp
+         TST.L    D0
+         BEQ.S    FCTRUE
+         BRA.S    FCFALSE
+*
+* D0 = _fneq(float D0, float D1)
+*
+* D0 <- D0 != D1 ? 1: 0
+*
+         CFUNC    '_fneq'
+_fneq    BSR      _fcmp
+         TST.L    D0
+         BNE.S    FCTRUE
+         BRA.S    FCFALSE
+FCTRUE   MOVEQ.L  #1,D0
+         RTS
+FCFALSE  MOVEQ.L  #0,D0
+         RTS
+*
+* (D0) = _dsub(double D1D2, double D3Arg4)
+*
+* (D0) <- D1D2 - D3Arg4
+*
+         CFUNC    '_dsub'
+_dsub    MOVEM.L  D4-D6,-(SP)
+         MOVE.L   16(SP),D4
+         LEA.L    -8(SP),SP
+         MOVEA.L  D0,A0                   Target
+         MOVEM.L  D1/D2,(A0)
+         MOVEM.L  D3/D4,(SP)
+         BCHG     #SIGNB,D3               Negate and add
+         BRA      DFADD1
+*
+* (D0) = _dadd(double D1D2, double D3Arg4)
+*
+* (D0) <- D1D2 + D3Arg4
+*
+         CFUNC    '_dadd'
+_dadd    MOVEM.L  D4-D6,-(SP)
+         MOVE.L   16(SP),D4
+         LEA.L    -8(SP),SP
+         MOVEA.L  D0,A0                   Target
+         MOVEM.L  D1/D2,(A0)
+         MOVEM.L  D3/D4,(SP)
+DFADD1   MOVE.L   (A0),D1
+         MOVE.L   D1,D2                   Copy arg1
+         MOVE.L   D3,D4                   and arg2
+         MOVE.L   #DEXPT,D7               Exponent mask
+         AND.L    D7,D4                   In each register
+         BEQ      DFAROK                  If EQ D2 = 0
+         AND.L    D7,D2                   Leave exponent
+         BNE.S    DFA11                   If EQ D1 = 0
+         MOVE.L   D3,(A0)
+         MOVE.L   4(SP),4(A0)
+         BRA      DFAROK                  If EQ ans = Arg2
+DFA11    MOVEM.L  D2/D4,-(SP)
+         NOT.L    D7                      Make mantissa mask
+         BCLR     #SIGNB,D1               Remove sign bit
+         SNE.B    D5                      D5 = sign of Arg1
+         BCLR     #SIGNB,D3               Remove sign bit
+         SNE.B    D6                      D6 = sign of Arg2
+         AND.L    D7,D1                   Leave Mantissa
+         AND.L    D7,D3                   In each register
+         BSET     #DHIDDENB,D1            Replace hidden bits
+         BSET     #DHIDDENB,D3
+         MOVE.L   4(A0),D2
+         MOVE.L   4+8(SP),D4
+         MOVEQ.L  #0,D7
+         TST.B    D5                      Make 2's comp no. of Arg1
+         BEQ.S    DFA1                    If EQ arg1 +ve
+         NOT.L    D2
+         NOT.L    D1
+         ADDQ.L   #1,D2
+         ADDX.L   D7,D1
+DFA1     TST.B    D6                      And Arg2
+         BEQ.S    DFA2                    If EQ arg2 +ve
+         NOT.L    D4
+         NOT.L    D3
+         ADDQ.L   #1,D4
+         ADDX.L   D7,D3
+DFA2     MOVEM.L  (SP)+,D5/D6             Restore exponents exp1 in D5
+         MOVE.L   D5,D0                   Copy D1 exponent
+         SUB.L    D6,D0                   Difference of exponents
+         BEQ.S    DFA3                    If EQ no shift required
+         MOVEQ.L  #DHIDDENB,D7
+         ASR.L    D7,D0                   Move diff to low byte
+         BGT.S    DFA4                    If GT |D1| > |D2|
+         EXG.L    D1,D3                   Do it the other way round
+         EXG.L    D2,D4
+         NEG.L    D0                      Make difference +ve
+         MOVE.L   D6,D5                   D5 = non-normalised exponent of result
+DFA4     CMPI.L   #DHIDDENB+32+1,D0       Is it worth doing?
+         BLT.S    DFA13                   If LT yes
+*
+* Simple answer case -> set answer to D3,D4
+*
+         TST.L    D1                      Is answer -ve
+         BLT.S    DFA14                   If LT yes
+         MOVEQ.L  #0,D0                   Set +ve ans
+         BRA.S    DFA7
+DFA14    MOVE.L   #SIGN,D0                Set -ve answer
+         MOVEQ.L  #0,D7                   And renegate
+         NOT.L    D1
+         NOT.L    D2
+         ADDI.L   #1,D2
+         ADDX.L   D7,D1
+         BRA.S    DFA7
+*
+DFA13    SUBQ.L   #1,D0
+DFA10    ASR.L    #1,D3                   Shift to make exp's equal
+         ROXR.L   #1,D4
+         DBRA     D0,DFA10
+*
+         MOVEQ.L  #0,D0
+         ADDX.L   D0,D4                   Round before add
+         ADDX.L   D0,D3
+DFA3     MOVEQ.L  #0,D7
+         ADD.L    D4,D2                   Lower part
+         ADDX.L   D3,D1                   And upper
+         BEQ      DFA9                    0 result
+         BLT.S    DFA5                    Make sign of result
+         MOVEQ.L  #0,D0                   Set +ve
+         BRA.S    DFA6
+DFA5     MOVE.L   #SIGN,D0                Set -ve
+         NOT.L    D2                      And negate integer result
+         NOT.L    D1
+         ADDQ.L   #1,D2
+         ADDX.L   D7,D1
+*
+* Normalise-Round-Normalise
+*
+DFA6     MOVE.L   #DHIDDEN*2,D3
+         MOVE.L   #DHIDDEN,D4
+         CMP.L    D3,D1                   Normalised?
+         BLT.S    DFA8                    If LT possibly
+         ADD.L    D4,D5                   Increment exp
+         LSR.L    #1,D1                   Otherwise only 1 shift necessary
+         ROXR.L   #1,D2
+         ADDX.L   D7,D2                   Round
+         ADDX.L   D7,D1
+         CMP.L    D3,D1                   Still normalised?
+         BLT.S    DFA7                    If LT yes
+         ADD.L    D4,D5                   Increment exp
+         LSR.L    #1,D1                   And shift once more
+         ROXR.L   #1,D2
+         BRA.S    DFA7
+*
+DFA8     CMP.L    D4,D1                   Normalise upwards
+         BGE.S    DFA7
+         SUB.L    D4,D5
+         LSL.L    #1,D2
+         ROXL.L   #1,D1
+         BRA.S    DFA8
+*
+DFA7     BCLR     #DHIDDENB,D1            Remove hidden result bit
+         TST.L    D5                      Bad exponent?
+         BMI.S    DFAUO                   If LT yes
+         BEQ.S    DFAUO
+         OR.L     D5,D1                   Insert exponent
+DFA15    OR.L     D0,D1                   And sign
+         MOVE.L   D1,(A0)
+         MOVE.L   D2,4(A0)
+         BRA      DFAROK
+*
+DFAUO    MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         BRA.S    DFAR
+*
+DFA9     CLR.L    (A0)
+         CLR.L    4(A0)
+DFAROK
+DFAR     LEA.L    8(SP),SP
+         MOVEM.L  (SP)+,D4-D6
+         RTS
+*
+* (D0) = _dmul(double D1D2, double D3Arg4)
+*
+* (D0) <- D1D2 * D3Arg4
+*
+         CFUNC    '_dmul'
+_dmul    MOVEM.L  D4-D6,-(SP)
+         MOVE.L   16(SP),D4
+         LEA.L    -8(SP),SP
+         MOVE.L   D0,A0
+         MOVEM.L  D1/D2,(A0)
+         MOVEM.L  D3/D4,(SP)
+         MOVE.L   D1,D2                   And copy
+         BCLR     #SIGNB,D1
+         SNE.B    D0                      D0 = Incoming sign of Arg1
+         MOVE.L   (SP),D3                 First word of arg2
+         MOVE.L   D3,D4                   And copy
+         BCLR     #SIGNB,D3
+         SNE.B    D5                      D5 = Incoming sign of D2
+         MOVE.L   #DEXPT,D6
+         AND.L    D6,D2                   Leave the exponent
+         BEQ      DFM4                    If EQ res = 0
+         AND.L    D6,D4                   In each arg
+         BEQ      DFM4                    If EQ res = 0
+         NOT.L    D6                      Make mantissa mask
+         AND.L    D6,D1                   Leave the mantissa
+         AND.L    D6,D3                   In each arg
+         ADD.L    D2,D4                   Intermediate exponent result
+         MOVE.B   D0,D4
+         EOR.B    D5,D4                   D0 = sign of result
+         MOVE.L   D4,-(SP)                Save it all for later
+         BSET     #DHIDDENB,D1
+         BSET     #DHIDDENB,D3            Replace hidden bits
+         MOVE.L   8(SP),D4                Fetch the rest of arg2
+         MOVE.L   4(A0),D2                And arg1
+*
+         MOVE.L   #10,D5
+DFM1     LSL.L    #1,D2                   Shift everybody left 11 places
+         ROXL.L   #1,D1
+         LSL.L    #1,D4
+         ROXL.L   #1,D3
+         DBRA     D5,DFM1
+*
+         CLR.L    (A0)
+         CLR.L    4(A0)
+         MOVEQ.L  #0,D7                   For the ADDX'S
+         MOVEQ.L  #0,D5
+*
+* Right here we go
+* (A4 + A3 + A2 + A1) * (B4 + B3 + B2 + B1)
+* Except for the bottom six multiplications
+*
+         SWAP     D1                      A4
+         MOVE.W   D4,D6
+         MULU     D1,D6                   A4 * B1
+         CLR.W    D6
+         SWAP     D6
+*
+         SWAP     D3                      B4
+         MOVE.W   D2,D0
+         MULU     D3,D0                   A1 *  B4
+         CLR.W    D0
+         SWAP     D0
+         ADD.L    D0,D6
+*
+         SWAP     D1                      A3
+         SWAP     D4                      B2
+         MOVE.W   D4,D0
+         MULU     D1,D0                   A3 * B2
+         CLR.W    D0
+         SWAP     D0
+         ADD.L    D0,D6
+*
+         SWAP     D2                      A2
+         SWAP     D3                      B3
+         MOVE.W   D3,D0
+         MULU     D2,D0                   A2 * B3
+         CLR.W    D0
+         SWAP     D0
+         ADD.L    D0,D6
+*
+         MOVE.W   D3,D0
+         MULU     D1,D0                   A3 * B3
+         ADD.L    D0,D6
+         ADDX.W   D7,D5
+*
+         SWAP     D1                      A4
+         MOVE.W   D4,D0
+         MULU     D1,D0                   A4 * B2
+         ADD.L    D0,D6
+         ADDX.W   D7,D5
+*
+         SWAP     D3                      B4
+         MOVE.W   D2,D0
+         MULU     D3,D0                   A2 * B4
+         ADD.L    D0,D6
+         ADDX.W   D7,D5
+*
+         MOVE.W   D6,6(A0)
+         MOVE.W   D5,D6
+         SWAP     D6
+         CLR.W    D5
+*
+         SWAP     D3                      B3
+         MOVE.W   D3,D0
+         MULU     D1,D0                   A4 * B3
+         ADD.L    D0,D6
+         ADDX.W   D7,D5
+*
+         SWAP     D3                      B4
+         SWAP     D1                      A3
+         MOVE.W   D3,D0
+         MULU     D1,D0                   A3 * B4
+         ADD.L    D0,D6
+         ADDX.W   D7,D5
+*
+         MOVE.W   D6,4(A0)
+         MOVE.W   D5,D6
+         SWAP     D6
+*
+         SWAP     D1                      A4
+         MULU     D3,D1                   A4 * B4
+         ADD.L    D1,D6
+*
+         MOVE.L   4(A0),D5                Unnormalised result in D6/D5
+         MOVE.L   (SP)+,D0                Fetch exp + sign again
+         MOVE.B   D0,D4
+         CLR.B    D0
+*
+* Normalise-Round-Normalise
+*
+         MOVE.L   #-DEXCESS,D2            Amount to adjust the exponent by
+         MOVE.L   #9,D1
+DFM2     LSR.L    #1,D6                   Shift right 10 places
+         ROXR.L   #1,D5
+         DBRA     D1,DFM2
+         CMP.L    #DHIDDEN*2,D6           Normalised
+         BLT.S    DFM5                    If LT yes
+         ADDQ.L   #1,D2                   Increment amount to add to exp
+         LSR.L    #1,D6                   Shift again
+         ROXR.L   #1,D5
+DFM5     MOVEQ.L  #0,D1                   For the ADDX
+         ADDX.L   D1,D5                   Round
+         ADDX.L   D1,D6
+         CMP.L    #DHIDDEN*2,D6           Still normalised?
+         BLT.S    DFM7                    If LT yes
+         ADDQ.L   #1,D2                   Increment amount to add to exp
+         LSR.L    #1,D6                   Shift again
+         ROXR.L   #1,D5
+DFM7     BCLR     #DHIDDENB,D6            Remove hidden bit
+         MOVE.L   #DHIDDENB,D3
+         LSL.L    D3,D2                   Shift up the exponent change
+         ADD.L    D2,D0                   Adjust exponent
+         BMI.S    DFMUO                   If LT -> exception
+         BEQ.S    DFMUO
+         OR.L     D0,D6                   = Result
+DFM8     TST.B    D4
+         BGE.S    DFM6
+         BSET     #SIGNB,D6
+DFM6     MOVE.L   D6,(A0)
+         MOVE.L   D5,4(A0)
+         BRA      DFMROK                  Return to the outside world
+*
+DFMUO    MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         BRA.S    DFMR
+*
+DFM4     CLR.L    (A0)
+         CLR.L    4(A0)
+DFMROK
+DFMR     LEA.L    8(SP),SP
+         MOVEM.L  (SP)+,D4-D6
+         RTS
+*
+* (D0) = _ddiv(double D1D2, double D3Arg4)
+*
+* (D0) <- D1D2 / D3Arg4
+*
+*  By the non-restorative shift & subtract method
+*
+         CFUNC    '_ddiv'
+_ddiv    MOVEM.L  D4-D6,-(SP)
+         MOVE.L   16(SP),D4               Fetch Arg4
+         MOVEA.L  D0,A0
+         MOVEM.L  D1/D2,(A0)
+         MOVE.L   D1,D7                   Copy arg1
+         MOVE.L   D3,D6                   And arg2
+         MOVE.L   #DEXPT,D5               Exponent mask
+         AND.L    D5,D7                   Remove all but exponent on arg1
+         BNE.S    DFD7                    If Arg1 = 0 THEN RES = 0
+         MOVEQ    #0,D5
+         MOVEQ    #0,D6                   Set result of zero
+         BRA      DFDROK
+DFD7     AND.L    D5,D6                   And on arg2
+         BNE.S    DFD8
+         BRA      DFDUO                   Whoops - Divide by 0
+DFD8     SUB.L    D6,D7                   D7 = Initial exponent of result
+         ADDI.L   #DEXCESS*DHIDDEN,D7     Replace excess
+         NOT.L    D5                      Make mantissa mask
+         AND.L    D5,D1                   Leave sign and mantissa
+         AND.L    D5,D3
+         MOVEQ.L  #0,D0
+         BSET     #DHIDDENB,D1            Replace hidden bits
+         BSET     #DHIDDENB,D3
+         BCLR     #SIGNB,D1               Remove sign bit
+         SNE.B    D0                      And keep it
+         BCLR     #SIGNB,D3
+         SNE.B    D6
+         EOR.B    D6,D0                   D0.B = sign of result
+         OR.L     D7,D0                   Insert the exponent
+*
+         MOVEQ.L  #0,D5                   D5 = start of result
+         MOVEQ.L  #0,D6
+*
+         MOVEQ.L  #54,D7                  55 loops
+DFD1     SUB.L    D4,D2                   Subtract bottom from top
+         SUBX.L   D3,D1
+         BLT.S    DFD9                    If LT -> can't do it this time
+DFD11    ADD.L    D6,D6                   Otherwise double answer
+         ADDX.L   D5,D5
+         ADD.L    D2,D2                   And numerator
+         ADDX.L   D1,D1
+         BSET     #0,D6                   Set new bit
+         DBRA     D7,DFD1                 Next bit
+         BRA.S    DFD12
+*
+DFD10    ADD.L    D4,D2                   Add bottom to new top
+         ADDX.L   D3,D1
+         BGT.S    DFD11                   If GT ok
+DFD9     ADD.L    D6,D6                   Otherwise double answer
+         ADDX.L   D5,D5
+         ADD.L    D2,D2                   And numerator
+         ADDX.L   D1,D1
+         DBRA     D7,DFD10                Next bit
+*
+DFD12    CMPI.L   #DHIDDEN*4,D5           How much shift?
+         BLT.S    DFD4                    If LT only one
+         LSR.L    #1,D5                   Otherwise 2 shifts required
+         ROXR.L   #1,D6                   Copy carry down
+         BRA.S    DFD14
+DFD4     SUBI.L   #DHIDDEN,D0             Adjust exponent
+DFD14    LSR.L    #1,D5                   Shift 1 place
+         ROXR.L   #1,D6
+         MOVEQ.L  #0,D7
+         ADDX.L   D7,D6                   Round
+         ADDX.L   D7,D5
+         CMPI.L   #DHIDDEN*2,D5           Still normalised?
+         BLT.S    DFD13                   If LT yes
+         ADDI.L   #DHIDDEN,D0             Increment exponent
+         LSR.L    #1,D5                   1 more shift required
+         ROXR.L   #1,D6
+DFD13    TST.B    D0                      Check sign (held in D0.B)
+         BEQ.S    DFD15
+         CLR.B    D0                      Clear it if set
+         BSET     #SIGNB,D5               And set sign bit in ans
+DFD15    TST.L    D0                      Check for bad exponent
+         BMI.S    DFDUO                   If MI or EQ yes
+         BEQ.S    DFDUO
+         BCLR     #DHIDDENB,D5            Remove hidden bit
+         OR.L     D0,D5                   Insert exponent
+         BRA.S    DFDROK
+*
+DFDUO    MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         BRA.S    DFDR
+*
+DFDROK   MOVEM.L  D5/D6,(A0)              Set result
+DFDR     MOVEM.L  (SP)+,D4-D6
+         RTS
+*
+* (D0) = _dneg(double D1D2)
+*
+* (D0) <- -D1D2
+*
+         CFUNC    '_dneg'
+_dneg    MOVE.L   D0,A0
+         BCHG     #31,D1
+         MOVEM.L  D1/D2,(A0)
+         RTS
+*
+* Double precision compare
+*
+* D0 <- _dcmp(double D0D1, double D2D3)
+*
+* D0 <- D0D1  > D2D3 ? 1:
+*       D0D1 == D2D3 ? 0: -1
+*
+         CFUNC    '_dcmp'
+_dcmp
+         TST.L    D0                   Is DST -ve
+         BLT.S    DF31                 If LT yes
+         CMP.L    D2,D0                Compare with at least D0 +ve
+         BEQ.S    DF33                 If EQ -> compare lo words
+         BGT.S    DF361
+DF362    MOVEQ.L  #-1,D0
+         RTS
+DF361    MOVEQ.L  #1,D0
+         RTS                           Otherwise return this status
+
+DF33     CMP.L    D3,D1                Second half of two positives
+         BEQ.S    DF331                If they are equal ok
+         BCS.S    DF362
+         BRA.S    DF361
+
+DF331    MOVEQ.L  #0,D0
+         RTS
+*
+DF31     TST.L    D2                   DST -ve , is SRC -ve as well
+         BLT.S    DF34                 If LT yes
+         BRA.S    DF362                Otherwise DST < SRC
+
+DF34     CMP.L    D0,D2                Compare two negatives
+         BEQ.S    DF35                 Are these equal
+         BGT.S    DF361
+         BRA.S    DF362
+
+DF35     CMP.L    D3,D1                Second half of two negatives
+         BEQ.S    DF331                If they are equal ok
+         BCS.S    DF361
+         BRA.S    DF361
+*
+* D0 = _dgr( double D0D1, double D2D3 )
+*
+* D0 <- D0D1 > D2D3 ? 1: 0
+*
+         CFUNC    '_dgr'
+_dgr     BSR      _dcmp
+         TST.L    D0
+         BGT.S    DCTRUE
+         BRA.S    DCFALSE
+*
+* D0 = _dgeq( double D0D1, double D2D3 )
+*
+* D0 <- D0D1 >= D2D3 ? 1: 0
+*
+         CFUNC    '_dgeq'
+_dgeq    BSR      _dcmp
+         TST.L    D0
+         BGE.S    DCTRUE
+         BRA.S    DCFALSE
+*
+* D0 = _dls( double D0D1, double D2D3 )
+*
+* D0 <- D0D1 < D2D3 ? 1: 0
+*
+         CFUNC    '_dls'
+_dls     BSR      _dcmp
+         TST.L    D0
+         BLT.S    DCTRUE
+         BRA.S    DCFALSE
+*
+* D0 = _dleq( double D0D1, double D2D3 )
+*
+* D0 <- D0D1 <= D2D3 ? 1: 0
+*
+         CFUNC    '_dleq'
+_dleq    BSR      _dcmp
+         TST.L    D0
+         BLE.S    DCTRUE
+         BRA.S    DCFALSE
+*
+* D0 = _deq( double D0D1, double D2D3 )
+*
+* D0 <- D0D1 == D2D3 ? 1: 0
+*
+         CFUNC    '_deq'
+_deq     BSR      _dcmp
+         TST.L    D0
+         BEQ.S    DCTRUE
+         BRA.S    DCFALSE
+*
+* D0 = _dneq( double D0D1, double D2D3 )
+*
+* D0 <- D0D1 != D2D3 ? 1: 0
+*
+         CFUNC    '_dneq'
+_dneq    BSR      _dcmp
+         TST.L    D0
+         BNE.S    DCTRUE
+         BRA.S    DCFALSE
+DCTRUE   MOVEQ.L  #1,D0
+         RTS
+DCFALSE  MOVEQ.L  #0,D0
+         RTS
+*
+* Convert Signed Integer to IEEE single precision floating format
+*
+* D0 = _fflt(float D0)
+*
+         CFUNC    '_fflt'
+_fflt    TST.L    D0                      Is it negative
+         BEQ.S    FL4                     If zero leave alone
+         SLT.B    D2                      Save negative status of arg
+         BGE.S    FL1                     Negate if negative
+         NEG.L    D0                      So we have now a positive arg
+FL1      MOVEQ.L  #31,D3                  Max No. of bits to shift
+FL2      LSL.L    #1,D0
+         DBCS     D3,FL2                  Shift until we get a carry
+*
+* D3 = exponent now
+*
+FL3      LSR.L    #8,D0                   Put the mantissa in its right place
+         LSR.L    #1,D0
+         ADDI.B   #EXCESS,D3              Make biassed exponent
+         MOVEQ.L  #HIDDENB,D1
+         ASL.L    D1,D3                   Put exponent in its right place
+         OR.L     D3,D0                   And put it in
+         TST.B    D2                      Was it negative to start with
+         BEQ.S    FL4                     If EQ no
+         BSET     #SIGNB,D0               Otherwise set N
+FL4      RTS                              All done
+*
+* Convert Unsigned Integer to IEEE single precision floating format
+*
+* D0 = _ffltu(unsigned int D0)
+*
+         CFUNC    '_ffltu'
+_ffltu   TST.L    D0                      Is it negative or zero
+         BEQ.S    FLU5                    If zero leave alone
+         MOVEQ.L  #31,D3                  Max No. of bits to shift
+FLU2     LSL.L    #1,D0
+         DBCS     D3,FLU2                 Shift until we get a carry
+*
+* D3 = exponent now
+*
+FLU3     LSR.L    #8,D0                   Put the mantissa in its right place
+         LSR.L    #1,D0
+         ADDI.B   #EXCESS,D3              Make biassed exponent
+         MOVEQ.L  #HIDDENB,D1
+         ASL.L    D1,D3                   Put exponent in its right place
+         OR.L     D3,D0                   And put it in
+FLU5     RTS                              All done
+*
+*  Convert IEEE single precision floating point no.
+*   to Signed Integer
+*  D0 = _ffix(float D0)
+*
+         CFUNC    '_ffix'
+_ffix    BCLR     #SIGNB,D0               Ensure positive no.
+         SNE.B    D2                      Save negative status
+         MOVE.L   D0,D3
+         ANDI.L   #EXPT,D3                Remove all but exponent
+         BEQ.S    FI1                     If EQ return 0
+         ANDI.L   #MANT,D0                Remove all but mantissa
+         MOVEQ.L  #HIDDENB,D1
+         ASR.L    D1,D3                   Get exponent in its correct place
+         SUBI.L   #EXCESS+23,D3           And value
+         BSET     #HIDDENB,D0             Replace hidden bit
+         TST.L    D3                      Negative shifted required ?
+         BLT.S    FI2                     If LT yes
+         BEQ.S    FI3                     If EQ no shift required
+         CMPI.L   #7,D3                   Overflow?
+         BGT.S    FI4                     If GT yes
+         ASL.L    D3,D0                   Do the left shift
+         BRA.S    FI3
+FI2      NEG.L    D3                      Convert to positive right shift
+         CMPI.L   #HIDDENB+1,D3           Will it underflow ?
+         BGE.S    FI5
+         ASR.L    D3,D0                   Shift
+FI3      TST.B    D2                      Was it negative?
+         BEQ.S    FI1                     If EQ no
+         NEG.L    D0
+FI1      RTS                              And exit
+FI5      MOVEQ.L  #0,D0
+         RTS
+*
+FI4      MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         RTS
+*
+*  Convert IEEE single precision floating point no.
+*   to Unsigned Integer
+*
+*  D0 = _ffixu(float D0)
+*
+         CFUNC    '_ffixu'
+_ffixu   MOVE.L   D0,D3
+         BLT.S    FIU4
+         ANDI.L   #EXPT,D3                Remove all but exponent
+         BEQ.S    FIU3                    If EQ return 0
+         ANDI.L   #MANT,D0                Remove all but mantissa
+         MOVEQ.L  #HIDDENB,D1
+         LSR.L    D1,D3                   Get exponent in its correct place
+         SUBI.L   #EXCESS+23,D3           And value
+         BSET     #HIDDENB,D0             Replace hidden bit
+         TST.L    D3                      Negative shifted required ?
+         BLT.S    FIU2                    If LT yes
+         BEQ.S    FIU3                    If EQ no shift required
+         CMPI.L   #8,D3                   Overflow?
+         BGT.S    FIU4                    If GT yes
+         ASL.L    D3,D0                   Do the left shift
+         BRA.S    FIU3
+FIU2     NEG.L    D3                      Convert to positive right shift
+         CMPI.L   #HIDDENB+1,D3           Will it underflow ?
+         BGE.S    FIU5
+         ASR.L    D3,D0                   Shift
+FIU3     RTS                              And exit
+FIU5     MOVEQ.L  #0,D0
+         RTS
+*
+FIU4     MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         RTS
+*
+* Convert Signed Integer to IEEE double precision floating format
+*
+* (D0) = _dflt(int D1)
+*
+         CFUNC    '_dflt'
+_dflt    MOVE.L   D4,-(SP)
+         MOVEA.L  D0,A0                   A0 = MC ptr
+         MOVEQ.L  #0,D2
+         TST.L    D1                      Is it negative
+         BEQ.S    DFL4                    If zero leave alone
+         SLT.B    D4                      Save negative status of arg
+         BGE.S    DFL1                    Negate if negative
+         NEG.L    D1                      So we have now a positive arg
+DFL1     MOVEQ.L  #31,D3                  Max No. of bits to shift
+DFL2     LSL.L    #1,D1
+         DBCS     D3,DFL2                 Shift until we get a carry
+*
+* D3 = exponent now
+*
+         MOVEQ.L  #12-1,D0                No. of places to move mantissa
+DFL3     LSR.L    #1,D1                   Put the mantissa in its right place
+         ROXR.L   #1,D2                   In D1 and D2
+         DBRA     D0,DFL3
+         ADDI.W   #DEXCESS,D3             Make biassed exponent
+         MOVEQ.L  #20,D0
+         ASL.L    D0,D3                   Put exponent in its right place
+         OR.L     D3,D1                   And put it in
+         TST.B    D4                      Was it negative to start with
+         BEQ.S    DFL4                    If EQ no
+         BSET     #SIGNB,D1               Otherwise set N
+DFL4     MOVEM.L  D1/D2,(A0)              Save Result
+         MOVE.L   (SP)+,D4
+         RTS                              All done
+*
+* Convert Unsigned Integer to IEEE double precision floating format
+*
+* (D0) = _dfltu(unsigned int D1)
+*
+         CFUNC    '_dfltu'
+_dfltu   MOVEA.L  D0,A0                   A0 = MC ptr
+         MOVEQ.L  #0,D2
+         TST.L    D1
+         BEQ.S    DFLU4                   If zero leave alone
+         MOVEQ.L  #31,D3                  Max No. of bits to shift
+DFLU2    LSL.L    #1,D1
+         DBCS     D3,DFLU2                Shift until we get a carry
+*
+* D3 = exponent now
+*
+         MOVEQ.L  #12-1,D0                No. of places to move mantissa
+DFLU3    LSR.L    #1,D1                   Put the mantissa in its right place
+         ROXR.L   #1,D2                   In D1 and D2
+         DBRA     D0,DFLU3
+         ADDI.W   #DEXCESS,D3             Make biassed exponent
+         MOVEQ.L  #20,D0
+         ASL.L    D0,D3                   Put exponent in its right place
+         OR.L     D3,D1                   And put it in
+DFLU4    MOVEM.L  D1/D2,(A0)              Save Result
+         RTS                              All done
+*
+*  Convert IEEE double precision floating point no.
+*   to Signed Integer
+*
+*  D0 = _dfix(double D0D1)
+*
+         CFUNC    '_dfix'
+_dfix    MOVE.L   D5,-(SP)
+         TST.L    D0
+         BEQ.S    DFI1                    If 0 return 0
+         SLT.B    D5                      Save negative status
+         BCLR     #SIGNB,D0               Ensure positive no.
+         MOVE.L   D0,D3
+         ANDI.L   #DEXPT,D3               Remove all but exponent
+         ANDI.L   #DMANT,D0               Remove all but mantissa
+         MOVEQ.L  #20,D2
+         ASR.L    D2,D3                   Get exponent in its correct place
+         SUBI.L   #DEXCESS+DHIDDENB+32,D3 And value
+         BSET     #20,D0                  Replace hidden bit
+         TST.L    D3                      Negative shifted required
+         BGE.S    DFI4                    If LT yes - error
+         NEG.L    D3                      Make positive right shift
+         CMPI.L   #21,D3                  Overflow?
+         BLE.S    DFI4                    If LT yes - must have > 21 bit shift
+         CMPI.L   #DHIDDENB+32+1,D3       Too many ?
+         BGE.S    DFI6
+         SUBQ.L   #1,D3                   Adjust for DBRA
+DFI2     ASR.L    #1,D0                   Shift required places
+         ROXR.L   #1,D1
+         DBRA     D3,DFI2                 Convert
+DFI3     MOVE.L   D1,D0                   Fetch result
+DFI5     TST.B    D5                      Was it negative?
+         BEQ.S    DFI1                    If EQ no
+         NEG.L    D0
+DFI1     MOVE.L   (SP)+,D5
+         RTS                              And exit
+DFI6     MOVEQ.L  #0,D0
+         MOVE.L   (SP)+,D5
+         RTS
+*
+DFI4     MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         MOVE.L   (SP)+,D5
+         RTS
+*
+*  Convert IEEE double precision floating point no.
+*   to Unsigned Integer
+*  D0 = _dfixu(double D0D1)
+*
+         CFUNC    '_dfixu'
+_dfixu   TST.L    D0
+         BEQ.S    DFIU5                   If 0 return 0
+         BLT.S    DFIU4
+         MOVE.L   D0,D3
+         ANDI.L   #DEXPT,D3               Remove all but exponent
+         ANDI.L   #DMANT,D0               Remove all but mantissa
+         MOVEQ.L  #20,D2
+         ASR.L    D2,D3                   Get exponent in its correct place
+         SUBI.L   #DEXCESS+DHIDDENB+32,D3 And value
+         BSET     #20,D0                  Replace hidden bit
+         TST.L    D3                      Negative shifted required
+         BGE.S    DFIU4                   If LT yes - error
+         NEG.L    D3                      Make positive right shift
+         CMPI.L   #20,D3                  Overflow?
+         BLE.S    DFIU4                   If LT yes - must have > 20 bit shift
+         CMPI.L   #DHIDDENB+32+1,D3       Too many ?
+         BGE.S    DFIU6
+         SUBQ.L   #1,D3                   Adjust for DBRA
+DFIU2    ASR.L    #1,D0                   Shift required places
+         ROXR.L   #1,D1
+         DBRA     D3,DFIU2                Convert
+DFIU3    MOVE.L   D1,D0                   Fetch result
+DFIU5    RTS                              And exit
+DFIU6    MOVEQ.L  #0,D0
+         RTS
+*
+DFIU4    MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         RTS
+*
+*  (D0) = _f2d(float D1)
+*
+         CFUNC    '_f2d'
+_f2d     MOVE.L   D0,A0
+         TST.L    D1                         0?
+         BEQ.S    L5                         If EQ yes
+         MOVEQ.L  #0,D2
+         MOVEQ.L  #2,D0                      Shift 3 places
+L1       LSR.L    #1,D1                      Shift top
+         ROXR.L   #1,D2                      And bottom
+         DBRA     D0,L1
+         BCLR     #SIGNB-3,D1                Clear sign bit
+         BEQ.S    L2
+         BSET     #SIGNB,D1                  And reset as before
+L2       ADDI.L   #(DEXCESS-EXCESS)*DHIDDEN,D1 Change excess
+         MOVEM.L  D1/D2,(A0)                   Set dp answer
+L6       RTS
+
+L5       CLR.L    (A0)                      Set zero answer
+         CLR.L    4(A0)
+         RTS
+*
+* D0 = _d2f(double D0D1)
+*
+         CFUNC    '_d2f'
+_d2f     MOVE.L   D4,-(SP)
+         TST.L    D0
+         BEQ.S    L7
+         MOVE.L   D0,D2
+         ANDI.L   #DEXPT,D2
+         CMPI.L   #(DEXCESS-EXCESS)*DHIDDEN,D2
+         BLT.S    L8
+         CMPI.L   #(DEXCESS+EXCESS)*DHIDDEN,D2
+         BGT.S    L8
+         SUBI.L   #(DEXCESS-EXCESS)*DHIDDEN,D0 Change excess
+         BCLR     #SIGNB,D0                  Remove sign
+         SNE.B    D4                         And remember it
+         MOVEQ.L  #2,D2                      Shift no.
+L3       LSL.L    #1,D1                      Move up
+         ROXL.L   #1,D0
+         DBRA     D2,L3
+         TST.B    D4                         Was it -ve
+         BEQ.S    L4                         If EQ no
+         BSET     #SIGNB,D0                  Otherwise set -ve.
+L4       MOVE.L   (SP)+,D4
+         RTS                                 That's all folks
+L7       MOVEQ.L  #0,D0                      Zero result
+         MOVE.L   (SP)+,D4
+         RTS
+
+L8       MOVEQ.L  #SIGFPE,D0
+         JSR      raise
+         MOVE.L   (SP)+,D4
+         RTS
+
+         IFEQ     TRIPOS
+         CNOP     0,4
+         DC.L     0                          End of table
+         DC.L     0                          HRG
+MEND
+         ENDC
+
+         END

@@ -1,0 +1,798 @@
+_if _false [
+-- *** NOW DEFUNCT ALLOCATED DMA LINK TX CODE ***
+-- THIS HAD TO SET ALL POSSIBLE PARAMETERS ALWAYS AS PREVIOUS USERS MAY HAVE
+-- CHANGED THEM. THIS CODE IS NOT SAFE FOR INDIVIDUAL USE OF THE SPLIT CHANNELS
+-- AS IT CAN POSSIBLY OVERWRITE A STOP VALUE WITH THE OLD START VALUE WHEN THE
+-- NEW CONTROL REG VALUE IS MASKED IN - SEE COMMENTS AT END OF FN
+-- THE MAIN REASON FOR NOT USING THIS CODE IS DUE TO THE REQUIREMENT THAT
+-- THE SAME NUMBERD LINK/DMA ENGINES MUST BE USED WITH EACH OTHER IF YOU WISH
+-- TO SYNCRONISE THEIR ACIVITIES - ARG!
+--
+-- void LinkDMATx(word DMAEng, word comport, word size, void *buf)
+--
+-- Sets up and starts a DMA transfer to a link using the primary channel of
+-- a split mode DMA engine.
+--
+-- Called from C so must be PCS conformant
+
+
+_def	'mask_prim	[dcr_tranmodeM]
+_def	'mask_aux	[dcr_auxtranmodeM]
+_def	'mask_both	[dcr_comportM]
+
+_def	'set_both	[(dcr_dmapriM | dcr_syncmodeM | dcr_splitmode)]
+_def	'set_prim	[(dcr_tranmode[0b01] | dcr_startM | dcr_tcc)]
+_def	'set_aux	[(dcr_auxtranmode[0b01] | dcr_auxstartM | dcr_auxtcc)]
+
+_def	'hi_mask_prim	[((mask_prim | mask_both) >> 16)]
+_def	'lo_mask_prim	[((mask_prim | mask_both) & 0xffff)]
+_def	'hi_set_prim	[((set_prim | set_both) >> 16)]
+_def	'lo_set_prim	[((set_prim | set_both) & 0xffff)]
+
+_def	'hi_mask_aux	[((mask_aux | mask_both) >> 16)]
+_def	'lo_mask_aux	[((mask_aux |mask_both) & 0xffff)]
+_def	'hi_set_aux	[((set_aux | set_both) >> 16)]
+_def	'lo_set_aux	[((set_aux | set_both) & 0xffff)]
+
+
+.LinkDMATx:
+	-- move DMA control reg to address reg for indirection
+	ldi	R_A1, R_ADDR1
+
+	-- load primary channel count register with word version of byte count
+	lsh	-2, R_A3	
+	sti	R_A3, *+R_ADDR1(dma_count)
+
+	-- load word pointer converted from byte pointer into source reg
+	C40WordAddress R_A4
+	sti	R_A4, *+R_ADDR1(dma_srcaddr)
+
+	-- index is always 1
+	_test _defp 'C40STIKBUG [
+		ldi	1, R_A3
+		sti	R_A3, *+R_ADDR1(dma_srcindex)
+	][
+		stik	1, *+R_ADDR1(dma_srcindex)
+	]
+
+	-- setup end of DMA interrupt handler into the correct intr. vector
+	-- @@@ can any of this be pre-computed?
+
+	-- get hold of interrupt vector base
+	ldep	ivtp, R_A3
+		
+	-- convert cpcr WPTR to dma channel number
+	lsh	-4, R_ADDR1, R_ADDR2
+	and	0xf, R_ADDR2
+	subi	0xa, R_ADDR2		-- R_ADDR2 == dma chan number
+
+	-- add in interrupt vector base
+	addi	R_A3, R_ADDR2, R_ADDR3	-- R_ADDR3 == (after +ivdmaint0) =
+					--		DMA channel intr vector
+
+	-- get address of this channels handler
+	ldabs16 LinkDMAIntrHandler0 R_A4 -- abs addr of interrupt handler 0
+	mpyi	5, R_ADDR2, R_A3		-- chan * 5 instructions
+	addi	R_A3, R_A4			-- index to correct handler
+
+	-- store link DMA interrupt handler into interrupt vector.
+	sti	R_A4, *+R_ADDR3(iv_dmaint0)
+
+
+	-- Enable OCRDY write sync in DIE reg. This  automatically
+	-- syncronises the DMA writes to link read ready interrupts
+	-- R_ADDR2 == DMA channel number
+	cmpi	1, R_ADDR2
+	bhi	hi_die
+
+	-- Two bit die masking
+	bz	chan_zero
+	-- DMA channel 1
+	bud	end_die_mask
+		andn	0b110000, die	-- set OCRDY DMA sync interrupt
+		or	0b010000, die
+		nop
+chan_zero:
+	-- DMA channel 0
+	bud	end_die_mask
+		andn	0b11, die	-- set OCRDY DMA sync interrupt
+		or	1, die
+		nop
+
+	_def	'dma2_readmask	[0b0000011100000000]
+	_def	'dma2_OCRDY	[0b0000000100000000]
+
+hi_die:	-- Three bit die masking for channels 2-5
+	ldi	dma2_readmask, R_A3
+	subi	2, R_ADDR2, R_A4	-- convert DMA channel to shift for mask
+	mpyi	6, R_A4			-- (chan - 2) * 6 = shift amount
+	lsh	R_A4, R_A3		-- shift mask
+	andn	R_A3, die		-- mask out old DMA channel intr enable
+
+	ldi	dma2_OCRDY, R_A3
+	lsh	R_A4, R_A3
+	or	R_A3, die		-- set new DMA channel intr enable OCRDY
+end_die_mask:
+
+
+	-- Enable the end of DMA interupts in IIE
+	-- These interrupts signal the link DMA interrupt handler to resume the
+	-- thread that requested the LinkTx as it will then have been completed
+
+	_def	'edmaint0	[0b0000001000000000]
+
+	ldhi	edmaint0, R_A3
+
+	lsh	R_ADDR2, R_A3	-- shift to set end of DMA intr
+	or	R_A3, iie	-- for this DMA channel
+
+
+	-- Read in, mask and set the control register for this DMA channel
+
+	-- shift comms port to ctrl reg field
+	lsh	15, R_A2
+
+	-- load value to mask out the primary channel parts of the control reg
+	ldhi	hi_mask_prim, R_A3
+	or	lo_mask_prim, R_A3
+
+	-- load value to insert into DMA control register
+	ldhi	hi_set_prim, R_A1
+	or	lo_set_prim, R_A1
+	-- insert comms port into control reg
+	or	R_A2, R_A1
+
+	-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	-- DANGER: The next four instructions MAY cause a aux chan start
+	-- field stop value to be overwritten by an old (11) run value!
+	-- Plus the read may reset the value of the auxtccint/tccint flag!
+	-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+	ldi	*+R_ADDR1(dma_control), R_A4
+	andn	R_A3, R_A4
+	or	R_A1, R_A4
+	-- store Tx attributes in control reg
+	-- THIS STARTS THE DMA TRANSFER
+	sti	R_A4, *+R_ADDR1(dma_control)
+
+	b	R_LR
+
+
+-- void LinkDMARx(word DMAEng, word comport, word size, void *buf)
+--
+-- Sets up and starts a DMA transfer from a link using the auxilary channel of
+-- a split mode DMA engine.
+--
+-- Called from C so must be PCS conformant
+
+.LinkDMARx:
+	-- move DMA control reg to address reg for indirection
+	ldi	R_A1, R_ADDR1
+
+	-- load aux channel count register with word version of byte count
+	lsh	-2, R_A3	
+	sti	R_A3, *+R_ADDR1(dma_auxcount)
+
+	-- load word pointer converted from byte pointer into destination reg
+	C40WordAddress R_A4
+	sti	R_A4, *+R_ADDR1(dma_dstaddr)
+
+	-- index is always 1
+	_test _defp 'C40STIKBUG [
+		ldi	1, R_A3
+		sti	R_A3, *+R_ADDR1(dma_dstindex)
+	][
+		stik	1, *+R_ADDR1(dma_dstindex)
+	]
+
+	-- setup end of DMA interrupt handler into the correct intr. vector
+	-- @@@ can any of this be pre-computed?
+
+	-- get hold of interrupt vector base
+	ldep	ivtp, R_A3
+
+	-- convert cpcr WPTR to dma channel number
+	lsh	-4, R_ADDR1, R_ADDR2
+	and	0xf, R_ADDR2
+	subi	0xa, R_ADDR2		-- R_ADDR2 == dma chan number
+
+	-- add in interrupt vector base
+	addi	R_A3, R_ADDR2, R_ADDR3	-- R_ADDR3 == (after +ivdmaint0) =
+					--		DMA channel intr vector
+
+	-- get address of this channels handler
+	ldabs16 LinkDMAIntrHandler0 R_A4 -- abs addr of interrupt handler 0
+	mpyi	5, R_ADDR2, R_A3		-- chan * 5 instructions
+	addi	R_A3, R_A4			-- index to correct handler
+
+	-- store link DMA interrupt handler into interrupt vector.
+	sti	R_A4, *+R_ADDR3(iv_dmaint0)
+
+
+	-- Enable ICRDY write sync in DIE reg. This  automatically
+	-- syncronises the link read ready iterrupts to DMA writes
+	-- R_ADDR2 == DMA channel number
+	cmpi	1, R_ADDR2
+	bhi	hi_dieRx
+
+	-- Two bit die masking
+	bz	chan_zeroRx
+	-- DMA channel 1
+	bud	end_die_maskRx
+		andn	0b110000, die	-- set ICRDY DMA sync interrupt
+		or	0b010000, die
+		nop
+chan_zeroRx:
+	-- DMA channel 0
+	bud	end_die_maskRx
+		andn	0b11, die	-- set ICRDY DMA sync interrupt
+		or	1, die
+		nop
+
+	_def	'dma2_writemask	[0b0011100000000000]
+	_def	'dma2_ICRDY	[0b0000100000000000]
+
+hi_dieRx:	-- Three bit die masking for channels 2-5
+	ldi	dma2_writemask, R_A3
+	subi	2, R_ADDR2, R_A4	-- convert DMA channel to shift for mask
+	mpyi	6, R_A4			-- (chan - 2) * 6 = shift amount
+	lsh	R_A4, R_A3		-- shift the mask
+	andn	R_A3, die		-- mask out old DMA channel intr enable
+
+	ldi	dma2_ICRDY, R_A3
+	lsh	R_A4, R_A3
+	or	R_A3, die		-- set new DMA channel intr enable ICRDY
+end_die_maskRx:
+
+
+	-- Enable the end of DMA interupts in IIE
+	-- These interrupts signal the link DMA interrupt handler to resume the
+	-- thread that requested the LinkRx as it will then have been completed
+
+	ldhi	edmaint0, R_A3
+
+	lsh	R_ADDR2, R_A3	-- shift to set end of DMA intr
+	or	R_A3, iie	-- for this DMA channel
+
+
+	-- Read in, mask and set the control register for this DMA channel
+
+	-- shift comms port to ctrl reg field
+	lsh	15, R_A2
+
+	-- load value to mask out the primary channel parts of the control reg
+	ldhi	hi_mask_aux, R_A3
+	or	lo_mask_aux, R_A3
+
+	-- load value to insert into DMA control register
+	ldhi	hi_set_aux, R_A1
+	or	lo_set_aux, R_A1
+	-- insert comms port into control reg
+	or	R_A2, R_A1
+
+	-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	-- DANGER: The next four instructions MAY cause a aux chan start
+	-- field stop value to be overwritten by an old (11) run value!
+	-- Plus the read may reset the value of the auxtccint/tccint flag!
+	-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+	ldi	*+R_ADDR1(dma_control), R_A4
+	andn	R_A3, R_A4
+	or	R_A1, R_A4
+	-- store Tx attributes in control reg
+	-- THIS STARTS THE DMA TRANSFER
+	sti	R_A4, *+R_ADDR1(dma_control)
+
+	b	R_LR
+]
+
+
+
+_if _false [ -- TEST VERSIONS of __LinkTX/Rx ROUTINES
+
+_if _false [	-- DELETE when we are sure we dont need them anymore
+_test _true [
+-- start primary channel + reset aux
+_def    'prim_control           [(set_control | dcr_start[0b11] |
+                                dcr_auxstart[0b00])]
+
+-- start auxiliary channel + reset pri
+_def    'aux_control            [(set_control | dcr_auxstart[0b11] |
+                                dcr_start[0b00])]
+][
+-- start primary channel + stop on aux
+_def    'prim_control           [(set_control | dcr_start[0b11] |
+                                dcr_auxstart[0b10])]
+
+-- start auxiliary channel + stop on pri
+_def    'aux_control            [(set_control | dcr_auxstart[0b11] |
+                                dcr_start[0b10])]
+]
+
+_test _false [
+-- reset primary channel and halt auxiliary on next full transfer boundary
+_def    'resetprim_control      [(set_control | dcr_start[0b00] |
+                                dcr_auxstart[0b10])]
+
+-- reset auxiliary channel and halt primary on next full transfer boundary
+_def    'resetaux_control       [(set_control | dcr_start[0b10] |
+                                dcr_auxstart[0b00])]
+][
+-- reset primary channel and halt auxiliary immediately
+_def    'resetprim_control      [(set_control | dcr_start[0b00] |
+                                dcr_auxstart[0b01])]
+
+-- reset auxiliary channel and halt primary immediately
+_def    'resetaux_control       [(set_control | dcr_start[0b01] |
+                                dcr_auxstart[0b00])]
+]
+
+_def    'hi_prim_control        [(prim_control >> 16)]
+_def    'lo_prim_control        [(prim_control & 0xffff)]
+_def    'hi_aux_control         [(aux_control >> 16)]
+_def    'lo_aux_control         [(aux_control & 0xffff)]
+_def    'hi_resetprim_control   [(resetprim_control >> 16)]
+_def    'lo_resetprim_control   [(resetprim_control & 0xffff)]
+_def    'hi_resetaux_control    [(resetaux_control >> 16)]
+_def    'lo_resetaux_control    [(resetaux_control & 0xffff)]
+]
+
+
+-- void __LinkTx(LinkInfo *link, word linkId, word size, void *buf)
+--
+-- Sets up and starts a DMA transfer to a link using the primary channel of
+-- a split mode DMA engine.
+--
+-- The sometimes odd ordering of these instructions is designed not to stall the
+-- pipeline - so be careful about changing the order.
+--
+-- Called from C so must be PCS conformant
+
+.__LinkTx:
+        -- get word address of link info
+	ldi	R_A1, R_ADDR1
+        C40WordAddress R_ADDR1
+
+        -- get WPTR to source data
+        C40WordAddress R_A4
+
+        -- convert byte to word count (guaranteed by caller to be a word multip)
+        lsh     -2, R_A3
+
+        -- get WPTR to DMA control reg for this link.
+        ldi     *+R_ADDR1(Link.DMAEng), R_ADDR2
+
+        -- shift comms port to ctrl reg field
+        lsh     15, R_A2
+
+        -- store word pointer to source data into DMA source address reg
+        sti     R_A4, *+R_ADDR2(dma_srcaddr)
+
+_test _false [  -- two ways of determining if DMA has completed:
+                -- Thread says interrupt not serviced yet, but DMA may
+                -- have completed, count == 0 says DMA has completed.
+                -- Q: Will reset stop interrupt being raised if it hits just
+                -- at the wrong point with count == 0?
+                -- Q2 is it valid to read the count reg if the engine is
+                -- not stopped?
+        cmpi    0, *+R_ADDR2(dma_auxcount)      -- if other split channel
+][
+        cmpi    0, *+R_ADDR1(Link.RxThread)     -- if other split channel
+]
+        bne     CarefulTxStart                  -- is operating take care
+
+SimpleTxStart:
+        -- neither split channel is operating if we reach this point
+
+        _if _false [    -- @@@ try no reset
+_test _true [
+
+        ldhi    hi_resetboth_control, R_A1
+        or      lo_resetboth_control, R_A1
+
+        -- insert comms port into control reg values
+        or      R_A2, R_A1
+
+        sti     R_A1, *+R_ADDR2(dma_control)
+][
+        _test _defp 'C40STIKBUG [
+                -- reset both channels
+                ldi     0, R_A1
+                sti     R_A1, *+R_ADDR2(dma_control)
+        ][
+                -- reset both channels
+                stik    0, *+R_ADDR2(dma_control)
+        ]
+]
+]
+        -- reset zeros count reg, so we must load it this point
+        -- load primary channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_count)
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and reset for the aux chan
+
+_test _false [
+        ldhi    hi_prim_control, R_A1
+
+        bud     R_LR
+                or      lo_prim_control, R_A1
+][
+        ldhi    hi_gohalt_control, R_A1     -- @@@ try no reset
+
+        bud     R_LR
+                or      lo_gohalt_control, R_A1
+]
+                -- insert comms port into control reg values
+                or      R_A2, R_A1
+
+                -- store Tx attributes in control reg
+                -- THIS STARTS THE DMA TRANSFER
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+CarefulTxStart:
+
+_if _true [ -- @@@ try halting input comms channel before halting DMA
+        lsh     -15, R_A2, R_A4 -- @@@ quick bodge to get chan addr.
+        lsh     4,R_A4
+        addi    0x40,R_A4
+        ldhi    0x10,R_ATMP
+        or      R_A2, R_ATMP
+        stik    0b01000, *R_ATMP
+]
+        -- Rx channel is operating, so we must take care not to simply overwrite
+        -- its channel start value and either stop or restart it at the
+        -- wrong time.
+_test _false [
+        ldhi    hi_resetprim_control, R_A1
+        or      lo_resetprim_control, R_A1
+][
+        ldhi    hi_haltboth_control, R_A1   -- @@@ try no resets
+        or      lo_haltboth_control, R_A1
+]
+        -- this Halts all DMA transfers on either read or write boundary
+        sti     R_A1, *+R_ADDR2(dma_control)
+
+        _test _false [                  -- reads control reg and may therefore
+                                        -- reset interrupt flags
+        haltRx_wait:
+                ldi     *+R_ADDR2(dma_control), R_A4
+--              cmpi    R_A4, R_A1
+--              beq     notdiff
+--              int 0x66ffffff
+--      notdiff:
+                -- @@@ if we do use this, remeber to check the interrupt flags.
+                lsh     -dcr_auxstatusB, R_A1
+                and     0b11, R_A1
+                bz      haltedRx
+                cmpi    0b01, R_A1
+                bne     haltRx_wait     -- loop until Rx side halted
+        ][
+                nop     -- Give time for last transfer to complete
+                nop     -- before the halt takes effect. This should be
+                nop     -- for a minimum of 9 cycles in case we are writing to
+                nop     -- dynamic RAM and miss the current page
+                nop
+                nop
+                nop
+                nop
+                nop
+
+                nop     -- @@@ tmp check
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+
+                nop     -- @@@ tmp check
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+        ]
+
+haltedRx:
+        -- If Rx side was operating, it has now been halted.
+        -- Reset also resets the count, so we must reinstate it.
+        -- load primary channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_count)
+
+_test _true [   -- @@@ try halting input comms channel
+        -- see if the Rx side had just completed anyway
+        cmpi    0, *+R_ADDR2(dma_auxcount)
+        beq     SimpleTxStart2  -- yes Rx has completed - so just start Tx
+
+        -- no start Tx and re-start Rx
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and auxilary channel transfer re-start
+        ldhi    hi_goboth_control, R_A1
+
+        or      lo_goboth_control, R_A1
+
+        -- insert comms port into its control reg field
+        or      R_A2, R_A1
+        -- this starts the Tx and restarts the Rx DMA transfer
+        sti     R_A1, *+R_ADDR2(dma_control)
+
+        -- restart input comms channel
+        lsh     -15, R_A2 -- @@@ quick bodge to get chan addr.
+        lsh     4,R_A2
+        addi    0x40,R_A2
+        bud     R_LR
+                ldhi    0x10,R_ATMP
+                or      R_A2, R_ATMP
+                stik    0b00000, *R_ATMP
+
+SimpleTxStart2:
+        -- restart comms and jump to SimpleTxStart
+        -- restart input comms channel
+        lsh     -15, R_A2, R_A4 -- @@@ quick bodge to get chan addr.
+        lsh     4,R_A4
+        addi    0x40,R_A4
+        bud     SimpleTxStart
+                ldhi    0x10,R_ATMP
+                or      R_A2, R_ATMP
+                stik    0b00000, *R_ATMP
+][
+        -- see if the Rx side had just completed anyway
+        cmpi    0, *+R_ADDR2(dma_auxcount)
+        beq     SimpleTxStart   -- yes Rx has completed - so just start Tx
+
+        -- no start Tx and re-start Rx
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and auxilary channel transfer re-start
+        ldhi    hi_goboth_control, R_A1
+
+        bud     R_LR
+                or      lo_goboth_control, R_A1
+
+                -- insert comms port into its control reg field
+                or      R_A2, R_A1
+
+                -- this starts the Tx and restarts the Rx DMA transfer
+                sti     R_A1, *+R_ADDR2(dma_control)
+]
+
+-- void __LinkRx(LinkInfo *link, word linkId, word size, void *buf)
+--
+-- Sets up and starts a DMA transfer from a link using the auxilary channel of
+-- a split mode DMA engine.
+--
+-- Called from C so must be PCS conformant
+
+.__LinkRx:
+        -- get word address of link info
+	ldi	R_A1, R_ADDR1
+        C40WordAddress R_ADDR1
+
+        -- get WPTR to destination for data
+        C40WordAddress R_A4
+
+        -- convert byte to word count (guaranteed by caller to be a word multip)
+        lsh     -2, R_A3
+
+        -- get WPTR to DMA control reg for this link.
+        ldi     *+R_ADDR1(Link.DMAEng), R_ADDR2
+
+        -- shift comms port to ctrl reg field
+        lsh     15, R_A2
+
+        -- store word pointer to destination for  data into DMA reg
+        sti     R_A4, *+R_ADDR2(dma_dstaddr)
+
+_test _false [  -- two ways of determining if DMA has completed:
+                -- Thread says interrupt not serviced yet, but DMA may
+                -- have completed, count == 0 says DMA has completed.
+                -- Q: Will reset stop interrupt being raised if it hits just
+                -- at the wrong point with count == 0?
+                -- Q2 is it valid to read the count reg if the engine is
+                -- not stopped?
+        cmpi    0, *+R_ADDR2(dma_count)         -- if other split channel
+][
+        cmpi    0, *+R_ADDR1(Link.TxThread)     -- if other split channel
+]
+        bne     CarefulRxStart                  -- is operating take care
+
+        -- load primary channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_auxcount)
+
+SimpleRxStart:
+        _if _false [    -- @@@ try no reset
+        -- neither split channel is operating if we reach this point
+_test _true [
+                ldhi    hi_resetboth_control, R_A1
+                or      lo_resetboth_control, R_A1
+
+                -- insert comms port into control reg values
+                or      R_A2, R_A1
+
+                -- reset both channels
+                sti     R_A1, *+R_ADDR2(dma_control)
+][
+        _test _defp 'C40STIKBUG [
+                -- reset both channels
+                ldi     0, R_A1
+                sti     R_A1, *+R_ADDR2(dma_control)
+        ][
+                -- reset both channels
+                stik    0, *+R_ADDR2(dma_control)
+        ]
+]
+]
+
+        -- load primary channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_auxcount)
+
+        -- load std values to set in DMA control reg
+        -- this value includes auxiliary channel transfer initialisation
+        -- and primary channel reset.
+_test _false [
+        ldhi    hi_aux_control, R_A1
+        bud     R_LR
+                or      lo_aux_control, R_A1
+][
+        ldhi    hi_haltgo_control, R_A1     -- @@@ try no reset
+        bud     R_LR
+                or      lo_haltgo_control, R_A1
+]
+                -- insert comms port into control reg values
+                or      R_A2, R_A1
+                -- store Rx attributes in control reg
+                -- THIS STARTS THE DMA TRANSFER
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+CarefulRxStart:
+        -- Tx channel is operating, so we must take care not to simply overwrite
+        -- its channel start value and either stop or restart it at the
+        -- wrong time.
+
+_if _true [ -- @@@ try halting output comms channel before halting DMA
+        lsh     -15, R_A2, R_A4 -- @@@ quick bodge to get chan addr.
+        lsh     4,R_A4
+        addi    0x40,R_A4
+        ldhi    0x10,R_ATMP
+        or      R_A2, R_ATMP
+        ldi     0b10000, R_A1
+        sti     R_A1, *R_ATMP
+]
+
+        -- reset aux (rx) and halt primary (tx)
+_test _false [
+        ldhi    hi_resetaux_control, R_A1
+        or      lo_resetaux_control, R_A1
+][
+        ldhi    hi_haltboth_control, R_A1   -- @@@ try no resets
+        or      lo_haltboth_control, R_A1
+]
+
+        -- this Halts all DMA transfers on either read or write boundary
+        sti     R_A1, *+R_ADDR2(dma_control)
+
+        _test _false [                  -- reads control reg and may therefore
+                                        -- reset interrupt flags
+        haltTx_wait:
+                ldi     *+R_ADDR2(dma_control), R_A1
+                lsh     -dcr_auxstatusB, R_A1
+                and     0b11, R_A1
+                bz      haltedTx
+                cmpi    0b01, R_A1
+                bne     haltTx_wait     -- loop until Rx side halted
+        ][
+                nop     -- Give time for last transfer to complete
+                nop     -- before the halt takes effect. This should be
+                nop     -- for a minimum of 8 cycles in case we are writing to
+                nop     -- dynamic RAM and miss the current page
+                nop
+                nop
+                nop
+                nop
+                nop
+
+                nop     -- @@@ tmp check
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+
+                nop     -- @@@ tmp check
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+                nop
+        ]
+
+
+haltedTx:
+_test _true [ -- @@@ try halting output channel
+        -- If Tx side was running, is should now have been halted
+
+        -- Reset also resets the count, so we must reinstate it.
+        -- load primary channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_auxcount)
+
+        -- see if the Tx side had just completed anyway
+        cmpi    0, *+R_ADDR2(dma_count)
+        beq     SimpleRxStart   -- yes Tx has completed - so just start Rx
+
+        -- no so start Rx and re-start Tx
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and auxilary channel transfer re-start
+        ldhi    hi_goboth_control, R_A1
+        bud     R_LR
+                or      lo_goboth_control, R_A1
+                -- insert comms port into its control reg field
+                or      R_A2, R_A1
+                -- this starts the Rx and restarts the paused Tx DMA transfer
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+        -- restart input comms channel
+        lsh     -15, R_A2 -- @@@ quick bodge to get chan addr.
+        lsh     4,R_A2
+        addi    0x40,R_A2
+        bud     R_LR
+                ldhi    0x10,R_ATMP
+                or      R_A2, R_ATMP
+                stik    0b00000, *R_ATMP
+
+SimpleRxStart2:
+        -- restart comms and jump to SimpleTxStart
+        -- restart input comms channel
+        lsh     -15, R_A2, R_A4 -- @@@ quick bodge to get chan addr.
+        lsh     4,R_A4
+        addi    0x40,R_A4
+        bud     SimpleTxStart
+                ldhi    0x10,R_ATMP
+                or      R_A2, R_ATMP
+                stik    0b00000, *R_ATMP
+][
+        -- If Tx side was running, is should now have been halted
+
+        -- Reset also resets the count, so we must reinstate it.
+        -- load primary channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_auxcount)
+
+        -- see if the Tx side had just completed anyway
+        cmpi    0, *+R_ADDR2(dma_count)
+        beq     SimpleRxStart   -- yes Tx has completed - so just start Rx
+
+        -- no so start Rx and re-start Tx
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and auxilary channel transfer re-start
+        ldhi    hi_goboth_control, R_A1
+        bud     R_LR
+                or      lo_goboth_control, R_A1
+                -- insert comms port into its control reg field
+                or      R_A2, R_A1
+                -- this starts the Rx and restarts the paused Tx DMA transfer
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+]
+] -- end of test versions
+

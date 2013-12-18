@@ -1,0 +1,260 @@
+From linton@interviews.Stanford.EDU Sat Jun 24 03:36:10 1989
+Return-Path: <linton@interviews.Stanford.EDU>
+Received: from interviews.Stanford.EDU by Control.LTH.Se (3.2/Regler-1 ); Sat, 24 Jun 89 03:34:35 +0200 (MET)
+Received: by interviews.Stanford.EDU (5.57/Ultrix2.4-C)
+	id AA23349; Fri, 23 Jun 89 16:34:52 PDT
+Date: Fri, 23 Jun 89 16:34:52 PDT
+From: linton@interviews.stanford.edu (Mark Linton)
+Message-Id: <8906232334.AA23349@interviews.Stanford.EDU>
+To: J.M.Pullan%newcastle.ac.uk@nsfnet-relay.ac.uk
+Subject: Re:  TextItem problem
+Cc: interviews@interviews.Stanford.EDU
+Status: R
+
+>     I  too  have  found the TextItems do not always de-highlight when
+>you move the pointer of them. The thing that I noticied was  that  the
+>problem  only  appeared when I used twm i.e TextItems worked fine with
+>no window manager or with uwm.
+
+    I finally tracked this one down, though I don't completely understand
+    how the window manager is related to the problem.  It is definitely
+    our bug, though it seems to be tickled by a window manager or setting.
+    Below is the fix.
+
+	Mark
+
+
+Sometimes X will generate a FocusIn event that confuses
+the InterViews On/Off event interpretation.  The typical effect
+is a popup menu that leaves an extra item highlighted.  The problem
+is the FocusIn event sets a static "focus" variable,
+which may cause a subsequent LeaveNotify event to be ignored.
+
+The solution is to split the On/Off events into separate
+events for mouse movement and keyboard focus.  The original InterViews
+model had these unified, which is not right.  The patch below
+replaces OnEvent and OffEvent with EnterEvent and LeaveEvent, and
+adds FocusInEvent and FocusOutEvent for keyboard focus.
+For backward compability, OnEvent is equated to EnterEvent and
+OffEvent is equated to LeaveEvent.  Because of careful placement
+of the constants in the enumeration, it should not be necessary
+to recompile any code when this patch is installed (other than X11.c and
+then rebuilding the library).
+
+--
+
+Apply with ``cd iv; patch -p -N < diffs'' to patch files:
+
+	src/InterViews/event.h
+	src/libInterViews/X11.c
+
+*** /dist/2.5/iv/src/InterViews/event.h	Thu Apr 13 01:01:00 1989
+--- src/InterViews/event.h	Fri Jun 23 15:53:13 1989
+***************
+*** 12,23 ****
+      DownEvent,		/* button pressed */
+      UpEvent,		/* button released */
+      KeyEvent,		/* key pressed, intepreted as ascii */
+!     OnEvent,		/* now input focus */
+!     OffEvent,		/* no longer input focus */
+      ChannelEvent,	/* input pending on channel */
+!     TimerEvent		/* time out on read */
+  };
+  
+  static const int LEFTMOUSE = 0;
+  static const int MIDDLEMOUSE = 1;
+  static const int RIGHTMOUSE = 2;
+--- 12,30 ----
+      DownEvent,		/* button pressed */
+      UpEvent,		/* button released */
+      KeyEvent,		/* key pressed, intepreted as ascii */
+!     EnterEvent,		/* mouse enters canvas */
+!     LeaveEvent,		/* mouse leaves canvas */
+      ChannelEvent,	/* input pending on channel */
+!     TimerEvent,		/* time out on read */
+!     FocusInEvent,	/* focus for keyboard events */
+!     FocusOutEvent 	/* lose keyboard focus */
+  };
+  
++ /* obsolete */
++ static const int OnEvent = EnterEvent;
++ static const int OffEvent = LeaveEvent;
++ 
++ /* mouse buttons */
+  static const int LEFTMOUSE = 0;
+  static const int MIDDLEMOUSE = 1;
+  static const int RIGHTMOUSE = 2;
+*** /dist/2.5/iv/src/libInterViews/X11.c	Tue May 30 01:21:45 1989
+--- src/libInterViews/X11.c	Fri Jun 23 15:54:32 1989
+***************
+*** 49,55 ****
+      return (w+7)/8 * h;
+  }
+  
+! BitmapRep::BitmapRep(const char* filename) {
+      XReadBitmapFile(
+  	_world->display(), _world->root(), filename, &width, &height,
+  	(Pixmap*)&map, &x0, &y0
+--- 49,55 ----
+      return (w+7)/8 * h;
+  }
+  
+! BitmapRep::BitmapRep (const char* filename) {
+      XReadBitmapFile(
+  	_world->display(), _world->root(), filename, &width, &height,
+  	(Pixmap*)&map, &x0, &y0
+***************
+*** 149,155 ****
+      }
+  }
+  
+! static void DrawSourceTransformedImage(
+      XImage* s, int sx0, int sy0,
+      XImage* m, int mx0, int my0,
+      Drawable d, int height, int dx0, int dy0,
+--- 149,155 ----
+      }
+  }
+  
+! static void DrawSourceTransformedImage (
+      XImage* s, int sx0, int sy0,
+      XImage* m, int mx0, int my0,
+      Drawable d, int height, int dx0, int dy0,
+***************
+*** 229,235 ****
+      XSetForeground(_world->display(), gc, fg);
+  }
+  
+! static void DrawDestinationTransformedImage(
+      XImage* s, int sx0, int sy0,
+      XImage* m, int mx0, int my0,
+      Drawable d, int height, int dx0, int dy0,
+--- 229,235 ----
+      XSetForeground(_world->display(), gc, fg);
+  }
+  
+! static void DrawDestinationTransformedImage (
+      XImage* s, int sx0, int sy0,
+      XImage* m, int mx0, int my0,
+      Drawable d, int height, int dx0, int dy0,
+***************
+*** 305,311 ****
+      XSetForeground(_world->display(), gc, fg);
+  }
+  
+! static void DrawTransformedImage(
+      XImage* s, int sx0, int sy0,
+      XImage* m, int mx0, int my0,
+      Drawable d, int height, int dx0, int dy0,
+--- 305,311 ----
+      XSetForeground(_world->display(), gc, fg);
+  }
+  
+! static void DrawTransformedImage (
+      XImage* s, int sx0, int sy0,
+      XImage* m, int mx0, int my0,
+      Drawable d, int height, int dx0, int dy0,
+***************
+*** 676,682 ****
+      return c->pixel;
+  }
+  
+! void ColorRep::GetIntensities(
+      ColorIntensity& red, ColorIntensity& green, ColorIntensity& blue
+  ) {
+      XColor* c = (XColor*)info;
+--- 676,682 ----
+      return c->pixel;
+  }
+  
+! void ColorRep::GetIntensities (
+      ColorIntensity& red, ColorIntensity& green, ColorIntensity& blue
+  ) {
+      XColor* c = (XColor*)info;
+***************
+*** 744,750 ****
+       */
+  
+      Pixmap dst;
+!     GC g;    register int i, j;
+      register unsigned s1, s2;
+  
+      dst = XCreatePixmap(
+--- 744,751 ----
+       */
+  
+      Pixmap dst;
+!     GC g;
+!     register int i, j;
+      register unsigned s1, s2;
+  
+      dst = XCreatePixmap(
+***************
+*** 3067,3073 ****
+  int downmask = ButtonPressMask|ButtonReleaseMask|OwnerGrabButtonMask;
+  int initmask = PointerMotionHintMask;
+  
+- static Window focus;
+  static Sensor* grabber;
+  
+  boolean Sensor::Interesting (void* raw, Event& e) {
+--- 3068,3073 ----
+***************
+*** 3079,3084 ****
+--- 3079,3085 ----
+      switch (x->type) {
+  	case MotionNotify:
+  	    e.eventType = MotionEvent;
++ 	    e.timestamp = x->xmotion.time;
+  	    e.x = x->xmotion.x;
+  	    e.y = x->xmotion.y;
+  	    if (assocTable->Find(i, (void*)x->xmotion.root)) {
+***************
+*** 3111,3131 ****
+  	    b = ButtonIsSet(up, e.button) || (grabber != nil);
+  	    break;
+  	case FocusIn:
+! 	    focus = x->xfocus.window;
+! 	    e.eventType = OnEvent;
+  	    b = true;
+  	    break;
+  	case FocusOut:
+! 	    focus = nil;
+! 	    e.eventType = OffEvent;
+  	    b = true;
+  	    break;
+  	case EnterNotify:
+  	case LeaveNotify:
+! 	    if (x->xcrossing.detail != NotifyInferior &&
+! 		x->xcrossing.window != focus
+! 	    ) {
+! 		e.eventType = x->type == EnterNotify ? OnEvent : OffEvent;
+  		b = true;
+  	    }
+  	    break;
+--- 3112,3135 ----
+  	    b = ButtonIsSet(up, e.button) || (grabber != nil);
+  	    break;
+  	case FocusIn:
+! 	    e.eventType = FocusInEvent;
+  	    b = true;
+  	    break;
+  	case FocusOut:
+! 	    e.eventType = FocusOutEvent;
+  	    b = true;
+  	    break;
+  	case EnterNotify:
++ 	    if (x->xcrossing.detail != NotifyInferior) {
++ 		e.eventType = EnterEvent;
++ 		e.timestamp = x->xcrossing.time;
++ 		b = true;
++ 	    }
++ 	    break;
+  	case LeaveNotify:
+! 	    if (x->xcrossing.detail != NotifyInferior) {
+! 		e.eventType = LeaveEvent;
+! 		e.timestamp = x->xcrossing.time;
+  		b = true;
+  	    }
+  	    break;
+

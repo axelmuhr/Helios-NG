@@ -1,0 +1,6141 @@
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create the files:
+#	rn/addng.c
+#	rn/art.c
+#	rn/artio.c
+#	rn/artsrch.c
+#	rn/backpage.c
+#	rn/bits.c
+#	rn/cheat.c
+#	rn/final.c
+#	rn/head.c
+#	rn/header.c.1.pat
+#	rn/header.c.2.pat
+#	rn/header.h.1.pat
+#	rn/header.h.2.pat
+#	rn/help.c
+#	rn/inews.c.1.pat
+#	rn/inews.c.2.pat
+#	rn/init.c
+#	rn/intrp.c
+#	rn/kfile.c
+#	rn/kitlists.c
+#	rn/last.c
+# This archive created: Wed Mar  1 10:55:47 1989
+export PATH; PATH=/bin:$PATH
+echo shar: extracting "'addng.c'" '(2919 characters)'
+if test -f 'addng.c'
+then
+	echo shar: will not over-write existing file "'addng.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'addng.c'
+	X/* $Header: addng.c,v 4.3.1.2 85/05/29 09:06:24 lwall Exp $
+	X *
+	X * $Log:	addng.c,v $
+	X * Revision 4.3.1.2  85/05/29  09:06:24  lwall
+	X * New newsgroups without spool directories incorrectly classified as "ancient".
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:30:50  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:34:41  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "rn.h"
+	X#include "ngdata.h"
+	X#include "last.h"
+	X#include "util.h"
+	X#include "intrp.h"
+	X#include "only.h"
+	X#include "rcstuff.h"
+	X#include "INTERN.h"
+	X#include "addng.h"
+	X
+	Xvoid
+	Xaddng_init()
+	X{
+	X    ;
+	X}
+	X
+	X#ifdef FINDNEWNG
+	X/* generate a list of new newsgroups from active file */
+	X
+	Xbool
+	Xnewlist(munged,checkinlist)
+	Xbool munged;				/* are we scanning the whole file? */
+	Xbool checkinlist;
+	X{
+	X    char *tmpname;
+	X    register char *s;
+	X    long birthof();
+	X
+	X    tmpname = savestr(filexp("/tmp/rnew.%$"));
+	X    tmpfp = fopen(tmpname,"w");
+	X    if (tmpfp == Nullfp) {
+	X	printf(cantcreate,tmpname) FLUSH;
+	X	return FALSE;
+	X    }
+	X    while (fgets(buf,LBUFLEN,actfp) != Nullch) {
+	X	if (s = index(buf,' ')) {
+	X	    *s++ = '\0';
+	X	    if (strnEQ(buf,"to.",3))
+	X		continue;
+	X	    if (find_ng(buf) == nextrcline &&
+	X		    (checkinlist ?
+	X			(inlist(buf)) :
+	X			(birthof(buf,(ART_NUM)atol(s)) > lasttime)
+	X		    )
+	X		) {
+	X					/* if not in .newsrc and younger */
+	X					/* than the last time we checked */
+	X		fprintf(tmpfp,"%s\n",buf);
+	X					/* then remember said newsgroup */
+	X	    }
+	X#ifdef FASTNEW
+	X	    else {			/* not really a new group */
+	X		if (!munged) {		/* did we assume not munged? */
+	X		    fclose(tmpfp);	/* then go back, knowing that */
+	X		    UNLINK(tmpname);
+	X		    free(tmpname);
+	X		    return TRUE;	/* active file was indeed munged */
+	X		}
+	X	    }
+	X#endif
+	X	}
+	X#ifdef DEBUGGING
+	X	else
+	X	    printf("Bad active record: %s\n",buf) FLUSH;
+	X#endif
+	X    }
+	X
+	X    /* we have successfully generated the list */
+	X
+	X    fclose(tmpfp);
+	X    tmpfp = fopen(tmpname,"r");
+	X    UNLINK(tmpname);			/* be nice to the world */
+	X    if (tmpfp == Nullfp) {
+	X	printf(cantopen,tmpname) FLUSH;
+	X	return FALSE;
+	X    }
+	X    while (fgets(buf,LBUFLEN,tmpfp) != Nullch) {
+	X	buf[strlen(buf)-1] = '\0';
+	X	get_ng(buf,TRUE);		/* add newsgroup, maybe */
+	X    }
+	X    fclose(tmpfp);			/* be nice to ourselves */
+	X    free(tmpname);
+	X    return FALSE;			/* do not call us again */
+	X}
+	X
+	X/* return creation time of newsgroup */
+	X
+	Xlong
+	Xbirthof(ngnam,ngsize)
+	Xchar *ngnam;
+	XART_NUM ngsize;
+	X{
+	X    char tst[128];
+	X    long time();
+	X 
+	X    sprintf(tst, ngsize ? "%s/%s/1" : "%s/%s" ,spool,getngdir(ngnam));
+	X    if (stat(tst,&filestat) < 0)
+	X	return (ngsize ? 0L : time(Null(long *)));
+	X	/* not there, assume something good */
+	X    else
+	X	return filestat.st_mtime;
+	X}
+	X
+	Xbool
+	Xscanactive()
+	X{
+	X    NG_NUM oldnext = nextrcline;	/* remember # lines in newsrc */
+	X
+	X    fseek(actfp,0L,0);
+	X    newlist(TRUE,TRUE);
+	X    if (nextrcline != oldnext) {	/* did we add any new groups? */
+	X	return TRUE;
+	X    }
+	X    return FALSE;
+	X}
+	X
+	X#endif
+	X
+SHAR_EOF
+if test 2919 -ne "`wc -c < 'addng.c'`"
+then
+	echo shar: error transmitting "'addng.c'" '(should have been 2919 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'art.c'" '(22512 characters)'
+if test -f 'art.c'
+then
+	echo shar: will not over-write existing file "'art.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'art.c'
+	X/* $Header: art.c,v 4.3.1.5 85/09/10 11:07:18 lwall Exp $
+	X *
+	X * $Log:	art.c,v $
+	X * Revision 4.3.1.5  85/09/10  11:07:18  lwall
+	X * %m not restored on some returns.
+	X * 
+	X * Revision 4.3.1.4  85/05/23  12:13:31  lwall
+	X * shouldn't display article that's really a subdirectory.
+	X * 
+	X * Revision 4.3.1.3  85/05/13  09:29:55  lwall
+	X * Added CUSTOMLINES option.
+	X * 
+	X * Revision 4.3.1.2  85/05/10  13:46:07  lwall
+	X * Fixed header reparse bug on backpage.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:30:56  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:34:51  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "rn.h"
+	X#include "ngstuff.h"
+	X#include "ngdata.h"
+	X#include "head.h"
+	X#include "cheat.h"
+	X#include "help.h"
+	X#include "search.h"
+	X#include "artio.h"
+	X#include "ng.h"
+	X#include "bits.h"
+	X#include "final.h"
+	X#include "artstate.h"
+	X#include "rcstuff.h"
+	X#include "term.h"
+	X#include "sw.h"
+	X#include "util.h"
+	X#include "backpage.h"
+	X#include "intrp.h"
+	X#include "INTERN.h"
+	X#include "art.h"
+	X
+	X/* page_switch() return values */
+	X
+	X#define PS_NORM 0
+	X#define PS_ASK 1
+	X#define PS_RAISE 2
+	X#define PS_TOEND 3
+	X
+	Xbool special = FALSE;		/* is next page special length? */
+	Xint slines = 0;			/* how long to make page when special */
+	XART_LINE highlight = -1;	/* next line to be highlighted */
+	Xchar *restart = Nullch;		/* if nonzero, the place where last */
+	X				/* line left off on line split */
+	Xchar *blinebeg;			/* where in buffer current line began */
+	XART_POS alinebeg;		/* where in file current line began */
+	X
+	X#ifdef INNERSEARCH
+	XART_POS innersearch = 0;	/* artpos of end of line we found */
+	X				/* for 'g' command */
+	XART_LINE isrchline = 0;			/* last line to display */
+	Xbool hide_everything = FALSE;
+	X				/* if set, do not write page now, */
+	X				/* but refresh when done with page */
+	XCOMPEX gcompex;				/* in article search pattern */
+	X#endif
+	X
+	Xbool firstpage;			/* is this the 1st page of article? */
+	X
+	Xchar art_buf[LBUFLEN];		/* place for article lines */
+	X
+	Xvoid
+	Xart_init()
+	X{
+	X    ;
+	X}
+	X
+	Xint
+	Xdo_article()
+	X{
+	X    register char *s;
+	X    ART_POS artsize;			/* size in bytes of article */
+	X    bool hide_this_line = FALSE;	/* hidden header line? */
+	X    ART_LINE linenum;	/* line # on page, 1 origin */
+	X#ifdef ULSMARTS
+	X    bool under_lining = FALSE;
+	X			    /* are we underlining a word? */
+	X#endif
+	X    register char *bufptr = art_buf;
+	X			    /* pointer to input buffer */
+	X    register int outpos;	/* column position of output */
+	X    static char prompt_buf[64];		/* place to hold prompt */
+	X    bool notesfiles = FALSE;		/* might there be notesfiles junk? */
+	X    char oldmode = mode;
+	X
+	X#ifdef INNERSEARCH
+	X    register int outputok;
+	X#endif
+	X
+	X    if (fstat(artfp->_file,&filestat))
+	X			    /* get article file stats */
+	X	return DA_CLEAN;
+	X    if (filestat.st_mode & S_IFMT != S_IFREG)
+	X	return DA_NORM;
+	X    artsize = filestat.st_size;
+	X			    /* from that get article size */
+	X    sprintf(prompt_buf,
+	X	"%%sEnd of article %ld (of %ld)--what next? [%%s]",
+	X	(long)art,(long)lastart);	/* format prompt string */
+	X    prompt = prompt_buf;
+	X    int_count = 0;		/* interrupt count is 0 */
+	X    firstpage = (topline < 0);
+	X    for (;;) {			/* for each page */
+	X	assert(art == openart);
+	X	if (do_fseek) {
+	X#ifdef ASYNC_PARSE
+	X	    parse_maybe(art);		/* make sure header is ours */
+	X#endif
+	X	    artpos = vrdary(artline);
+	X	    if (artpos < 0)
+	X		artpos = -artpos;	/* labs(), anyone? */
+	X	    if (firstpage)
+	X		artpos = (ART_POS)0;
+	X	    fseek(artfp,artpos,0);
+	X	    if (artpos < htype[PAST_HEADER].ht_minpos)
+	X		in_header = SOME_LINE;
+	X	    do_fseek = FALSE;
+	X	    restart = Nullch;
+	X	}
+	X	if (firstpage) {
+	X	    if (firstline) {
+	X		interp(art_buf, (sizeof art_buf), firstline);
+	X#ifdef CLEAREOL
+	X		maybe_eol();	/* PWP */
+	X#endif CLEAREOL
+	X		fputs(art_buf,stdout) FLUSH;
+	X		artopen(art);		/* rewind article in case interp */
+	X					/* forced a header parse */
+	X	    }
+	X	    else {
+	X		ART_NUM i;
+	X
+	X#ifdef CLEAREOL
+	X		maybe_eol();	/* PWP */
+	X#endif CLEAREOL
+	X		printf("Article %ld",(long)art);
+	X		i = (((ART_NUM)toread[ng]) - 1 + was_read(art));
+	X#ifdef DELAYMARK
+	X		if (i || dmcount) {
+	X		    printf(" (%ld more",(long)i);
+	X		    if (dmcount)
+	X			printf(" + %ld Marked to return)",(long)dmcount);
+	X		    putchar(')');
+	X		}
+	X#else
+	X		if (i)
+	X		    printf(" (%ld more)",(long)i);
+	X#endif
+	X		if (htype[NGS_LINE].ht_flags & HT_HIDE)
+	X		    printf(" in %s", ngname);
+	X		fputs(moderated,stdout);
+	X		fputs(":\n",stdout) FLUSH;
+	X	    }
+	X	    start_header(art);
+	X	    forcelast = FALSE;		/* we will have our day in court */
+	X	    restart = Nullch;
+	X	    artline = 0;		/* start counting lines */
+	X	    artpos = 0;
+	X	    vwtary(artline,artpos);	/* remember pos in file */
+	X	}
+	X	for (linenum=(firstpage?2:1);
+	X	  in_header || (
+	X#ifdef INNERSEARCH
+	X	  innersearch ? innermore() :
+	X#endif
+	X	  linenum<(firstpage?initlines:(special?slines:LINES)) );
+	X	  linenum++) {		/* for each line on page */
+	X	    if (int_count) {	/* exit via interrupt? */
+	X		putchar('\n') FLUSH;	/* get to left margin */
+	X		int_count = 0;	/* reset interrupt count */
+	X		mode = oldmode;
+	X		return DA_NORM;	/* skip out of loops */
+	X	    }
+	X	    if (restart) {		/* did not finish last line? */
+	X		bufptr = restart;	/* then start again here */
+	X		restart = Nullch;	/* and reset the flag */
+	X	    }
+	X	    else {			/* not a restart */
+	X		if (fgets(art_buf,LBUFLEN,artfp)==Nullch) {
+	X					/* if all done */
+	X		    mode = oldmode;
+	X		    return DA_NORM;	/* skip out of loops */
+	X		}
+	X		bufptr = art_buf;	/* so start at beginning */
+	X		art_buf[LBUFLEN-1] = '\0';
+	X					/* make sure string ends */
+	X	    }
+	X	    blinebeg = bufptr;	/* remember where we began */
+	X	    alinebeg = artpos;	/* both in buffer and file */
+	X	    if (in_header && bufptr == art_buf)
+	X		hide_this_line =
+	X		    parseline(art_buf,do_hiding,hide_this_line);
+	X	    else if (notesfiles && do_hiding &&
+	X	      bufptr == art_buf && *art_buf == '#' &&
+	X	      isupper(art_buf[1]) && art_buf[2] == ':' ) {
+	X		fgets(art_buf,sizeof(art_buf),artfp);
+	X		if (index(art_buf,'!') != Nullch)
+	X		    fgets(art_buf,sizeof(art_buf),artfp);
+	X		htype[PAST_HEADER].ht_minpos = ftell(artfp);
+	X					/* exclude notesfiles droppings */
+	X		hide_this_line = TRUE;	/* and do not print either */
+	X		notesfiles = FALSE;
+	X	    }
+	X#ifdef CUSTOMLINES
+	X	    if (hideline && bufptr == art_buf &&
+	X		  execute(&hide_compex,art_buf) )
+	X		hide_this_line = TRUE;
+	X#endif
+	X	    if (in_header && htype[in_header].ht_flags & HT_MAGIC) {
+	X		if (in_header == NGS_LINE) {
+	X		    hide_this_line = (index(art_buf,',') == Nullch);
+	X		}
+	X		else if (in_header == EXPIR_LINE) {
+	X		    if (!(htype[EXPIR_LINE].ht_flags & HT_HIDE))
+	X		    hide_this_line = (strlen(art_buf) < 10);
+	X		}
+	X	    }
+	X	    if (in_header == SUBJ_LINE &&
+	X		htype[SUBJ_LINE].ht_flags & HT_MAGIC) {
+	X			    /* is this the subject? */
+	X		int length;
+	X
+	X		length = strlen(art_buf)-1;
+	X		artline++;
+	X		art_buf[length] = '\0';		/* wipe out newline */
+	X#ifdef NOFIREWORKS
+	X		no_ulfire();
+	X#endif
+	X		notesfiles =
+	X		    (instr(&art_buf[length-10]," - (nf") != Nullch);
+	X		if (oldsubject) {
+	X		    length += 7;
+	X		    fputs("(SAME) ",stdout);
+	X		    oldsubject = FALSE;
+	X		}
+	X		if (length+UG > COLS) {		/* rarely true */
+	X		    linenum++;
+	X		    vwtary(artline,vrdary(artline-1)+COLS);
+	X		    artline++;
+	X		}
+	X		s = art_buf + 8;
+	X		*s++ = '\0';	/* make into 2 strings */
+	X#ifdef CLEAREOL
+	X		maybe_eol();	/* PWP */
+	X#endif CLEAREOL
+	X		fputs(art_buf,stdout) FLUSH;
+	X				/* print up through : */
+	X		if (!UG)
+	X		    putchar(' ');
+	X		underprint(s);	/* print subject underlined */
+	X		putchar('\n') FLUSH;	/* and finish the line */
+	X	    }
+	X	    else if (hide_this_line && do_hiding) {
+	X					/* do not print line? */
+	X		linenum--;		/* compensate for linenum++ */
+	X		if (!in_header)
+	X		    hide_this_line = FALSE;
+	X	    }
+	X	    else {			/* just a normal line */
+	X		if (highlight==artline) {	/* this line to be highlit? */
+	X		    if (marking == STANDOUT) {
+	X#ifdef NOFIREWORKS
+	X			if (erase_screen)
+	X			    no_sofire();
+	X#endif
+	X			standout();
+	X		    }
+	X		    else {
+	X#ifdef NOFIREWORKS
+	X			if (erase_screen)
+	X			    no_ulfire();
+	X#endif
+	X			underline();
+	X		    }
+	X		    if (*bufptr == '\n')
+	X			putchar(' ');
+	X		}
+	X#ifdef INNERSEARCH
+	X		outputok = !hide_everything;
+	X					/* get it into register, hopefully */
+	X#endif
+	X#ifdef CLEAREOL
+	X#ifdef INNERSEARCH
+	X		if (outputok)
+	X#endif
+	X		maybe_eol();	/* PWP */
+	X#endif CLEAREOL
+	X#ifdef CUSTOMLINES
+	X		if (pagestop && bufptr == art_buf && 
+	X		  execute(&page_compex,art_buf) )
+	X		    linenum = 32700;
+	X#endif
+	X		for (outpos = 0; outpos < COLS; ) {
+	X				    /* while line has room */
+	X		    if (*bufptr >= ' ') {	/* normal char? */
+	X#ifdef ULSMARTS
+	X			if (*bufptr == '_') {
+	X			    if (bufptr[1] == '\b') {
+	X				if (!under_lining && highlight!=artline
+	X#ifdef INNERSEARCH
+	X				    && outputok
+	X#endif
+	X				    ) {
+	X				    under_lining++;
+	X				    if (UG) {
+	X					if (bufptr != buf &&
+	X					  bufptr[-1] == ' ') {
+	X					    outpos--;
+	X					    backspace();
+	X					}
+	X				    }
+	X				    underline();
+	X				}
+	X				bufptr += 2;
+	X			    }
+	X			}
+	X			else {
+	X			    if (under_lining) {
+	X				under_lining = 0;
+	X				un_underline();
+	X				if (UG) {
+	X				    if (*bufptr == ' ')
+	X					goto skip_put;
+	X				    outpos++;
+	X				}
+	X			    }
+	X			}
+	X#endif
+	X#ifdef INNERSEARCH
+	X			if (outputok)
+	X#endif
+	X			{
+	X#ifdef ROTATION
+	X			    if (rotate && !in_header
+	X			      && isalpha(*bufptr)) {
+	X				if ((*bufptr & 31) <= 13)
+	X				    putchar(*bufptr+13);
+	X				else
+	X				    putchar(*bufptr-13);
+	X			    }
+	X			    else
+	X#endif
+	X				putchar(*bufptr);
+	X			}
+	X			if (*UC && ((highlight==artline && marking == 1)
+	X#ifdef ULSMARTS
+	X			    || under_lining
+	X#endif
+	X			    )) {
+	X			    backspace();
+	X			    underchar();
+	X			}
+	X		    skip_put:
+	X			bufptr++;
+	X			outpos++;
+	X		    }
+	X		    else if (*bufptr == '\n' || !*bufptr) {
+	X						    /* newline? */
+	X#ifdef ULSMARTS
+	X			if (under_lining) {
+	X			    under_lining = 0;
+	X			    un_underline();
+	X			}
+	X#endif
+	X#ifdef DEBUGGING
+	X			if (debug & DEB_INNERSRCH && outpos < COLS - 6) {
+	X			    standout();
+	X			    printf("%4d",artline); 
+	X			    un_standout();
+	X			}
+	X#endif
+	X#ifdef INNERSEARCH
+	X			if (outputok)
+	X#endif
+	X			    putchar('\n') FLUSH;
+	X			restart = 0;
+	X			outpos = 1000;	/* signal normal \n */
+	X		    }
+	X		    else if (*bufptr == '\t') {	/* tab? */
+	X#ifdef INNERSEARCH
+	X			if (outputok)
+	X#endif
+	X			    putchar(*bufptr);
+	X			bufptr++;
+	X			outpos += 8 - outpos % 8;
+	X		    }
+	X		    else if (*bufptr == '\f') {	/* form feed? */
+	X#ifdef INNERSEARCH
+	X			if (outputok)
+	X#endif
+	X			    fputs("^L",stdout);
+	X			if (bufptr == blinebeg && highlight != artline)
+	X			    linenum = 32700;
+	X			    /* how is that for a magic number? */
+	X			bufptr++;
+	X			outpos += 2;
+	X		    }
+	X		    else {		/* other control char */
+	X#ifdef INNERSEARCH
+	X			if (outputok)
+	X#endif
+	X			{
+	X			    putchar('^');
+	X			    if (highlight == artline && *UC && marking == 1) {
+	X				backspace();
+	X				underchar();
+	X				putchar(*bufptr+64);
+	X				backspace();
+	X				underchar();
+	X			    }
+	X			    else
+	X				putchar(*bufptr+64);
+	X			}
+	X			bufptr++;
+	X			outpos += 2;
+	X		    }
+	X		    
+	X		} /* end of column loop */
+	X
+	X		if (outpos < 1000) {/* did line overflow? */
+	X		    restart = bufptr;
+	X				    /* restart here next time */
+	X		    if (AM) {	/* automatic margins on tty? */
+	X			if (!XN && *bufptr == '\n')
+	X				    /* need we simulate XN? */
+	X			    restart = 0;
+	X				    /* skip the newline */
+	X		    }
+	X		    else {		/* cursor just hangs there */
+	X#ifdef INNERSEARCH
+	X			if (outputok)
+	X#endif
+	X			    putchar('\n') FLUSH;
+	X				    /* so move it down ourselves */
+	X			if (*bufptr == '\n')
+	X			    restart = 0;
+	X				    /* simulate XN if need be */
+	X		    }
+	X#ifdef CLEAREOL
+	X/* #ifdef INNERSEARCH
+	X		    if (outputok)
+	X#endif
+	X		    maybe_eol(); */	/* PWP *//* comment this out for now
+	X						    until I am sure it is
+	X						    needed*/
+	X
+	X#endif CLEAREOL
+	X		}
+	X
+	X		/* handle normal end of output line formalities */
+	X
+	X		if (highlight == artline) {
+	X					/* were we highlighting line? */
+	X		    if (marking == STANDOUT)
+	X			un_standout();
+	X		    else
+	X			un_underline();
+	X		    highlight = -1;	/* no more we are */
+	X		}
+	X		artline++;	/* count the line just printed */
+	X		if (artline - LINES + 1 > topline)
+	X			    /* did we just scroll top line off? */
+	X		    topline = artline - LINES + 1;
+	X			    /* then recompute top line # */
+	X	    }
+	X
+	X	    /* determine actual position in file */
+	X
+	X	    if (restart)	/* stranded somewhere in the buffer? */
+	X		artpos += restart - blinebeg;
+	X			    /* just calculate position */
+	X	    else		/* no, ftell will do */
+	X		artpos = ftell(artfp);
+	X			    /* so do ftell */
+	X	    vwtary(artline,artpos);	/* remember pos in file */
+	X	} /* end of line loop */
+	X
+	X#ifdef INNERSEARCH
+	X	innersearch = 0;
+	X	if (hide_everything) {
+	X	    hide_everything = FALSE;
+	X	    *buf = Ctl('l');
+	X	    goto fake_command;
+	X	}
+	X#endif
+	X	if (linenum >= 32700)/* did last line have formfeed? */
+	X	    vwtary(artline-1,-vrdary(artline-1));
+	X			    /* remember by negating pos in file */
+	X
+	X	special = FALSE;	/* end of page, so reset page length */
+	X	firstpage = FALSE;	/* and say it is not 1st time thru */
+	X
+	X	/* extra loop bombout */
+	X
+	X	if (artpos == artsize) {/* did we just now reach EOF? */
+	X	    mode = oldmode;
+	X	    return DA_NORM;	/* avoid --MORE--(100%) */
+	X	}
+	X
+	X/* not done with this article, so pretend we are a pager */
+	X
+	Xreask_pager:		    
+	X	unflush_output();	/* disable any ^O in effect */
+	X	standout();		/* enter standout mode */
+	X	printf("--MORE--(%ld%%)",(long)(artpos*100/artsize));
+	X	un_standout();	/* leave standout mode */
+	X	fflush(stdout);
+	X/* reinp_pager:     			/* unused, commented for lint */
+	X	eat_typeahead();
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_CHECKPOINTING) {
+	X	    printf("(%d %d %d)",checkcount,linenum,artline);
+	X	    fflush(stdout);
+	X	}
+	X#endif
+	X	if (checkcount >= docheckwhen &&
+	X	  linenum == LINES &&
+	X	  (artline > 40 || checkcount >= docheckwhen+10) ) {
+	X			    /* while he is reading a whole page */
+	X			    /* in an article he is interested in */
+	X	    checkcount = 0;
+	X	    checkpoint_rc();	/* update .newsrc */
+	X	}
+	X	collect_subjects();		/* loads subject cache until */
+	X					/* input is pending */
+	X	mode = 'p';
+	X	getcmd(buf);
+	X	if (errno) {
+	X	    if (LINES < 100 && !int_count)
+	X		*buf = '\f';/* on CONT fake up refresh */
+	X	    else {
+	X		*buf = 'q';	/* on INTR or paper just quit */
+	X	    }
+	X	}
+	X	carriage_return();
+	X#ifndef CLEAREOL
+	X	erase_eol();	/* and erase the prompt */
+	X#else
+	X	if (erase_screen && can_home_clear)	/* PWP was here */
+	X	    clear_rest();
+	X	else
+	X	    erase_eol();	/* and erase the prompt */
+	X#endif CLEAREOL
+	X	fflush(stdout);
+	X
+	X    fake_command:		/* used by innersearch */
+	X
+	X	/* parse and process pager command */
+	X
+	X	switch (page_switch()) {
+	X	case PS_ASK:	/* reprompt "--MORE--..." */
+	X	    goto reask_pager;
+	X	case PS_RAISE:	/* reparse on article level */
+	X	    mode = oldmode;
+	X	    return DA_RAISE;
+	X	case PS_TOEND:	/* fast pager loop exit */
+	X	    mode = oldmode;
+	X	    return DA_TOEND;
+	X	case PS_NORM:	/* display more article */
+	X	    break;
+	X	}
+	X    } /* end of page loop */
+	X}
+	X
+	X/* process pager commands */
+	X
+	Xint
+	Xpage_switch()
+	X{
+	X    register char *s;
+	X    
+	X    switch (*buf) {
+	X    case 'd':
+	X    case Ctl('d'):	/* half page */
+	X	special = TRUE;
+	X	slines = LINES / 2 + 1;
+	X	if (marking && *blinebeg != '\f'
+	X#ifdef CUSTOMLINES
+	X	  && (!pagestop || blinebeg != art_buf ||
+	X	      !execute(&page_compex,blinebeg))
+	X#endif
+	X	  ) {
+	X	    up_line();
+	X	    highlight = --artline;
+	X	    restart = blinebeg;
+	X	    artpos = alinebeg;
+	X	}
+	X	return PS_NORM;
+	X    case '!':			/* shell escape */
+	X	escapade();
+	X	return PS_ASK;
+	X#ifdef INNERSEARCH
+	X    case Ctl('i'):
+	X	gline = 3;
+	X	sprintf(cmd_buf,"^[^%c]",*blinebeg);
+	X	compile(&gcompex,cmd_buf,TRUE,TRUE);
+	X	goto caseG;
+	X    case Ctl('g'):
+	X	gline = 3;
+	X	compile(&gcompex,"^Subject:",TRUE,TRUE);
+	X	goto caseG;
+	X    case 'g':		/* in-article search */
+	X	if (!finish_command(FALSE))/* get rest of command */
+	X	    return PS_ASK;
+	X	s = buf+1;
+	X	if (isspace(*s))
+	X	    s++;
+	X	if ((s = compile(&gcompex,s,TRUE,TRUE)) != Nullch) {
+	X			    /* compile regular expression */
+	X	    printf("\n%s\n",s) FLUSH;
+	X	    return PS_ASK;
+	X	}
+	X	carriage_return();
+	X	erase_eol();	/* erase the prompt */
+	X	/* FALL THROUGH */
+	X    caseG:
+	X    case 'G': {
+	X	/* ART_LINE lines_to_skip = 0; */
+	X	ART_POS start_where;
+	X
+	X	if (gline < 0 || gline > LINES-2)
+	X	    gline = LINES-2;
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_INNERSRCH)
+	X	    printf("Start here? %d  >=? %d\n",topline + gline + 1,artline)
+	X	      FLUSH;
+	X#endif
+	X	if (*buf == Ctl('i') || topline+gline+1 >= artline)
+	X	    start_where = artpos;
+	X			/* in case we had a line wrap */
+	X	else {
+	X	    start_where = vrdary(topline+gline+1);
+	X	    if (start_where < 0)
+	X		start_where = -start_where;
+	X	}
+	X	if (start_where < htype[PAST_HEADER].ht_minpos)
+	X	    start_where = htype[PAST_HEADER].ht_minpos;
+	X	fseek(artfp,(long)start_where,0);
+	X	innersearch = 0; /* assume not found */
+	X	while (fgets(buf, sizeof buf, artfp) != Nullch) {
+	X	    /* lines_to_skip++; 		NOT USED NOW */
+	X#ifdef DEBUGGING
+	X	    if (debug & DEB_INNERSRCH)
+	X		printf("Test %s",buf) FLUSH;
+	X#endif
+	X	    if (execute(&gcompex,buf) != Nullch) {
+	X		innersearch = ftell(artfp);
+	X		break;
+	X	    }
+	X	}
+	X	if (!innersearch) {
+	X	    fseek(artfp,artpos,0);
+	X	    fputs("(Not found)",stdout) FLUSH;
+	X	    return PS_ASK;
+	X	}
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_INNERSRCH)
+	X	    printf("On page? %ld <=? %ld\n",(long)innersearch,(long)artpos)
+	X	      FLUSH;
+	X#endif
+	X	if (innersearch <= artpos) {	/* already on page? */
+	X	    if (innersearch < artpos) {
+	X		artline = topline+1;
+	X		while (vrdary(artline) < innersearch)
+	X		    artline++;
+	X	    }
+	X	    highlight = artline - 1;
+	X#ifdef DEBUGGING
+	X	    if (debug & DEB_INNERSRCH)
+	X		printf("@ %d\n",highlight) FLUSH;
+	X#endif
+	X	    topline = highlight - gline;
+	X	    if (topline < -1)
+	X		topline = -1;
+	X	    *buf = '\f';		/* fake up a refresh */
+	X	    innersearch = 0;
+	X	    return page_switch();
+	X	}
+	X	else {				/* who knows how many lines it is? */
+	X	    do_fseek = TRUE;
+	X	    hide_everything = TRUE;
+	X	}
+	X	return PS_NORM;
+	X    }
+	X#else
+	X    case 'g': case 'G': case Ctl('g'):
+	X	notincl("g");
+	X	return PS_ASK;
+	X#endif
+	X    case '\n':		/* one line */
+	X	special = TRUE;
+	X	slines = 2;
+	X	return PS_NORM;
+	X#ifdef ROTATION
+	X    case 'X':
+	X	rotate = !rotate;
+	X	/* FALL THROUGH */
+	X#endif
+	X    case 'l':
+	X    case '\f':		/* refresh screen */
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_INNERSRCH) {
+	X	    printf("Topline = %d",topline) FLUSH;
+	X	    gets(buf);
+	X	}
+	X#endif
+	X	clear();
+	X	do_fseek = TRUE;
+	X	artline = topline;
+	X	if (artline < 0)
+	X	    artline = 0;
+	X	firstpage = (topline < 0);
+	X	return PS_NORM;
+	X    case 'b':
+	X    case '\b':			/* I like backspace for this -- PWP */
+	X					/* Leaving it undocumented in case */
+	X					/* I want to steal the key--LAW */
+	X    case Ctl('b'): {	/* back up a page */
+	X	ART_LINE target;
+	X
+	X#ifndef CLEAREOL
+	X	clear();
+	X#else
+	X	if (can_home_clear)	/* if we can home do it -- PWP */
+	X	    home_cursor();
+	X	else
+	X	    clear();
+	X
+	X#endif CLEAREOL
+	X	do_fseek = TRUE;	/* reposition article file */
+	X	target = topline - (LINES - 2);
+	X	artline = topline;
+	X	do {
+	X	    artline--;
+	X	} while (artline >= 0 && artline > target &&
+	X	    vrdary(artline-1) >= 0);
+	X	topline = artline;
+	X			/* remember top line of screen */
+	X			/*  (line # within article file) */
+	X	if (artline < 0)
+	X	    artline = 0;
+	X	firstpage = (topline < 0);
+	X	return PS_NORM;
+	X    }
+	X    case 'h': {		/* help */
+	X	int cmd;
+	X
+	X	if ((cmd = help_page()) > 0)
+	X	    pushchar(cmd);
+	X	return PS_ASK;
+	X    }
+	X    case '\177':
+	X    case '\0':		/* treat del,break as 'n' */
+	X	*buf = 'n';
+	X	/* FALL THROUGH */
+	X    case 'k':	case 'K':
+	X    case 'n':	case 'N':	case Ctl('n'):
+	X    case 's':	case 'S':
+	X    case 'u':
+	X    case 'w':	case 'W':
+	X    case '|':
+	X	mark_as_read(art);	/* mark article as read */
+	X	/* FALL THROUGH */
+	X    case '#':
+	X    case '$':
+	X    case '&':
+	X    case '-':
+	X    case '.':
+	X    case '/':
+	X    case '1': case '2': case '3': case '4': case '5':
+	X    case '6': case '7': case '8': case '9':
+	X    case '=':
+	X    case '?':
+	X    case 'c':	case 'C':	
+	X    case 'f':	case 'F':	
+	X    case 'j':
+	X				case Ctl('k'):
+	X    case 'm':	case 'M':	
+	X    case 'p':	case 'P':	case Ctl('p'):	
+	X		case 'Q':
+	X    case 'r':	case 'R':	case Ctl('r'):
+	X    case 'v':
+	X		case 'Y':
+	X#ifndef ROTATION
+	X    case 'x':	case 'X':
+	X#endif
+	X    case Ctl('x'):
+	X    case '^':
+	X
+	X#ifdef ROTATION
+	X	rotate = FALSE;
+	X#endif
+	X	reread = FALSE;
+	X	do_hiding = TRUE;
+	X	if (index("nNpP",*buf) == Nullch &&
+	X	  index("wWsS!&|/?123456789.",*buf) != Nullch) {
+	X	    setdfltcmd();
+	X	    standout();		/* enter standout mode */
+	X	    printf(prompt,mailcall,dfltcmd);
+	X			    /* print prompt, whatever it is */
+	X	    un_standout();	/* leave standout mode */
+	X	    putchar(' ');
+	X	    fflush(stdout);
+	X	}
+	X	return PS_RAISE;	/* and pretend we were at end */
+	X#ifdef ROTATION
+	X    case 'x':
+	X	rotate = TRUE;
+	X	/* FALL THROUGH */
+	X#endif
+	X    case 'y':
+	X    case Ctl('v'):		/* I like emacs -- PWP */
+	X					/* Leaving it undocumented in case */
+	X					/* I want to steal the key--LAW */
+	X    case ' ':	/* continue current article */
+	X	if (erase_screen) {	/* -e? */
+	X#ifndef CLEAREOL
+	X	    clear();		/* clear screen */
+	X#else
+	X	    if (can_home_clear)	/* if we can home do it -- PWP */
+	X		home_cursor();
+	X	    else
+	X		clear();	/* else clear screen */
+	X
+	X#endif CLEAREOL
+	X	    if (*blinebeg != '\f'
+	X#ifdef CUSTOMLINES
+	X	      && (!pagestop || blinebeg != art_buf ||
+	X	          !execute(&page_compex,blinebeg))
+	X#endif
+	X	      ) {
+	X		restart = blinebeg;
+	X		artline--;	 /* restart this line */
+	X		artpos = alinebeg;
+	X		if (marking)	/* and mark repeated line */
+	X		    highlight = artline;
+	X	    }
+	X	    topline = artline;
+	X			/* and remember top line of screen */
+	X			/*  (line # within article file) */
+	X	}
+	X	else if (marking && *blinebeg != '\f'
+	X#ifdef CUSTOMLINES
+	X	  && (!pagestop || blinebeg != art_buf ||
+	X	      !execute(&page_compex,blinebeg))
+	X#endif
+	X	  ) {
+	X				/* are we marking repeats? */
+	X	    up_line();		/* go up one line */
+	X	    highlight = --artline;/* and get ready to highlight */
+	X	    restart = blinebeg;	/*   the old line */
+	X	    artpos = alinebeg;
+	X	}
+	X	return PS_NORM;
+	X    case 'q':	/* quit this article? */
+	X	do_hiding = TRUE;
+	X	return PS_TOEND;
+	X    default:
+	X	fputs(hforhelp,stdout) FLUSH;
+	X	settle_down();
+	X	return PS_ASK;
+	X    }
+	X}
+	X
+	X#ifdef INNERSEARCH
+	Xbool
+	Xinnermore()
+	X{
+	X    if (artpos < innersearch) {		/* not even on page yet? */
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_INNERSRCH)
+	X	    printf("Not on page %ld < %ld\n",(long)artpos,(long)innersearch)
+	X	      FLUSH;
+	X#endif
+	X	return TRUE;
+	X    }
+	X    if (artpos == innersearch) {	/* just got onto page? */
+	X	isrchline = artline;		/* remember first line after */
+	X	highlight = artline - 1;
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_INNERSRCH)
+	X	    printf("There it is %ld = %ld, %d @ %d\n",(long)artpos,
+	X		(long)innersearch,hide_everything,highlight) FLUSH;
+	X#endif
+	X	if (hide_everything) {		/* forced refresh? */
+	X	    topline = highlight - gline;
+	X	    if (topline < -1)
+	X		topline = -1;
+	X	    return FALSE;		/* let refresh do it all */
+	X	}
+	X    }
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_INNERSRCH)
+	X	printf("Not far enough? %d <? %d + %d\n",artline,isrchline,gline)
+	X	  FLUSH;
+	X#endif
+	X    if (artline < isrchline + gline) {
+	X	return TRUE;
+	X    }
+	X    return FALSE;
+	X}
+	X#endif
+SHAR_EOF
+if test 22512 -ne "`wc -c < 'art.c'`"
+then
+	echo shar: error transmitting "'art.c'" '(should have been 22512 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'artio.c'" '(1603 characters)'
+if test -f 'artio.c'
+then
+	echo shar: will not over-write existing file "'artio.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'artio.c'
+	X/* $Header: artio.c,v 4.3 85/05/01 11:35:39 lwall Exp $
+	X *
+	X * $Log:	artio.c,v $
+	X * Revision 4.3  85/05/01  11:35:39  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "INTERN.h"
+	X#include "artio.h"
+	X
+	Xvoid
+	Xartio_init()
+	X{
+	X    ;
+	X}
+	X
+	X/* open an article, unless it's already open */
+	X
+	XFILE *
+	Xartopen(artnum)
+	XART_NUM artnum;
+	X{
+	X    char artname[8];			/* filename of current article */
+	X
+	X    if (artnum < 1)
+	X	return Nullfp;
+	X    if (openart == artnum) {		/* this article is already open? */
+	X	fseek(artfp,0L,0);		/* just get to the beginning */
+	X	return artfp;			/* and say we succeeded */
+	X    }
+	X    if (artfp != Nullfp) {		/* it was somebody else? */
+	X	fclose(artfp);			/* put them out of their misery */
+	X	openart = 0;			/* and remember them no more */
+	X    }
+	X    sprintf(artname,"%ld",(long)artnum);
+	X					/* produce the name of the article */
+	X    if (artfp = fopen(artname,"r"))	/* if we can open it */
+	X	openart = artnum;		/* remember what we did here */
+	X#ifdef LINKART
+	X    {
+	X	char tmpbuf[256];
+	X	char *s;
+	X
+	X	if (fstat(artfp->_file,&filestat))
+	X	    return artfp;
+	X	if (filestat.st_size < (sizeof tmpbuf)) {
+	X	    fgets(tmpbuf,(sizeof tmpbuf),artfp);
+	X	    if (*tmpbuf == '/') {	/* is a "link" to another article */
+	X		fclose(artfp);
+	X		if (s=index(tmpbuf,'\n'))
+	X		    *s = '\0';
+	X		if (!(artfp = fopen(tmpbuf,"r")))
+	X		    openart = 0;
+	X		else {
+	X		    if (*linkartname)
+	X			free(linkartname);
+	X		    linkartname = savestr(tmpbuf);
+	X		}
+	X	    }
+	X	    else
+	X		fseek(artfp,0L,0);		/* get back to the beginning */
+	X	}
+	X    }
+	X#endif
+	X    return artfp;			/* and return either fp or NULL */
+	X}
+	X
+SHAR_EOF
+if test 1603 -ne "`wc -c < 'artio.c'`"
+then
+	echo shar: error transmitting "'artio.c'" '(should have been 1603 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'artsrch.c'" '(6815 characters)'
+if test -f 'artsrch.c'
+then
+	echo shar: will not over-write existing file "'artsrch.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'artsrch.c'
+	X/* $Header: artsrch.c,v 4.3 85/05/01 11:35:47 lwall Exp $
+	X *
+	X * $Log:	artsrch.c,v $
+	X * Revision 4.3  85/05/01  11:35:47  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "search.h"
+	X#include "term.h"
+	X#include "util.h"
+	X#include "intrp.h"
+	X#include "bits.h"
+	X#include "kfile.h"
+	X#include "head.h"
+	X#include "final.h"
+	X#include "cheat.h"
+	X#include "ng.h"
+	X#include "artio.h"
+	X#include "INTERN.h"
+	X#include "artsrch.h"
+	X
+	Xvoid
+	Xartsrch_init()
+	X{
+	X#ifdef ARTSEARCH
+	X#ifdef ZEROGLOB
+	X    init_compex(&sub_compex);
+	X    init_compex(&art_compex);
+	X#endif
+	X#endif
+	X}
+	X
+	X/* search for an article containing some pattern */
+	X
+	X#ifdef ARTSEARCH
+	Xint
+	Xart_search(patbuf,patbufsiz,get_cmd)
+	Xchar *patbuf;				/* if patbuf != buf, get_cmd must */
+	Xint patbufsiz;
+	Xint get_cmd;				/*   be set to FALSE!!! */
+	X{
+	X    char *pattern;			/* unparsed pattern */
+	X    register char cmdchr = *patbuf;	/* what kind of search? */
+	X    register char *s;
+	X    bool backward = cmdchr == '?' || cmdchr == Ctl('p');
+	X					/* direction of search */
+	X    COMPEX *compex;			/* which compiled expression */
+	X    char *cmdlst = Nullch;		/* list of commands to do */
+	X    int normal_return = SRCH_NOTFOUND;	/* assume no commands */
+	X    bool saltaway = FALSE;		/* store in KILL file? */
+	X    char howmuch;			/* search just the subjects */
+	X    bool doread;			/* search read articles? */
+	X    bool foldcase = TRUE;		/* fold upper and lower case? */
+	X
+	X    int_count = 0;
+	X    if (cmdchr == '/' || cmdchr == '?') {	/* normal search? */
+	X	if (get_cmd && buf == patbuf)
+	X	    if (!finish_command(FALSE))	/* get rest of command */
+	X		return SRCH_ABORT;
+	X	compex = &art_compex;
+	X	if (patbuf[1]) {
+	X	    howmuch = 0;
+	X	    doread = FALSE;
+	X	}
+	X	else {
+	X	    howmuch = art_howmuch;
+	X	    doread = art_doread;
+	X	}
+	X	s = cpytill(buf,patbuf+1,cmdchr);/* ok to cpy buf+1 to buf */
+	X	pattern = buf;
+	X	if (*pattern) {
+	X	    if (*lastpat)
+	X		free(lastpat);
+	X	    lastpat = savestr(pattern);
+	X	}
+	X	if (*s) {			/* modifiers or commands? */
+	X	    for (s++; *s && index("Kharc",*s); s++) {
+	X		if (*s == 'h')		/* scan header */
+	X		    howmuch = 1;
+	X		else if (*s == 'a')	/* scan article */
+	X		    howmuch = 2;
+	X		else if (*s == 'r')	/* scan read articles */
+	X		    doread = TRUE;
+	X		else if (*s == 'K')	/* put into KILL file */
+	X		    saltaway = TRUE;
+	X		else if (*s == 'c')	/* make search case sensitive */
+	X		    foldcase = FALSE;
+	X	    }
+	X	}
+	X	while (isspace(*s) || *s == ':')
+	X	    s++;
+	X	if (*s) {
+	X	    if (*s == 'm' || *s == 'M')
+	X		doread = TRUE;
+	X	    if (*s == 'k')		/* grandfather clause */
+	X		*s = 'j';
+	X	    cmdlst = savestr(s);
+	X	    normal_return = SRCH_DONE;
+	X	}
+	X	art_howmuch = howmuch;
+	X	art_doread = doread;
+	X	if (srchahead)
+	X	    srchahead = -1;
+	X    }
+	X    else {
+	X	register char *h;
+	X
+	X	howmuch = 0;			/* just search subjects */
+	X	doread = (cmdchr == Ctl('p'));
+	X	if (cmdchr == Ctl('n'))
+	X	    normal_return = SRCH_SUBJDONE;
+	X	compex = &sub_compex;
+	X	pattern = patbuf+1;
+	X	strcpy(pattern,": *");
+	X	h = pattern + strlen(pattern);
+	X	interp(h,patbufsiz - (h-patbuf),"%s");	/* fetch current subject */
+	X	if (cmdchr == 'K') {
+	X	    saltaway = TRUE;
+	X	    cmdchr = 'k';
+	X	}
+	X	if (cmdchr == 'k') {
+	X	    normal_return = SRCH_DONE;
+	X	    cmdlst = savestr("j");
+	X	    mark_as_read(art);		/* this article has this subject */
+	X	    if (!*h) {
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\nCannot delete null subject.\n",stdout) FLUSH;
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    fputs("\nNull subject.\n",stdout) FLUSH;
+	X#endif
+	X		return SRCH_ABORT;
+	X	    }
+	X#ifdef VERBOSE
+	X	    else if (verbose)
+	X		printf("\nMarking subject \"%s\" as read.\n",h) FLUSH;
+	X#endif
+	X	}
+	X	else if (!srchahead)
+	X	    srchahead = -1;
+	X	h[24] = '\0';		/* compensate for notesfiles */
+	X	while (*h) {
+	X	    if (index("/\\[.^*$'\"",*h) != Nullch)
+	X		*h++ = '.';
+	X	    else
+	X		h++;
+	X	}
+	X#ifdef DEBUGGING
+	X	if (debug) {
+	X	    printf("\npattern = %s\n",pattern) FLUSH;
+	X	}
+	X#endif
+	X    }
+	X    if ((s = compile(compex,pattern,TRUE,foldcase)) != Nullch) {
+	X					/* compile regular expression */
+	X	printf("\n%s\n",s) FLUSH;
+	X	return SRCH_ABORT;
+	X    }
+	X#ifdef KILLFILES
+	X    if (saltaway) {
+	X	char saltbuf[LBUFLEN];
+	X
+	X	s = saltbuf;
+	X	sprintf(s,"/%s/",pattern);
+	X	s += strlen(s);
+	X	if (doread)
+	X	    *s++ = 'r';
+	X	if (howmuch==1)
+	X	    *s++ = 'h';
+	X	else if (howmuch==2)
+	X	    *s++ = 'a';
+	X	*s++ = ':';
+	X	if (!cmdlst)
+	X	    cmdlst = savestr("j");
+	X	safecpy(s,cmdlst,LBUFLEN-(s-saltbuf));
+	X	kf_append(saltbuf);
+	X    }
+	X#endif
+	X    if (cmdlst && index(cmdlst,'='))
+	X	normal_return = SRCH_ERROR;	/* listing subjects is an error? */
+	X    if (get_cmd) {
+	X	fputs("\nSearching...\n",stdout) FLUSH;
+	X					/* give them something to read */
+	X    }
+	X    if (backward) {
+	X	if (cmdlst && art < lastart)
+	X	    art++;			/* include current article */
+	X	if (doread)
+	X	    check_first(absfirst);
+	X    }
+	X    else {
+	X	if (art > lastart)
+	X	    art = (doread ? absfirst : firstart) - 1;
+	X	else if (cmdlst && art > absfirst)
+	X	    art--;			/* include current article */
+	X	check_first(art);
+	X    }
+	X    if (srchahead > 0) {
+	X	if (!backward)
+	X	    art = srchahead - 1;
+	X	srchahead = -1;
+	X    }
+	X    assert(!cmdlst || *cmdlst);
+	X    for (;;) {
+	X	if (int_count) {
+	X	    int_count = 0;
+	X	    if (cmdlst)
+	X		free(cmdlst);
+	X	    return SRCH_INTR;
+	X	}
+	X	if (backward ?
+	X		(--art < absfirst || (!doread && art < firstart)) :
+	X		(++art > lastart)
+	X	  ) {			/* out of articles? */
+	X	    if (cmdlst)
+	X		free(cmdlst);
+	X	    return normal_return;
+	X	}
+	X	/*NOSTRICT*/
+	X	if (doread || !was_read(art)) {
+	X	    if (wanted(compex,art,howmuch)) {
+	X				    /* does the shoe fit? */
+	X		if (cmdlst) {
+	X		    if (perform(cmdlst,TRUE)) {
+	X			if (cmdlst)
+	X			    free(cmdlst);
+	X			return SRCH_INTR;
+	X		    }
+	X		}
+	X		else {
+	X		    if (cmdlst)
+	X			free(cmdlst);
+	X		    return SRCH_FOUND;
+	X		}
+	X	    }
+	X	    else if (!cmdlst && ! (art%50)) {
+	X		printf("...%ld",(long)art);
+	X		fflush(stdout);
+	X	    }
+	X	}
+	X    }
+	X}
+	X
+	X/* determine if article fits pattern */
+	X/* returns TRUE if it exists and fits pattern, FALSE otherwise */
+	X
+	Xbool
+	Xwanted(compex, artnum, scope)
+	XCOMPEX *compex;
+	XART_NUM artnum;
+	Xchar scope;
+	X{
+	X    if (!scope) {
+	X	char subj_buf[266];
+	X	
+	X	strcpy(subj_buf, "Subject: ");
+	X	strncpy(subj_buf+9,fetchsubj(artnum,FALSE,FALSE),256);
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_SEARCH_AHEAD)
+	X	    printf("%s\n",subj_buf) FLUSH;
+	X#endif
+	X	return execute(compex,subj_buf) != Nullch;
+	X    }
+	X#ifdef CACHESUBJ
+	X    else
+	X	fetchsubj(artnum,FALSE,FALSE);/* might as well get subject handy */
+	X#endif
+	X    
+	X    if (artopen(artnum) == Nullfp)	/* ensure that article is open */
+	X	return FALSE;			/* if not, return NO MATCH */
+	X    scope--;
+	X    while (fgets(buf,LBUFLEN,artfp) != Nullch) {
+	X					/* for each line of article */
+	X	if (!scope && index(buf,':') == Nullch && *buf != ' ' && *buf != '\t')
+	X					/* if headers only and out of header */
+	X	    return FALSE;		/* say no go */
+	X	if (execute(compex,buf) != Nullch) {
+	X					/* does pattern matcher match? */
+	X	    return TRUE;		/* say Eureka */
+	X	}
+	X    }
+	X    return FALSE;			/* out of article, so no match */
+	X}
+	X#endif
+	X
+SHAR_EOF
+if test 6815 -ne "`wc -c < 'artsrch.c'`"
+then
+	echo shar: error transmitting "'artsrch.c'" '(should have been 6815 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'backpage.c'" '(2062 characters)'
+if test -f 'backpage.c'
+then
+	echo shar: will not over-write existing file "'backpage.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'backpage.c'
+	X/* $Header: backpage.c,v 4.3 85/05/01 11:36:03 lwall Exp $
+	X *
+	X * $Log:	backpage.c,v $
+	X * Revision 4.3  85/05/01  11:36:03  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "intrp.h"
+	X#include "final.h"
+	X#include "INTERN.h"
+	X#include "backpage.h"
+	X
+	XART_LINE maxindx = -1;
+	Xlong lseek();
+	X
+	Xvoid
+	Xbackpage_init()
+	X{
+	X    char *varyname;
+	X    
+	X    varyname = filexp(VARYNAME);
+	X    close(creat(varyname,0600));
+	X    varyfd = open(varyname,2);
+	X    UNLINK(varyname);
+	X    if (varyfd < 0) {
+	X	printf(cantopen,varyname) FLUSH;
+	X	sig_catcher(0);
+	X    }
+	X    
+	X}
+	X
+	X/* virtual array read */
+	X
+	XART_POS
+	Xvrdary(indx)
+	XART_LINE indx;
+	X{
+	X    int subindx;
+	X    long offset;
+	X
+	X#ifdef DEBUGGING
+	X    if (indx > maxindx) {
+	X	printf("vrdary(%ld) > %ld\n",(long)indx, (long)maxindx) FLUSH;
+	X	return 0;
+	X    }
+	X#endif
+	X    if (indx < 0)
+	X	return 0;
+	X    subindx = indx % VARYSIZE;
+	X    offset = (indx - subindx) * sizeof(varybuf[0]);
+	X    if (offset != oldoffset) {
+	X	if (oldoffset >= 0) {
+	X#ifndef lint
+	X	    (void)lseek(varyfd,oldoffset,0);
+	X	    write(varyfd, (char *)varybuf,sizeof(varybuf));
+	X#endif lint
+	X	}
+	X#ifndef lint
+	X	(void)lseek(varyfd,offset,0);
+	X	read(varyfd,(char *)varybuf,sizeof(varybuf));
+	X#endif lint
+	X	oldoffset = offset;
+	X    }
+	X    return varybuf[subindx];
+	X}
+	X
+	X/* write to virtual array */
+	X
+	Xvoid
+	Xvwtary(indx,newvalue)
+	XART_LINE indx;
+	XART_POS newvalue;
+	X{
+	X    int subindx;
+	X    long offset;
+	X
+	X#ifdef DEBUGGING
+	X    if (indx < 0)
+	X	printf("vwtary(%ld)\n",(long)indx) FLUSH;
+	X    if (!indx)
+	X	maxindx = 0;
+	X    if (indx > maxindx) {
+	X	if (indx != maxindx + 1)
+	X	    printf("indx skipped %d-%d\n",maxindx+1,indx-1) FLUSH;
+	X	maxindx = indx;
+	X    }
+	X#endif
+	X    subindx = indx % VARYSIZE;
+	X    offset = (indx - subindx) * sizeof(varybuf[0]);
+	X    if (offset != oldoffset) {
+	X	if (oldoffset >= 0) {
+	X#ifndef lint
+	X	    (void)lseek(varyfd,oldoffset,0);
+	X	    write(varyfd,(char *)varybuf,sizeof(varybuf));
+	X#endif lint
+	X	}
+	X#ifndef lint
+	X	(void)lseek(varyfd,offset,0);
+	X	read(varyfd,(char *)varybuf,sizeof(varybuf));
+	X#endif lint
+	X	oldoffset = offset;
+	X    }
+	X    varybuf[subindx] = newvalue;
+	X}
+	X
+SHAR_EOF
+if test 2062 -ne "`wc -c < 'backpage.c'`"
+then
+	echo shar: error transmitting "'backpage.c'" '(should have been 2062 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'bits.c'" '(16015 characters)'
+if test -f 'bits.c'
+then
+	echo shar: will not over-write existing file "'bits.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'bits.c'
+	X/* $Header: bits.c,v 4.3.1.4 86/10/31 15:23:53 lwall Exp $
+	X *
+	X * $Log:	bits.c,v $
+	X * Revision 4.3.1.4  86/10/31  15:23:53  lwall
+	X * Separated firstart into two variables so KILL on new articles won't
+	X * accidentally mark articles read.
+	X * 
+	X * Revision 4.3.1.3  86/09/09  16:01:43  lwall
+	X * Fixed 'n more articles' bug.
+	X * 
+	X * Revision 4.3.1.2  86/07/24  14:40:23  lwall
+	X * Gets host name from path instead of relay-version for news 2.10.3.
+	X *
+	X * Revision 4.3.1.1  85/05/10  11:31:41  lwall
+	X * Branch for patches.
+	X *
+	X * Revision 4.3  85/05/01  11:36:15  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "rcstuff.h"
+	X#include "head.h"
+	X#include "util.h"
+	X#include "final.h"
+	X#include "rn.h"
+	X#include "cheat.h"
+	X#include "ng.h"
+	X#include "artio.h"
+	X#include "intrp.h"
+	X#include "ngdata.h"
+	X#include "rcln.h"
+	X#include "kfile.h"
+	X#include "INTERN.h"
+	X#include "bits.h"
+	X
+	X#ifdef DBM
+	X#    ifdef NULL
+	X#	undef NULL
+	X#    endif NULL
+	X#    include <dbm.h>
+	X#endif DBM
+	XMEM_SIZE ctlsize;			/* size of bitmap in bytes */
+	X
+	Xvoid
+	Xbits_init()
+	X{
+	X#ifdef DELAYMARK
+	X    dmname = savestr(filexp(RNDELNAME));
+	X#else
+	X    ;
+	X#endif
+	X}
+	X
+	X/* checkpoint the .newsrc */
+	X
+	Xvoid
+	Xcheckpoint_rc()
+	X{
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_CHECKPOINTING) {
+	X	fputs("(ckpt)",stdout);
+	X	fflush(stdout);
+	X    }
+	X#endif
+	X    if (doing_ng)
+	X	restore_ng();			/* do not restore M articles */
+	X    if (rc_changed)
+	X	write_rc();
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_CHECKPOINTING) {
+	X	fputs("(done)",stdout);
+	X	fflush(stdout);
+	X    }
+	X#endif
+	X}
+	X
+	X/* reconstruct the .newsrc line in a human readable form */
+	X
+	Xvoid
+	Xrestore_ng()
+	X{
+	X    register char *s, *mybuf = buf;
+	X    register ART_NUM i;
+	X    ART_NUM count=0;
+	X    int safelen = LBUFLEN - 16;
+	X
+	X    strcpy(buf,rcline[ng]);		/* start with the newsgroup name */
+	X    s = buf + rcnums[ng] - 1;		/* use s for buffer pointer */
+	X    *s++ = rcchar[ng];			/* put the requisite : or !*/
+	X    *s++ = ' ';				/* put the not-so-requisite space */
+	X    for (i=1; i<=lastart; i++) {	/* for each article in newsgroup */
+	X	if (s-mybuf > safelen) {	/* running out of room? */
+	X	    safelen *= 2;
+	X	    if (mybuf == buf) {		/* currently static? */
+	X		*s = '\0';
+	X		mybuf = safemalloc((MEM_SIZE)safelen + 16);
+	X		strcpy(mybuf,buf);	/* so we must copy it */
+	X		s = mybuf + (s-buf);
+	X					/* fix the pointer, too */
+	X	    }
+	X	    else {			/* just grow in place, if possible */
+	X		char *newbuf;
+	X
+	X		newbuf = saferealloc(mybuf,(MEM_SIZE)safelen + 16);
+	X		s = newbuf + (s-mybuf);
+	X		mybuf = newbuf;
+	X	    }
+	X	}
+	X	if (!was_read(i))		/* still unread? */
+	X	    count++;			/* then count it */
+	X	else {				/* article was read */
+	X	    ART_NUM oldi;
+	X
+	X	    sprintf(s,"%ld",(long)i);	/* put out the min of the range */
+	X	    s += strlen(s);		/* keeping house */
+	X	    oldi = i;			/* remember this spot */
+	X	    do i++; while (i <= lastart && was_read(i));
+	X					/* find 1st unread article or end */
+	X	    i--;			/* backup to last read article */
+	X	    if (i > oldi) {		/* range of more than 1? */
+	X		sprintf(s,"-%ld,",(long)i);
+	X					/* then it out as a range */
+	X		s += strlen(s);		/* and housekeep */
+	X	    }
+	X	    else
+	X		*s++ = ',';		/* otherwise, just a comma will do */
+	X	}
+	X    }
+	X    if (*(s-1) == ',')			/* is there a final ','? */
+	X	s--;				/* take it back */
+	X    *s++ = '\0';			/* and terminate string */
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_NEWSRC_LINE && !panic) {
+	X	printf("%s: %s\n",rcline[ng],rcline[ng]+rcnums[ng]) FLUSH;
+	X	printf("%s\n",mybuf) FLUSH;
+	X    }
+	X#endif
+	X    free(rcline[ng]);			/* return old rc line */
+	X    if (mybuf == buf) {
+	X	rcline[ng] = safemalloc((MEM_SIZE)(s-buf)+1);
+	X					/* grab a new rc line */
+	X	strcpy(rcline[ng], buf);	/* and load it */
+	X    }
+	X    else {
+	X	mybuf = saferealloc(mybuf,(MEM_SIZE)(s-mybuf)+1);
+	X					/* be nice to the heap */
+	X	rcline[ng] = mybuf;
+	X    }
+	X    *(rcline[ng] + rcnums[ng] - 1) = '\0';
+	X    if (rcchar[ng] == NEGCHAR) {	/* did they unsubscribe? */
+	X	printf(unsubto,ngname) FLUSH;
+	X	toread[ng] = TR_UNSUB;		/* make line invisible */
+	X    }
+	X    else
+	X	/*NOSTRICT*/
+	X	toread[ng] = (ART_UNREAD)count;		/* remember how many unread there are */
+	X}
+	X
+	X/* mark an article unread, keeping track of toread[] */
+	X
+	Xvoid
+	Xonemore(artnum)
+	XART_NUM artnum;
+	X{
+	X#ifdef DEBUGGING
+	X    if (debug && artnum < firstbit) {
+	X	printf("onemore: %d < %d\n",artnum,firstbit) FLUSH;
+	X	return;
+	X    }
+	X#endif
+	X    if (ctl_read(artnum)) {
+	X	ctl_clear(artnum);
+	X	++toread[ng];
+	X    }
+	X}
+	X
+	X/* mark an article read, keeping track of toread[] */
+	X
+	Xvoid
+	Xoneless(artnum)
+	XART_NUM artnum;
+	X{
+	X#ifdef DEBUGGING
+	X    if (debug && artnum < firstbit) {
+	X	printf("oneless: %d < %d\n",artnum,firstbit) FLUSH;
+	X	return;
+	X    }
+	X#endif
+	X    if (!ctl_read(artnum)) {
+	X	ctl_set(artnum);
+	X	if (toread[ng] > TR_NONE)
+	X	    --toread[ng];
+	X    }
+	X}
+	X
+	X/* mark an article as unread, making sure that firstbit is properly handled */
+	X/* cross-references are left as read in the other newsgroups */
+	X
+	Xvoid
+	Xunmark_as_read(artnum)
+	XART_NUM artnum;
+	X{
+	X    check_first(artnum);
+	X    onemore(artnum);
+	X#ifdef MCHASE
+	X    if (!parse_maybe(artnum))
+	X	chase_xrefs(artnum,FALSE);
+	X#endif
+	X}
+	X
+	X#ifdef DELAYMARK
+	X/* temporarily mark article as read.  When newsgroup is exited, articles */
+	X/* will be marked as unread.  Called via M command */
+	X
+	Xvoid
+	Xdelay_unmark(artnum)
+	XART_NUM artnum;
+	X{
+	X    if (dmfp == Nullfp) {
+	X	dmfp = fopen(dmname,"w");
+	X	if (dmfp == Nullfp) {
+	X	    printf(cantcreate,dmname) FLUSH;
+	X	    sig_catcher(0);
+	X	}
+	X    }
+	X    oneless(artnum);			/* set the correct bit */
+	X    dmcount++;
+	X    fprintf(dmfp,"%ld\n",(long)artnum);
+	X}
+	X#endif
+	X
+	X/* mark article as read.  If article is cross referenced to other */
+	X/* newsgroups, mark them read there also. */
+	X
+	Xvoid
+	Xmark_as_read(artnum)
+	XART_NUM artnum;
+	X{
+	X    oneless(artnum);			/* set the correct bit */
+	X    checkcount++;			/* get more worried about crashes */
+	X    chase_xrefs(artnum,TRUE);
+	X}
+	X
+	X/* make sure we have bits set correctly down to firstbit */
+	X
+	Xvoid
+	Xcheck_first(min)
+	XART_NUM min;
+	X{
+	X    register ART_NUM i = firstbit;
+	X
+	X    if (min < absfirst)
+	X	min = absfirst;
+	X    if (min < i) {
+	X	for (i--; i>=min; i--)
+	X	    ctl_set(i);		/* mark as read */
+	X	firstart = firstbit = min;
+	X    }
+	X}
+	X
+	X/* bring back articles marked with M */
+	X
+	X#ifdef DELAYMARK
+	Xvoid
+	Xyankback()
+	X{
+	X    register ART_NUM anum;
+	X
+	X    if (dmfp) {			/* delayed unmarks pending? */
+	X#ifdef VERBOSE
+	X	printf("\nReturning %ld Marked article%s...\n",(long)dmcount,
+	X	    dmcount == 1 ? nullstr : "s") FLUSH;
+	X#endif
+	X	fclose(dmfp);
+	X	if (dmfp = fopen(dmname,"r")) {
+	X	    while (fgets(buf,sizeof buf,dmfp) != Nullch) {
+	X		anum = (ART_NUM)atol(buf);
+	X		/*NOSTRICT*/
+	X		onemore(anum);             /* then unmark them */
+	X#ifdef MCHASE
+	X		chase_xrefs(anum,FALSE);
+	X#endif
+	X	    }
+	X	    fclose(dmfp);
+	X	    dmfp = Nullfp;
+	X	    UNLINK(dmname);		/* and be tidy */
+	X	}
+	X	else {
+	X	    printf(cantopen,dmname) FLUSH;
+	X	    sig_catcher(0);
+	X	}
+	X    }
+	X    dmcount = 0;
+	X}
+	X#endif
+	X    
+	X/* run down xref list and mark as read or unread */
+	X
+	Xint
+	Xchase_xrefs(artnum,markread)
+	XART_NUM artnum;
+	Xint markread;
+	X{
+	X#ifdef ASYNC_PARSE
+	X    if (parse_maybe(artnum))		/* make sure we have right header */
+	X	return -1;
+	X#endif
+	X#ifdef DBM
+	X    {
+	X	datum lhs, rhs;
+	X	datum fetch();
+	X	register char *idp;
+	X	char *ident_buf;
+	X	static FILE * hist_file = Nullfp;
+	X#else
+	X    if (
+	X#ifdef DEBUGGING
+	X	debug & DEB_FEED_XREF ||
+	X#endif
+	X	htype[XREF_LINE].ht_minpos >= 0) {
+	X					/* are there article# xrefs? */
+	X#endif DBM
+	X	char *xref_buf, *curxref;
+	X	register char *xartnum;
+	X	char *rver_buf = Nullch;
+	X	static char *inews_site = Nullch;
+	X	register ART_NUM x;
+	X	char tmpbuf[128];
+	X
+	X#ifdef DBM
+	X	rver_buf = fetchlines(artnum,NGS_LINE);
+	X					/* get Newsgroups */
+	X	if (!index(rver_buf,','))	/* if no comma, no Xref! */
+	X	    return 0;
+	X	if (hist_file == Nullfp) {	/* Init. file accesses */
+	X#ifdef DEBUGGING
+	X	    if (debug)
+	X		printf ("chase_xref: opening files\n");
+	X#endif
+	X	    dbminit(filexp(ARTFILE));
+	X	    if ((hist_file = fopen (filexp(ARTFILE), "r")) == Nullfp)
+	X		return 0;
+	X	}
+	X	xref_buf = safemalloc((MEM_SIZE)BUFSIZ);
+	X	ident_buf = fetchlines(artnum,MESSID_LINE);
+	X					/* get Message-ID */
+	X#ifdef DEBUGGING
+	X	if (debug)
+	X	    printf ("chase_xref: Message-ID: %s\n", ident_buf);
+	X#endif
+	X	idp = ident_buf;
+	X	while (*++idp)			/* make message-id case insensitive */
+	X	    if (isupper(*idp))
+	X	        *idp = tolower (*idp);
+	X	lhs.dptr = ident_buf;		/* look up article by id */
+	X	lhs.dsize = strlen(lhs.dptr) + 1;
+	X	rhs = fetch(lhs);		/* fetch the record */
+	X	if (rhs.dptr == NULL)		/* if null, nothing there */
+	X	    goto wild_goose;
+	X	fseek (hist_file, *((long *)rhs.dptr), 0);
+	X					/* datum returned is position in hist file */
+	X	fgets (xref_buf, BUFSIZ, hist_file);
+	X#ifdef DEBUGGING
+	X	if (debug)
+	X	    printf ("Xref from history: %s\n", xref_buf);
+	X#endif
+	X	curxref = cpytill(tmpbuf, xref_buf, '\t') + 1;
+	X	curxref = cpytill(tmpbuf, curxref, '\t') + 1;
+	X#ifdef DEBUGGING
+	X	if (debug)
+	X	    printf ("chase_xref: curxref: %s\n", curxref);
+	X#endif
+	X#else !DBM
+	X#ifdef DEBUGGING
+	X	if (htype[XREF_LINE].ht_minpos >= 0)
+	X#endif
+	X	    xref_buf = fetchlines(artnum,XREF_LINE);
+	X					/* get xrefs list */
+	X#ifdef DEBUGGING
+	X	else {
+	X	    xref_buf = safemalloc((MEM_SIZE)100);
+	X	    printf("Give Xref: ") FLUSH;
+	X	    gets(xref_buf);
+	X	}
+	X#endif
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_XREF_MARKER)
+	X	    printf("Xref: %s\n",xref_buf) FLUSH;
+	X#endif
+	X	curxref = cpytill(tmpbuf,xref_buf,' ') + 1;
+	X
+	X	/* Make sure site name on Xref matches what inews thinks site is.
+	X	 * Check first against last inews_site.  If it matches, fine.
+	X	 * If not, fetch inews_site from current Relay-Version line and
+	X	 * check again.  This is so that if the new administrator decides
+	X	 * to change the system name as known to inews, rn will still do
+	X	 * Xrefs correctly--each article need only match itself to be valid.
+	X	 */ 
+	X	if (inews_site == Nullch || strNE(tmpbuf,inews_site)) {
+	X	    char *t;
+	X
+	X	    if (inews_site != Nullch)
+	X		free(inews_site);
+	X#ifndef NORELAY
+	X	    rver_buf = fetchlines(artnum,RVER_LINE);
+	X	    if ((t = instr(rver_buf,"; site ")) == Nullch)
+	X#else NORELAY
+	X          /* In version 2.10.3 of news or afterwards, the Relay-Version
+	X           * and Posting-Version header lines have been removed.  For
+	X           * the code below to work as intended, I have modified it to
+	X           * extract the first component of the Path header line.  This
+	X           * should give the same effect as did the old code with respect
+	X           * to the use of the Relay-Version site name.
+	X           */
+	X          rver_buf = fetchlines(artnum,PATH_LINE);
+	X          if ((t = instr(rver_buf,"!")) == Nullch)
+	X#endif NORELAY
+	X		inews_site = savestr(nullstr);
+	X	    else {
+	X		char new_site[128];
+	X
+	X#ifndef NORELAY
+	X		cpytill(new_site,t + 7,'.');
+	X#else NORELAY
+	X              cpytill(new_site,rver_buf,'!');
+	X#endif NORELAY
+	X		inews_site = savestr(new_site);
+	X	    }
+	X	    if (strNE(tmpbuf,inews_site)) {
+	X#ifdef DEBUGGING
+	X		if (debug)
+	X		    printf("Xref not from %s--ignoring\n",inews_site) FLUSH;
+	X#endif
+	X		goto wild_goose;
+	X	    }
+	X	}
+	X#endif DBM
+	X	while (*curxref) {
+	X					/* for each newsgroup */
+	X	    curxref = cpytill(tmpbuf,curxref,' ');
+	X#ifdef DBM
+	X	    xartnum = index(tmpbuf,'/');
+	X#else
+	X	    xartnum = index(tmpbuf,':');
+	X#endif DBM
+	X	    if (!xartnum)		/* probably an old-style Xref */
+	X		break;
+	X	    *xartnum++ = '\0';
+	X	    if (strNE(tmpbuf,ngname)) {/* not the current newsgroup? */
+	X		x = atol(xartnum);
+	X		if (x)
+	X		    if (markread) {
+	X			if (addartnum(x,tmpbuf))
+	X			    goto wild_goose;
+	X		    }
+	X#ifdef MCHASE
+	X		    else
+	X			subartnum(x,tmpbuf);
+	X#endif
+	X	    }
+	X	    while (*curxref && isspace(*curxref))
+	X		curxref++;
+	X	}
+	X      wild_goose:
+	X	free(xref_buf);
+	X#ifdef DBM
+	X	free(ident_buf);
+	X#endif DBM
+	X	if (rver_buf != Nullch)
+	X	    free(rver_buf);
+	X    }
+	X    return 0;
+	X}
+	X
+	Xint
+	Xinitctl()
+	X{
+	X    char *mybuf = buf;			/* place to decode rc line */
+	X    register char *s, *c, *h;
+	X    register long i;
+	X    register ART_NUM unread;
+	X    
+	X#ifdef DELAYMARK
+	X    dmcount = 0;
+	X#endif
+	X    if ((lastart = getngsize(ng)) < 0)	/* this cannot happen (laugh here) */
+	X	return -1;
+	X
+	X    absfirst = getabsfirst(ng,lastart);	/* remember first existing article */
+	X    if (!absfirst)			/* no articles at all? */
+	X	absfirst = 1;			/* pretend there is one */
+	X#ifndef lint
+	X    ctlsize = (MEM_SIZE)(OFFSET(lastart)/BITSPERBYTE+20);
+	X#endif lint
+	X    ctlarea = safemalloc(ctlsize);	/* allocate control area */
+	X
+	X    /* now modify ctlarea to reflect what has already been read */
+	X
+	X    for (s = rcline[ng] + rcnums[ng]; *s == ' '; s++) ;
+	X					/* find numbers in rc line */
+	X    i = strlen(s);
+	X#ifndef lint
+	X    if (i >= LBUFLEN-2)			/* bigger than buf? */
+	X	mybuf = safemalloc((MEM_SIZE)(i+2));
+	X#endif lint
+	X    strcpy(mybuf,s);			/* make scratch copy of line */
+	X    mybuf[i++] = ',';			/* put extra comma on the end */
+	X    mybuf[i] = '\0';
+	X    s = mybuf;				/* initialize the for loop below */
+	X    if (strnEQ(s,"1-",2)) {		/* can we save some time here? */
+	X	firstbit = atol(s+2)+1;		/* ignore first range thusly */
+	X	s=index(s,',') + 1;
+	X    }
+	X    else
+	X	firstbit = 1;			/* all the bits are valid for now */
+	X    if (absfirst > firstbit) {		/* do we know already? */
+	X	firstbit = absfirst;		/* no point calling getngmin again */
+	X    }
+	X    else if (artopen(firstbit) == Nullfp) {
+	X					/* first unread article missing? */
+	X	i = getngmin(".",firstbit);	/* see if expire has been busy */
+	X	if (i) {			/* avoid a bunch of extra opens */
+	X	    firstbit = i;
+	X	}
+	X    }
+	X    firstart = firstbit;		/* firstart > firstbit in KILL */
+	X#ifdef PENDING
+	X#   ifdef CACHESUBJ
+	X	subj_to_get = firstbit;
+	X#   endif
+	X#endif
+	X    unread = lastart - firstbit + 1;	/* assume this range unread */
+	X    for (i=OFFSET(firstbit)/BITSPERBYTE; i<ctlsize; i++)
+	X	ctlarea[i] = 0;			/* assume unread */
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_CTLAREA_BITMAP) {
+	X	printf("\n%s\n",mybuf) FLUSH;
+	X	for (i=1; i <= lastart; i++)
+	X	    if (! was_read(i))
+	X		printf("%ld ",(long)i) FLUSH;
+	X    }
+	X#endif
+	X    for ( ; (c = index(s,',')) != Nullch; s = ++c) {
+	X					/* for each range */
+	X	ART_NUM min, max;
+	X
+	X	*c = '\0';			/* do not let index see past comma */
+	X	if ((h = index(s,'-')) != Nullch) {	/* is there a -? */
+	X	    min = atol(s);
+	X	    max = atol(h+1);
+	X	    if (min < firstbit)		/* make sure range is in range */
+	X		min = firstbit;
+	X	    if (max > lastart)
+	X		max = lastart;
+	X	    if (min <= max)		/* non-null range? */
+	X		unread -= max - min + 1;/* adjust unread count */
+	X	    for (i=min; i<=max; i++)	/* for all articles in range */
+	X		ctl_set(i);		/* mark them read */
+	X	}
+	X	else if ((i = atol(s)) >= firstbit && i <= lastart) {
+	X					/* is single number reasonable? */
+	X	    ctl_set(i);			/* mark it read */
+	X	    unread--;			/* decrement articles to read */
+	X	}
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_CTLAREA_BITMAP) {
+	X	    printf("\n%s\n",s) FLUSH;
+	X	    for (i=1; i <= lastart; i++)
+	X		if (! was_read(i))
+	X		    printf("%ld ",(long)i) FLUSH;
+	X	}
+	X#endif
+	X    }
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_CTLAREA_BITMAP) {
+	X	fputs("\n(hit CR)",stdout) FLUSH;
+	X	gets(cmd_buf);
+	X    }
+	X#endif
+	X    if (mybuf != buf)
+	X	free(mybuf);
+	X    toread[ng] = unread;
+	X    return 0;
+	X}
+	X
+	Xvoid
+	Xgrow_ctl()
+	X{
+	X    ART_NUM newlast;
+	X    ART_NUM tmpfirst;
+	X    MEM_SIZE newsize;
+	X    register ART_NUM i;
+	X
+	X    forcegrow = FALSE;
+	X    newlast = getngsize(ng);
+	X    if (newlast > lastart) {
+	X	ART_NUM tmpart = art;
+	X#ifndef lint
+	X	newsize = (MEM_SIZE)(OFFSET(newlast)/BITSPERBYTE+2);
+	X#else
+	X	newsize = Null(MEM_SIZE);
+	X#endif lint
+	X	if (newsize > ctlsize) {
+	X	    newsize += 20;
+	X	    ctlarea = saferealloc(ctlarea,newsize);
+	X	    ctlsize = newsize;
+	X	}
+	X	toread[ng] += (ART_UNREAD)(newlast-lastart);
+	X	for (i=lastart+1; i<=newlast; i++)
+	X	    ctl_clear(i);	/* these articles are unread */
+	X#ifdef CACHESUBJ
+	X	if (subj_list != Null(char**)) {
+	X#ifndef lint
+	X	    subj_list = (char**)saferealloc((char*)subj_list,
+	X		  (MEM_SIZE)((OFFSET(newlast)+2)*sizeof(char *)) );
+	X#endif lint
+	X	    for (i=lastart+1; i<=newlast; i++)
+	X		subj_list[OFFSET(i)] = Nullch;
+	X	}
+	X#endif
+	X	tmpfirst = lastart+1;
+	X	lastart = newlast;
+	X#ifdef KILLFILES
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    sprintf(buf,
+	X		"%ld more article%s arrived--looking for more to kill...\n\n",
+	X		(long)(lastart - tmpfirst + 1),
+	X		(lastart > tmpfirst ? "s have" : " has" ) );
+	X	ELSE			/* my, my, how clever we are */
+	X#endif
+	X#ifdef TERSE
+	X	    strcpy(buf, "More news--killing...\n\n");
+	X#endif
+	X	kill_unwanted(tmpfirst,buf,TRUE);
+	X#endif
+	X	art = tmpart;
+	X    }
+	X}
+	X
+SHAR_EOF
+if test 16015 -ne "`wc -c < 'bits.c'`"
+then
+	echo shar: error transmitting "'bits.c'" '(should have been 16015 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'cheat.c'" '(2670 characters)'
+if test -f 'cheat.c'
+then
+	echo shar: will not over-write existing file "'cheat.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'cheat.c'
+	X/* $Header: cheat.c,v 4.3 85/05/01 11:36:46 lwall Exp $
+	X *
+	X * $Log:	cheat.c,v $
+	X * Revision 4.3  85/05/01  11:36:46  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "intrp.h"
+	X#include "search.h"
+	X#include "ng.h"
+	X#include "bits.h"
+	X#include "artio.h"
+	X#include "term.h"
+	X#include "artsrch.h"
+	X#include "head.h"
+	X#include "INTERN.h"
+	X#include "cheat.h"
+	X
+	X/* see what we can do while they are reading */
+	X
+	X#ifdef PENDING
+	X#   ifdef ARTSEARCH
+	X	COMPEX srchcompex;		/* compiled regex for searchahead */
+	X#   endif
+	X#endif
+	X
+	Xvoid
+	Xcheat_init()
+	X{
+	X    ;
+	X}
+	X
+	X#ifdef PENDING
+	Xvoid
+	Xlook_ahead()
+	X{
+	X#ifdef ARTSEARCH
+	X    register char *h, *s;
+	X
+	X#ifdef DEBUGGING
+	X    if (debug && srchahead) {
+	X	printf("(%ld)",(long)srchahead);
+	X	fflush(stdout);
+	X    }
+	X#endif
+	X    if (srchahead && srchahead < art) {	/* in ^N mode? */
+	X	char *pattern;
+	X
+	X	pattern = buf+1;
+	X	strcpy(pattern,": *");
+	X	h = pattern + strlen(pattern);
+	X	interp(h,(sizeof buf) - (h-buf),"%s");
+	X	h[24] = '\0';		/* compensate for notesfiles */
+	X	while (*h) {
+	X	    if (index("\\[.^*$'\"",*h) != Nullch)
+	X		*h++ = '.';
+	X	    else
+	X		h++;
+	X	}
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_SEARCH_AHEAD) {
+	X	    fputs("(hit CR)",stdout);
+	X	    fflush(stdout);
+	X	    gets(buf+128);
+	X	    printf("\npattern = %s\n",pattern);
+	X	}
+	X#endif
+	X	if ((s = compile(&srchcompex,pattern,TRUE,TRUE)) != Nullch) {
+	X				    /* compile regular expression */
+	X	    printf("\n%s\n",s);
+	X	    srchahead = 0;
+	X	}
+	X	if (srchahead) {
+	X	    srchahead = art;
+	X	    for (;;) {
+	X		srchahead++;	/* go forward one article */
+	X		if (srchahead > lastart) { /* out of articles? */
+	X#ifdef DEBUGGING
+	X		    if (debug)
+	X			fputs("(not found)",stdout);
+	X#endif
+	X		    break;
+	X		}
+	X		if (!was_read(srchahead) &&
+	X		    wanted(&srchcompex,srchahead,0)) {
+	X				    /* does the shoe fit? */
+	X#ifdef DEBUGGING
+	X		    if (debug)
+	X			printf("(%ld)",(long)srchahead);
+	X#endif
+	X		    artopen(srchahead);
+	X		    break;
+	X		}
+	X		if (input_pending())
+	X		    break;
+	X	    }
+	X	    fflush(stdout);
+	X	}
+	X    }
+	X    else
+	X#endif
+	X    {
+	X	if (art+1 <= lastart)/* how about a pre-fetch? */
+	X	    artopen(art+1);	/* look for the next article */
+	X    }
+	X}
+	X#endif
+	X
+	X/* see what else we can do while they are reading */
+	X
+	Xvoid
+	Xcollect_subjects()
+	X{
+	X#ifdef PENDING
+	X# ifdef CACHESUBJ
+	X    ART_NUM oldart = openart;
+	X    ART_POS oldartpos;
+	X
+	X    if (!in_ng || !srchahead)
+	X	return;
+	X    if (oldart)			/* remember where we were in art */
+	X	oldartpos = ftell(artfp);
+	X    if (srchahead >= subj_to_get)
+	X	subj_to_get = srchahead+1;
+	X    while (!input_pending() && subj_to_get <= lastart)
+	X	fetchsubj(subj_to_get++,FALSE,FALSE);
+	X    if (oldart) {
+	X	artopen(oldart);
+	X	fseek(artfp,oldartpos,0);	/* do not screw the pager */
+	X    }
+	X# endif
+	X#endif
+	X}
+	X
+SHAR_EOF
+if test 2670 -ne "`wc -c < 'cheat.c'`"
+then
+	echo shar: error transmitting "'cheat.c'" '(should have been 2670 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'final.c'" '(3932 characters)'
+if test -f 'final.c'
+then
+	echo shar: will not over-write existing file "'final.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'final.c'
+	X/* $Header: final.c,v 4.3 85/05/01 11:38:08 lwall Exp $
+	X *
+	X * $Log:	final.c,v $
+	X * Revision 4.3  85/05/01  11:38:08  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "term.h"
+	X#include "ng.h"
+	X#include "init.h"
+	X#include "bits.h"
+	X#include "last.h"
+	X#include "rcstuff.h"
+	X#include "INTERN.h"
+	X#include "final.h"
+	X
+	Xvoid
+	Xfinal_init()
+	X{
+	X#ifdef SIGTSTP
+	X    sigset(SIGTSTP, stop_catcher);	/* job control signals */
+	X    sigset(SIGCONT, cont_catcher);	/* job control signals */
+	X#endif
+	X
+	X    sigset(SIGINT, int_catcher);	/* always catch interrupts */
+	X    sigset(SIGHUP, sig_catcher);	/* and hangups */
+	X#ifndef lint
+	X    sigignore(SIGEMT);
+	X#endif lint
+	X
+	X    sigset(SIGILL, sig_catcher);
+	X    sigset(SIGTRAP, sig_catcher);
+	X    sigset(SIGFPE, sig_catcher);
+	X    sigset(SIGBUS, sig_catcher);
+	X    sigset(SIGSEGV, sig_catcher);
+	X    sigset(SIGSYS, sig_catcher);
+	X    sigset(SIGTERM, sig_catcher);
+	X#ifdef SIGXCPU
+	X    sigset(SIGXCPU, sig_catcher);
+	X#endif
+	X#ifdef SIGXFSZ
+	X    sigset(SIGXFSZ, sig_catcher);
+	X#endif
+	X}
+	X
+	Xvoid					/* very much void */
+	Xfinalize(status)
+	Xint status;
+	X{
+	X    if (bizarre)
+	X	resetty();
+	X    UNLINK(lockname);
+	X    if (status < 0) {
+	X	chdir("/usr/tmp");
+	X	sigset(SIGILL,SIG_DFL);
+	X	abort();
+	X    }
+	X    exit(status);
+	X}
+	X
+	X/* come here on interrupt */
+	X
+	Xint
+	Xint_catcher()
+	X{
+	X    sigset(SIGINT,int_catcher);
+	X#ifdef DEBUGGING
+	X    if (debug)
+	X	write(2,"int_catcher\n",12);
+	X#endif
+	X    if (!waiting) {
+	X	if (int_count) {		/* was there already an interrupt? */
+	X	    write(2,"\nBye-bye.\n",10);
+	X	    sig_catcher(0);		/* emulate the other signals */
+	X	}
+	X	int_count++;
+	X    }
+	X}
+	X
+	X/* come here on signal other than interrupt, stop, or cont */
+	X
+	Xint
+	Xsig_catcher(signo)
+	X{
+	X#ifdef VERBOSE
+	X    static char *signame[] = {
+	X	"",
+	X	"HUP",
+	X	"INT",
+	X	"QUIT",
+	X	"ILL",
+	X	"TRAP",
+	X	"IOT",
+	X	"EMT",
+	X	"FPE",
+	X	"KILL",
+	X	"BUS",
+	X	"SEGV",
+	X	"SYS",
+	X	"PIPE",
+	X	"ALRM",
+	X	"TERM",
+	X	"???"
+	X#ifdef SIGTSTP
+	X	,"STOP",
+	X	"TSTP",
+	X	"CONT",
+	X	"CHLD",
+	X	"TTIN",
+	X	"TTOU",
+	X	"TINT",
+	X	"XCPU",
+	X	"XFSZ"
+	X#ifdef SIGPROF
+	X	,"VTALARM",
+	X	"PROF"
+	X#endif
+	X#endif
+	X	};
+	X#endif
+	X
+	X#ifdef SIGTTOU
+	X#ifndef lint
+	X    sigignore(SIGTTOU);
+	X#endif lint
+	X#endif
+	X#ifdef DEBUGGING
+	X    if (debug) {
+	X	printf("\nSIG%s--.newsrc not restored in debug\n",signame[signo]);
+	X	finalize(-1);
+	X    }
+	X#endif
+	X    if (panic)
+	X	abort();
+	X    (void) sigset(SIGILL,SIG_DFL);
+	X    panic = TRUE;			/* disable terminal I/O */
+	X    if (doing_ng) {			/* need we reconstitute rc line? */
+	X	yankback();
+	X	restore_ng();			/* then do so (hope this works) */
+	X    }
+	X    doing_ng = FALSE;
+	X    if (rc_changed)			/* need we write .newsrc out? */
+	X	write_rc();			/* then do so */
+	X    rc_changed = FALSE;
+	X    if (signo != SIGHUP)
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    printf("\nCaught %s%s--.newsrc restored\n",
+	X		signo ? "a SIG" : "an internal error", signame[signo]);
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    printf("\nSignal %d--bye bye\n",signo);
+	X#endif
+	X    switch (signo) {
+	X    case SIGBUS:
+	X    case SIGILL:
+	X    case SIGSEGV:
+	X	finalize(-signo);
+	X    }
+	X    finalize(1);				/* and blow up */
+	X}
+	X
+	X#ifdef SIGTSTP
+	X/* come here on stop signal */
+	X
+	Xint
+	Xstop_catcher()
+	X{
+	X    if (!waiting) {
+	X	checkpoint_rc();		/* good chance of crash while stopped */
+	X	resetty();			/* this is the point of all this */
+	X#ifdef DEBUGGING
+	X	if (debug)
+	X	    write(2,"stop_catcher\n",13);
+	X#endif
+	X	sigset(SIGTSTP,SIG_DFL);	/* enable stop */
+	X#ifdef BSD42
+	X	sigsetmask(sigblock(0) & ~(1 << (SIGTSTP-1)));
+	X#endif
+	X	kill(0,SIGTSTP);		/* and do the stop */
+	X    }
+	X    sigset(SIGTSTP,stop_catcher);	/* unenable the stop */
+	X}
+	X
+	X/* come here on cont signal */
+	X
+	Xint
+	Xcont_catcher()
+	X{
+	X    sigset(SIGCONT,cont_catcher);
+	X    savetty();
+	X#ifdef MAILCALL;
+	X    mailcount = 0;			/* force recheck */
+	X#endif
+	X    if (!panic) {
+	X	if (!waiting) {
+	X#ifdef DEBUGGING
+	X	    if (debug)
+	X		write(2,"cont_catcher\n",13);
+	X#endif
+	X	    noecho();			/* set no echo */
+	X	    crmode();			/* set cbreak mode */
+	X	    forceme("\f");		/* cause a refresh */
+	X					/* (defined only if TIOCSTI defined) */
+	X	}
+	X    }
+	X}
+	X#endif
+	X
+SHAR_EOF
+if test 3932 -ne "`wc -c < 'final.c'`"
+then
+	echo shar: error transmitting "'final.c'" '(should have been 3932 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'head.c'" '(6493 characters)'
+if test -f 'head.c'
+then
+	echo shar: will not over-write existing file "'head.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'head.c'
+	X/* $Header: head.c,v 4.3.1.2 85/05/10 13:47:25 lwall Exp $
+	X *
+	X * $Log:	head.c,v $
+	X * Revision 4.3.1.2  85/05/10  13:47:25  lwall
+	X * Added debugging stuff.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:32:30  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:38:21  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "artio.h"
+	X#include "bits.h"
+	X#include "util.h"
+	X#include "INTERN.h"
+	X#include "head.h"
+	X
+	Xbool first_one;		/* is this the 1st occurance of this header line? */
+	X
+	Xstatic char htypeix[26] =
+	X    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+	X
+	Xvoid
+	Xhead_init()
+	X{
+	X    register int i;
+	X
+	X    for (i=HEAD_FIRST+1; i<HEAD_LAST; i++)
+	X	htypeix[*htype[i].ht_name - 'a'] = i;
+	X}
+	X
+	X#ifdef DEBUGGING
+	Xdumpheader(where)
+	Xchar *where;
+	X{
+	X    register int i;
+	X
+	X    printf("header: %d %s", parsed_art, where);
+	X
+	X    for (i=0; i<HEAD_LAST; i++) {
+	X	printf("%15s %4d %4d %03o\n",htype[i].ht_name,
+	X	    htype[i].ht_minpos,
+	X	    htype[i].ht_maxpos,
+	X	    htype[i].ht_flags) FLUSH;
+	X    }
+	X}
+	X#endif
+	X
+	Xint
+	Xset_line_type(bufptr,colon)
+	Xchar *bufptr;
+	Xregister char *colon;
+	X{
+	X    char lc[LONGKEY+3];
+	X    register char *t, *f;
+	X    register int i, len;
+	X
+	X    for (t=lc,f=bufptr; f<colon; f++, t++) {
+	X	if (isspace(*f))
+	X	/* guard against space before : */
+	X	    break;
+	X	*t = isupper(*f) ? tolower(*f) : *f;
+	X    }
+	X    *t = '\0';
+	X    f = lc;				/* get lc into register */
+	X    len = t - f;
+	X
+	X    /* now scan the headtype table, backwards so we don't have to supply an
+	X     * extra terminating value, using first letter as index, and length as
+	X     * optimization to avoid calling subroutine strEQ unnecessarily.  Hauls.
+	X     */
+	X    
+	X    if (islower(*f)) {
+	X	for (i = htypeix[*f - 'a']; *htype[i].ht_name == *f; --i) {
+	X	    if (len == htype[i].ht_length && strEQ(f, htype[i].ht_name)) {
+	X		return i;
+	X	    }
+	X	}
+	X    }
+	X    return SOME_LINE;
+	X}
+	X
+	Xvoid
+	Xstart_header(artnum)
+	XART_NUM artnum;
+	X{
+	X    register int i;
+	X
+	X#ifdef DEBUGGING
+	X    if (debug & 4)
+	X	dumpheader("start_header\n");
+	X#endif
+	X    for (i=0; i<HEAD_LAST; i++) {
+	X	htype[i].ht_minpos = -1;
+	X	htype[i].ht_maxpos = 0;
+	X    }
+	X    in_header = SOME_LINE;
+	X    first_one = FALSE;
+	X#ifdef ASYNC_PARSE
+	X    parsed_art = artnum;
+	X#endif
+	X}
+	X
+	Xbool
+	Xparseline(art_buf,newhide,oldhide)
+	Xchar *art_buf;
+	Xint newhide, oldhide;
+	X{
+	X    if (*art_buf == ' ' || *art_buf == '\t')
+	X					/* header continuation line? */
+	X	return oldhide;
+	X    else {				/* maybe another header line */
+	X	char *s;
+	X
+	X	if (first_one) {		/* did we just pass 1st occurance? */
+	X	    first_one = FALSE;
+	X	    htype[in_header].ht_maxpos = artpos;
+	X					/* remember where line left off */
+	X	}
+	X	s = index(art_buf,':');
+	X	if (s == Nullch || s-art_buf > LONGKEY+2) {
+	X			    /* is it the end of the header? */
+	X	    htype[PAST_HEADER].ht_minpos =
+	X		(*art_buf == '\n') ? ftell(artfp) : artpos;
+	X			    /* remember where body starts */
+	X	    in_header = PAST_HEADER;
+	X	}
+	X	else {	/* it is a new header line */
+	X	    in_header = set_line_type(art_buf,s);
+	X	    first_one = (htype[in_header].ht_minpos < 0);
+	X	    if (first_one)
+	X		htype[in_header].ht_minpos = artpos;
+	X#ifdef DEBUGGING
+	X	    if (debug & 4)
+	X		dumpheader(art_buf);
+	X#endif
+	X	    if (htype[in_header].ht_flags & HT_HIDE)
+	X		return newhide;
+	X	}
+	X    }
+	X    return FALSE;			/* don't hide this line */
+	X}
+	X
+	X#ifdef ASYNC_PARSE
+	Xint
+	Xparse_maybe(artnum)
+	XART_NUM artnum;
+	X{
+	X    char tmpbuf[LBUFLEN];
+	X
+	X    if (parsed_art == artnum)
+	X	return 0;
+	X    /* no maybe about it now */
+	X    if (artopen(artnum) == Nullfp) {
+	X	return -1;
+	X    }
+	X    start_header(artnum);
+	X    while (in_header) {
+	X	artpos = ftell(artfp);
+	X	if (fgets(tmpbuf,LBUFLEN,artfp) == Nullch)
+	X	    break;
+	X	parseline(tmpbuf,FALSE,FALSE);
+	X    }
+	X    in_header = PAST_HEADER;
+	X    return 0;
+	X}
+	X#endif
+	X
+	X/* get the subject line for an article */
+	X
+	Xchar *
+	Xfetchsubj(artnum,current_subject,copy)
+	XART_NUM artnum;				/* article to get subject from */
+	Xbool current_subject;			/* is it in a parsed header? */
+	Xbool copy;				/* do you want it savestr()ed? */
+	X{
+	X    char *s = Nullch, *t;
+	X
+	X#ifdef CACHESUBJ
+	X    if (!subj_list) {
+	X	register ART_NUM i;
+	X	
+	X
+	X#ifndef lint
+	X	subj_list =
+	X	  (char**)safemalloc((MEM_SIZE)((OFFSET(lastart)+2)*sizeof(char *)));
+	X#endif lint
+	X	for (i=0; i<=OFFSET(lastart); i++)
+	X	    subj_list[i] = Nullch;
+	X    }
+	X    if (!artnum || artnum > lastart)
+	X	s = nullstr;
+	X    else
+	X	s = subj_list[OFFSET(artnum)];
+	X#endif
+	X    if (s == Nullch) {
+	X	if (current_subject) {
+	X	    s = fetchlines(artnum,SUBJ_LINE);
+	X#ifdef CACHESUBJ
+	X	    subj_list[OFFSET(artnum)] = s;
+	X#endif
+	X	}
+	X	else {
+	X	    s = safemalloc((MEM_SIZE)256);
+	X	    *s = '\0';
+	X	    if (artopen(artnum) != Nullfp) {
+	X		do {
+	X		    if (fgets(s,256,artfp) == Nullch)
+	X			strcpy(s, "Title: \n");
+	X		} while (strnNE(s,"Title:",6) && strnNE(s,"Subject:",8));
+	X		s[strlen(s)-1] = '\0';
+	X		t = index(s,':')+1;
+	X		while (*t == ' ') t++;
+	X		strcpy(s, t);
+	X	    }
+	X	    s = saferealloc(s, (MEM_SIZE)strlen(s)+1);
+	X#ifdef CACHESUBJ
+	X	    subj_list[OFFSET(artnum)] = s;
+	X#endif 
+	X	}
+	X    }
+	X#ifdef CACHESUBJ
+	X    if (copy) {
+	X	t = savestr(s);
+	X	return t;
+	X    }
+	X    else
+	X	return s;
+	X#else
+	X    if (copy)
+	X	return s;
+	X    else {
+	X	safecpy(cmd_buf,s,CBUFLEN);	/* hope this is okay--we're */
+	X	free(s);
+	X	return cmd_buf;			/* really scraping for space here */
+	X    }
+	X#endif
+	X}
+	X
+	X/* get header lines from an article */
+	X
+	Xchar *
+	Xfetchlines(artnum,which_line)
+	XART_NUM artnum;				/* article to get line from */
+	Xint which_line;				/* type of line desired */
+	X{
+	X    char *newbuf, *t, tmp_buf[LBUFLEN];
+	X    register ART_POS curpos;
+	X    int size;
+	X    register ART_POS firstpos;
+	X    register ART_POS lastpos;
+	X    
+	X#ifdef ASYNC_PARSE
+	X    if (parse_maybe(artnum))
+	X	artnum = 0;
+	X#endif
+	X    firstpos = htype[which_line].ht_minpos;
+	X    lastpos = htype[which_line].ht_maxpos;
+	X    if (!artnum || firstpos < 0 || artopen(artnum) == Nullfp) {
+	X	newbuf = safemalloc((unsigned int)1);
+	X	*newbuf = '\0';
+	X	return newbuf;
+	X    }
+	X#ifndef lint
+	X    size = lastpos - firstpos + 1;
+	X#else
+	X    size = Null(int);
+	X#endif lint
+	X#ifdef DEBUGGING
+	X    if (debug && (size < 1 || size > 1000)) {
+	X	printf("Firstpos = %ld, lastpos = %ld\n",(long)firstpos,(long)lastpos);
+	X	gets(tmp_buf);
+	X    }
+	X#endif
+	X    newbuf = safemalloc((unsigned int)size);
+	X    *newbuf = '\0';
+	X    fseek(artfp,firstpos,0);
+	X    for (curpos = firstpos; curpos < lastpos; curpos = ftell(artfp)) {
+	X	if (fgets(tmp_buf,LBUFLEN,artfp) == Nullch)
+	X	    break;
+	X	if (*tmp_buf == ' ' || *tmp_buf == '\t')
+	X	    t = tmp_buf;
+	X	else
+	X	    t = index(tmp_buf,':')+1;
+	X	if (t == Nullch)
+	X	    break;
+	X	else {
+	X	    while (*t == ' ' || *t == '\t') t++;
+	X	    safecat(newbuf,t,size);
+	X	}
+	X    }
+	X    return newbuf;
+	X}
+	X
+SHAR_EOF
+if test 6493 -ne "`wc -c < 'head.c'`"
+then
+	echo shar: error transmitting "'head.c'" '(should have been 6493 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'header.c.1.pat'" '(1814 characters)'
+if test -f 'header.c.1.pat'
+then
+	echo shar: will not over-write existing file "'header.c.1.pat'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'header.c.1.pat'
+	XNOTE: the preceding context may be different under 2.10.2, but you should
+	Xbe able to figure it out anyway.
+	X
+	X*** header.old.c	Fri Apr 27 11:30:49 1984
+	X--- header.c	Mon Feb 27 10:44:03 1984
+	X***************
+	X*** 107,112
+	X  #define NUMLINES	19
+	X  #define KEYWORDS	20
+	X  #define APPROVED	21
+	X  #define OTHER		99
+	X  
+	X  char *malloc();
+	X
+	X--- 107,115 -----
+	X  #define NUMLINES	19
+	X  #define KEYWORDS	20
+	X  #define APPROVED	21
+	X+ #ifdef DOXREFS
+	X+ #define XREF		98
+	X+ #endif DOXREFS
+	X  #define OTHER		99
+	X  
+	X  char *malloc();
+	X***************
+	X*** 201,206
+	X  				seenrelay = 1;
+	X  			}
+	X  			break;
+	X  		case OTHER:
+	X  			if (unreccnt < NUNREC) {
+	X  				hp->unrec[unreccnt] = malloc(strlen(bfr) + 1);
+	X
+	X--- 204,214 -----
+	X  				seenrelay = 1;
+	X  			}
+	X  			break;
+	X+ #ifdef DOXREFS
+	X+ 		case XREF:
+	X+ 			getfield(hp->xref);
+	X+ 			break;
+	X+ #endif DOXREFS
+	X  		case OTHER:
+	X  			if (unreccnt < NUNREC) {
+	X  				hp->unrec[unreccnt] = malloc(strlen(bfr) + 1);
+	X***************
+	X*** 398,403
+	X  		return KEYWORDS;
+	X  	if (its("Approved: "))
+	X  		return APPROVED;
+	X  	return OTHER;
+	X  }
+	X  
+	X
+	X--- 406,415 -----
+	X  		return KEYWORDS;
+	X  	if (its("Approved: "))
+	X  		return APPROVED;
+	X+ #ifdef DOXREFS
+	X+ 	if (its("Xref: "))
+	X+ 		return XREF;
+	X+ #endif DOXREFS
+	X  	return OTHER;
+	X  }
+	X  
+	X***************
+	X*** 507,512
+	X  		fprintf(fp, "Keywords: %s\n", hp->keywords);
+	X  	if (*hp->approved)
+	X  		fprintf(fp, "Approved: %s\n", hp->approved);
+	X  	for (iu = 0; iu < NUNREC; iu++) {
+	X  		if (hp->unrec[iu])
+	X  			fprintf(fp, "%s", &hp->unrec[iu][0]);
+	X
+	X--- 519,528 -----
+	X  		fprintf(fp, "Keywords: %s\n", hp->keywords);
+	X  	if (*hp->approved)
+	X  		fprintf(fp, "Approved: %s\n", hp->approved);
+	X+ #ifdef DOXREFS
+	X+ 	if (wr == 1 && *hp->xref)
+	X+ 		fprintf(fp, "Xref: %s\n", hp->xref);
+	X+ #endif DOXREFS
+	X  	for (iu = 0; iu < NUNREC; iu++) {
+	X  		if (hp->unrec[iu])
+	X  			fprintf(fp, "%s", &hp->unrec[iu][0]);
+SHAR_EOF
+if test 1814 -ne "`wc -c < 'header.c.1.pat'`"
+then
+	echo shar: error transmitting "'header.c.1.pat'" '(should have been 1814 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'header.c.2.pat'" '(1751 characters)'
+if test -f 'header.c.2.pat'
+then
+	echo shar: will not over-write existing file "'header.c.2.pat'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'header.c.2.pat'
+	X*** header.old.c	Tue Apr 30 14:33:53 1985
+	X--- header.c		Tue Apr 30 14:33:56 1985
+	X***************
+	X*** 119,124
+	X  #define APPROVED	21
+	X  #define NFID		22
+	X  #define NFFROM		23
+	X  #define OTHER		99
+	X  
+	X  char *malloc();
+	X
+	X--- 119,127 -----
+	X  #define APPROVED	21
+	X  #define NFID		22
+	X  #define NFFROM		23
+	X+ #ifdef DOXREFS
+	X+ #define XREF		98
+	X+ #endif DOXREFS
+	X  #define OTHER		99
+	X  
+	X  char *malloc();
+	X***************
+	X*** 214,219
+	X  				getfield(hp->relayversion);
+	X  			}
+	X  			break;
+	X  		case OTHER:
+	X  			if (unreccnt < NUNREC) {
+	X  				if ((hp->unrec[unreccnt] = malloc((unsigned)(strlen(bfr) + 1))) != NULL ) {
+	X
+	X--- 217,227 -----
+	X  				getfield(hp->relayversion);
+	X  			}
+	X  			break;
+	X+ #ifdef DOXREFS
+	X+ 		case XREF:
+	X+ 			getfield(hp->xref);
+	X+ 			break;
+	X+ #endif DOXREFS
+	X  		case OTHER:
+	X  			if (unreccnt < NUNREC) {
+	X  				if ((hp->unrec[unreccnt] = malloc((unsigned)(strlen(bfr) + 1))) != NULL ) {
+	X***************
+	X*** 422,427
+	X  		return NFID;
+	X  	if (its("Nf-From: "))
+	X  		return NFFROM;
+	X  	return OTHER;
+	X  }
+	X  
+	X
+	X--- 430,439 -----
+	X  		return NFID;
+	X  	if (its("Nf-From: "))
+	X  		return NFFROM;
+	X+ #ifdef DOXREFS
+	X+ 	if (its("Xref: "))
+	X+ 		return XREF;
+	X+ #endif DOXREFS
+	X  	return OTHER;
+	X  }
+	X  
+	X***************
+	X*** 536,541
+	X  		fprintf(fp, "Nf-ID: %s\n", hp->nf_id);
+	X  	if (*hp->nf_from)
+	X  		fprintf(fp, "Nf-From: %s\n", hp->nf_from);
+	X  	for (iu = 0; iu < NUNREC; iu++) {
+	X  		if (hp->unrec[iu])
+	X  			fprintf(fp, "%s", &hp->unrec[iu][0]);
+	X
+	X--- 548,557 -----
+	X  		fprintf(fp, "Nf-ID: %s\n", hp->nf_id);
+	X  	if (*hp->nf_from)
+	X  		fprintf(fp, "Nf-From: %s\n", hp->nf_from);
+	X+ #ifdef DOXREFS
+	X+ 	if (wr == 1 && *hp->xref)
+	X+ 		fprintf(fp, "Xref: %s\n", hp->xref);
+	X+ #endif DOXREFS
+	X  	for (iu = 0; iu < NUNREC; iu++) {
+	X  		if (hp->unrec[iu])
+	X  			fprintf(fp, "%s", &hp->unrec[iu][0]);
+SHAR_EOF
+if test 1751 -ne "`wc -c < 'header.c.2.pat'`"
+then
+	echo shar: error transmitting "'header.c.2.pat'" '(should have been 1751 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'header.h.1.pat'" '(661 characters)'
+if test -f 'header.h.1.pat'
+then
+	echo shar: will not over-write existing file "'header.h.1.pat'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'header.h.1.pat'
+	XNOTE: the preceding context may be different under 2.10.2, but you should
+	Xbe able to figure it out anyway.
+	X
+	X*** header.old.h	Fri Apr 27 11:30:49 1984
+	X--- header.h	Thu May 10 15:19:55 1984
+	X***************
+	X*** 34,38
+	X  	int	intnumlines;		/* Integer version	*/
+	X  	char	keywords[BUFLEN];	/* Keywords:		*/
+	X  	char	approved[BUFLEN];	/* Approved:		*/
+	X  	char	*unrec[NUNREC];		/* unrecognized lines	*/
+	X  };
+	X
+	X--- 34,41 -----
+	X  	int	intnumlines;		/* Integer version	*/
+	X  	char	keywords[BUFLEN];	/* Keywords:		*/
+	X  	char	approved[BUFLEN];	/* Approved:		*/
+	X+ #ifdef DOXREFS
+	X+ 	char	xref[BUFLEN];		/* Xref:		*/
+	X+ #endif
+	X  	char	*unrec[NUNREC];		/* unrecognized lines	*/
+	X  };
+SHAR_EOF
+if test 661 -ne "`wc -c < 'header.h.1.pat'`"
+then
+	echo shar: error transmitting "'header.h.1.pat'" '(should have been 661 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'header.h.2.pat'" '(548 characters)'
+if test -f 'header.h.2.pat'
+then
+	echo shar: will not over-write existing file "'header.h.2.pat'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'header.h.2.pat'
+	X*** header.old.h	Tue Apr 30 14:33:33 1985
+	X--- header.h		Tue Apr 30 14:33:35 1985
+	X***************
+	X*** 35,39
+	X  	char	approved[BUFLEN];	/* Approved:		*/
+	X  	char	nf_id[BUFLEN];		/* Nf-ID:		*/
+	X  	char	nf_from[BUFLEN];	/* Nf-From:		*/
+	X  	char	*unrec[NUNREC];		/* unrecognized lines	*/
+	X  };
+	X
+	X--- 35,42 -----
+	X  	char	approved[BUFLEN];	/* Approved:		*/
+	X  	char	nf_id[BUFLEN];		/* Nf-ID:		*/
+	X  	char	nf_from[BUFLEN];	/* Nf-From:		*/
+	X+ #ifdef DOXREFS
+	X+ 	char	xref[BUFLEN];		/* Xref:		*/
+	X+ #endif DOXREFS
+	X  	char	*unrec[NUNREC];		/* unrecognized lines	*/
+	X  };
+SHAR_EOF
+if test 548 -ne "`wc -c < 'header.h.2.pat'`"
+then
+	echo shar: error transmitting "'header.h.2.pat'" '(should have been 548 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'help.c'" '(9650 characters)'
+if test -f 'help.c'
+then
+	echo shar: will not over-write existing file "'help.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'help.c'
+	X/* $Header: help.c,v 4.3.1.2 85/09/10 11:05:39 lwall Exp $
+	X *
+	X * $Log:	help.c,v $
+	X * Revision 4.3.1.2  85/09/10  11:05:39  lwall
+	X * Improved %m in in_char().
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:33:10  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:38:59  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "rn.h"
+	X#include "term.h"
+	X#include "INTERN.h"
+	X#include "help.h"
+	X
+	Xvoid
+	Xhelp_init()
+	X{
+	X    ;
+	X}
+	X
+	Xint
+	Xhelp_page()
+	X{
+	X    int cmd;
+	X
+	X#ifdef PAGERHELP
+	X    doshell(sh,filexp(PAGERHELP));
+	X#else
+	X    page_init();
+	X    if ((cmd = print_lines("\
+	XPaging commands:\n\
+	X",STANDOUT)) ||
+	X    (cmd = print_lines("\n\
+	XSP	Display the next page.\n\
+	Xx	Display the next page decrypted (rot13).\n\
+	Xd	Display half a page more.\n\
+	XCR	Display one more line.\n\
+	X^R,v,^X	Restart the current article (v=verbose header, ^X=rot13).\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	X^B	Back up one page.\n\
+	X^L,X	Refresh the screen (X=rot13).\n\
+	Xg pat	Go to (search forward within article for) pattern.\n\
+	XG	Search again for current pattern within article.\n\
+	X^G	Search for next line beginning with \"Subject:\".\n\
+	XTAB	Search for next line beginning with a different character.\n\
+	Xq	Quit the pager, go to end of article.  Leave article read or unread.\n\
+	Xj	Junk this article (mark it read).  Goes to end of article.\n\
+	X\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	XThe following commands skip the rest of the current article, then behave\n\
+	Xjust as if typed to the 'What next?' prompt at the end of the article:\n\
+	X",STANDOUT)) ||
+	X    (cmd = print_lines("\n\
+	Xn	Scan forward for next unread article.\n\
+	XN	Go to next article.\n\
+	X^N	Scan forward for next unread article with same title.\n\
+	Xp,P,^P	Same as n,N,^N, only going backwards.\n\
+	X-	Go to previously displayed article.\n\
+	X\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	XThe following commands also take you to the end of the article.\n\
+	XType h at end of article for a description of these commands:\n\
+	X",STANDOUT)) ||
+	X    (cmd = print_lines("\
+	X	# $ & / = ? c C f F k K ^K m M number r R ^R s S u v w W Y ^ |\n\
+	X\n\
+	X(To return to the middle of the article after one of these commands, type ^L.)\n\
+	X",NOMARKING)) )
+	X	return cmd;
+	X#endif
+	X    return 0;
+	X}
+	X
+	Xint
+	Xhelp_art()
+	X{
+	X    int cmd;
+	X#ifdef ARTHELP
+	X    doshell(sh,filexp(ARTHELP));
+	X#else
+	X    page_init();
+	X    if ((cmd = print_lines("\
+	XArticle Selection commands:\n\
+	X",STANDOUT)) ||
+	X    (cmd = print_lines("\n\
+	Xn,SP	Scan forward for next unread article.\n\
+	XN	Go to next article.\n\
+	X^N	Scan forward for next unread article with same subject.\n\
+	Xp,P,^P	Same as n,N,^N, only going backwards.\n\
+	X-	Go to previously displayed article.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xnumber	Go to specified article.\n\
+	Xrange{,range} command{:command}\n\
+	X	Apply one or more commands to one or more ranges of articles.\n\
+	X	Ranges are of the form: number | number-number.  You may use . for\n\
+	X	the current article, and $ for the last article.\n\
+	X 	Valid commands are: j, m, M, s, S, and !.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	X/pattern/modifiers\n\
+	X	Scan forward for article containing pattern in the subject line.\n\
+	X	(Use ?pat? to scan backwards; append h to scan headers, a to scan\n\
+	X	entire articles, r to scan read articles, c to make case sensitive.\n\
+	X/pattern/modifiers:command{:command}\n\
+	X	Apply one or more commands to the set of articles matching pattern.\n\
+	X	Use a K modifier to save entire command to the KILL file for this\n\
+	X	newsgroup.  Commands m and M, if first, imply an r modifier.\n\
+	X 	Valid commands are: j, m, M, s, S, and !.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xf,F	Submit a followup article (F = include this article).\n\
+	Xr,R	Reply through net mail (R = include this article).\n\
+	Xs ...	Save to file or pipe via sh.\n\
+	XS ...	Save via preferred shell.\n\
+	Xw,W	Like s and S but save without the header.\n\
+	X| ...	Same as s|...\n\
+	XC	Cancel this article, if yours.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	X^R,v	Restart article (v=verbose).\n\
+	X^X	Restart article, rot13 mode.\n\
+	Xc	Catch up (mark all articles as read).\n\
+	X^B	Back up one page.\n\
+	X^L	Refresh the screen.  You can get back to the pager with this.\n\
+	XX	Refresh screen in rot13 mode.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	X^	Go to first unread article.  Disables subject search mode.\n\
+	X$	Go to end of newsgroup.  Disables subject search mode.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("#       Print last article number.\n\
+	X&	Print current values of command-line switches.\n\
+	X&switch {switch}\n\
+	X	Set or unset more switches.\n\
+	X&&	Print current macro definitions.\n\
+	X&&def	Define a new macro.\n\
+	Xj	Junk this article (mark it read).  Stays at end of article.\n\
+	Xm	Mark article as still unread.\n\
+	XM	Mark article as still unread upon exiting newsgroup or Y command.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	XY	Yank back articles marked temporarily read via M.\n\
+	Xk	Mark current SUBJECT as read.\n\
+	XK	Mark current SUBJECT as read, and save command in KILL file.\n\
+	X=	List subjects of unread articles.\n\
+	Xu	Unsubscribe to this newsgroup.\n\
+	X^K	Edit local KILL file (the one for this newsgroup).\n\
+	Xq	Quit this newsgroup for now.\n\
+	XQ	Quit newsgroup, staying at current newsgroup.\n\
+	X",NOMARKING)) )
+	X	return cmd;
+	X#endif
+	X    return 0;
+	X}
+	X
+	Xint
+	Xhelp_ng()
+	X{
+	X    int cmd;
+	X#ifdef NGHELP
+	X    doshell(sh,filexp(NGHELP));
+	X#else
+	X    page_init();
+	X    if (cmd = print_lines("\
+	XNewsgroup Selection commands:\n\
+	X",STANDOUT) )
+	X	return cmd;
+	X    if (ng != nextrcline) {
+	X	if (cmd = print_lines("\
+	X\n\
+	Xy,SP	Do this newsgroup now.\n\
+	X.cmd	Do this newsgroup, executing cmd as first command.\n\
+	X=	Equivalent to .=<carriage return>.\n\
+	Xu	Unsubscribe from this newsgroup.\n\
+	Xc	Catch up (mark this newsgroup all read).\n\
+	X",NOMARKING) )
+	X	    return cmd;
+	X    }
+	X    if ((cmd = print_lines("\
+	X\n\
+	Xn	Go to the next newsgroup with unread news.\n\
+	XN	Go to the next newsgroup.\n\
+	Xp	Go to the previous newsgroup with unread news.\n\
+	XP	Go to the previous newsgroup.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	X-	Go to the previously displayed newsgroup.\n\
+	X1	Go to the first newsgroup.\n\
+	X^	Go to the first newsgroup with unread news.\n\
+	X$	Go to the last newsgroup.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xg name	Go to the named newsgroup.  Subscribe to new newsgroups this way too.\n\
+	X/pat	Search forward for newsgroup matching pattern.\n\
+	X?pat	Search backward for newsgroup matching pattern.\n\
+	X	(Use * and ? style patterns.  Append r to include read newsgroups.)\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xl pat	List unsubscribed newsgroups containing pattern.\n\
+	Xm name	Move named newsgroup elsewhere (no name moves current newsgroup).\n\
+	Xo pat	Only display newsgroups matching pattern.  Omit pat to unrestrict.\n\
+	Xa pat	Like o, but also scans for unsubscribed newsgroups matching pattern.\n\
+	XL	List current .newsrc.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	X&	Print current command-line switch settings.\n\
+	X&switch {switch}\n\
+	X	Set (or unset) more command-line switches.\n\
+	X&&	Print current macro definitions.\n\
+	X&&def	Define a new macro.\n\
+	X!cmd	Shell escape.\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xq	Quit rn.\n\
+	X^K	Edit the global KILL file.  Use commands like /pattern/j to suppress\n\
+	X	pattern in every newsgroup.\n\
+	Xv	Print version.\n\
+	X",NOMARKING)) )
+	X	return cmd;
+	X#endif
+	X#ifdef PUSHBACK
+	X    if (cmd = get_anything())
+	X	return cmd;
+	X    show_macros();
+	X#endif
+	X    return 0;
+	X}
+	X
+	X#ifdef ESCSUBS
+	Xint
+	Xhelp_subs()
+	X{
+	X    int cmd;
+	X#ifdef SUBSHELP
+	X    doshell(sh,filexp(SUBSHELP));
+	X#else
+	X    page_init();
+	X    if ((cmd = print_lines("\
+	XValid substitutions are:\n\
+	X",STANDOUT)) ||
+	X    (cmd = print_lines("\
+	X\n\
+	Xa	Current article number\n\
+	XA	Full name of current article (%P/%c/%a)\n\
+	Xb	Destination of last save command, often a mailbox\n\
+	XB	Bytes to ignore at beginning of last saved article\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xc	Current newsgroup, directory form\n\
+	XC	Current newsgroup, dot form\n\
+	Xd	Full name of newsgroup directory (%P/%c)\n\
+	XD	Distribution line from current article\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xf	Who the current article is from\n\
+	XF	Newsgroups to followup to (from Newsgroups and Followup-To)\n\
+	Xh	(This help message)\n\
+	XH	Host name (yours)\n\
+	Xi	Message-I.D. line from current article, with <>\n\
+	XI	Reference indicator mark (see -F switch)\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xl	News administrator's login name, if any\n\
+	XL	Login name (yours)\n\
+	Xm	Current mode, first letter of (init, newsgroup, article, pager,\n\
+	X		Add, Catchup, Delete bogus, Mailbox, Resubscribe)\n\
+	XM	Number of article marked with M\n\
+	Xn	Newsgroups from current article\n\
+	XN	Full name (yours)\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xo	Organization (yours)\n\
+	XO	Original working directory (where you ran rn from)\n\
+	Xp	Your private news directory (from -d)\n\
+	XP	Public news spool directory\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xr	Last reference (parent article id)\n\
+	XR	References list for followup article\n\
+	Xs	Subject, with all Re's and (nf)'s stripped off\n\
+	XS	Subject, with one Re stripped off\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	Xt	New To line derived from From and Reply-To (Internet format)\n\
+	XT	New To line derived from Path\n\
+	Xu	Number of unread articles\n\
+	XU	Number of unread articles not counting current article\n\
+	Xx	News library directory\n\
+	XX	Rn library directory\n\
+	Xz	Length of current article in bytes\n\
+	X",NOMARKING)) ||
+	X    (cmd = print_lines("\
+	X~	Your home directory\n\
+	X.	Directory containing . files\n\
+	X$	Current process number\n\
+	X/	Last search string\n\
+	XESC	Run preceding command through % interpretation\n\
+	X",NOMARKING)) )
+	X	return cmd;
+	X#endif
+	X    return 0;
+	X}
+	X#endif
+	X
+SHAR_EOF
+if test 9650 -ne "`wc -c < 'help.c'`"
+then
+	echo shar: error transmitting "'help.c'" '(should have been 9650 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'inews.c.1.pat'" '(5899 characters)'
+if test -f 'inews.c.1.pat'
+then
+	echo shar: will not over-write existing file "'inews.c.1.pat'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'inews.c.1.pat'
+	X*** inews.c.1.std	Tue Oct  2 16:09:59 1984
+	X--- inews.c.1	Fri Sep 21 14:50:49 1984
+	X***************
+	X*** 483,488
+	X  /*
+	X   *	Link ARTICLE into dir for ngname and update active file.
+	X   */
+	X  localize(ngname)
+	X  char	*ngname;
+	X  {
+	X
+	X--- 483,491 -----
+	X  /*
+	X   *	Link ARTICLE into dir for ngname and update active file.
+	X   */
+	X+ #ifdef DOXREFS
+	X+ long
+	X+ #endif
+	X  localize(ngname)
+	X  char	*ngname;
+	X  {
+	X***************
+	X*** 515,520
+	X  	}
+	X  	for (;;) {
+	X  		sprintf(bfr, "%s/%ld", dirname(ngname), ngsize+1);
+	X  		if (link(ARTICLE, bfr) == 0) break;
+	X  		e = errno;	/* keep log from clobbering it */
+	X  		fprintf(stderr, "Cannot install article as %s\n", bfr);
+	X
+	X--- 518,528 -----
+	X  	}
+	X  	for (;;) {
+	X  		sprintf(bfr, "%s/%ld", dirname(ngname), ngsize+1);
+	X+ #ifdef LINKART
+	X+ 		if (mylink(ARTICLE, bfr) == 0) break;
+	X+ 				/* on first file inits ARTICLE, on subsequent */
+	X+ 				/* files "links" to first article */
+	X+ #else
+	X  		if (link(ARTICLE, bfr) == 0) break;
+	X  #endif
+	X  		e = errno;	/* keep log from clobbering it */
+	X***************
+	X*** 516,521
+	X  	for (;;) {
+	X  		sprintf(bfr, "%s/%ld", dirname(ngname), ngsize+1);
+	X  		if (link(ARTICLE, bfr) == 0) break;
+	X  		e = errno;	/* keep log from clobbering it */
+	X  		fprintf(stderr, "Cannot install article as %s\n", bfr);
+	X  		log("Cannot install article as %s", bfr);
+	X
+	X--- 524,530 -----
+	X  				/* files "links" to first article */
+	X  #else
+	X  		if (link(ARTICLE, bfr) == 0) break;
+	X+ #endif
+	X  		e = errno;	/* keep log from clobbering it */
+	X  		fprintf(stderr, "Cannot install article as %s\n", bfr);
+	X  		log("Cannot install article as %s", bfr);
+	X***************
+	X*** 542,547
+	X  		strcpy(firstbufname, bfr);
+	X  	sprintf(bfr, "%s/%ld ", ngname, ngsize+1);
+	X  	addhist(bfr);
+	X  	return TRUE;
+	X  }
+	X  
+	X
+	X--- 551,557 -----
+	X  		strcpy(firstbufname, bfr);
+	X  	sprintf(bfr, "%s/%ld ", ngname, ngsize+1);
+	X  	addhist(bfr);
+	X+ #ifndef DOXREFS
+	X  	return TRUE;
+	X  #else DOXREFS
+	X  	return ngsize+1;
+	X***************
+	X*** 543,548
+	X  	sprintf(bfr, "%s/%ld ", ngname, ngsize+1);
+	X  	addhist(bfr);
+	X  	return TRUE;
+	X  }
+	X  
+	X  /*
+	X
+	X--- 553,561 -----
+	X  	addhist(bfr);
+	X  #ifndef DOXREFS
+	X  	return TRUE;
+	X+ #else DOXREFS
+	X+ 	return ngsize+1;
+	X+ #endif DOXREFS
+	X  }
+	X  
+	X  /*
+	X***************
+	X*** 553,558
+	X  	register char *ptr;
+	X  	register FILE *tfp;
+	X  	int badgroup = 0, goodgroup = 0;
+	X  
+	X  	/* Fill up the rest of header. */
+	X  	if (mode != PROC) {
+	X
+	X--- 566,574 -----
+	X  	register char *ptr;
+	X  	register FILE *tfp;
+	X  	int badgroup = 0, goodgroup = 0;
+	X+ #ifdef DOXREFS
+	X+ 	register char *nextxref = header.xref; 
+	X+ #endif DOXREFS
+	X  
+	X  	/* Fill up the rest of header. */
+	X  	if (mode != PROC) {
+	X***************
+	X*** 565,570
+	X  	if (mode==PROC)
+	X  		log("from %s relay %s", header.from, header.relayversion);
+	X  
+	X  	/* Write article to temp file. */
+	X  	tfp = xfopen(mktemp(ARTICLE), "w");
+	X  	lhwrite(&header, tfp);
+	X
+	X--- 581,593 -----
+	X  	if (mode==PROC)
+	X  		log("from %s relay %s", header.from, header.relayversion);
+	X  
+	X+ #ifdef LINKART
+	X+ 	*ARTICLE = '\0';	/* tell mylink() to snarf the name */
+	X+ #else !LINKART
+	X+ #ifdef DOXREFS
+	X+ 	/* Open temp file for article, but link before writing */
+	X+ 	tfp = xfopen(mktemp(ARTICLE), "w");
+	X+ #else DOXREFS
+	X  	/* Write article to temp file. */
+	X  	tfp = xfopen(mktemp(ARTICLE), "w");
+	X  	lhwrite(&header, tfp);
+	X***************
+	X*** 577,582
+	X  	}
+	X  	fclose(tfp);
+	X  	fclose(infp);
+	X  
+	X  	if (is_ctl) {
+	X  		control(&header);
+	X
+	X--- 600,607 -----
+	X  	}
+	X  	fclose(tfp);
+	X  	fclose(infp);
+	X+ #endif DOXREFS
+	X+ #endif LINKART
+	X  
+	X  	if (is_ctl) {
+	X  		control(&header);
+	X***************
+	X*** 593,598
+	X  			}
+	X  		}
+	X  	} else {
+	X  		for (ptr = nbuf; *ptr;) {
+	X  			if (*ptr == '-') {
+	X  				while (*ptr++)
+	X
+	X--- 618,627 -----
+	X  			}
+	X  		}
+	X  	} else {
+	X+ #ifdef DOXREFS
+	X+ 		sprintf(nextxref,"%s ",SYSNAME);
+	X+ 		nextxref += strlen(nextxref);
+	X+ #endif
+	X  		for (ptr = nbuf; *ptr;) {
+	X  			if (*ptr == '-') {
+	X  				while (*ptr++)
+	X***************
+	X*** 610,615
+	X  			}
+	X  			else
+	X  				goodgroup++;
+	X  			if (*nbuf)
+	X  				localize(ptr);
+	X  			while (*ptr++)
+	X
+	X--- 639,645 -----
+	X  			}
+	X  			else
+	X  				goodgroup++;
+	X+ #ifndef DOXREFS
+	X  			if (*nbuf)
+	X  				localize(ptr);
+	X  #else DOXREFS
+	X***************
+	X*** 612,617
+	X  				goodgroup++;
+	X  			if (*nbuf)
+	X  				localize(ptr);
+	X  			while (*ptr++)
+	X  				;
+	X  		}
+	X
+	X--- 642,653 -----
+	X  #ifndef DOXREFS
+	X  			if (*nbuf)
+	X  				localize(ptr);
+	X+ #else DOXREFS
+	X+ 			if (*nbuf)
+	X+ 				sprintf(nextxref,"%s:%ld ",ptr,localize(ptr));
+	X+ 			while (*nextxref)
+	X+ 				nextxref++;
+	X+ #endif DOXREFS
+	X  			while (*ptr++)
+	X  				;
+	X  		}
+	X***************
+	X*** 616,621
+	X  				;
+	X  		}
+	X  	}
+	X  
+	X  #ifdef NOFORWARD
+	X  	if (*nbuf)
+	X
+	X--- 652,663 -----
+	X  				;
+	X  		}
+	X  	}
+	X+ #ifdef DOXREFS
+	X+ 	if (goodgroup < 2)
+	X+ 	    header.xref[0] = '\0';
+	X+ 	else
+	X+ 	    *(nextxref-1) = '\0';
+	X+ #endif
+	X  
+	X  #ifdef LINKART
+	X  	tfp = xfopen(ARTICLE,"w");	/* open 1st article localized */
+	X***************
+	X*** 617,622
+	X  		}
+	X  	}
+	X  
+	X  #ifdef NOFORWARD
+	X  	if (*nbuf)
+	X  #endif
+	X
+	X--- 659,683 -----
+	X  	    *(nextxref-1) = '\0';
+	X  #endif
+	X  
+	X+ #ifdef LINKART
+	X+ 	tfp = xfopen(ARTICLE,"w");	/* open 1st article localized */
+	X+ #endif
+	X+ 
+	X+ #if defined(LINKART) || defined(DOXREFS)
+	X+ 	/* Now that xref is constructed, write article to temp file. */
+	X+ 	/* (We ought to detect no room at this point and clean up.) */ 
+	X+ 	lhwrite(&header, tfp);
+	X+ 	while (fgets(bfr, BUFLEN, infp) != NULL) {
+	X+ 		/*
+	X+ 		if (!strncmp(bfr, "From ", 5))
+	X+ 			putc('>', tfp);
+	X+ 		*/
+	X+ 		fputs(bfr, tfp);
+	X+ 	}
+	X+ 	fclose(tfp);
+	X+ 	fclose(infp);
+	X+ #endif LINKART || DOXREFS
+	X+ 
+	X  #ifdef NOFORWARD
+	X  	if (*nbuf)
+	X  #endif
+	X***************
+	X*** 861,863
+	X  		mclose(fd);
+	X  	}
+	X  }
+	X
+	X--- 922,946 -----
+	X  		mclose(fd);
+	X  	}
+	X  }
+	X+ 
+	X+ #ifdef LINKART
+	X+ mylink(tmpart,linkfrom)
+	X+ char *tmpart, *linkfrom;
+	X+ {
+	X+     struct stat statbuf;
+	X+ 
+	X+     if (stat(linkfrom,&statbuf)==0)
+	X+ 	return -1;
+	X+     if (!*tmpart)
+	X+ 	strcpy(tmpart,linkfrom);
+	X+     else {
+	X+ 	FILE *linkfp = fopen(linkfrom,"w");
+	X+ 
+	X+ 	if (!linkfp)
+	X+ 	    return -1;
+	X+ 	fprintf(linkfp,"%s\n",tmpart);
+	X+ 	fclose(linkfp);
+	X+     }
+	X+     return 0;
+	X+ }
+	X+ #endif LINKART
+SHAR_EOF
+if test 5899 -ne "`wc -c < 'inews.c.1.pat'`"
+then
+	echo shar: error transmitting "'inews.c.1.pat'" '(should have been 5899 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'inews.c.2.pat'" '(9579 characters)'
+if test -f 'inews.c.2.pat'
+then
+	echo shar: will not over-write existing file "'inews.c.2.pat'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'inews.c.2.pat'
+	X*** inews.old.c	Tue Apr 30 14:34:19 1985
+	X--- inews.c	Tue Apr 30 14:34:33 1985
+	X***************
+	X*** 416,421
+	X  /*
+	X   *	Link ARTICLE into dir for ngname and update active file.
+	X   */
+	X  localize(ngname)
+	X  char	*ngname;
+	X  {
+	X
+	X--- 416,424 -----
+	X  /*
+	X   *	Link ARTICLE into dir for ngname and update active file.
+	X   */
+	X+ #ifdef DOXREFS
+	X+ long
+	X+ #endif
+	X  localize(ngname)
+	X  char	*ngname;
+	X  {
+	X***************
+	X*** 453,458
+	X  			mknewsg(cp, ngname);
+	X  
+	X  		sprintf(bfr, "%s/%ld", cp, ngsize+1);
+	X  #ifdef VMS
+	X  		if ((f2 = creat(bfr, 0666)) >=0 ) {
+	X  			f1 = open(article, 0);
+	X
+	X--- 456,466 -----
+	X  			mknewsg(cp, ngname);
+	X  
+	X  		sprintf(bfr, "%s/%ld", cp, ngsize+1);
+	X+ #ifdef LINKART
+	X+ 		if (mylink(ARTICLE, bfr) == 0) break;
+	X+ 				/* on first file inits ARTICLE, on subsequent */
+	X+ 				/* files "links" to first article */
+	X+ #else !LINKART
+	X  #ifdef VMS
+	X  		if ((f2 = creat(bfr, 0666)) >=0 ) {
+	X  			f1 = open(article, 0);
+	X***************
+	X*** 468,473
+	X  		if (link(ARTICLE, bfr) == 0)
+	X  			break;
+	X  #endif !VMS
+	X  		e = errno;	/* keep log from clobbering it */
+	X  		logerr("Cannot install article as %s", bfr);
+	X  		if (e != EEXIST) {
+	X
+	X--- 476,482 -----
+	X  		if (link(ARTICLE, bfr) == 0)
+	X  			break;
+	X  #endif !VMS
+	X+ #endif !LINKART
+	X  		e = errno;	/* keep log from clobbering it */
+	X  		logerr("Cannot install article as %s", bfr);
+	X  		if (e != EEXIST) {
+	X***************
+	X*** 494,499
+	X  		strcpy(firstbufname, bfr);
+	X  	sprintf(bfr, "%s/%ld ", ngname, ngsize+1);
+	X  	addhist(bfr);
+	X  	return TRUE;
+	X  }
+	X  
+	X
+	X--- 503,509 -----
+	X  		strcpy(firstbufname, bfr);
+	X  	sprintf(bfr, "%s/%ld ", ngname, ngsize+1);
+	X  	addhist(bfr);
+	X+ #ifndef DOXREFS
+	X  	return TRUE;
+	X  #else DOXREFS
+	X  	return ngsize+1;
+	X***************
+	X*** 495,500
+	X  	sprintf(bfr, "%s/%ld ", ngname, ngsize+1);
+	X  	addhist(bfr);
+	X  	return TRUE;
+	X  }
+	X  
+	X  /*
+	X
+	X--- 505,513 -----
+	X  	addhist(bfr);
+	X  #ifndef DOXREFS
+	X  	return TRUE;
+	X+ #else DOXREFS
+	X+ 	return ngsize+1;
+	X+ #endif DOXREFS
+	X  }
+	X  
+	X  /*
+	X***************
+	X*** 507,512
+	X  	char c;
+	X  	struct srec srec;	/* struct for sys file lookup	*/
+	X  	int is_invalid = FALSE;
+	X  
+	X  	/* Fill up the rest of header. */
+	X  	if (mode != PROC) {
+	X
+	X--- 520,529 -----
+	X  	char c;
+	X  	struct srec srec;	/* struct for sys file lookup	*/
+	X  	int is_invalid = FALSE;
+	X+ #ifdef DOXREFS
+	X+ 	register char *nextxref = header.xref; 
+	X+ 	int numxrefs = 0;
+	X+ #endif DOXREFS
+	X  
+	X  	/* Fill up the rest of header. */
+	X  	if (mode != PROC) {
+	X***************
+	X*** 527,532
+	X  	if (!is_ctl && mode != CREATENG)
+	X  		is_invalid = ngfcheck(mode == PROC);
+	X  
+	X  	/* Write article to temp file. */
+	X  	tfp = xfopen(mktemp(ARTICLE), "w");
+	X  	if ( (c=getc(infp)) == ' ' || c == '\t' ) {
+	X
+	X--- 544,556 -----
+	X  	if (!is_ctl && mode != CREATENG)
+	X  		is_invalid = ngfcheck(mode == PROC);
+	X  
+	X+ #ifdef LINKART
+	X+ 	*ARTICLE = '\0';	/* tell mylink() to snarf the name */
+	X+ #else !LINKART
+	X+ #ifdef DOXREFS
+	X+ 	/* Open temp file for article, but link before writing */
+	X+ 	tfp = xfopen(mktemp(ARTICLE), "w");
+	X+ #else DOXREFS
+	X  	/* Write article to temp file. */
+	X  	tfp = xfopen(mktemp(ARTICLE), "w");
+	X  	if ( (c=getc(infp)) == ' ' || c == '\t' ) {
+	X***************
+	X*** 545,550
+	X  		putc('\n',tfp);
+	X  	fclose(tfp);
+	X  	fclose(infp);
+	X  
+	X  	if (is_invalid) {
+	X  		logerr("No valid newsgroups found, moved to junk");
+	X
+	X--- 569,576 -----
+	X  		putc('\n',tfp);
+	X  	fclose(tfp);
+	X  	fclose(infp);
+	X+ #endif DOXREFS
+	X+ #endif LINKART
+	X  
+	X  	if (is_invalid) {
+	X  		logerr("No valid newsgroups found, moved to junk");
+	X***************
+	X*** 550,555
+	X  		logerr("No valid newsgroups found, moved to junk");
+	X  		if (localize("junk"))
+	X  			savehist(histline);
+	X  		xxit(1);
+	X  	}
+	X  
+	X
+	X--- 576,582 -----
+	X  		logerr("No valid newsgroups found, moved to junk");
+	X  		if (localize("junk"))
+	X  			savehist(histline);
+	X+ #ifndef DOXREFS
+	X  		xxit(1);
+	X  #endif
+	X  	}
+	X***************
+	X*** 551,556
+	X  		if (localize("junk"))
+	X  			savehist(histline);
+	X  		xxit(1);
+	X  	}
+	X  
+	X  	if (time((time_t)0) > (cgtdate(header.subdate) + DFLTEXP) ){
+	X
+	X--- 578,584 -----
+	X  			savehist(histline);
+	X  #ifndef DOXREFS
+	X  		xxit(1);
+	X+ #endif
+	X  	}
+	X  #ifdef DOXREFS
+	X  	else
+	X***************
+	X*** 552,558
+	X  			savehist(histline);
+	X  		xxit(1);
+	X  	}
+	X! 
+	X  	if (time((time_t)0) > (cgtdate(header.subdate) + DFLTEXP) ){
+	X  		logerr("Article too old, moved to junk");
+	X  		if (localize("junk"))
+	X
+	X--- 580,588 -----
+	X  		xxit(1);
+	X  #endif
+	X  	}
+	X! #ifdef DOXREFS
+	X! 	else
+	X! #endif
+	X  	if (time((time_t)0) > (cgtdate(header.subdate) + DFLTEXP) ){
+	X  		logerr("Article too old, moved to junk");
+	X  		if (localize("junk"))
+	X***************
+	X*** 557,562
+	X  		logerr("Article too old, moved to junk");
+	X  		if (localize("junk"))
+	X  			savehist(histline);
+	X  		xxit(1);
+	X  	}
+	X  
+	X
+	X--- 587,593 -----
+	X  		logerr("Article too old, moved to junk");
+	X  		if (localize("junk"))
+	X  			savehist(histline);
+	X+ #ifndef DOXREFS
+	X  		xxit(1);
+	X  #endif
+	X  	}
+	X***************
+	X*** 558,563
+	X  		if (localize("junk"))
+	X  			savehist(histline);
+	X  		xxit(1);
+	X  	}
+	X  
+	X  	if (is_ctl) {
+	X
+	X--- 589,595 -----
+	X  			savehist(histline);
+	X  #ifndef DOXREFS
+	X  		xxit(1);
+	X+ #endif
+	X  	}
+	X  #ifdef DOXREFS
+	X  	else
+	X***************
+	X*** 559,565
+	X  			savehist(histline);
+	X  		xxit(1);
+	X  	}
+	X! 
+	X  	if (is_ctl) {
+	X  		control(&header);
+	X  		localize("control");
+	X
+	X--- 591,599 -----
+	X  		xxit(1);
+	X  #endif
+	X  	}
+	X! #ifdef DOXREFS
+	X! 	else
+	X! #endif
+	X  	if (is_ctl) {
+	X  #ifndef DOXREFS
+	X  		control(&header);
+	X***************
+	X*** 561,566
+	X  	}
+	X  
+	X  	if (is_ctl) {
+	X  		control(&header);
+	X  		localize("control");
+	X  	} else {
+	X
+	X--- 595,601 -----
+	X  	else
+	X  #endif
+	X  	if (is_ctl) {
+	X+ #ifndef DOXREFS
+	X  		control(&header);
+	X  #endif
+	X  		localize("control");
+	X***************
+	X*** 562,567
+	X  
+	X  	if (is_ctl) {
+	X  		control(&header);
+	X  		localize("control");
+	X  	} else {
+	X  		if (s_find(&srec, FULLSYSNAME) == FALSE)
+	X
+	X--- 597,603 -----
+	X  	if (is_ctl) {
+	X  #ifndef DOXREFS
+	X  		control(&header);
+	X+ #endif
+	X  		localize("control");
+	X  	} else {
+	X  		if (s_find(&srec, FULLSYSNAME) == FALSE)
+	X***************
+	X*** 566,571
+	X  	} else {
+	X  		if (s_find(&srec, FULLSYSNAME) == FALSE)
+	X  			xerror("Cannot find my name '%s' in %s", FULLSYSNAME, SUBFILE);
+	X  		for (ptr = nbuf; *ptr;) {
+	X  			if (ngmatch(ptr, srec.s_nbuf) || index(ptr,'.') == NULL)
+	X  				localize(ptr);
+	X
+	X--- 602,611 -----
+	X  	} else {
+	X  		if (s_find(&srec, FULLSYSNAME) == FALSE)
+	X  			xerror("Cannot find my name '%s' in %s", FULLSYSNAME, SUBFILE);
+	X+ #ifdef DOXREFS
+	X+ 		sprintf(nextxref,"%s ",FULLSYSNAME);
+	X+ 		nextxref += strlen(nextxref);
+	X+ #endif
+	X  		for (ptr = nbuf; *ptr;) {
+	X  #ifndef DOXREFS
+	X  			if (ngmatch(ptr, srec.s_nbuf) || index(ptr,'.') == NULL)
+	X***************
+	X*** 567,572
+	X  		if (s_find(&srec, FULLSYSNAME) == FALSE)
+	X  			xerror("Cannot find my name '%s' in %s", FULLSYSNAME, SUBFILE);
+	X  		for (ptr = nbuf; *ptr;) {
+	X  			if (ngmatch(ptr, srec.s_nbuf) || index(ptr,'.') == NULL)
+	X  				localize(ptr);
+	X  			while (*ptr++)
+	X
+	X--- 607,613 -----
+	X  		nextxref += strlen(nextxref);
+	X  #endif
+	X  		for (ptr = nbuf; *ptr;) {
+	X+ #ifndef DOXREFS
+	X  			if (ngmatch(ptr, srec.s_nbuf) || index(ptr,'.') == NULL)
+	X  				localize(ptr);
+	X  #else DOXREFS
+	X***************
+	X*** 569,574
+	X  		for (ptr = nbuf; *ptr;) {
+	X  			if (ngmatch(ptr, srec.s_nbuf) || index(ptr,'.') == NULL)
+	X  				localize(ptr);
+	X  			while (*ptr++)
+	X  				;
+	X  		}
+	X
+	X--- 610,624 -----
+	X  #ifndef DOXREFS
+	X  			if (ngmatch(ptr, srec.s_nbuf) || index(ptr,'.') == NULL)
+	X  				localize(ptr);
+	X+ #else DOXREFS
+	X+ 			if (ngmatch(ptr, srec.s_nbuf) ||
+	X+ 			    index(ptr,'.') == NULL) {
+	X+ 				sprintf(nextxref,"%s:%ld ",ptr,localize(ptr));
+	X+ 				numxrefs++;
+	X+ 				while (*nextxref)
+	X+ 				       nextxref++;
+	X+ 			}
+	X+ #endif DOXREFS
+	X  			while (*ptr++)
+	X  				;
+	X  		}
+	X***************
+	X*** 577,582
+	X  			localize("junk");
+	X  		}
+	X  	}
+	X  
+	X  	broadcast();
+	X  	savehist(histline);
+	X
+	X--- 627,638 -----
+	X  			localize("junk");
+	X  		}
+	X  	}
+	X+ #ifdef DOXREFS
+	X+ 	if (numxrefs >= 2)
+	X+ 	    *(nextxref-1) = '\0';       /* wipe out the last space */
+	X+ 	else
+	X+ 	    header.xref[0] = '\0';      /* wipe out the whole thing */
+	X+ #endif
+	X  
+	X  #ifdef LINKART
+	X  	tfp = xfopen(ARTICLE,"w");	/* open 1st article localized */
+	X***************
+	X*** 578,583
+	X  		}
+	X  	}
+	X  
+	X  	broadcast();
+	X  	savehist(histline);
+	X  	xxit(0);
+	X
+	X--- 634,669 -----
+	X  	    header.xref[0] = '\0';      /* wipe out the whole thing */
+	X  #endif
+	X  
+	X+ #ifdef LINKART
+	X+ 	tfp = xfopen(ARTICLE,"w");	/* open 1st article localized */
+	X+ #endif
+	X+ 
+	X+ #if defined(LINKART) || defined(DOXREFS)
+	X+ 	/* Now that xref is constructed, write article to temp file. */
+	X+ 	/* (We ought to detect no room at this point and clean up.) */ 
+	X+ 	if ( (c=getc(infp)) == ' ' || c == '\t' ) {
+	X+ 		header.intnumlines++;
+	X+ 		sprintf(header.numlines,"%d",header.intnumlines);
+	X+ 	}
+	X+ 	lhwrite(&header, tfp);
+	X+ 	/* Kludge to get around article truncation problem */
+	X+ 	if (c == ' ' || c == '\t' )
+	X+ 		putc('\n', tfp);
+	X+ 	putc(c,tfp);
+	X+ 	while (fgets(bfr, BUFLEN, infp) != NULL)
+	X+ 		fputs(bfr, tfp);
+	X+ 
+	X+ 	if (bfr[strlen(bfr)-1] != '\n')
+	X+ 		putc('\n',tfp);
+	X+ 	fclose(tfp);
+	X+ 	fclose(infp);
+	X+ #endif LINKART || DOXREFS
+	X+ 
+	X+ #ifdef DOXREFS
+	X+ 	if (is_ctl)	/* moved here cuz checkgroups uses ARTICLE! */
+	X+ 		control(&header);
+	X+ #endif
+	X+ 
+	X  	broadcast();
+	X  	savehist(histline);
+	X  	xxit(0);
+	X***************
+	X*** 853,855
+	X  	}
+	X  	return(NULL);
+	X  }
+	X
+	X--- 939,963 -----
+	X  	}
+	X  	return(NULL);
+	X  }
+	X+ 
+	X+ #ifdef LINKART
+	X+ mylink(tmpart,linkfrom)
+	X+ char *tmpart, *linkfrom;
+	X+ {
+	X+     struct stat statbuf;
+	X+ 
+	X+     if (stat(linkfrom,&statbuf)==0)
+	X+ 	return -1;
+	X+     if (!*tmpart)                       /* first article? */
+	X+ 	strcpy(tmpart,linkfrom);        /* just remember name */
+	X+     else {
+	X+ 	FILE *linkfp = fopen(linkfrom,"w");
+	X+ 
+	X+ 	if (!linkfp)
+	X+ 	    return -1;
+	X+ 	fprintf(linkfp,"%s\n",tmpart);  /* do "symbolic link" */
+	X+ 	fclose(linkfp);
+	X+     }
+	X+     return 0;
+	X+ }
+	X+ #endif LINKART
+SHAR_EOF
+if test 9579 -ne "`wc -c < 'inews.c.2.pat'`"
+then
+	echo shar: error transmitting "'inews.c.2.pat'" '(should have been 9579 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'init.c'" '(7030 characters)'
+if test -f 'init.c'
+then
+	echo shar: will not over-write existing file "'init.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'init.c'
+	X/* $Header: init.c,v 4.3.1.4 86/09/05 14:24:02 lwall Exp $
+	X *
+	X * $Log:	init.c,v $
+	X * Revision 4.3.1.4  86/09/05  14:24:02  lwall
+	X * Removed net.announce dependency.
+	X * 
+	X * Revision 4.3.1.3  85/07/23  18:08:36  lwall
+	X * Fixed up NOLINEBUF option to work.
+	X * 
+	X * Revision 4.3.1.2  85/05/21  14:22:46  lwall
+	X * Sped up "rn -c" by avoiding unnecessary initialization.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:33:39  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  16:16:13  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "final.h"
+	X#include "term.h"
+	X#include "last.h"
+	X#include "rn.h"
+	X#include "rcstuff.h"
+	X#include "ngdata.h"
+	X#include "only.h"
+	X#include "intrp.h"
+	X#include "addng.h"
+	X#include "sw.h"
+	X#include "art.h"
+	X#include "artsrch.h"
+	X#include "artio.h"
+	X#include "backpage.h"
+	X#include "bits.h"
+	X#include "cheat.h"
+	X#include "head.h"
+	X#include "help.h"
+	X#include "kfile.h"
+	X#include "ngsrch.h"
+	X#include "ngstuff.h"
+	X#include "rcln.h"
+	X#include "respond.h"
+	X#include "ng.h"
+	X#include "INTERN.h"
+	X#include "init.h"
+	X
+	Xbool
+	Xinitialize(argc,argv)
+	Xint argc;
+	Xchar *argv[];
+	X{
+	X    char *tcbuf;
+	X    register bool foundany = FALSE;
+	X    long time();
+	X#ifdef NOLINEBUF
+	X    static char std_out_buf[BUFSIZ];	/* must be static or malloced */
+	X
+	X    setbuf(stdout, std_out_buf);
+	X#endif
+	X
+	X    tcbuf = safemalloc(1024);		/* make temp buffer for termcap and */
+	X					/* other initialization stuff */
+	X    
+	X    /* init terminal */
+	X    
+	X    term_init();			/* must precede sw_init() so that */
+	X					/* ospeed is set for baud-rate */
+	X					/* switches.  Actually terminal */
+	X					/* mode setting is in term_set() */
+	X
+	X    /* we have to know rnlib to look up global switches in %X/INIT */
+	X
+	X    lib = savestr(filexp(LIB));
+	X    rnlib = savestr(filexp(RNLIB));
+	X
+	X    /* decode switches */
+	X
+	X    sw_init(argc,argv,&tcbuf);          /* must not do % interps! */
+	X					/* (but may mung environment) */
+	X
+	X    /* init signals, status flags */
+	X
+	X    final_init();
+	X    
+	X    /* start up file expansion and the % interpreter */
+	X
+	X    intrp_init(tcbuf);
+	X    
+	X    /* now make sure we have a current working directory */
+	X
+	X    if (!checkflag)
+	X	cwd_check();
+	X    
+	X    /* now that we know where to save things, cd to news directory */
+	X
+	X    if (chdir(spool)) {
+	X	printf(nocd,spool) FLUSH;
+	X	finalize(1);
+	X    }
+	X
+	X    /* if we aren't just checking, turn off echo */
+	X
+	X    if (!checkflag)
+	X	term_set(tcbuf);
+	X
+	X    /* get info on last rn run, if any */
+	X
+	X    if (!checkflag)
+	X	last_init(tcbuf);
+	X
+	X    free(tcbuf);			/* recover 1024 bytes */
+	X
+	X    /* make sure we are the sole possessors of .newsrc */
+	X
+	X    if (!checkflag)
+	X	lock_check();
+	X
+	X    /* check for news news */
+	X
+	X    if (!checkflag)
+	X	newsnews_check();
+	X
+	X    /* open active file, etc. */
+	X
+	X    ngdata_init();
+	X
+	X    /* now read in the .newsrc file */
+	X
+	X    foundany = rcstuff_init();
+	X
+	X    /* it looks like we will actually read something, so init everything */
+	X
+	X    addng_init();
+	X    art_init();
+	X    artio_init();
+	X    artsrch_init();
+	X    backpage_init();
+	X    bits_init();
+	X    cheat_init();
+	X/*  final_init();	already done */
+	X    head_init();
+	X    help_init();
+	X/*  intrp_init();      already done */
+	X    kfile_init();
+	X/*  last_init();	already done */
+	X    ng_init();
+	X/*  ngdata_init();	already done */
+	X    ngsrch_init();
+	X    ngstuff_init();
+	X    only_init();
+	X    rcln_init();
+	X/*  rcstuff_init();	already done */
+	X    respond_init();
+	X    rn_init();
+	X    search_init();
+	X/*  sw_init();      already done */
+	X/*  term_init();	already done */
+	X    util_init();
+	X
+	X#ifdef FINDNEWNG
+	X    fstat(actfp->_file,&filestat);	/* did active file grow? */
+	X    if (filestat.st_size != lastactsiz) {
+	X	long actsiz = filestat.st_size;	/* remember new size */
+	X	NG_NUM oldnext = nextrcline;	/* remember # lines in newsrc */
+	X#ifdef FASTNEW
+	X	bool munged = writesoft || !lastactsiz;
+	X					/* bad soft ptrs -> edited active */
+	X#else
+	X	bool munged = TRUE;		/* just assume .newsrc munged */
+	X#endif
+	X
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    fputs("\nChecking active list for new newsgroups...\n",stdout)
+	X	      FLUSH;
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    fputs("\nNew newsgroups:\n",stdout) FLUSH;
+	X#endif
+	X#ifdef FASTNEW
+	X	if (!munged) {			/* maybe just do tail of file? */
+	X	    fseek(actfp,lastactsiz-1,0);
+	X	    fgets(buf,LBUFLEN,actfp);
+	X	    munged = (*buf != '\n');
+	X	    if (!munged)
+	X		munged = newlist(munged,FALSE);
+	X	}
+	X#endif
+	X	if (munged) {			/* must we scan entire file? */
+	X	    fseek(actfp,0L,0);		/* rewind active file */
+	X	    newlist(munged,FALSE);      /* sure hope they use hashing... */
+	X	}
+	X	lastactsiz = actsiz;		/* remember for .rnlast */
+	X	if (nextrcline != oldnext) {	/* did we add any new groups? */
+	X	    foundany = TRUE;		/* let main() know */
+	X	    starthere = 0;              /* and start ng scan from the top */
+	X	}
+	X    }
+	X#endif
+	X    time(&lasttime);			/* remember when we inited-- */
+	X					/* ends up back in .rnlast */
+	X    writelast();                       /* in fact, put it there now */
+	X    
+	X#ifdef FINDNEWNG
+	X# ifdef ONLY
+	X    if (maxngtodo)			/* patterns on command line? */
+	X	foundany |= scanactive();
+	X# endif
+	X#endif
+	X
+	X    return foundany;
+	X}
+	X
+	X/* make sure there is no rn out there already */
+	X
+	Xvoid
+	Xlock_check()
+	X{
+	X    lockname = savestr(filexp(LOCKNAME));
+	X    if (!checkflag) {
+	X	tmpfp = fopen(lockname,"r");
+	X	if (tmpfp != Nullfp) {
+	X	    int processnum;
+	X    
+	X	    fgets(buf,LBUFLEN,tmpfp);
+	X	    fclose(tmpfp);
+	X	    processnum = atoi(buf);
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		printf("You seem to have left an rn running, process %d.\n",
+	X		    processnum) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		printf("Rn left running, #%d.\n", processnum) FLUSH;
+	X#endif
+	X	    if (kill(processnum, SIGEMT)) {
+	X				    /* does process not exist? */
+	X				    /* (rn ignores SIGEMT) */
+	X		sleep(2);
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\n\
+	XThat process does not seem to exist anymore.  The count of read articles\n\
+	Xmay be incorrect in the last newsgroup accessed by that other (defunct)\n\
+	Xprocess.\n\n",stdout) FLUSH;
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    fputs("\nProcess crashed.\n",stdout) FLUSH;
+	X#endif
+	X		if (*lastngname) {
+	X#ifdef VERBOSE
+	X		    IF(verbose)
+	X			printf("(The last newsgroup accessed was %s.)\n\n",
+	X			lastngname) FLUSH;
+	X		    ELSE
+	X#endif
+	X#ifdef TERSE
+	X			printf("(In %s.)\n\n",lastngname) FLUSH;
+	X#endif
+	X		}
+	X		get_anything();
+	X		putchar('\n') FLUSH;
+	X	    }
+	X	    else {
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    fputs("\n\
+	XYou may not have two copies of rn running simultaneously.  Goodbye.\n\
+	X",stdout) FLUSH;
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    fputs("\nCan't start another.\n",stdout) FLUSH;
+	X#endif
+	X		finalize(0);
+	X	    }
+	X	}
+	X	tmpfp = fopen(lockname,"w");
+	X	if (tmpfp == Nullfp) {
+	X	    printf(cantcreate,lockname) FLUSH;
+	X	    sig_catcher(0);
+	X	}
+	X	fprintf(tmpfp,"%d\n",getpid());
+	X	fclose(tmpfp);
+	X    }
+	X}
+	X
+	Xvoid
+	Xnewsnews_check()
+	X{
+	X    char *newsnewsname = filexp(NEWSNEWSNAME);
+	X
+	X    if ((tmpfp = fopen(newsnewsname,"r")) != Nullfp) {
+	X	fstat(tmpfp->_file,&filestat);
+	X	if (filestat.st_mtime > lasttime) {
+	X	    while (fgets(buf,sizeof(buf),tmpfp) != Nullch)
+	X		fputs(buf,stdout) FLUSH;
+	X	    get_anything();
+	X	    putchar('\n') FLUSH;
+	X	}
+	X	fclose(tmpfp);
+	X    }
+	X}
+SHAR_EOF
+if test 7030 -ne "`wc -c < 'init.c'`"
+then
+	echo shar: error transmitting "'init.c'" '(should have been 7030 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'intrp.c'" '(23283 characters)'
+if test -f 'intrp.c'
+then
+	echo shar: will not over-write existing file "'intrp.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'intrp.c'
+	X/* $Header: intrp.c,v 4.3.1.5 85/05/23 17:21:24 lwall Exp $
+	X *
+	X * $Log:	intrp.c,v $
+	X * Revision 4.3.1.5  85/05/23  17:21:24  lwall
+	X * Now allows 'r' and 'f' on null articles.
+	X * 
+	X * Revision 4.3.1.4  85/05/21  13:35:21  lwall
+	X * Sped up "rn -c" by not doing unnecessary initialization.
+	X * 
+	X * Revision 4.3.1.3  85/05/17  10:37:11  lwall
+	X * Fixed & substitution to capitalize last name too.
+	X * 
+	X * Revision 4.3.1.2  85/05/15  14:39:45  lwall
+	X * Spelled gecos right.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:33:51  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:40:54  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "util.h"
+	X#include "search.h"
+	X#include "head.h"
+	X#include "rn.h"
+	X#include "artsrch.h"
+	X#include "ng.h"
+	X#include "util.h"
+	X#include "respond.h"
+	X#include "rcstuff.h"
+	X#include "bits.h"
+	X#include "artio.h"
+	X#include "term.h"
+	X#include "final.h"
+	X#include "INTERN.h"
+	X#include "intrp.h"
+	X
+	Xchar orgname[] = ORGNAME;
+	X
+	X/* name of this site */
+	X#ifdef GETHOSTNAME
+	X    char *hostname;
+	X#   undef SITENAME
+	X#   define SITENAME hostname
+	X#else !GETHOSTNAME
+	X#   ifdef DOUNAME
+	X#	include <sys/utsname.h>
+	X	struct utsname uts;
+	X#	undef SITENAME
+	X#	define SITENAME uts.nodename
+	X#   else !DOUNAME
+	X#	ifdef PHOSTNAME
+	X	    char *hostname;
+	X#	    undef SITENAME
+	X#	    define SITENAME hostname
+	X#	else !PHOSTNAME
+	X#	    ifdef WHOAMI
+	X#		undef SITENAME
+	X#		define SITENAME sysname
+	X#	    endif WHOAMI
+	X#	endif PHOSTNAME
+	X#   endif DOUNAME
+	X#endif GETHOSTNAME
+	X
+	X#ifdef TILDENAME
+	Xstatic char *tildename = Nullch;
+	Xstatic char *tildedir = Nullch;
+	X#endif
+	X
+	Xchar *realname INIT(Nullch);	/* real name of sender from /etc/passwd */
+	X
+	Xchar *dointerp();
+	Xchar *getrealname();
+	X#ifdef CONDSUB
+	Xchar *skipinterp();
+	X#endif
+	X
+	Xstatic void abort_interp();
+	X
+	Xvoid
+	Xintrp_init(tcbuf)
+	Xchar *tcbuf;
+	X{
+	X    char *getlogin();
+	X
+	X    spool = savestr(filexp(SPOOL));	/* usually /usr/spool/news */
+	X    
+	X    /* get environmental stuff */
+	X
+	X    /* get home directory */
+	X
+	X    homedir = getenv("HOME");
+	X    if (homedir == Nullch)
+	X	homedir = getenv("LOGDIR");
+	X
+	X    dotdir = getval("DOTDIR",homedir);
+	X
+	X    /* get login name */
+	X
+	X    logname = getenv("USER");
+	X    if (logname == Nullch)
+	X	logname = getenv("LOGNAME");
+	X#ifdef GETLOGIN
+	X    if (logname == Nullch)
+	X	logname = savestr(getlogin());
+	X#endif
+	X    
+	X    if (checkflag)			/* that getwd below takes ~1/3 sec. */
+	X	return;				/* and we do not need it for -c */
+	X    getwd(tcbuf);			/* find working directory name */
+	X    origdir = savestr(tcbuf);		/* and remember it */
+	X
+	X    /* get the real name of the person (%N) */
+	X    /* Must be done after logname is read in because BERKNAMES uses that */
+	X
+	X    strcpy(tcbuf,getrealname(getuid()));
+	X    realname = savestr(tcbuf);
+	X
+	X    /* name of header file (%h) */
+	X
+	X    headname = savestr(filexp(HEADNAME));
+	X
+	X    /* name of this site (%H) */
+	X
+	X#ifdef GETHOSTNAME
+	X    gethostname(buf,sizeof buf);
+	X    hostname = savestr(buf);
+	X#else
+	X#ifdef DOUNAME
+	X    /* get sysname */
+	X    uname(&uts);
+	X#else
+	X#ifdef PHOSTNAME
+	X    {
+	X	FILE *popen();
+	X	FILE *pipefp = popen(PHOSTNAME,"r");
+	X	
+	X	if (pipefp == Nullfp) {
+	X	    printf("Can't find hostname\n");
+	X	    sig_catcher(0);
+	X	}
+	X	fgets(buf,sizeof buf,pipefp);
+	X	buf[strlen(buf)-1] = '\0';	/* wipe out newline */
+	X	hostname = savestr(buf);
+	X	pclose(pipefp);
+	X    }
+	X#endif
+	X#endif
+	X#endif
+	X    sitename = savestr(SITENAME);
+	X}
+	X
+	X/* expand filename via %, ~, and $ interpretation */
+	X/* returns pointer to static area */
+	X/* Note that there is a 1-deep cache of ~name interpretation */
+	X
+	Xchar *
+	Xfilexp(s)
+	Xregister char *s;
+	X{
+	X    static char filename[CBUFLEN];
+	X    char scrbuf[CBUFLEN];
+	X    register char *d;
+	X
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_FILEXP)
+	X	printf("< %s\n",s) FLUSH;
+	X#endif
+	X    interp(filename, (sizeof filename), s);			/* interpret any % escapes */
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_FILEXP)
+	X	printf("%% %s\n",filename) FLUSH;
+	X#endif
+	X    s = filename;
+	X    if (*s == '~') {	/* does destination start with ~? */
+	X	if (!*(++s) || *s == '/') {
+	X	    sprintf(scrbuf,"%s%s",homedir,s);
+	X				/* swap $HOME for it */
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_FILEXP)
+	X	printf("~ %s\n",scrbuf) FLUSH;
+	X#endif
+	X	    strcpy(filename,scrbuf);
+	X	}
+	X	else {
+	X#ifdef TILDENAME
+	X	    for (d=scrbuf; isalnum(*s); s++,d++)
+	X		*d = *s;
+	X	    *d = '\0';
+	X	    if (tildedir && strEQ(tildename,scrbuf)) {
+	X		strcpy(scrbuf,tildedir);
+	X		strcat(scrbuf, s);
+	X		strcpy(filename, scrbuf);
+	X#ifdef DEBUGGING
+	X		if (debug & DEB_FILEXP)
+	X		    printf("r %s %s\n",tildename,tildedir) FLUSH;
+	X#endif
+	X	    }
+	X	    else {
+	X		if (tildename) {
+	X		    free(tildename);
+	X		    free(tildedir);
+	X		}
+	X		tildedir = Nullch;
+	X		tildename = savestr(scrbuf);
+	X#ifdef GETPWENT		/* getpwnam() is not the paragon of efficiency */
+	X		{
+	X		    struct passwd *getpwnam();
+	X		    struct passwd *pwd = getpwnam(tildename);
+	X
+	X		    sprintf(scrbuf,"%s%s",pwd->pw_dir,s);
+	X		    tildedir = savestr(pwd->pw_dir);
+	X#ifdef NEWSADMIN
+	X		    if (strEQ(newsadmin,tildename))
+	X			newsuid = atoi(pwd->pw_uid);
+	X#endif
+	X		    strcpy(filename,scrbuf);
+	X#ifdef GETPWENT
+	X		    endpwent();
+	X#endif
+	X		}
+	X#else			/* this will run faster, and is less D space */
+	X		{	/* just be sure LOGDIRFIELD is correct */
+	X		    FILE *pfp = fopen("/etc/passwd","r");
+	X		    char tmpbuf[512];
+	X		    int i;
+	X		    
+	X		    if (pfp == Nullfp) {
+	X			printf(cantopen,"passwd") FLUSH;
+	X			sig_catcher(0);
+	X		    }
+	X		    while (fgets(tmpbuf,512,pfp) != Nullch) {
+	X			d = cpytill(scrbuf,tmpbuf,':');
+	X#ifdef DEBUGGING
+	X			if (debug & DEB_FILEXP)
+	X			    printf("p %s\n",tmpbuf) FLUSH;
+	X#endif
+	X			if (strEQ(scrbuf,tildename)) {
+	X#ifdef NEWSADMIN
+	X			    if (strEQ(newsadmin,tildename))
+	X				newsuid = atoi(index(d,':')+1);
+	X#endif
+	X			    for (i=LOGDIRFIELD-2; i; i--) {
+	X				if (d)
+	X				    d = index(d+1,':');
+	X			    }
+	X			    if (d) {
+	X				cpytill(scrbuf,d+1,':');
+	X				tildedir = savestr(scrbuf);
+	X				strcat(scrbuf,s);
+	X				strcpy(filename,scrbuf);
+	X			    }
+	X			    break;
+	X			}
+	X		    }
+	X		    fclose(pfp);
+	X		}
+	X#endif
+	X	    }
+	X#else !TILDENAME
+	X#ifdef VERBOSE
+	X	    IF(verbose)
+	X		fputs("~loginname not implemented.\n",stdout) FLUSH;
+	X	    ELSE
+	X#endif
+	X#ifdef TERSE
+	X		fputs("~login not impl.\n",stdout) FLUSH;
+	X#endif
+	X#endif
+	X	}
+	X    }
+	X    else if (*s == '$') {	/* starts with some env variable? */
+	X	d = scrbuf;
+	X	*d++ = '%';
+	X	if (s[1] == '{')
+	X	    strcpy(d,s+2);
+	X	else {
+	X	    *d++ = '{';
+	X	    for (s++; isalnum(*s); s++) *d++ = *s;
+	X				/* skip over token */
+	X	    *d++ = '}';
+	X	    strcpy(d,s);
+	X	}
+	X#ifdef DEBUGGING
+	X	if (debug & DEB_FILEXP)
+	X	    printf("$ %s\n",scrbuf) FLUSH;
+	X#endif
+	X	interp(filename, (sizeof filename), scrbuf);
+	X					/* this might do some extra '%'s but */
+	X					/* that is how the Mercedes Benz */
+	X    }
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_FILEXP)
+	X	printf("> %s\n",filename) FLUSH;
+	X#endif
+	X    return filename;
+	X}
+	X
+	X#ifdef CONDSUB
+	X/* skip interpolations */
+	X
+	Xchar *
+	Xskipinterp(pattern,stoppers)
+	Xregister char *pattern;
+	Xchar *stoppers;
+	X{
+	X
+	X    while (*pattern && (!stoppers || !index(stoppers,*pattern))) {
+	X#ifdef DEBUGGING
+	X	if (debug & 8)
+	X	    printf("skipinterp till %s at %s\n",stoppers?stoppers:"",pattern);
+	X#endif
+	X	if (*pattern == '%' && pattern[1]) {
+	X	    switch (*++pattern) {
+	X	    case '{':
+	X		for (pattern++; *pattern && *pattern != '}'; pattern++)
+	X		    if (*pattern == '\\')
+	X			pattern++;
+	X		break;
+	X	    case '[':
+	X		for (pattern++; *pattern && *pattern != ']'; pattern++)
+	X		    if (*pattern == '\\')
+	X			pattern++;
+	X		break;
+	X#ifdef CONDSUB
+	X	    case '(': {
+	X		pattern = skipinterp(pattern+1,"!=");
+	X		if (!*pattern)
+	X		    goto getout;
+	X		for (pattern++; *pattern && *pattern != '?'; pattern++)
+	X		    if (*pattern == '\\')
+	X			pattern++;
+	X		if (!*pattern)
+	X		    goto getout;
+	X		pattern = skipinterp(pattern+1,":)");
+	X		if (*pattern == ':')
+	X		    pattern = skipinterp(pattern+1,")");
+	X		break;
+	X	    }
+	X#endif
+	X#ifdef BACKTICK
+	X	    case '`': {
+	X		pattern = skipinterp(pattern+1,"`");
+	X		break;
+	X	    }
+	X#endif
+	X#ifdef PROMPTTTY
+	X	    case '"':
+	X		pattern = skipinterp(pattern+1,"\"");
+	X		break;
+	X#endif
+	X	    default:
+	X		break;
+	X	    }
+	X	    pattern++;
+	X	}
+	X	else {
+	X	    if (*pattern == '^' && pattern[1])
+	X		pattern += 2;
+	X	    else if (*pattern == '\\' && pattern[1])
+	X		pattern += 2;
+	X	    else
+	X		pattern++;
+	X	}
+	X    }
+	Xgetout:
+	X    return pattern;			/* where we left off */
+	X}
+	X#endif
+	X
+	X/* interpret interpolations */
+	X
+	Xchar *
+	Xdointerp(dest,destsize,pattern,stoppers)
+	Xregister char *dest;
+	Xregister int destsize;
+	Xregister char *pattern;
+	Xchar *stoppers;
+	X{
+	X    char *subj_buf = Nullch;
+	X    char *ngs_buf = Nullch;
+	X    char *refs_buf = Nullch;
+	X    char *artid_buf = Nullch;
+	X    char *reply_buf = Nullch;
+	X    char *from_buf = Nullch;
+	X    char *path_buf = Nullch;
+	X    char *follow_buf = Nullch;
+	X    char *dist_buf = Nullch;
+	X    char *line_buf = Nullch;
+	X    register char *s, *h;
+	X    register int i;
+	X    char scrbuf[512];
+	X    bool upper = FALSE;
+	X    bool lastcomp = FALSE;
+	X    int metabit = 0;
+	X
+	X    while (*pattern && (!stoppers || !index(stoppers,*pattern))) {
+	X#ifdef DEBUGGING
+	X	if (debug & 8)
+	X	    printf("dointerp till %s at %s\n",stoppers?stoppers:"",pattern);
+	X#endif
+	X	if (*pattern == '%' && pattern[1]) {
+	X	    upper = FALSE;
+	X	    lastcomp = FALSE;
+	X	    for (s=Nullch; !s; ) {
+	X		switch (*++pattern) {
+	X		case '^':
+	X		    upper = TRUE;
+	X		    break;
+	X		case '_':
+	X		    lastcomp = TRUE;
+	X		    break;
+	X		case '/':
+	X#ifdef ARTSRCH
+	X		    s = scrbuf;
+	X		    if (!index("/?g",pattern[-2]))
+	X			*s++ = '/';
+	X		    strcpy(s,lastpat);
+	X		    s += strlen(s);
+	X		    if (pattern[-2] != 'g') {
+	X			if (index("/?",pattern[-2]))
+	X			    *s++ = pattern[-2];
+	X			else
+	X			    *s++ = '/';
+	X			if (art_howmuch == 1)
+	X			    *s++ = 'h';
+	X			else if (art_howmuch == 2)
+	X			    *s++ = 'a';
+	X			if (art_doread)
+	X			    *s++ = 'r';
+	X		    }
+	X		    *s = '\0';
+	X		    s = scrbuf;
+	X#else
+	X		    s = nullstr;
+	X#endif
+	X		    break;
+	X		case '{':
+	X		    pattern = cpytill(scrbuf,pattern+1,'}');
+	X		    if (s = index(scrbuf,'-'))
+	X			*s++ = '\0';
+	X		    else
+	X			s = nullstr;
+	X		    s = getval(scrbuf,s);
+	X		    break;
+	X		case '[':
+	X		    pattern = cpytill(scrbuf,pattern+1,']');
+	X		    i = set_line_type(scrbuf,scrbuf+strlen(scrbuf));
+	X		    if (line_buf)
+	X			free(line_buf);
+	X		    s = line_buf = fetchlines(art,i);
+	X		    break;
+	X#ifdef CONDSUB
+	X		case '(': {
+	X		    COMPEX *oldbra_compex = bra_compex;
+	X		    COMPEX cond_compex;
+	X		    char rch;
+	X		    bool matched;
+	X		    
+	X		    init_compex(&cond_compex);
+	X		    pattern = dointerp(dest,destsize,pattern+1,"!=");
+	X		    rch = *pattern;
+	X		    if (rch == '!')
+	X			pattern++;
+	X		    if (*pattern != '=')
+	X			goto getout;
+	X		    pattern = cpytill(scrbuf,pattern+1,'?');
+	X		    if (!*pattern)
+	X			goto getout;
+	X		    if (s = compile(&cond_compex,scrbuf,TRUE,TRUE)) {
+	X			printf("%s: %s\n",scrbuf,s) FLUSH;
+	X			pattern += strlen(pattern);
+	X			goto getout;
+	X		    }
+	X		    matched = (execute(&cond_compex,dest) != Nullch);
+	X		    if (cond_compex.nbra)	/* were there brackets? */
+	X			bra_compex = &cond_compex;
+	X		    if (matched==(rch == '=')) {
+	X			pattern = dointerp(dest,destsize,pattern+1,":)");
+	X			if (*pattern == ':')
+	X			    pattern = skipinterp(pattern+1,")");
+	X		    }
+	X		    else {
+	X			pattern = skipinterp(pattern+1,":)");
+	X			if (*pattern == ':')
+	X			    pattern++;
+	X			pattern = dointerp(dest,destsize,pattern,")");
+	X		    }
+	X		    s = dest;
+	X		    bra_compex = oldbra_compex;
+	X		    free_compex(&cond_compex);
+	X		    break;
+	X		}
+	X#endif
+	X#ifdef BACKTICK
+	X		case '`': {
+	X		    FILE *pipefp, *popen();
+	X
+	X		    pattern = dointerp(scrbuf,(sizeof scrbuf),pattern+1,"`");
+	X		    pipefp = popen(scrbuf,"r");
+	X		    if (pipefp != Nullfp) {
+	X			int len;
+	X
+	X			len = fread(scrbuf,sizeof(char),(sizeof scrbuf)-1,
+	X			    pipefp);
+	X			scrbuf[len] = '\0';
+	X			pclose(pipefp);
+	X		    }
+	X		    else {
+	X			printf("\nCan't run %s\n",scrbuf);
+	X			*scrbuf = '\0';
+	X		    }
+	X		    for (s=scrbuf; *s; s++) {
+	X			if (*s == '\n') {
+	X			    if (s[1])
+	X				*s = ' ';
+	X			    else
+	X				*s = '\0';
+	X			}
+	X		    }
+	X		    s = scrbuf;
+	X		    break;
+	X		}
+	X#endif
+	X#ifdef PROMPTTTY
+	X		case '"':
+	X		    pattern = dointerp(scrbuf,(sizeof scrbuf),pattern+1,"\"");
+	X		    fputs(scrbuf,stdout) FLUSH;
+	X		    resetty();
+	X		    gets(scrbuf);
+	X		    noecho();
+	X		    crmode();
+	X		    s = scrbuf;
+	X		    break;
+	X#endif
+	X		case '~':
+	X		    s = homedir;
+	X		    break;
+	X		case '.':
+	X		    s = dotdir;
+	X		    break;
+	X		case '$':
+	X		    s = scrbuf;
+	X		    sprintf(s,"%d",getpid());
+	X		    break;
+	X		case '0': case '1': case '2': case '3': case '4':
+	X		case '5': case '6': case '7': case '8': case '9':
+	X#ifdef CONDSUB
+	X		    s = getbracket(bra_compex,*pattern - '0');
+	X#else
+	X		    s = nullstr;
+	X#endif
+	X		    break;
+	X		case 'a':
+	X		    s = scrbuf;
+	X		    sprintf(s,"%ld",(long)art);
+	X		    break;
+	X		case 'A':
+	X#ifdef LINKART
+	X		    s = linkartname;	/* so Eunice people get right file */
+	X#else
+	X		    s = scrbuf;
+	X		    sprintf(s,"%s/%s/%ld",spool,ngdir,(long)art);
+	X#endif
+	X		    break;
+	X		case 'b':
+	X		    s = savedest;
+	X		    break;
+	X		case 'B':
+	X		    s = scrbuf;
+	X		    sprintf(s,"%ld",(long)savefrom);
+	X		    break;
+	X		case 'c':
+	X		    s = ngdir;
+	X		    break;
+	X		case 'C':
+	X		    s = ngname;
+	X		    break;
+	X		case 'd':
+	X		    s = scrbuf;
+	X		    sprintf(s,"%s/%s",spool,ngdir);
+	X		    break;
+	X		case 'D':
+	X		    s = dist_buf = fetchlines(art,DIST_LINE);
+	X		    break;
+	X		case 'f':			/* from line */
+	X#ifdef ASYNC_PARSE
+	X		    parse_maybe(art);
+	X#endif
+	X		    if (htype[REPLY_LINE].ht_minpos >= 0) {
+	X						/* was there a reply line? */
+	X			if (!(s=reply_buf))
+	X			    s = reply_buf = fetchlines(art,REPLY_LINE);
+	X		    }
+	X		    else if (!(s = from_buf))
+	X			s = from_buf = fetchlines(art,FROM_LINE);
+	X		    break;
+	X		case 'F':
+	X#ifdef ASYNC_PARSE
+	X		    parse_maybe(art);
+	X#endif
+	X		    if (htype[FOLLOW_LINE].ht_minpos >= 0)
+	X					/* is there a Followup-To line? */
+	X			s = follow_buf = fetchlines(art,FOLLOW_LINE);
+	X		    else {
+	X			int off;
+	X		
+	X			s = ngs_buf = fetchlines(art,NGS_LINE);
+	X			if (h = instr(s,"net.general")) {
+	X			    off = h-s;
+	X			    strncpy(scrbuf,s,off+4);
+	X			    strcpy(scrbuf+off+4,"followup");
+	X			    safecpy(scrbuf+off+12,h+11,sizeof(scrbuf));
+	X			    s = scrbuf;
+	X			}
+	X		    }
+	X		    break;
+	X		case 'h':			/* header file name */
+	X		    s = headname;
+	X		    break;
+	X		case 'H':			/* host name */
+	X		    s = sitename;
+	X		    break;
+	X		case 'i':
+	X		    if (!(s=artid_buf))
+	X			s = artid_buf = fetchlines(art,MESSID_LINE);
+	X		    if (*s && *s != '<') {
+	X			sprintf(scrbuf,"<%s>",artid_buf);
+	X			s = scrbuf;
+	X		    }
+	X		    break;
+	X		case 'I':			/* ref article indicator */
+	X		    s = scrbuf;
+	X		    sprintf(scrbuf,"'%s'",indstr);
+	X		    break;
+	X		case 'l':			/* rn library */
+	X#ifdef NEWSADMIN
+	X		    s = newsadmin;
+	X#else
+	X		    s = "???";
+	X#endif
+	X		    break;
+	X		case 'L':			/* login id */
+	X		    s = logname;
+	X		    break;
+	X		case 'm':		/* current mode */
+	X		    s = scrbuf;
+	X		    *s = mode;
+	X		    s[1] = '\0';
+	X		    break;
+	X		case 'M':
+	X#ifdef DELAYMARK
+	X		    sprintf(scrbuf,"%ld",(long)dmcount);
+	X		    s = scrbuf;
+	X#else
+	X		    s = nullstr;
+	X#endif
+	X		    break;
+	X		case 'n':			/* newsgroups */
+	X		    s = ngs_buf = fetchlines(art,NGS_LINE);
+	X		    break;
+	X		case 'N':			/* full name */
+	X		    s = getval("NAME",realname);
+	X		    break;
+	X		case 'o':			/* organization */
+	X		    s = getval("ORGANIZATION",orgname);
+	X#ifdef ORGFILE
+	X		    if (*s == '/') {
+	X			FILE *ofp = fopen(s,"r");
+	X
+	X			if (ofp) {
+	X			    fgets(scrbuf,sizeof scrbuf,ofp);
+	X			    fclose(ofp);
+	X			    s = scrbuf;
+	X			    s[strlen(s)-1] = '\0';
+	X			}
+	X		    }
+	X#endif
+	X		    break;
+	X		case 'O':
+	X		    s = origdir;
+	X		    break;
+	X		case 'p':
+	X		    s = cwd;
+	X		    break;
+	X		case 'P':
+	X		    s = spool;
+	X		    break;
+	X		case 'r':
+	X#ifdef ASYNC_PARSE
+	X		    parse_maybe(art);
+	X#endif
+	X		    if (htype[REFS_LINE].ht_minpos >= 0) {
+	X			refs_buf = fetchlines(art,REFS_LINE);
+	X			refscpy(scrbuf,(sizeof scrbuf),refs_buf);
+	X		    }
+	X		    else
+	X			*scrbuf = '\0';
+	X		    s = rindex(scrbuf,'<');
+	X		    break;
+	X		case 'R':
+	X#ifdef ASYNC_PARSE
+	X		    parse_maybe(art);
+	X#endif
+	X		    if (htype[REFS_LINE].ht_minpos >= 0) {
+	X			refs_buf = fetchlines(art,REFS_LINE);
+	X			refscpy(scrbuf,(sizeof scrbuf),refs_buf);
+	X		    }
+	X		    else
+	X			*scrbuf = '\0';
+	X		    if (!artid_buf)
+	X			artid_buf = fetchlines(art,MESSID_LINE);
+	X		    if (artid_buf[0] == '<')
+	X			safecat(scrbuf,artid_buf,sizeof(scrbuf));
+	X		    else if (artid_buf[0]) {
+	X			char tmpbuf[64];
+	X    
+	X			sprintf(tmpbuf,"<%s>",artid_buf);
+	X			safecat(scrbuf,tmpbuf,sizeof(scrbuf));
+	X		    }
+	X		    s = scrbuf;
+	X		    break;
+	X		case 's':
+	X		    if (!(s=subj_buf))
+	X			s = subj_buf = fetchsubj(art,TRUE,TRUE);
+	X						/* get subject handy */
+	X		    while ((*s=='R'||*s=='r')&&(s[1]=='E'||s[1]=='e')&&s[2]==':') {
+	X						/* skip extra Re: */
+	X			s += 3;
+	X			if (*s == ' ')
+	X			    s++;
+	X		    }
+	X		    if (h = instr(s,"- (nf"))
+	X			*h = '\0';
+	X		    break;
+	X		case 'S':
+	X		    if (!(s=subj_buf))
+	X			s = subj_buf = fetchsubj(art,TRUE,TRUE);
+	X						/* get subject handy */
+	X		    if ((*s=='R'||*s=='r')&&(s[1]=='E'||s[1]=='e')&&s[2]==':') {
+	X						/* skip extra Re: */
+	X			s += 3;
+	X			if (*s == ' ')
+	X			    s++;
+	X		    }
+	X		    break;
+	X		case 't':
+	X		case 'T':
+	X#ifdef ASYNC_PARSE
+	X		    parse_maybe(art);
+	X#endif
+	X		    if (htype[REPLY_LINE].ht_minpos >= 0) {
+	X					/* was there a reply line? */
+	X			if (!(s=reply_buf))
+	X			    s = reply_buf = fetchlines(art,REPLY_LINE);
+	X		    }
+	X		    else if (!(s = from_buf))
+	X			s = from_buf = fetchlines(art,FROM_LINE);
+	X		    if (*pattern == 'T') {
+	X			if (htype[PATH_LINE].ht_minpos >= 0) {
+	X					/* should we substitute path? */
+	X			    s = path_buf = fetchlines(art,PATH_LINE);
+	X			}
+	X			i = strlen(sitename);
+	X			if (strnEQ(sitename,s,i) && s[i] == '!')
+	X			    s += i + 1;
+	X		    }
+	X		    if ((h=index(s,'(')) != Nullch)
+	X						/* strip garbage from end */
+	X			*(h-1) = '\0';
+	X		    else if ((h=index(s,'<')) != Nullch) {
+	X						/* or perhaps from beginning */
+	X			s = h+1;
+	X			if ((h=index(s,'>')) != Nullch)
+	X			    *h = '\0';
+	X		    }
+	X		    break;
+	X		case 'u':
+	X		    sprintf(scrbuf,"%ld",(long)toread[ng]);
+	X		    s = scrbuf;
+	X		    break;
+	X		case 'U':
+	X		    sprintf(scrbuf,"%ld",
+	X			(long)(((ART_NUM)toread[ng]) - 1 + was_read(art)));
+	X		    s = scrbuf;
+	X		    break;
+	X		case 'x':			/* news library */
+	X		    s = lib;
+	X		    break;
+	X		case 'X':			/* rn library */
+	X		    s = rnlib;
+	X		    break;
+	X		case 'z':
+	X#ifdef LINKART
+	X		    s = linkartname;	/* so Eunice people get right file */
+	X#else
+	X		    s = scrbuf;
+	X		    sprintf(s,"%ld",(long)art);
+	X#endif
+	X		    if (stat(s,&filestat) < 0)
+	X			filestat.st_size = 0L;
+	X		    sprintf(scrbuf,"%5ld",(long)filestat.st_size);
+	X		    s = scrbuf;
+	X		    break;
+	X		default:
+	X		    if (--destsize <= 0)
+	X			abort_interp();
+	X		    *dest++ = *pattern | metabit;
+	X		    s = nullstr;
+	X		    break;
+	X		}
+	X	    }
+	X	    if (!s)
+	X		s = nullstr;
+	X	    pattern++;
+	X	    if (upper || lastcomp) {
+	X		char *t;
+	X
+	X		if (s != scrbuf) {
+	X		    safecpy(scrbuf,s,(sizeof scrbuf));
+	X		    s = scrbuf;
+	X		}
+	X		if (upper || !(t=rindex(s,'/')))
+	X		    t = s;
+	X		while (*t && !isalpha(*t))
+	X		    t++;
+	X		if (islower(*t))
+	X		    *t = toupper(*t);
+	X	    }
+	X	    i = metabit;		/* maybe get into register */
+	X	    if (s == dest) {
+	X		while (*dest) {
+	X		    if (--destsize <= 0)
+	X			abort_interp();
+	X		    *dest++ |= i;
+	X		}
+	X	    }
+	X	    else {
+	X		while (*s) {
+	X		    if (--destsize <= 0)
+	X			abort_interp();
+	X		    *dest++ = *s++ | i;
+	X		}
+	X	    }
+	X	}
+	X	else {
+	X	    if (--destsize <= 0)
+	X		abort_interp();
+	X	    if (*pattern == '^' && pattern[1]) {
+	X		++pattern;			/* skip uparrow */
+	X		i = *pattern;		/* get char into a register */
+	X		if (i == '?')
+	X		    *dest++ = '\177' | metabit;
+	X		else if (i == '(') {
+	X		    metabit = 0200;
+	X		    destsize++;
+	X		}
+	X		else if (i == ')') {
+	X		    metabit = 0;
+	X		    destsize++;
+	X		}
+	X		else
+	X		    *dest++ = i & 037 | metabit;
+	X		pattern++;
+	X	    }
+	X	    else if (*pattern == '\\' && pattern[1]) {
+	X		++pattern;			/* skip backslash */
+	X		i = *pattern;		/* get char into a register */
+	X    
+	X		/* this used to be a switch but the if may save space */
+	X		
+	X		if (i >= '0' && i <= '7') {
+	X		    i = 1;
+	X		    while (i < 01000 && *pattern >= '0' && *pattern <= '7') {
+	X			i <<= 3;
+	X			i += *pattern++ - '0';
+	X		    }
+	X		    *dest++ = i & 0377 | metabit;
+	X		    --pattern;
+	X		}
+	X		else if (i == 'b')
+	X		    *dest++ = '\b' | metabit;
+	X		else if (i == 'f')
+	X		    *dest++ = '\f' | metabit;
+	X		else if (i == 'n')
+	X		    *dest++ = '\n' | metabit;
+	X		else if (i == 'r')
+	X		    *dest++ = '\r' | metabit;
+	X		else if (i == 't')
+	X		    *dest++ = '\t' | metabit;
+	X		else
+	X		    *dest++ = i | metabit;
+	X		pattern++;
+	X	    }
+	X	    else
+	X		*dest++ = *pattern++ | metabit;
+	X	}
+	X    }
+	X    *dest = '\0';
+	Xgetout:
+	X    if (subj_buf != Nullch)	/* return any checked out storage */
+	X	free(subj_buf);
+	X    if (ngs_buf != Nullch)
+	X	free(ngs_buf);
+	X    if (refs_buf != Nullch)
+	X	free(refs_buf);
+	X    if (artid_buf != Nullch)
+	X	free(artid_buf);
+	X    if (reply_buf != Nullch)
+	X	free(reply_buf);
+	X    if (from_buf != Nullch)
+	X	free(from_buf);
+	X    if (path_buf != Nullch)
+	X	free(path_buf);
+	X    if (follow_buf != Nullch)
+	X	free(follow_buf);
+	X    if (dist_buf != Nullch)
+	X	free(dist_buf);
+	X    if (line_buf != Nullch)
+	X	free(line_buf);
+	X    return pattern;			/* where we left off */
+	X}
+	X
+	Xvoid
+	Xinterp(dest,destsize,pattern)
+	Xchar *dest;
+	Xint destsize;
+	Xchar *pattern;
+	X{
+	X    dointerp(dest,destsize,pattern,Nullch);
+	X#ifdef DEBUGGING
+	X    if (debug & DEB_FILEXP)
+	X	fputs(dest,stdout);
+	X#endif
+	X}
+	X
+	X/* copy a references line, normalizing as we go */
+	X
+	Xvoid
+	Xrefscpy(dest,destsize,src)
+	Xregister char *dest, *src;
+	Xregister int destsize;
+	X{
+	X    register char *dot, *at, *beg;
+	X    char tmpbuf[64];
+	X    
+	X    while (*src) {
+	X	if (*src != '<') {
+	X	    if (--destsize <= 0)
+	X		break;
+	X	    *dest++ = '<';
+	X	    at = dot = Nullch;
+	X	    beg = src;
+	X	    while (*src && *src != ' ' && *src != ',') {
+	X		if (*src == '.')
+	X		    dot = src;
+	X		else if (*src == '@')
+	X		    at = src;
+	X		if (--destsize <= 0)
+	X		    break;
+	X		*dest++ = *src++;
+	X	    }
+	X	    if (destsize <= 0)
+	X		break;
+	X	    if (dot && !at) {
+	X		int len;
+	X
+	X		*dest = *dot++ = '\0';
+	X		sprintf(tmpbuf,"%s@%s.UUCP",dot,beg);
+	X		len = strlen(tmpbuf);
+	X		if (destsize > len) {
+	X		    strcpy(dest,tmpbuf);
+	X		    dest = dest + len;
+	X		    destsize -= len;
+	X		}
+	X	    }
+	X	    if (--destsize <= 0)
+	X		break;
+	X	    *dest++ = '>';
+	X	}
+	X	else {
+	X	    while (*src && --destsize > 0 && (*dest++ = *src++) != '>') ;
+	X	    if (destsize <= 0)
+	X		break;
+	X	}
+	X	while (*src == ' ' || *src == ',') src++;
+	X	if (*src && --destsize > 0)
+	X	    *dest++ = ' ';
+	X    }
+	X    *dest = '\0';
+	X} 
+	X
+	X/* get the person's real name from /etc/passwd */
+	X/* (string is overwritten, so it must be copied) */
+	X
+	Xchar *
+	Xgetrealname(uid)
+	Xint uid;
+	X{
+	X    char *s, *c;
+	X
+	X#ifdef PASSNAMES
+	X#ifdef GETPWENT
+	X    struct passwd *pwd = getpwuid(uid);
+	X    
+	X    s = pwd->pw_gecos;
+	X#else
+	X    char tmpbuf[512];
+	X    int i;
+	X
+	X    getpw(uid, tmpbuf);
+	X    for (s=tmpbuf, i=GCOSFIELD-1; i; i--) {
+	X	if (s)
+	X	    s = index(s,':')+1;
+	X    }
+	X    if (!s)
+	X	return nullstr;
+	X    cpytill(tmpbuf,s,':');
+	X    s = tmpbuf;
+	X#endif
+	X#ifdef BERKNAMES
+	X#ifdef BERKJUNK
+	X    while (*s && !isalnum(*s) && *s != '&') s++;
+	X#endif
+	X    if ((c = index(s, ',')) != Nullch)
+	X	*c = '\0';
+	X    if ((c = index(s, ';')) != Nullch)
+	X	*c = '\0';
+	X    s = cpytill(buf,s,'&');
+	X    if (*s == '&') {			/* whoever thought this one up was */
+	X	c = buf + strlen(buf);		/* in the middle of the night */
+	X	strcat(c,logname);		/* before the morning after */
+	X	strcat(c,s+1);
+	X	if (islower(*c))
+	X	    *c = toupper(*c);		/* gack and double gack */
+	X    }
+	X#else
+	X    if ((c = index(s, '(')) != Nullch)
+	X	*c = '\0';
+	X    if ((c = index(s, '-')) != Nullch)
+	X	s = c;
+	X    strcpy(buf,tmpbuf);
+	X#endif
+	X#ifdef GETPWENT
+	X    endpwent();
+	X#endif
+	X    return buf;				/* return something static */
+	X#else
+	X    if ((tmpfp=fopen(filexp(FULLNAMEFILE),"r")) != Nullfp) {
+	X	fgets(buf,sizeof buf,tmpfp);
+	X	fclose(tmpfp);
+	X	buf[strlen(buf)-1] = '\0';
+	X	return buf;
+	X    }
+	X    return "PUT YOUR NAME HERE";
+	X#endif
+	X}
+	X
+	Xstatic void
+	Xabort_interp()
+	X{
+	X    fputs("\n% interp buffer overflow!\n",stdout) FLUSH;
+	X    sig_catcher(0);
+	X}
+SHAR_EOF
+if test 23283 -ne "`wc -c < 'intrp.c'`"
+then
+	echo shar: error transmitting "'intrp.c'" '(should have been 23283 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'kfile.c'" '(5500 characters)'
+if test -f 'kfile.c'
+then
+	echo shar: will not over-write existing file "'kfile.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'kfile.c'
+	X/* $Header: kfile.c,v 4.3.1.3 85/05/29 09:11:52 lwall Exp $
+	X *
+	X * $Log:	kfile.c,v $
+	X * Revision 4.3.1.3  85/05/29  09:11:52  lwall
+	X * Suppressed some killing messages on -t.
+	X * 
+	X * Revision 4.3.1.2  85/05/10  14:21:29  lwall
+	X * Prevented THRU from setting art < absfirst.
+	X * 
+	X * Revision 4.3.1.1  85/05/10  11:34:33  lwall
+	X * Branch for patches.
+	X * 
+	X * Revision 4.3  85/05/01  11:41:53  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "term.h"
+	X#include "util.h"
+	X#include "artsrch.h"
+	X#include "ng.h"
+	X#include "bits.h"
+	X#include "intrp.h"
+	X#include "ngstuff.h"
+	X#include "rcstuff.h"
+	X#include "rn.h"
+	X#include "INTERN.h"
+	X#include "kfile.h"
+	X
+	Xstatic bool exitcmds = FALSE;
+	X
+	Xvoid
+	Xkfile_init()
+	X{
+	X    ;
+	X}
+	X
+	X#ifndef KILLFILES
+	Xint
+	Xedit_kfile()
+	X{
+	X    notincl("^K");
+	X    return -1;
+	X}
+	X
+	X#else KILLFILES
+	X
+	Xchar killglobal[] = KILLGLOBAL;
+	Xchar killlocal[] = KILLLOCAL;
+	X
+	Xvoid
+	Xmention(str)
+	Xchar *str;
+	X{
+	X#ifdef VERBOSE
+	X    IF(verbose) {
+	X#ifdef NOFIREWORKS
+	X	no_sofire();
+	X#endif
+	X	standout();
+	X	fputs(str,stdout);
+	X	un_standout();
+	X	putchar('\n');
+	X    }
+	X    ELSE
+	X#endif
+	X#ifdef TERSE
+	X	putchar('.');
+	X#endif
+	X    fflush(stdout);
+	X}
+	X
+	Xint
+	Xdo_kfile(kfp,entering)
+	XFILE *kfp;
+	Xint entering;
+	X{
+	X    art = lastart+1;
+	X    fseek(kfp,0L,0);			/* rewind file */
+	X    while (fgets(buf,LBUFLEN,kfp) != Nullch) {
+	X	buf[strlen(buf)-1] = '\0';
+	X	if (strnEQ(buf,"THRU",4)) {
+	X	    ART_NUM tmpart;
+	X
+	X	    tmpart = atol(buf+4)+1;
+	X	    if (tmpart < absfirst)
+	X		tmpart = absfirst;
+	X	    check_first(tmpart);
+	X	    firstart = tmpart;
+	X	    continue;
+	X	}
+	X	if (*buf == 'X') {		/* exit command? */
+	X	    if (entering) {
+	X		exitcmds = TRUE;
+	X		continue;
+	X	    }
+	X	    strcpy(buf,buf+1);
+	X	}
+	X	else {
+	X	    if (!entering)
+	X		continue;
+	X	}
+	X	if (*buf == '&') {
+	X	    mention(buf);
+	X	    switcheroo();
+	X	}
+	X	else if (*buf == '/' && firstart <= lastart) {
+	X	    mention(buf);
+	X	    switch (art_search(buf, (sizeof buf), FALSE)) {
+	X	    case SRCH_ABORT:
+	X		continue;
+	X	    case SRCH_INTR:
+	X#ifdef VERBOSE
+	X		IF(verbose)
+	X		    printf("\n(Interrupted at article %ld)\n",(long)art)
+	X		      FLUSH;
+	X		ELSE
+	X#endif
+	X#ifdef TERSE
+	X		    printf("\n(Intr at %ld)\n",(long)art) FLUSH;
+	X#endif
+	X		return -1;
+	X	    case SRCH_DONE:
+	X		break;
+	X	    case SRCH_SUBJDONE:
+	X		fputs("\tsubject not found (???)\n",stdout) FLUSH;
+	X		break;
+	X	    case SRCH_NOTFOUND:
+	X		fputs("\tnot found\n",stdout) FLUSH;
+	X		break;
+	X	    case SRCH_FOUND:
+	X		fputs("\tfound\n",stdout) FLUSH;
+	X	    }
+	X	}
+	X    }
+	X    return 0;
+	X}
+	X
+	Xvoid
+	Xkill_unwanted(starting,message,entering)
+	XART_NUM starting;
+	Xchar *message;
+	Xint entering;
+	X{
+	X    bool intr = FALSE;			/* did we get an interrupt? */
+	X    ART_NUM oldfirst;
+	X    bool anytokill = (toread[ng] > 0);
+	X
+	X    if (localkfp || globkfp) {
+	X	if (!entering && !exitcmds)
+	X	    return;
+	X	exitcmds = FALSE;
+	X	oldfirst = firstart;
+	X	firstart = starting;
+	X	clear();
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    if (message)
+	X		fputs(message,stdout) FLUSH;
+	X#endif
+	X	if (localkfp)
+	X	    intr = do_kfile(localkfp,entering);
+	X	if (globkfp && !intr)
+	X	    intr = do_kfile(globkfp,entering);
+	X	if (entering && localkfp && !intr)
+	X	    setthru(lastart);
+	X	putchar('\n') FLUSH;
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    if (entering)
+	X		get_anything();
+	X#endif
+	X	if (anytokill)			/* if there was anything to kill */
+	X	    forcelast = FALSE;		/* allow for having killed it all */
+	X	firstart = oldfirst;
+	X    }
+	X}
+	X
+	Xvoid
+	Xsetthru(thru)
+	XART_NUM thru;
+	X{
+	X    FILE *newkfp;
+	X
+	X    fseek(localkfp,0L,0);		/* rewind current file */
+	X    strcpy(buf,filexp(getval("KILLLOCAL",killlocal)));
+	X    UNLINK(buf);			/* to prevent file reuse */
+	X    if (newkfp = fopen(buf,"w")) {
+	X	fprintf(newkfp,"THRU %ld\n",(long)thru);
+	X	while (fgets(buf,LBUFLEN,localkfp) != Nullch) {
+	X	    if (strnEQ(buf,"THRU",4))
+	X		continue;
+	X	    fputs(buf,newkfp);
+	X	}
+	X	fclose(newkfp);
+	X	open_kfile(KF_LOCAL);		/* and reopen local file */
+	X    }
+	X    else
+	X	printf(cantcreate,buf) FLUSH;
+	X}
+	X
+	X/* edit KILL file for newsgroup */
+	X
+	Xint
+	Xedit_kfile()
+	X{
+	X    int r = -1;
+	X
+	X    if (in_ng)
+	X	strcpy(buf,filexp(getval("KILLLOCAL",killlocal)));
+	X    else
+	X	strcpy(buf,filexp(getval("KILLGLOBAL",killglobal)));
+	X    if ((r = makedir(buf,MD_FILE)) >= 0) {
+	X	sprintf(cmd_buf,"%s %s",
+	X	    filexp(getval("VISUAL",getval("EDITOR",defeditor))),buf);
+	X	printf("\nEditing %s KILL file:\n%s\n",
+	X	    (in_ng?"local":"global"),cmd_buf) FLUSH;
+	X	resetty();			/* make sure tty is friendly */
+	X	r = doshell(sh,cmd_buf);/* invoke the shell */
+	X	noecho();			/* and make terminal */
+	X	crmode();			/*   unfriendly again */
+	X	open_kfile(in_ng);
+	X    }
+	X    else
+	X	printf("Can't make %s\n",buf) FLUSH;
+	X    return r;
+	X}
+	X
+	Xvoid
+	Xopen_kfile(local)
+	Xint local;
+	X{
+	X    char *kname = filexp(local ?
+	X	getval("KILLLOCAL",killlocal) :
+	X	getval("KILLGLOBAL",killglobal)
+	X	);
+	X    
+	X    stat(kname,&filestat);
+	X    if (!filestat.st_size)		/* nothing in the file? */
+	X	UNLINK(kname);			/* delete the file */
+	X    if (local) {
+	X	if (localkfp)
+	X	    fclose(localkfp);
+	X	localkfp = fopen(kname,"r");
+	X    }
+	X    else {
+	X	if (globkfp)
+	X	    fclose(globkfp);
+	X	globkfp = fopen(kname,"r");
+	X    }
+	X}
+	X
+	Xvoid
+	Xkf_append(cmd)
+	Xchar *cmd;
+	X{
+	X    strcpy(cmd_buf,filexp(getval("KILLLOCAL",killlocal)));
+	X    if (makedir(cmd_buf,MD_FILE) >= 0) {
+	X#ifdef VERBOSE
+	X	IF(verbose)
+	X	    printf("\nDepositing command in %s...",cmd_buf);
+	X	ELSE
+	X#endif
+	X#ifdef TERSE
+	X	    printf("\n--> %s...",cmd_buf);
+	X#endif
+	X	fflush(stdout);
+	X	sleep(2);
+	X	if ((tmpfp = fopen(cmd_buf,"a")) != Nullfp) {
+	X	    fseek(tmpfp,0L,2);		/* get to EOF for sure */
+	X	    fprintf(tmpfp,"%s\n",cmd);
+	X	    fclose(tmpfp);
+	X	    fputs("done\n",stdout) FLUSH;
+	X	}
+	X	else
+	X	    printf(cantopen,cmd_buf) FLUSH;
+	X    }
+	X}
+	X#endif KILLFILES
+SHAR_EOF
+if test 5500 -ne "`wc -c < 'kfile.c'`"
+then
+	echo shar: error transmitting "'kfile.c'" '(should have been 5500 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'kitlists.c'" '(1097 characters)'
+if test -f 'kitlists.c'
+then
+	echo shar: will not over-write existing file "'kitlists.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'kitlists.c'
+	X/* $Header: kitlists.c,v 4.3 85/05/01 11:42:08 lwall Exp $
+	X *
+	X * $Log:	kitlists.c,v $
+	X * Revision 4.3  85/05/01  11:42:08  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include <stdio.h>
+	X
+	X#define MAXKIT 100
+	X#define MAXKITSIZE 63000
+	X#define KITOVERHEAD 700
+	X#define FILEOVERHEAD 80
+	X
+	Xlong tot[MAXKIT];
+	XFILE *outfp[MAXKIT];		/* of course, not this many file descriptors */
+	X
+	Xmain(argc,argv)
+	Xint argc;
+	Xchar **argv;
+	X{
+	X    FILE *inp, *popen();
+	X    char buf[1024], filnam[128];
+	X    char *index();
+	X    register char *s;
+	X    register int i, newtot;
+	X    
+	X    sprintf(buf,"\
+	Xls -l `awk '{print $1}' <%s'` | awk '{print $8 \" \" $4}' | sort +1nr\
+	X", argc > 1 ? argv[1] : "MANIFEST.new");
+	X    inp = popen(buf,"r");
+	X
+	X    while (fgets(buf,1024,inp) != Nullch) {
+	X	s = index(buf,' ');
+	X	*s++ = '\0';
+	X	for (i=1;
+	X	  (newtot = tot[i] + atol(s) + FILEOVERHEAD) > MAXKITSIZE-KITOVERHEAD;
+	X	  i++) 
+	X	    ;
+	X	if (!tot[i]) {
+	X	    sprintf(filnam,"kit%d.list",i);
+	X	    outfp[i] = fopen(filnam,"w");
+	X	}
+	X	tot[i] = newtot;
+	X	printf("Adding %s to kit %d giving %d bytes\n",buf,i,newtot);
+	X	fprintf(outfp[i],"%s\n",buf);
+	X    }
+	X}
+SHAR_EOF
+if test 1097 -ne "`wc -c < 'kitlists.c'`"
+then
+	echo shar: error transmitting "'kitlists.c'" '(should have been 1097 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'last.c'" '(1068 characters)'
+if test -f 'last.c'
+then
+	echo shar: will not over-write existing file "'last.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'last.c'
+	X/* $Header: last.c,v 4.3 85/05/01 11:42:16 lwall Exp $
+	X *
+	X * $Log:	last.c,v $
+	X * Revision 4.3  85/05/01  11:42:16  lwall
+	X * Baseline for release with 4.3bsd.
+	X * 
+	X */
+	X
+	X#include "EXTERN.h"
+	X#include "common.h"
+	X#include "rn.h"
+	X#include "util.h"
+	X#include "intrp.h"
+	X#include "INTERN.h"
+	X#include "last.h"
+	X
+	Xchar *lastname = Nullch;	/* path name of .rnlast file */
+	X
+	Xvoid
+	Xlast_init(tcbuf)
+	Xchar *tcbuf;
+	X{
+	X    lastname = savestr(filexp(LASTNAME));
+	X    if ((tmpfp = fopen(lastname,"r")) != Nullfp) {
+	X	fgets(tcbuf,1024,tmpfp);
+	X	tcbuf[strlen(tcbuf)-1] = '\0';
+	X	lastngname = savestr(tcbuf);
+	X	fgets(tcbuf,1024,tmpfp);
+	X	lasttime = atol(tcbuf);
+	X	fgets(tcbuf,1024,tmpfp);
+	X	lastactsiz = atol(tcbuf);
+	X	fclose(tmpfp);
+	X    }
+	X    else {
+	X	lastngname = nullstr;
+	X	lasttime = 0;
+	X	lastactsiz = 0;
+	X    }
+	X}
+	X
+	X/* put out certain values for next run of rn */
+	X
+	Xvoid
+	Xwritelast()
+	X{
+	X    if ((tmpfp = fopen(lastname,"w")) != Nullfp) {
+	X	fprintf(tmpfp,"%s\n%ld\n%ld\n",
+	X	    (ngname==Nullch?nullstr:ngname),(long)lasttime,(long)lastactsiz);
+	X	fclose(tmpfp);
+	X    }
+	X    else
+	X	printf(cantcreate,lastname) FLUSH;
+	X}
+SHAR_EOF
+if test 1068 -ne "`wc -c < 'last.c'`"
+then
+	echo shar: error transmitting "'last.c'" '(should have been 1068 characters)'
+fi
+fi # end of overwriting check
+#	End of shell archive
+exit 0
+

@@ -1,0 +1,1654 @@
+head	1.9;
+access;
+symbols;
+locks
+	tony:1.9; strict;
+comment	@ * @;
+
+
+1.9
+date	94.01.31.13.53.11;	author tony;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	93.12.22.09.59.08;	author tony;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	93.12.15.17.12.42;	author tony;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.12.15.16.46.32;	author tony;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	93.12.15.16.43.13;	author tony;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	93.12.15.12.27.38;	author tony;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	93.12.15.10.11.29;	author tony;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	93.12.13.16.00.53;	author tony;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	93.12.13.11.43.55;	author tony;	state Exp;
+branches;
+next	;
+
+
+desc
+@Main file - contains main () - performs the set up and calls everything
+else to make the nucleus
+@
+
+
+1.9
+log
+@*** empty log message ***
+@
+text
+@
+/*
+ * sysbuild.c
+ *
+ *	New, improved sysbuild.  Configuration information is taken from
+ * a file.  The build system is slightly more clever and can recognize
+ * when some part of the nucleus is missing, but will also allow custom
+ * nuclei to be built.
+ *
+ *	A rom disk server and rom disk file can be included in the nucleus.
+ *
+ *	The boot strap code will also be modified to change the first prog
+ * value.
+ *
+ *
+ * History:
+ *
+ * 2/12/93	Program started.
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+
+#include "defs.h"
+#include "externs.h"
+
+#define set_loaded_bit_(n)	(ConfigData.loaded |= (1 << ((n) - 1)))
+#define check_loaded_bit_(n)	(ConfigData.loaded & (1 << ((n) - 1)))
+
+/*
+ *		GLOBAL VARIABLE DECLARATIONS
+ */
+
+#ifdef DEBUG
+int	Debug = TRUE;
+int	Info = TRUE;
+#else
+int	Debug = FALSE;
+int	Info = FALSE;
+#endif
+
+int	WarningsEnabled = TRUE;
+int	ErrorsEnabled 	= TRUE;
+
+int	ShowOnly = FALSE;
+
+struct config_str	ConfigData;
+
+char *	ProgName;
+
+FILE *	DebugStream = stderr;
+
+/*
+ *		CLEAN UP FUNCTIONS
+ */
+void tidyup ()
+{
+	/* close any open file pointers */
+	if (ConfigFp != NULL)
+	{
+		fclose (ConfigFp);
+	}
+
+	/* clean up the parse list */
+	delete_list ();	
+
+	if (Image != NULL)
+	{
+		free (Image);
+	}
+
+	if (ModFp != NULL)
+	{
+		fclose (ModFp);
+	}
+
+#ifdef HELIOS
+	if (RomDiskFp != NULL)
+	{
+		fclose (RomDiskFp);
+	}
+
+	if (RomInFp != NULL)
+	{
+		fclose (RomInFp);
+	}
+#endif
+
+	if (NucOutFp != NULL)
+	{
+		fclose (NucOutFp);
+	}
+
+	if (BootStrapFp != NULL)
+	{
+		fclose (BootStrapFp);
+	}
+}
+
+/*
+ *		ERROR FUNCTIONS
+ */
+
+void usage (int	exit_val)
+{
+	fprintf (stderr, "usage: %s [-hweDdln] [-c config-file] [-o nucleus]\n", ProgName);
+	fprintf (stderr, "		w	No warnings\n");
+	fprintf (stderr, "		e	Errors signaled as warnings\n");
+	fprintf (stderr, "		d	Debug information\n");
+	fprintf (stderr, "		D	Debug on stdout\n");
+	fprintf (stderr, "		l	Information\n");
+	fprintf (stderr, "		n	Only show the format of the nucleus\n");
+
+	tidyup ();
+
+	exit (exit_val);
+}
+
+/* Not turn-offable */
+
+void sysbuild_fatal (char *	fmt,
+		     ...)
+{
+	va_list	args;
+
+	va_start (args, fmt);
+
+	fprintf (stderr, "%s - Fatal Error: ", ProgName);
+
+	vfprintf (stderr, fmt, args);
+	
+	fprintf (stderr, "\n");
+
+	tidyup ();
+
+	va_end (args);
+
+	exit (SYSBUILDERR_FAIL);
+}
+
+void sysbuild_error (char *	fmt,
+		    ...)
+{
+	va_list	args;
+
+	va_start (args, fmt);
+
+	if (ErrorsEnabled)
+	{
+		fprintf (stderr, "%s - Error: ", ProgName);
+
+		vfprintf (stderr, fmt, args);
+	
+		fprintf (stderr, "\n");
+
+		tidyup ();
+
+		va_end (args);
+
+		exit (SYSBUILDERR_FAIL);
+	}
+	else if (WarningsEnabled)
+	{
+		fprintf (stderr, "%s - Warning: ", ProgName);
+
+		va_start (args, fmt);
+
+		vfprintf (stderr, fmt, args);
+
+		fprintf (stderr, "\n");
+	}
+
+	va_end (args);
+}
+
+void sysbuild_warning (char *	fmt,
+		      ...)
+{
+	va_list	args;
+
+	if (WarningsEnabled)
+	{
+		fprintf (stderr, "%s - Warning: ", ProgName);
+
+		va_start (args, fmt);
+
+		vfprintf (stderr, fmt, args);
+
+		fprintf (stderr, "\n");
+	}
+
+	va_end (args);
+}
+
+void sysbuild_debug (char *	fmt,
+		    ...)
+{
+	va_list	args;
+
+	if (!Debug) 	return;
+
+	fprintf (DebugStream, "%s - Debug: ", ProgName);
+
+	va_start (args, fmt);
+
+	vfprintf (DebugStream, fmt, args);
+
+	va_end (args);
+
+	fprintf (DebugStream, "\n");
+}
+
+
+void sysbuild_info (char *	fmt,
+		   ...)
+{
+	va_list	args;
+
+	if (!Info) 	return;
+
+	va_start (args, fmt);
+
+	vfprintf (stdout, fmt, args);
+
+	va_end (args);
+
+	fprintf (stdout, "\n");
+}
+
+/*
+ *		SYSBUILD DEBUG FUNCTIONS
+ */
+
+#define SPEC_MODULES	9
+char *	SpecificModules[SPEC_MODULES] =
+{
+	"kernel",
+	"system lib",
+	"server lib",
+	"util lib",
+	"boot",
+	"procman",
+	"loader", 
+	"C lib",
+	"POSIX lib"
+};
+
+void pad (int	n)
+{
+	while (n--)	putchar (' ');
+}
+
+void print_configdata ()
+{
+	int	i;
+
+	int	output = FALSE;
+
+	if (!Info)	return;
+
+	printf ("\t\tConfiguration Data:\n\n");
+
+	printf ("Nucleus File: %s\n\n", ConfigData.nucleus);
+
+	/* 8 - 12 - ... */
+	printf ("Slot:"); pad (3);
+	printf ("Name:"); pad (7);
+	printf ("Module:");
+	putchar ('\n');
+
+	for (i = 0; i < SPEC_MODULES && ConfigData.modules[i] != NULL; i++)
+	{
+		printf (" %d", i + 1);
+		pad ((i > 9) ? 6 : 7);
+
+		if (check_loaded_bit_(i + 1))
+		{
+			printf ("%s", SpecificModules[i]);
+			pad (12 - strlen (SpecificModules[i]));
+		}
+		else
+		{
+			pad (12);
+		}
+
+		printf ("%s\n", ConfigData.modules[i]);
+
+		output = TRUE;
+	}
+
+	if (output)
+	{
+		putchar ('\n');
+		output = FALSE;
+	}
+
+	for ( ; i < MODULE_SLOTS && ConfigData.modules[i] != NULL; i++)
+	{
+		printf (" %d", i + 1);
+		pad ((i > 9) ? 2 : 3);
+
+		pad (12);
+
+		printf ("%s\n", ConfigData.modules[i]);
+
+		output = TRUE;
+	}
+
+	if (output)
+	{
+		putchar ('\n');
+		output = FALSE;
+	}
+
+	if (ConfigData.romdisk_file[0] != '\0')
+	{
+		printf ("Romdisk File : %s\n", ConfigData.romdisk_file);
+
+		output = TRUE;
+	}
+
+	if (ConfigData.romdisk_dir[0] != '\0')
+	{
+		printf ("Romdisk Dir  : %s\n", ConfigData.romdisk_dir);
+
+		output = TRUE;
+	}
+       
+	if (   ConfigData.romdisk_file[0] != '\0'
+	    || ConfigData.romdisk_dir[0] != '\0')
+	{
+		printf ("Romdisk Root : %s\n", ConfigData.romdisk_root);
+		printf ("Romdisk Write: %c\n", ConfigData.romdisk_write);
+
+		output = TRUE;
+	}
+
+	if (output)
+	{
+		putchar ('\n');
+		output = FALSE;
+	}
+
+	printf ("Bootstrap : %s\n\n", ConfigData.bootstrap);
+
+	printf ("Memory Size       = %d\n", ConfigData.memory_size);
+
+	printf ("Vector Table Size = %d (plus NULL)\n", ConfigData.vector_table_size - 1);
+	printf ("First Program     = %d\n", ConfigData.first_program);
+	printf ("Swap Bytes        = %c\n", ((ConfigData.swap_bytes) ? 'Y' : 'N'));
+}	
+
+/*
+ *		SETUP FUNCTIONS
+ */
+
+void init_config_data ()
+{
+	int	i;
+
+	strcpy (ConfigData.config_file, DEFAULT_CONFIG_FILE);
+
+	strcpy (ConfigData.nucleus, DEFAULT_NUCLEUS_FILE);
+
+	ConfigData.loaded = 0;
+
+	for (i = 0; i < MODULE_SLOTS; i++)
+	{
+		ConfigData.modules[i] = NULL;
+	}
+
+	ConfigData.romdisk_file[0] = '\0';
+	ConfigData.romdisk_dir[0] = '\0';
+	ConfigData.romdisk_root[0] = '\0';
+
+	ConfigData.memory_size = MEMSIZE;
+
+	ConfigData.vector_table_size = 0;	/* Start at 1 to allow for
+						   terminating NULL	   */
+
+	ConfigData.first_program = -1;
+	ConfigData.swap_bytes = 0;
+}
+
+module_files_ptr make_file_elem (char	filename[NAME_LEN_MAX])
+{
+	module_files_ptr	mp;
+
+	mp = (module_files_ptr)(malloc (sizeof (struct module_files_str)));
+
+	if (mp != NULL)
+	{
+		mp -> next = NULL;
+		strcpy (mp -> modfile_name, filename);
+	}
+
+	return mp;
+}
+
+/*
+ * setup ():
+ *	Parses the arguments and initialises the global variables.
+ */
+int setup (int		argc,
+	   char *	argv[])
+{
+	int	a;
+	char *	this_arg;
+
+	init_config_data ();
+
+	if (argc == 1)
+	{
+		/* use the default values */
+		return SYSBUILD_OK;
+	}
+
+	for (a = 1; a < argc; a++)
+	{
+		this_arg = argv[a];
+
+		if (*this_arg == '-')
+		{
+			this_arg++;
+
+			while (*this_arg != '\0')
+			{
+				switch (*this_arg)
+				{
+				case 'h':
+					usage (0);
+
+					break;
+
+				case 'w':
+					/* Turn of warning messages */
+					WarningsEnabled = FALSE;
+
+					break;
+
+				case 'e':
+					/* Error messages become warning messages */
+					ErrorsEnabled = FALSE;
+
+					break;
+
+				case 'D':
+					DebugStream = stdout;
+				case 'd':
+					Debug = !Debug;
+
+					break;
+
+				case 'l':
+					Info = TRUE;
+
+					break;
+
+				case 'n':
+					ShowOnly = TRUE;
+					Info = TRUE;
+
+					break;
+
+				case 'c':
+					this_arg++;
+
+					if (*this_arg == '\0')
+					{
+						a++;
+
+						if (a == argc)
+						{
+							sysbuild_fatal ("No config file specified");
+						}
+						this_arg = argv[a];
+					}
+
+					strcpy (ConfigData.config_file, this_arg);
+
+					*this_arg = '\0';
+
+					break;
+
+				case 'o':
+					this_arg++;
+
+					if (*this_arg == '\0')
+					{
+						a++;
+
+						if (a == argc)
+						{
+							sysbuild_error ("No nucleus file specified");
+						}
+						this_arg = argv[a];
+					}
+
+					strcpy (ConfigData.nucleus, this_arg);
+
+					*this_arg = '\0';
+
+					break;
+
+				default:
+					sysbuild_warning ("Unknown option %c", *this_arg);
+
+					break;
+				}
+				if (*this_arg != '\0') this_arg++;
+			}
+		}
+	}
+
+	return SYSBUILD_OK;
+}
+
+/*
+ *		UPDATE CONFIGURATION DATA
+ */
+
+/*
+ * sort_by_slots ():
+ *	Move all elements with a slot number not -1 to the top,
+ * and then sort them.
+ */
+void sort_by_slots (parse_ptr *	module_ptrs)
+{
+	parse_ptr	tmp;
+
+	int	not_sorted;
+	int	i = 0;
+
+	if (module_ptrs[0] == NULL)
+	{
+		/* Nothing to sort */
+		return;
+	}
+
+	not_sorted = TRUE;
+	while (not_sorted)
+	{
+		if (module_ptrs[i + 1] == NULL)
+		{
+			/* the end */
+			not_sorted = FALSE;
+		}
+		else if (  module_slot_(module_ptrs[i]) == -1
+			&& module_slot_(module_ptrs[i + 1]) != -1)
+		{
+			/* swap */
+			tmp = module_ptrs[i];
+			module_ptrs[i] = module_ptrs[i + 1];
+			module_ptrs[i + 1] = tmp;
+
+			/* start again */
+			i = 0;
+
+			not_sorted = TRUE;
+		}
+		else
+		{
+			i++;
+		}
+	}
+
+	/* sort the positive pointers */
+	not_sorted = TRUE;
+	i = 0;
+	while (not_sorted)
+	{
+		if (module_ptrs[i + 1] == NULL)
+		{
+			not_sorted = FALSE;
+		}
+		else if (module_slot_(module_ptrs[i + 1]) == -1)
+		{
+			not_sorted = FALSE;
+		}
+		else if (module_slot_(module_ptrs[i]) > module_slot_(module_ptrs[i + 1]))
+		{
+			/* swap */
+			tmp = module_ptrs[i];
+			module_ptrs[i] = module_ptrs[i + 1];
+			module_ptrs[i + 1] = tmp;
+
+			/* start again */
+			i = 0;
+		}
+		else if (module_slot_(module_ptrs[i]) == module_slot_(module_ptrs[i + 1]))
+		{
+			/* error */
+			sysbuild_error ("Found identical slot number %d for %s and %s",
+					module_slot_(module_ptrs[i]),
+					module_name_(module_ptrs[i]),
+					module_name_(module_ptrs[i + 1]));
+
+			sysbuild_warning ("%s will be ignored", module_name_(module_ptrs[i]));
+
+			i++;	/* continue sorting if errors ignored */
+		}
+		else
+		{
+			i++;
+		}
+	}
+}
+
+/*
+ * update_modules_data ():
+ *	First place all modules with a specified slot, then fill
+ * in the gaps with modules with no specified slot.  Finally
+ * check for any remaining gaps, raising a fatal error if there
+ * are any.
+ *
+ * At this point the module_ptrs array should be sorted, with all
+ * modules with non-specified slots at the end.
+ */
+void update_modules_data (parse_ptr *	module_ptrs)
+{
+	int	i;
+
+	int	mod_index;
+
+	int	last_spec_index = 0;	/* keep track of where the last
+					   specified module is 		*/
+	int	next_index;
+
+	for (i = 0; module_ptrs[i] != NULL; i++)
+	{
+		if (module_slot_(module_ptrs[i]) == -1)
+		{
+			/* finished with specified slots */
+			break;
+		}
+
+		/* slot count starts from 1, so subtract 1 for array index */
+		mod_index = module_slot_(module_ptrs[i]) - 1;
+
+		ConfigData.modules[mod_index] = (char *)(malloc (strlen (module_name_(module_ptrs[i])) + 1));
+
+		strcpy (ConfigData.modules[mod_index], module_name_(module_ptrs[i]));
+
+		last_spec_index = mod_index;
+	}
+
+	/* After running out of gaps, place remaining modules at next_index */
+	next_index = last_spec_index + 1;
+
+	/* Now fill in any gaps */
+	for ( ; module_ptrs[i] != NULL; i++)
+	{
+		int	j;
+
+		for (j = 0; j < last_spec_index; j++)
+		{
+			if (ConfigData.modules[j] == NULL)
+			{
+				/* found a gap */
+
+				sysbuild_debug ("found a gap at slot %d, placing %s",
+						j + 1,
+						module_name_(module_ptrs[i]));
+
+				ConfigData.modules[j] =
+					(char *)(malloc (strlen (module_name_(module_ptrs[i])) + 1));
+
+				strcpy (ConfigData.modules[j], module_name_(module_ptrs[i]));
+
+				break;
+			}
+		}
+
+		if (j == last_spec_index)
+		{
+			/* failed to find a gap - hence no gaps to find */
+
+			last_spec_index = 0;	/* no point checking anymore */
+
+			ConfigData.modules[next_index] =
+				(char *)(malloc (strlen (module_name_(module_ptrs[i])) + 1));
+
+			strcpy (ConfigData.modules[next_index], module_name_(module_ptrs[i]));
+			next_index++;
+		}
+	}
+
+	/* check for gaps, going backwards from last_spec_index */
+	while (last_spec_index--)
+	{
+		if (ConfigData.modules[last_spec_index] == NULL)
+		{
+			sysbuild_error ("Found a gap at slot %d", last_spec_index + 1);
+		}
+	}
+
+	/* set the vector table size */
+	ConfigData.vector_table_size = i + 1;
+}
+
+/*
+ * After parsing the file, we update the nucleus configuration data.
+ * First check the slot numbers for the kernel, syslib, servlib, etc,
+ * and set them to the required values.  At the same time, change their
+ * types to T_MODULE.
+ * Then call for all T_MODULEs and sort them in slot order, with default
+ * slot numbers (-1) appearing at the end.
+ * Check for gaps in the vector table, and then add to the modules array
+ * in ConfigData.
+ */
+void update_config_data ()
+{
+	parse_ptr	cfg_data;
+	parse_ptr *	cfg_arr_data;
+
+	/*
+	 * ConfigData.default_index will contain the last index number,
+	 * and hence the vector table size.  However, this doesn't
+	 * take into account the romdisk file if one is required.
+	 */
+	int	romdisk_reqd = FALSE;
+
+	int	expecting_next;
+
+	int	first_program = -1;
+
+	/* Next find the kernel.  */
+	if ((cfg_data = get_data (T_KERNEL)) != NULL)
+	{
+		if (module_slot_(cfg_data) != -1 && module_slot_(cfg_data) != 1)
+		{
+			/* Invalid slot number for the kernel */
+			sysbuild_fatal ("Invalid slot number for kernel");
+		}
+		module_slot_(cfg_data) = 1;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(1);
+	}
+	else
+	{
+		sysbuild_error ("No kernel file specified");
+	}
+
+	/*
+	 *   Now set up the other "normal" modules.  As they follow a
+	 * hierarchical pattern, we should only expect to get the next
+	 * one if the current one was found.
+	 */
+	expecting_next = TRUE;
+	if ((cfg_data = get_data (T_SYSLIB)) != NULL)
+	{
+		module_slot_(cfg_data) = 2;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(2);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	if ((cfg_data = get_data (T_SERVLIB)) != NULL)
+	{
+		if (expecting_next == FALSE)
+		{
+			sysbuild_warning ("Found servlib without syslib");
+		}
+		module_slot_(cfg_data) = 3;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(3);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	if ((cfg_data = get_data (T_UTILLIB)) != NULL)
+	{
+		if (expecting_next == FALSE)
+		{
+			sysbuild_warning ("Found utillib without previous module(s)");
+		}
+		module_slot_(cfg_data) = 4;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(4);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	if ((cfg_data = get_data (T_BOOT)) != NULL)
+	{
+		if (expecting_next == FALSE)
+		{
+			sysbuild_warning ("Found boot without previous module(s)");
+		}
+		module_slot_(cfg_data) = 5;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(5);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	if ((cfg_data = get_data (T_PROCMAN)) != NULL)
+	{
+		if (expecting_next == FALSE)
+		{
+			sysbuild_warning ("Found procman without previous module(s)");
+		}
+		module_slot_(cfg_data) = 6;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(6);
+
+		first_program = 6;
+
+		sysbuild_debug ("first_program = %d", first_program);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	if ((cfg_data = get_data (T_LOADER)) != NULL)
+	{
+		if (expecting_next == FALSE)
+		{
+			sysbuild_warning ("Found loader without previous module(s)");
+		}
+		module_slot_(cfg_data) = 7;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(7);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	if ((cfg_data = get_data (T_CLIB)) != NULL)
+	{
+		if (expecting_next == FALSE)
+		{
+			sysbuild_warning ("Found C library without previous module(s)");
+		}
+		module_slot_(cfg_data) = 8;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(8);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	if ((cfg_data = get_data (T_POSIXLIB)) != NULL)
+	{
+		if (expecting_next == FALSE)
+		{
+			sysbuild_warning ("Found POSIX library without previous module(s)");
+		}
+		module_slot_(cfg_data) = 9;
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		set_loaded_bit_(9);
+	}
+	else
+	{
+		expecting_next = FALSE;
+	}
+
+	/* set up rom disk, if required */
+	if ((cfg_data = get_data (T_ROMSERV)) != NULL)
+	{
+		strcpy (cfg_data -> keyword_name, T_MODULE);
+
+		if ((cfg_data = get_data (T_ROMDISK_DIR)) != NULL)
+		{
+			strcpy (ConfigData.romdisk_dir, string_val_(cfg_data));
+
+			if ((cfg_data = get_data (T_ROMDISK_FILE)) != NULL)
+			{
+				strcpy (ConfigData.romdisk_file, string_val_(cfg_data));
+			}
+			
+			if (get_data (T_ROMDISK_WRITE) != NULL)
+			{
+				ConfigData.romdisk_write = 'Y';
+			}
+			else
+			{
+				ConfigData.romdisk_write = 'N';
+			}
+
+			romdisk_reqd = TRUE;
+		}
+		else if ((cfg_data = get_data (T_ROMDISK_FILE)) != NULL)
+		{
+			strcpy (ConfigData.romdisk_file, string_val_(cfg_data));
+
+			romdisk_reqd = TRUE;
+		}
+		else
+		{
+			strcpy (ConfigData.romdisk_dir, DEFAULT_ROMDISK_DIR);
+		}
+	}
+	else if ((cfg_data = get_data (T_ROMDISK_FILE)) != NULL)
+	{
+		/* 
+		 * It's possible to have a romdisk file without
+		 * having an obvious romdisk server.
+		 */
+		sysbuild_warning ("Found romdisk file without romdisk server");
+
+		strcpy (ConfigData.romdisk_file, string_val_(cfg_data));
+
+		romdisk_reqd = TRUE;
+	}
+
+	/* Find out any extra files */
+	if ((cfg_arr_data = get_multi_data (T_MODULE)) != NULL)
+	{
+		/*
+		 * By now all specific modules have been converted to
+		 * T_MODULEs and their slot numbers patched.
+		 */
+
+		/*
+		 * sort_by_slots () also checks that no slot
+		 * numbers are identical
+		 */
+		sort_by_slots (cfg_arr_data);
+
+		/*
+		 * update_modules_data () also checks that
+		 * there are no gaps in the vector table.
+		 */
+		update_modules_data (cfg_arr_data);
+	}
+
+	/* Find bootstrap file */
+	if ((cfg_data = get_data (T_BOOTSTRAP)) != NULL)
+	{
+		strcpy (ConfigData.bootstrap, string_val_(cfg_data));
+	}
+
+	/* Finally set up miscellaneous config data */
+
+	if ((cfg_data = get_data (T_MEMORY_SIZE)) != NULL)
+	{
+		ConfigData.memory_size = int_val_(cfg_data);
+	}
+
+	if ((cfg_data = get_data (T_FIRST_PROGRAM)) != NULL)
+	{
+		if (first_program != -1 && first_program != int_val_(cfg_data))
+		{
+			sysbuild_warning ("Overriding process manager as first program");
+		}
+
+		first_program = int_val_(cfg_data);
+	}
+
+	if (get_data (T_SWAP_BYTES) != NULL)
+	{
+		ConfigData.swap_bytes = TRUE;
+	}
+
+	if (romdisk_reqd)
+	{
+		ConfigData.vector_table_size++;
+	}
+
+	ConfigData.first_program = first_program;
+}
+
+/*
+ * 		MAIN
+ */
+
+int main (int		argc,
+	  char *	argv[])
+{
+	ProgName = argv[0];
+
+	setup (argc, argv);
+
+	parse_config_file (ConfigData.config_file);
+
+	update_config_data ();
+
+	print_configdata ();
+
+	if (ShowOnly)	return 0;
+
+	make_nucleus ();
+
+	output_nucleus ();
+
+	check_bootstrap ();
+
+	tidyup ();
+}
+@
+
+
+1.8
+log
+@Various changes to command line arguments.
+@
+text
+@d30 3
+d48 2
+d109 1
+a109 1
+	fprintf (stderr, "usage: %s [-hweDdl] [-c config-file] [-o nucleus] [files ...]\n", ProgName);
+d115 1
+d122 22
+d153 1
+a153 1
+		fprintf (stderr, "%s - Serious Error: ", ProgName);
+d165 10
+a174 2
+	/* else */
+	sysbuild_warning (fmt, args);
+d237 2
+a238 1
+void print_extra_files (module_files_ptr	p)
+d240 10
+a249 1
+	if (p == NULL)	return;
+d251 3
+a253 3
+	sysbuild_info ("\t\t%s", p -> modfile_name);
+
+	print_extra_files (p -> next);
+d258 50
+a307 1
+	sysbuild_info ("ConfigData:");
+d309 4
+a312 16
+	sysbuild_info ("\tkernel : %s", ConfigData.kernel);
+	sysbuild_info ("\tsyslib : %s", ConfigData.syslib);
+	sysbuild_info ("\tservlib: %s", ConfigData.servlib);
+	sysbuild_info ("\tutillib: %s", ConfigData.utillib);
+	sysbuild_info ("\tboot   : %s", ConfigData.boot);
+	sysbuild_info ("\tprocman: %s", ConfigData.procman);
+	sysbuild_info ("\tloader : %s", ConfigData.loader);
+
+	sysbuild_info ("");
+
+	sysbuild_info ("\tromserv      : %s", ConfigData.romserv);
+	sysbuild_info ("\tromdisk file : %s", ConfigData.romdisk_file);
+	sysbuild_info ("\tromdisk dir  : %s", ConfigData.romdisk_dir);
+       
+	if (   ConfigData.romdisk_file[0] != '\0'
+	    || ConfigData.romdisk_dir[0] != '\0')
+d314 2
+a315 2
+		sysbuild_info ("\tromdisk root : %s", ConfigData.romdisk_root);
+		sysbuild_info ("\tromdisk write: %c", ConfigData.romdisk_write);
+d318 6
+a323 1
+	sysbuild_info ("");
+d325 3
+a327 1
+	sysbuild_info ("\tbootstrap: %s", ConfigData.bootstrap);
+d329 8
+a336 1
+	sysbuild_info ("");
+d338 2
+a339 2
+	sysbuild_info ("\tExtra Module Files:");
+	print_extra_files (ConfigData.files_head);
+d341 5
+a345 1
+	sysbuild_info ("");
+d347 1
+a347 1
+	sysbuild_info ("\tmemory_size       = 0x%lx", ConfigData.memory_size);
+d349 1
+a349 4
+	sysbuild_info ("\tvector_table_size = %d (plus NULL)", ConfigData.vector_table_size - 1);
+	sysbuild_info ("\tfirst program     = %d", ConfigData.first_program);
+	sysbuild_info ("\tswap_bytes        = %c", 
+				((ConfigData.swap_bytes) ? 'Y' : 'N'));
+d351 3
+a353 1
+	sysbuild_info ("");
+d362 2
+d368 6
+a373 7
+	ConfigData.kernel[0]	= '\0';
+	ConfigData.syslib[0]	= '\0';
+	ConfigData.servlib[0]	= '\0';
+	ConfigData.utillib[0]	= '\0';
+	ConfigData.boot[0]	= '\0';
+	ConfigData.procman[0]	= '\0';
+	ConfigData.loader[0]	= '\0';
+a374 1
+	ConfigData.romserv[0]	   = '\0';
+d376 1
+a376 1
+	ConfigData.romdisk_dir[0]  = '\0';
+a377 4
+	ConfigData.romdisk_write   = '\0';
+
+	ConfigData.files_head = NULL;
+	ConfigData.files_tail = &(ConfigData.files_head);
+d381 1
+a381 1
+	ConfigData.vector_table_size = 1;	/* Start at 1 to allow for
+d462 6
+d477 1
+a477 1
+							sysbuild_error ("No config file specified");
+d484 2
+d504 2
+d513 1
+a513 1
+				this_arg++;
+d516 89
+d607 50
+a656 4
+			/*
+			 * Names of modules to be added to the nucleus.
+			 */
+			module_files_ptr mp = make_file_elem (argv[a]);
+d658 3
+a660 1
+			if (mp == NULL)
+d662 12
+a673 1
+				sysbuild_error ("Out of memory");
+d675 1
+d677 13
+a689 1
+			ConfigData.vector_table_size++;
+d691 6
+a696 2
+			*(ConfigData.files_tail) = mp;
+			ConfigData.files_tail = &(mp -> next);
+d700 2
+a701 1
+	return SYSBUILD_OK;
+d705 8
+a712 1
+ *		UPDATE CONFIGURATION DATA
+a713 1
+
+d719 6
+a724 1
+	int	vector_table_size;
+a729 4
+	vector_table_size = ConfigData.vector_table_size;
+
+	sysbuild_debug ("vector_table_size = %d", vector_table_size);
+
+d733 7
+a739 1
+		strcpy (ConfigData.kernel, string_val_(cfg_data));
+d741 1
+a741 1
+		vector_table_size++;
+d756 2
+a757 1
+		strcpy (ConfigData.syslib, string_val_(cfg_data));
+d759 1
+a759 1
+		vector_table_size++;
+d772 2
+a773 1
+		strcpy (ConfigData.servlib, string_val_(cfg_data));
+d775 1
+a775 1
+		vector_table_size++;
+d788 2
+a789 1
+		strcpy (ConfigData.utillib, string_val_(cfg_data));
+d791 1
+a791 1
+		vector_table_size++;
+d804 2
+a805 1
+		strcpy (ConfigData.boot, string_val_(cfg_data));
+d807 1
+a807 1
+		vector_table_size++;
+d820 4
+a823 1
+		strcpy (ConfigData.procman, string_val_(cfg_data));
+d825 1
+a825 1
+		first_program = vector_table_size;
+a827 2
+
+		vector_table_size++;
+d840 34
+a873 1
+		strcpy (ConfigData.loader, string_val_(cfg_data));
+d875 1
+a875 1
+		vector_table_size++;
+d885 1
+a885 3
+		strcpy (ConfigData.romserv, string_val_(cfg_data));
+
+		vector_table_size++;
+d905 1
+a905 1
+			vector_table_size++;
+d911 1
+a911 1
+			vector_table_size++;
+d915 1
+a915 1
+			sysbuild_warning ("Rom disk server specified without directory or file");
+d928 1
+a928 1
+		vector_table_size++;
+d934 4
+a937 1
+		int	i;
+d939 5
+a943 3
+		for (i = 0; cfg_arr_data[i] != NULL; i++)
+		{
+			parse_ptr	p = cfg_arr_data[i];
+d945 5
+a949 12
+			module_files_ptr mp = make_file_elem (string_val_(p));
+
+			if (mp == NULL)
+			{
+				sysbuild_error ("Out of memory");
+			}
+
+			vector_table_size++;
+
+			*(ConfigData.files_tail) = mp;
+			ConfigData.files_tail = &(mp -> next);
+		}
+d980 5
+a984 1
+	ConfigData.vector_table_size = vector_table_size;
+a985 2
+
+	sysbuild_debug ("first_program = %d (%d)", ConfigData.first_program, first_program);
+d1004 2
+@
+
+
+1.7
+log
+@Minor fiddling with sysbuild_warning/error
+@
+text
+@a41 1
+int	KernelCheck 	= TRUE;
+a49 1
+FILE *	InfoStream = stderr;
+d104 1
+a104 2
+	fprintf (stderr, "usage: %s [-hkweDdIi] [-f config-file] [files ...]\n", ProgName);
+	fprintf (stderr, "		k	No kernel file check\n");
+d107 1
+a107 1
+	fprintf (stderr, "		d	Toggle debugging\n");
+d109 1
+a109 2
+	fprintf (stderr, "		i	Toggle information\n");
+	fprintf (stderr, "		I	Information onf stdout\n");
+d190 1
+a190 1
+	vfprintf (InfoStream, fmt, args);
+d194 1
+a194 1
+	fprintf (InfoStream, "\n");
+d264 1
+a264 1
+	ConfigData.nucleus[0]	= '\0';
+d361 1
+a361 3
+				case 'I':
+					InfoStream = stdout;
+				case 'i':
+d366 13
+a378 2
+				case 'k':
+					KernelCheck = FALSE;
+d380 2
+d384 1
+a384 1
+				case 'f':
+d393 1
+a393 1
+							sysbuild_error ("No config file specified");
+d398 1
+a398 1
+					strcpy (ConfigData.config_file, this_arg);
+d401 1
+d413 1
+a413 3
+			 * For compatibility with the old sysbuild, we assume
+			 * any other string is the name of a file to be added
+			 * as extra modules to the ConfigData
+d449 1
+a449 9
+	/* First find out the name chosen for this nucleus (if any) */
+	if ((cfg_data = get_data (T_NUCLEUS)) != NULL)
+	{
+		strcpy (ConfigData.nucleus, string_val_(cfg_data));
+	}
+	else
+	{
+		strcpy (ConfigData.nucleus, DEFAULT_NUCLEUS);
+	}
+d460 1
+a460 8
+		if (KernelCheck)
+		{
+			/* 
+			 * If kernel file check is not disabled, then
+			 * stop now.
+			 */
+			sysbuild_error ("No kernel file specified");
+		}
+a636 2
+
+		vector_table_size++;
+d648 1
+a648 1
+		if (first_program != -1 && first_program == int_val_(cfg_data))
+d653 1
+a653 1
+		ConfigData.first_program = int_val_(cfg_data);
+a654 4
+	else if (first_program == -1)
+	{
+		sysbuild_warning ("First program undefined");
+	}
+d662 3
+@
+
+
+1.6
+log
+@Fixed usage () message to give all new options
+@
+text
+@d106 2
+a107 2
+	fprintf (stderr, "usage: %s [-hkweDdIi] [-f config-file] [files ...]", ProgName);
+	fprintf (stderr, "		k	No kernel file check");
+d129 1
+a129 1
+		fprintf (stderr, "%s (serious error): ", ProgName);
+d154 1
+a154 1
+		fprintf (stderr, "%s (warning): ", ProgName);
+d173 1
+a173 1
+	fprintf (DebugStream, "%s (debug): ", ProgName);
+@
+
+
+1.5
+log
+@Added -
+	swap_bytes keyword which forces the swapping of the bytes read
+from the boot strap code when running on a machine with a different sex.
+	extra words on the command line are assumed to be names of modules
+to be added into the nucleus
+	'k' command line option - disables the kernel presence check
+
+The last two mean that the old sysbuild is equivalent to sysbuild2 -k <files>
+@
+text
+@d106 1
+a106 1
+	fprintf (stderr, "usage: %s [-hkweDdIi] [-f config-file]", ProgName);
+@
+
+
+1.4
+log
+@Added first_program initialisation/set up and call to check_bootstrap ()
+@
+text
+@d42 1
+d44 1
+a44 1
+int	ErrorsEnabled = TRUE;
+d106 2
+a107 1
+	fprintf (stderr, "usage: %s [-hweDdIi] [-f config-file]", ProgName);
+d253 3
+a255 1
+	sysbuild_info ("\tfirst program	    = %d", ConfigData.first_program);
+d289 2
+a290 1
+	ConfigData.vector_table_size = 0;
+d293 1
+d296 15
+d372 5
+d402 19
+a429 15
+module_files_ptr make_file_elem (char	filename[NAME_LEN_MAX])
+{
+	module_files_ptr	mp;
+
+	mp = (module_files_ptr)(malloc (sizeof (struct module_files_str)));
+
+	if (mp != NULL)
+	{
+		mp -> next = NULL;
+		strcpy (mp -> modfile_name, filename);
+	}
+
+	return mp;
+}
+
+d435 1
+a435 2
+	int	vector_table_size = 1;	/* start off at 1 to allow */
+					/* for terminating NULL    */
+d441 2
+d453 8
+a460 2
+	/* Next find the kernel.  If not present - then its the end */
+	if ((cfg_data = get_data (T_KERNEL)) == NULL)
+d462 8
+a469 1
+		sysbuild_error ("No kernel file specified");
+a471 4
+	vector_table_size++;
+
+	strcpy (ConfigData.kernel, string_val_(cfg_data));
+
+d584 1
+a584 1
+			if ((cfg_data = get_data (T_ROMDISK_WRITE)) != NULL)
+d606 12
+a629 2
+			vector_table_size++;
+
+d635 2
+d669 5
+@
+
+
+1.3
+log
+@Added options to disable warnings and make errors become warnings.
+@
+text
+@d92 5
+d251 1
+d286 2
+d410 2
+d502 4
+d605 14
+d642 2
+@
+
+
+1.2
+log
+@romdisk_write is now a no argument keyword.
+@
+text
+@d42 3
+d100 7
+a106 1
+	fprintf (stderr, "usage: %s [-f config-file]", ProgName);
+d118 1
+a118 1
+	fprintf (stderr, "%s (serious error): ", ProgName);
+d120 3
+a122 1
+	va_start (args, fmt);
+d124 3
+a126 1
+	vfprintf (stderr, fmt, args);
+d128 1
+a128 1
+	va_end (args);
+d130 1
+a130 1
+	fprintf (stderr, "\n");
+d132 4
+a135 1
+	tidyup ();
+d137 1
+a137 1
+	exit (SYSBUILDERR_FAIL);
+d145 5
+a149 1
+	printf ("%s (warning): ", ProgName);
+d151 1
+a151 1
+	va_start (args, fmt);
+d153 2
+a154 1
+	vprintf (fmt, args);
+a156 2
+
+	printf ("\n");
+d308 1
+a308 1
+			switch (*this_arg)
+d310 18
+a327 4
+			case 'D':
+				DebugStream = stdout;
+			case 'd':
+				Debug = !Debug;
+d329 4
+a332 1
+				break;
+d334 1
+a334 4
+			case 'I':
+				InfoStream = stdout;
+			case 'i':
+				Info = TRUE;
+d336 4
+a339 1
+				break;
+d341 1
+a341 2
+			case 'f':
+				this_arg++;
+d343 2
+a344 3
+				if (*this_arg == '\0')
+				{
+					a++;
+d346 1
+a346 1
+					if (a == argc)
+d348 7
+a354 1
+						sysbuild_error ("No config file specified");
+a355 2
+					this_arg = argv[a];
+				}
+d357 1
+a357 1
+				strcpy (ConfigData.config_file, this_arg);
+d359 3
+a361 3
+				break;
+			default:
+				sysbuild_warning ("Unknown option %c", *this_arg);
+d363 3
+a365 1
+				break;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d492 1
+a492 9
+				if (  char_val_(cfg_data) == 'y'
+				   || char_val_(cfg_data) == 'Y')
+				{
+					ConfigData.romdisk_write = 'Y';
+				}
+				else
+				{
+					ConfigData.romdisk_write = 'N';
+				}
+@

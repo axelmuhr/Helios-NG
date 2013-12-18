@@ -1,0 +1,210 @@
+echo T.sub: tests of sub and gsub code
+
+# input lines are of form
+#	pattern  replacement  input-string  sub-output  gsub-output
+AWK=${AWK-./gawk}
+
+$AWK '
+BEGIN {
+	FS = "\t"
+	awk = "'$AWK'"
+}
+NF == 0		{ next }
+$1 == "#"	{ next }
+
+$1 != "" {	# new pattern
+	pat = $1
+}
+$2 != "" {	# new replacement
+	repl = $2
+}
+$3 != "" {	# new input string
+	str = $3
+}
+$4 != "" {	# new sub output
+	subout = $4
+}
+$5 != "" {	# new gsub output
+	gsubout = $5
+}
+NF < 5 {	# weird input line
+	printf("weird test spec `%s` ignored\n", $0) | "cat 1>&2"
+	next
+}
+{		# "" => explicitly empty
+	printf(" %3d:   %s %s %s %s %s:\n", NR, pat, repl, str, subout, gsubout)
+	if (pat == "\"\"") pat = ""
+	if (repl == "\"\"") repl = ""
+	if (str == "\"\"") str = ""
+	if (subout == "\"\"") subout = ""
+	if (gsubout == "\"\"") gsubout = ""
+}
+{		# generate a test
+	test = sprintf("echo '"'"'%s'"'"' | %s '"'\n"'", str, awk) \
+	  sprintf("{ temp = $0; sub(/%s/, \"%s\", temp)\n", pat, repl) \
+	  sprintf("  if (temp !~ /^%s$/) print \" sub %d fails:\", temp, \"should be %s\"\n",
+		subout, NR, subout) \
+	  sprintf("  gsub(/%s/, \"%s\")\n", pat, repl) \
+	  sprintf("  if ($0 !~ /^%s$/) print \"gsub %d fails:\", $0, \"should be %s\"\n}",
+		gsubout, NR, gsubout) \
+	  "'" '"'"
+	#print "test is: " test
+	system(test)
+}
+' <<\!!!
+foo	bar	foo	shit	glop
+a	x	aaa	xaa	xxx
+		axa	xxa	xxx
+		bbb	bbb	bbb
+		""	""	""
+a	xy	aaa	xyaa	xyxyxy
+		axa	xyxa	xyxxy
+		bbb	bbb	bbb
+		""	""	""
+.	x	aaa	xaa	xxx
+		axa	xxa	xxx
+		bbb	xbb	xxx
+		""	""	""
+.a	x	a	a	a
+		ax	ax	ax
+		aa	x	x
+		aaab	xab	xab
+		aaaa	xaa	xx
+		""	""	""
+#	$	~	x
+#			""
+#	.$	~	x
+#			xx
+#		!~	""
+#	a$	~	a
+#			ba
+#			bbba
+#		!~	ab
+#			x
+#			""
+#	^	~	x
+#			""
+#			^
+#	^a$	~	a
+#		!~	xa
+#			ax
+#			xax
+#			""
+#	^a.$	~	ax
+#			aa
+#		!~	xa
+#			aaa
+#			axy
+#			""
+#	^$	~	""
+#		!~	x
+#			^
+#	^.a	~	xa
+#			xaa
+#		!~	a
+#			""
+#	^.*a	~	a
+#			xa
+#			xxxxxxa
+#		!~	""
+#	^.+a	~	xa
+#			xxxxxxa
+#		!~	""
+#			a
+#			ax
+#	a*	~	""
+#			a
+#			aaaa
+#			xa
+#			xxxx
+#	aa*	~	a
+#			aaa
+#			xa
+#		!~	xxxx
+#			""
+#	\$	~	x$
+#			$
+#			$x
+#			x$x
+#		!~	""
+#			x
+#	\.	~	.
+#		!~	x
+#			""
+#	xr+y	~	xry
+#			xrry
+#			xrrrrrry
+#		!~	ry
+#			xy
+#			xr
+#	xr?y	~	xy
+#			xry
+#		!~	xrry
+#	a?b?c?	~	""
+#			x
+#	^a?b?x	~	x
+#			ax
+#			bx
+#			abx
+#			xa
+#		!~	""
+#			ab
+#			aba			
+#	[0-9]	~	1
+#			567
+#			x0y
+#		!~	abc
+#			""
+#	[^0-9]	!~	1
+#			567
+#			""
+#		~	abc
+#			x0y
+#	x[0-9]+y	~	x0y
+#			x23y
+#			x12345y
+#		!~	0y
+#			xy
+#	x[0-9]?y	~	xy
+#			x1y
+#		!~	x23y
+#	x[[]y	~	x[y
+#		!~	xy
+#			x[[]y
+#			x]y
+#	x[^[]y	~	xay
+#		!~	x[y
+#	x[-]y	~	x-y
+#		!~	xy
+#			x+y
+#	x[^-]y	~	x+y
+#		!~	x-y
+#			xy
+#	[0\-9]	~	0
+#			-
+#			9
+#		!~	1
+#			""
+#	[-1]	~	-
+#			1
+#		!~	0
+#	[0-]	~	0
+#			-
+#		!~	1
+#	[^-0]	~	x
+#			^
+#		!~	-
+#			0
+#			""
+#	[^0-]	~	x
+#			^
+#		!~	-
+#			0
+#			""
+#	x|y	~	x
+#			y
+#			xy
+#		!~	a
+#			""
+#	^x\|y$	~	x|y
+#		!~	xy

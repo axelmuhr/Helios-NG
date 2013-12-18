@@ -1,0 +1,257 @@
+head	1.2;
+access;
+symbols
+	Helios_1_3_1:1.2
+	Helios_C40_1_3_Official_Release:1.2
+	Alenia_release:1.2
+	Helios1_3:1.2
+	C40_Field_Test_2:1.2
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	90.08.23.10.32.20;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.37.41;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--     			H E L I O S   C O M M A N D S			--
+--			-----------------------------			--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- run.c								--
+--                                                                      --
+--	A proper version of the run command.				--
+--                                                                      --
+--	Author:  BLV 13/7/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* SccsId: 1.8 8/8/90 Copyright (C) 1990, Perihelion Software Ltd.	*/
+
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/run.c,v 1.1 90/08/22 16:37:41 james Exp Locker: james $";
+
+#include <stdio.h>
+#include <syslib.h>
+#include <stdlib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <string.h>
+#include <servlib.h>
+#include <signal.h>
+
+#define eq ==
+#define ne !=
+
+/**
+*** find_file() is not currently located. It searches through the command
+*** search path for the specified string.
+**/
+extern void	find_file(char *, char *);
+
+/**
+*** forward declarations.
+**/
+static void	usage(void);
+static Object	*CreateWindow(char *);
+static int	RunCommand(char **, Object *, bool);
+static void	mysignalhandler(int);
+static int	child_pid;
+
+
+/**
+*** main()
+***  1) parse the arguments.
+***    -d, do not wait for the command to terminate
+***    the default command is the shell
+***  2) create a new window relative to the current standard streams
+***  3) run the command in that window
+***  4) get rid of the window
+**/
+int main(int argc, char **argv)
+{ char		**command_args;
+  bool		wait_for_child = TRUE;
+  Object	*window;
+  int		rc;
+  static char	*default_args[] = {"shell", Null(char) };
+    
+  if (argc eq 1)
+   command_args = default_args;
+  elif (*(argv[1]) eq '-') 
+   { if (!strcmp(argv[1], "-d"))
+      { wait_for_child = FALSE;
+        if (argc > 2)
+         command_args = &(argv[2]);
+        else
+         command_args = default_args;
+      }
+     else
+      usage();
+   }
+  else
+   command_args = &(argv[1]);
+   
+  window = CreateWindow(command_args[0]);
+  if (window eq Null(Object)) return(EXIT_FAILURE);  
+  rc = RunCommand(command_args, window, wait_for_child);
+  (void) Delete(window, Null(char));
+  return(rc);
+}
+
+/**
+*** [command] is optional, since it will default to the shell.
+*** It can be followed by any number of arguments.
+**/
+static void usage(void)
+{ fprintf(stderr, "run : usage, run [-d] [command] [arguments]\n");
+  exit(EXIT_FAILURE);
+}
+
+/**
+*** Creating a new window. This is done by getting an object for the
+*** current standard input stream, to which I must have access, and
+*** creating a new stream relative to it e.g. ../shell. This should work
+*** even in a protected environment.
+**/
+static Object *CreateWindow(char *command_name)
+{ Object	*current_window;
+  Stream	*current_stream;
+  Object	*new_window;
+  char		buffer[NameMax];
+  
+  if (!isatty(0))
+   { fprintf(stderr, "run : standard streams must not be redirected.\n");
+     return(Null(Object));
+   }
+
+  current_stream = Heliosno(stdin);
+  current_window = NewObject(current_stream->Name, &(current_stream->Access));
+  if (current_window eq Null(Object))
+   { fprintf(stderr, "run : failed to get object for current window.\n");
+     return(Null(Object));
+   }
+
+  strcpy(buffer, "../");
+  strncat(buffer, objname(command_name), NameMax - 4);
+  buffer[NameMax - 1] = '\0';
+  new_window = Create(current_window, buffer, Type_Stream, 0, Null(BYTE));
+  if (new_window eq Null(Object))
+   fprintf(stderr, "run : failed to Create window %s/%s", current_window->Name,
+   		buffer);
+  Close(current_window);
+  return(new_window);
+}
+
+/**
+*** RunCommand. This gives some problems, because it works partly at the
+*** Posix level and partly at the Helios level. It must work at the
+*** Posix level in order to achieve sensible interaction with the
+*** /tasks / /tfm directory depending on the CDL flag, etc. It must
+*** work at the Helios level because of capability problems with the
+*** windows.
+***
+*** 1) Take the current window, open a Helios stream to it, and turn this
+***    into a file descriptor. This file descriptor can now be used
+***    in the environment of the child.
+*** 2) Figure out which program to execute, and make sure it exists.
+*** 3) Do the usual vfork()/dup2()/execv() rubbish to run the child.
+*** 4) Unless the -d option was given, wait for the child to
+***    terminate. Then close my stream to the window so that it can be
+***    deleted.
+*** 5) If the -d option was given do not close my stream to the window
+***    because then that window may be deleted before the child has a
+***    chance to access it.
+*** 6) Also, do the usual tricks for propagating signal handling.
+**/
+static int RunCommand(char **command_args, Object *window, bool wait_for_child)
+{ char		command_name[IOCDataMax];
+  Object	*command;
+  Stream	*window_stream = Open(window, Null(char), O_ReadWrite);
+  int		window_fildes;
+  
+  if (window_stream eq Null(Stream))
+   { fprintf(stderr, "run : failed to open window %s\n", window->Name);
+     return(EXIT_FAILURE);
+   }
+  window_fildes = sopen(window_stream);
+  if (window_fildes eq -1)
+   { fprintf(stderr, "run : failed to open stream to window %s\n", 
+   		window->Name);
+     return(EXIT_FAILURE);
+   }
+   
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+
+  command = Locate(CurrentDir, command_name);
+  if (command eq Null(Object))
+   { fprintf(stderr, "run : failed to locate command %s\n", command_args[0]);
+     return(EXIT_FAILURE);
+   }  
+  
+  child_pid = vfork();
+  if (child_pid eq 0)
+   { if ((dup2(window_fildes, 0) eq -1) ||
+         (dup2(window_fildes, 1) eq -1) ||
+         (dup2(window_fildes, 2) eq -1))
+      { fprintf(stderr, "run : failed to overwrite standard streams.\n");
+        _exit(0);
+      }
+     if (execv(command->Name, command_args) eq -1)
+      { fprintf(stderr, "run : failed to execv, errno %d\n", errno);
+        _exit(0);
+      }
+   }
+  Close(command);
+
+  if (wait_for_child)
+   { (void) signal(SIGINT, &(mysignalhandler));
+     (void) wait(Null(int));
+     Close(window_stream);
+   }
+   
+  return(EXIT_SUCCESS);
+} 
+
+static void mysignalhandler(int x)
+{ (void) kill(child_pid, SIGINT);
+  x = x;
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 1
+a18 1
+static char rcsid[] = "$Header$";
+@

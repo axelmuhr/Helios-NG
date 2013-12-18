@@ -1,0 +1,5785 @@
+head	1.23;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.18
+	Alenia_release:1.17
+	Helios1_3:1.17
+	C40_Field_Test_2:1.17
+	C40_Field_Test_R1:1.14
+	Helios13_beta:1.14
+	Helios1_2_2_Fault:1.12
+	Helios1_2_2_Native:1.11
+	Helios1_2_2_native_beta:1.10
+	Helios1_2_2:1.9
+	Helios1_2_2Beta:1.9
+	Helios1_2_1:1.6
+	Helios1_2:1.6;
+locks; strict;
+comment	@ * @;
+
+
+1.23
+date	94.03.01.12.35.03;	author nickc;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	94.02.21.17.58.40;	author nickc;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	93.12.20.13.25.26;	author nickc;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	93.08.12.14.13.33;	author nickc;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	93.08.11.10.53.54;	author bart;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	93.01.26.16.41.58;	author bart;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	92.09.23.11.24.57;	author bart;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	92.09.09.11.46.29;	author bart;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	92.07.21.11.04.51;	author bart;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	92.04.24.15.46.31;	author bart;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	92.03.25.18.03.41;	author bart;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	92.01.15.11.04.39;	author bart;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	92.01.14.15.52.33;	author bart;	state Exp;
+branches
+	1.11.1.1;
+next	1.10;
+
+1.10
+date	92.01.14.14.22.48;	author bart;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.06.03.13.31.43;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.05.18.12.09.51;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.04.07.13.20.21;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.11.25.20.09.19;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.11.01.15.04.36;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.10.18.13.24.37;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.24.18.47.14;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.14.13.49.11;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.15.14.50;	author jon;	state Exp;
+branches;
+next	;
+
+1.11.1.1
+date	92.02.04.13.02.27;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.23
+log
+@added missing parenthesis
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- tfmjobs.c								--
+--                                                                      --
+--	This module of the Taskforce Manager deals with RmLib requests.	--
+--                                                                      --
+--	Author:  BLV 4/9/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/tfmjobs.c,v 1.22 1994/02/21 17:58:40 nickc Exp nickc $*/
+
+/*{{{  header files */
+#include <stdio.h>
+#include <syslib.h>
+#include <stddef.h>
+#include <servlib.h>
+#include <sem.h>
+#include <codes.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <posix.h>
+#include <ctype.h>
+#include <nonansi.h>
+#include <attrib.h>
+#include <pwd.h>
+#include <signal.h>
+#include <module.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include "exports.h"
+#include "private.h"
+#include "netutils.h"
+#include "rmlib.h"
+#include "tfmaux.h"
+/*}}}*/
+/*{{{  statics and initialisation */
+bool	DomainLocked;
+int	Socket_stoc;
+int	Socket_ctos;
+
+void	InitJobs(void)
+{
+#ifdef SingleProcessor
+  DomainLocked = TRUE;
+#else
+  DomainLocked = FALSE;
+#endif
+
+  Socket_ctos = Socket_stoc = -1;
+}
+/*}}}*/
+/*{{{  accept new connections */
+
+/*------------------------------------------------------------------------------
+*** The main purpose of the TFM is to support requests generated
+*** by the Resource Management library. This is done via Unix-domain sockets.
+*** The TFM has a thread running continuously accepting new
+*** connections from clients, and this will start up a ConnectionGuardian thread
+*** per connection. The TFM provides a more general interface than the
+*** Execute() facilities of the System Library and Processor Manager.
+**/
+static	void	connection_guardian(TfmConn);
+
+void	AcceptConnections(void)
+{ struct sockaddr_un	address;
+  int			next_connection = 0;
+  int			len;
+  Capability		cap;
+
+  Socket_ctos	= socket(AF_UNIX, SOCK_STREAM, 0);
+  Socket_stoc	= socket(AF_UNIX, SOCK_STREAM, 0);
+  if ((Socket_ctos < 0) || (Socket_stoc < 0))
+   fatal("unable to set up sockets");
+
+  address.sun_family	= AF_UNIX;
+  address.sun_path[0]	= '.';
+  strcpy(&(address.sun_path[1]), Root.Name);
+  strcat(address.sun_path, "_ctos");
+  len = sizeof(address.sun_family) + strlen(address.sun_path) + 1;
+
+  if (bind(Socket_ctos, (struct sockaddr * ) &address, len) ne 0)
+   fatal("failed to bind socket name");
+
+  address.sun_family	= AF_UNIX;
+  address.sun_path[0]	= '.';
+  strcpy(&(address.sun_path[1]), Root.Name);
+  strcat(address.sun_path, "_stoc");
+  len = sizeof(address.sun_family) + strlen(address.sun_path) + 1;
+
+  if (bind(Socket_stoc, (struct sockaddr *) &address, sizeof(address)) ne 0)
+   fatal("failed to bind socket name");
+
+  listen(Socket_ctos, SOMAXCONN);
+  listen(Socket_stoc, SOMAXCONN);
+
+  forever
+   { TfmConn	new_conn = (TfmConn)Malloc(sizeof(TfmConnStruct));
+     if (new_conn eq (TfmConn) NULL)
+      { Delay(2 * OneSec); continue; }
+
+     InitSemaphore(&(new_conn->WriteLock), 1);
+     InitList(&(new_conn->Processors));
+     InitList(&(new_conn->Tasks));
+     InitList(&(new_conn->Taskforces));
+     new_conn->FullAccess	= FALSE;
+     new_conn->Id		= next_connection++;
+
+     while ((new_conn->Socket_ctos = accept(Socket_ctos, NULL, NULL)) < 0)
+      Delay(5 * OneSec);
+
+	/* Pray that the client has not crashed in between...	*/
+     new_conn->Socket_stoc = accept(Socket_stoc, NULL, NULL);
+
+	/* Perform some initial communication to ensure that things	*/
+	/* are working.							*/
+     if (read(new_conn->Socket_ctos, (BYTE *) &cap, sizeof(Capability))
+		ne sizeof(Capability))
+      goto fail;
+
+     unless(GetAccess(&cap, TFM.Key) && (cap.Access & AccMask_D))
+      goto fail;
+     new_conn->FullAccess	= TRUE;
+
+     if (read(new_conn->Socket_ctos, (BYTE *) &(new_conn->Program), sizeof(int)) ne sizeof(int))
+     goto fail;
+
+	/* See abort_socket() in tfm.c					*/
+     if (new_conn->Program eq -1)
+      { 	/* Shut down the Helios domain sockets			*/
+        close(Socket_ctos);
+        close(Socket_stoc);
+	(void) write(new_conn->Socket_stoc, (BYTE *) &len, sizeof(int));
+	return;
+      }
+
+     len = 0;
+     if (write(new_conn->Socket_stoc, (BYTE *) &len, sizeof(int)) ne sizeof(int))
+      goto fail;
+
+	/* System library calls are currently preferred, because	*/
+	/* timeouts are necessary for fault tolerance.			*/
+     new_conn->Pipe_ctos = fdstream(new_conn->Socket_ctos);
+     new_conn->Pipe_stoc = fdstream(new_conn->Socket_stoc);
+
+	/* Spawn a connection guardian and accept the next connection	*/
+     if (Fork(ConnectionGuardian_Stack, &connection_guardian, sizeof(TfmConn), new_conn))
+      continue;
+
+fail:
+     close(new_conn->Socket_ctos);
+     close(new_conn->Socket_stoc);
+     Free(new_conn);
+   }  
+}
+
+/*}}}*/
+/*{{{  the ConnectionGuardian(), one per client */
+
+/**
+*** The ConnectionGuardian process. Essentially this is just another
+*** dispatcher. It reads an integer JobId from the pipe, followed by
+*** an RmRequest structure which may incorporate a network, taskforce,
+*** processor, task, and variable data vector. The TfmConnection structure,
+*** JobId, RmRequest structure, and a suitable RmReply structure are
+*** passed on to the worker routines. For convenience the RmReply
+*** is held on the stack of the Connection Guardian.
+**/
+static void HandleGetNetwork		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleProcessorAllocation	( TfmConn, int, RmRequest *, RmReply *);
+static void HandleLastChange		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleIsProcessorFree	( TfmConn, int, RmRequest *, RmReply *);
+static void HandleGetId			( TfmConn, int, RmRequest *, RmReply *);
+#if !(defined(SingleProcessor)) && Native_Supported
+static void HandleNativeStuff		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleConnectionStuff	( TfmConn, int, RmRequest *, RmReply *);
+#endif
+#if !(defined(SingleProcessor))
+static void HandleLocking		( TfmConn, int, RmRequest *, RmReply *);
+#endif
+static void HandleGetTaskforce		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleGetTask		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleExecute		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleUpdate		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleWait			( TfmConn, int, RmRequest *, RmReply *);
+static void HandleSendSignal		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleLeave			( TfmConn, int, RmRequest *, RmReply *);
+
+typedef struct TfmRequestTableEntry {
+	int			FnCode;
+	bool			Synchronous;
+	TfmRequestHandler	*handler;
+} TfmRequestTableEntry;
+
+TfmRequestTableEntry request_handlers[] =  
+{
+ { RmC_GetNetwork,	 	TRUE,	&HandleGetNetwork		},
+ { RmC_ProcessorPermanent,	TRUE,	&HandleProcessorAllocation	},
+ { RmC_ProcessorTemporary,	TRUE,	&HandleProcessorAllocation	},
+ { RmC_ProcessorExclusive,	TRUE,	&HandleProcessorAllocation	},
+ { RmC_ProcessorShareable,	TRUE,	&HandleProcessorAllocation	}, 
+ { RmC_ProcessorBooked,		TRUE,	&HandleProcessorAllocation	},
+ { RmC_ProcessorCancelled,	TRUE,	&HandleProcessorAllocation	},
+ { RmC_LastChange,		TRUE,	&HandleLastChange		},
+ { RmC_ObtainProcessor,		TRUE,	&HandleObtainProcessor		},
+ { RmC_ReleaseProcessor,	TRUE,	&HandleReleaseProcessor		},
+ { RmC_ObtainExactNetwork,	TRUE,	&HandleObtainNetwork		},
+ { RmC_ObtainNetwork,		TRUE,	&HandleObtainNetwork		},
+ { RmC_ReleaseNetwork,		TRUE,	&HandleReleaseNetwork		},
+#ifndef SingleProcessor
+ { RmC_Lock,			TRUE,	&HandleLocking			},
+ { RmC_Unlock,			TRUE,	&HandleLocking			},
+#endif
+ { RmC_IsProcessorFree,		TRUE,	&HandleIsProcessorFree		},
+ { RmC_ObtainProcessors,	TRUE,	&HandleObtainProcessors		},
+ { RmC_ObtainExactProcessors,	TRUE,	&HandleObtainProcessors		},
+#if !(defined(SingleProcessor)) && Native_Supported
+ { RmC_Reboot,			TRUE,	&HandleNativeStuff		},
+ { RmC_ResetProcessors,		TRUE,	&HandleNativeStuff		},
+ { RmC_SetNative,		TRUE,	&HandleNativeStuff		},
+ { RmC_Revert,			TRUE,	&HandleConnectionStuff		},
+ { RmC_MakeConnections,		TRUE,	&HandleConnectionStuff		},
+#endif
+ { RmC_GetId,			TRUE,	&HandleGetId			},
+ { RmC_ReportProcessor,		TRUE,	&HandleReportProcessor		},
+ { RmC_GetTaskforce,		TRUE,	&HandleGetTaskforce		},
+ { RmC_GetTask,			TRUE,	&HandleGetTask			},
+ { RmC_Execute,			TRUE,	&HandleExecute			},
+ { RmC_Update,			TRUE,	&HandleUpdate			},
+ { RmC_SendSignal,		TRUE,	&HandleSendSignal		}, 
+ { RmC_Leave,			TRUE,	&HandleLeave			},
+ { RmC_Wait,			FALSE,	&HandleWait			},
+ { -1, TRUE, NULL }
+};
+
+static word kill_task(Node *node);
+static word kill_taskforce(Node *node);
+static void guardian_aux(TfmConn, int job_id, int i, RmRequest *, RmReply *);
+
+static void connection_guardian(TfmConn connection)
+{ int		JobId;
+  RmRequest	*request = NULL;
+  RmReply	*reply	 = NULL;
+  int		timeouts = 0;
+  Stream	*pipe	 = connection->Pipe_ctos;  
+  bool		broken	 = FALSE;
+
+  while (!broken)
+   { word rc;
+     int i;
+
+     while (request eq NULL)
+      if ((request = New(RmRequest)) eq NULL)
+	Delay(OneSec);
+     while (reply eq NULL)
+      if ((reply = New(RmReply)) eq NULL)
+	Delay(OneSec);
+
+     memset(request, 0, sizeof(RmRequest));
+     memset(reply, 0, sizeof(RmReply));
+
+     rc = Read(pipe, (BYTE *) &JobId, sizeof(int), -1);
+     if (rc <= 0)
+      { if (rc eq 0)
+         { timeouts++;
+           if (timeouts < 5) continue;
+         }
+        if ((Result2(pipe) & EG_Mask) eq EG_Timeout) 
+         continue;
+	else
+ 	 break;
+      }
+
+     timeouts = 0;
+     if ((JobId & RmR_Private) ne 0)
+      { if ((JobId & ~RmR_Private) eq RmR_Synch) continue;
+        IOdebug("tfm : private protocol received down pipe");
+        continue;
+      }
+
+     rc = FullRead(pipe, (BYTE *) request, sizeof(RmRequest), -1);
+     if (rc < (int) sizeof(RmRequest)) break;
+
+     if ((request->Network ne (RmNetwork) NULL) ||
+         (request->Taskforce ne (RmTaskforce) NULL))
+      if ((rc = RmReadStream(pipe, &(request->Network), &(request->Taskforce)))
+          ne RmE_Success)
+       break;
+
+     if (request->Processor ne (RmProcessor) NULL)
+      if ((rc = RmReadProcessor(pipe, &(request->Processor), FALSE))
+          ne RmE_Success)
+       break;
+
+     if (request->Task ne (RmTask) NULL)
+      if ((rc = RmReadTask(pipe, &(request->Task), FALSE))
+          ne RmE_Success)
+       break;
+
+     if (request->VariableSize > 0)
+      { request->VariableData = (char *)Malloc(request->VariableSize);
+        if (request->VariableData eq NULL)
+         break;
+        if (FullRead(pipe, request->VariableData, request->VariableSize, -1) < 0)
+	 break;
+      }
+
+     if (DebugOptions & dbg_Comms)
+      report("request %x, jobid %x, Network %N,\n          Taskforce %T, Processor %P, Task %T, size %d",
+		request->FnRc, JobId, request->Network, request->Taskforce, 
+		request->Processor, request->Task,
+		request->VariableSize);
+      	
+     MRSW_GetRead();
+
+     for (i = 0; request_handlers[i].handler ne NULL; i++)
+      if (request->FnRc eq request_handlers[i].FnCode)
+       break;
+     if (request_handlers[i].handler ne NULL)
+      { if (request_handlers[i].Synchronous)
+         (*request_handlers[i].handler)(connection, JobId, request, reply);
+	else
+	 { until(Fork(GuardianAux_Stack, &guardian_aux, 20, connection, JobId, i, request, reply))
+		Delay(OneSec);
+	   request = NULL; reply = NULL;
+	 }
+      }
+     else
+      { report("unexpected request %x", request->FnRc);
+	broken = TRUE;
+      }
+
+     MRSW_FreeRead();
+
+     if (request ne NULL)
+      { if (request->Network ne (RmNetwork) NULL) RmFreeNetwork(request->Network);
+        if (request->Taskforce ne (RmTaskforce) NULL) RmFreeTaskforce(request->Taskforce);
+        if (request->Processor ne (RmProcessor) NULL) RmFreeProcessor(request->Processor);
+        if (request->Task ne (RmTask) NULL) RmFreeTask(request->Task);
+        if (request->VariableData ne NULL) Free(request->VariableData);
+      }
+   }
+
+	/* Recovery code for communication failures, rather primitive	*/
+	/* at present.							*/
+  close(connection->Socket_ctos);
+  close(connection->Socket_stoc);
+  MRSW_GetWrite();
+  (void) WalkList(&(connection->Processors), &AutomaticRelease);
+  (void) WalkList(&(connection->Tasks), &kill_task);
+  (void) WalkList(&(connection->Taskforces), &kill_taskforce);
+  MRSW_FreeWrite();
+  if (request ne NULL) Free(request);
+  if (reply ne NULL) Free(reply);
+  Free(connection);
+}
+
+/**
+*** For some requests, particularly ones which can involve blocking such as
+*** waiting for task or taskforce termination, the request has to be
+*** handled in a separate thread from the ConnectionGuardian to avoid
+*** blocking the application. This auxiliary routine performs the necessary.
+**/
+static void guardian_aux(TfmConn connection, int job_id, int i, RmRequest *request, RmReply *reply)
+{
+  MRSW_GetRead();
+  (*request_handlers[i].handler)(connection, job_id, request, reply);
+  MRSW_FreeRead();
+
+  if (request->Network ne (RmNetwork) NULL) RmFreeNetwork(request->Network);
+  if (request->Taskforce ne (RmTaskforce) NULL) RmFreeTaskforce(request->Taskforce);
+  if (request->Processor ne (RmProcessor) NULL) RmFreeProcessor(request->Processor);
+  if (request->Task ne (RmTask) NULL) RmFreeTask(request->Task);
+  if (request->VariableData ne NULL) Free(request->VariableData);
+  Free(request); Free(reply);
+}
+
+/*}}}*/
+/*{{{  ReplyRmLib() */
+int ReplyRmLib(TfmConn connection, int JobId, RmReply *reply)
+{ int		rc = RmE_CommsBreakdown;
+  Stream	*pipe;
+
+  if (DebugOptions & dbg_Comms)
+   report("reply %x, jobid %x, Network %N,\n          Taskforce %T, Processor %P, Task %T, size %d",
+	reply->FnRc, JobId, reply->Network, reply->Taskforce,
+	reply->Processor, reply->Task, reply->VariableSize);
+
+  Wait(&(connection->WriteLock));
+  pipe = connection->Pipe_stoc;
+
+  if (Write(pipe, (BYTE *) &JobId, sizeof(int), -1) ne sizeof(int))
+   goto fail;
+
+  if (Write(pipe, (BYTE *) reply, sizeof(RmReply), -1) ne sizeof(RmReply))
+   goto fail;
+
+  if ((reply->Network ne (RmNetwork) NULL) ||
+      (reply->Taskforce ne (RmTaskforce) NULL))
+   if ((rc = RmWriteStream(pipe, reply->Network, reply->Taskforce, reply->Filter))
+       ne RmE_Success)
+    goto fail;
+
+  if (reply->Processor ne (RmProcessor) NULL)
+   if ((rc = RmWriteProcessor(pipe, reply->Processor, reply->Filter))
+       ne RmE_Success)
+    goto fail;
+
+  if (reply->Task ne (RmTask) NULL)
+   if ((rc = RmWriteTask(pipe, reply->Task, reply->Filter))
+       ne RmE_Success)
+    goto fail;
+
+  if (reply->VariableSize > 0)
+   if (Write(pipe, reply->VariableData, reply->VariableSize, -1)
+       ne reply->VariableSize)
+    { rc = RmE_CommsBreakdown; goto fail; }
+
+  Signal(&(connection->WriteLock));
+  return(RmE_Success);
+
+fail:
+#ifdef SYSDEB
+  IOdebug("TfmJobs, ReplyRmLib: failed to send reply down pipe %s",
+		pipe->Name);
+#endif
+  Signal(&(connection->WriteLock));
+  return(rc);
+}
+/*}}}*/
+/*{{{  CreateDup2() */
+/**
+*** This horrible piece of code is used to cause the client to open a
+*** particular posix file descriptor. It is assumed that the client
+*** side has used the KeepLocked flag to ensure that no other requests
+*** can come in, and that the request is being handled synchronously.
+**/
+bool CreateDup2(TfmConn connection, int fd, Stream *stream)
+{ Dup2Details	details;
+  word		temp;
+
+  details.FileDescriptor	= fd;
+  DecodeCapability(details.Name, &(stream->Access));
+  strcat(details.Name, stream->Name);
+
+  Wait(&connection->WriteLock);
+  temp	= RmR_Private | RmR_Dup2;
+  Write(connection->Pipe_stoc, (BYTE *) &temp, sizeof(word), -1);
+  Write(connection->Pipe_stoc, (BYTE *) &details, sizeof(Dup2Details), -1);
+  Signal(&connection->WriteLock);
+  Read(connection->Pipe_ctos, (BYTE *) &temp, sizeof(word), -1);
+  return(temp);
+}
+/*}}}*/
+/*{{{  clean up connections */
+/**
+*** When a top-level task or taskforce has terminated and the owning client has
+*** been informed about this termination, the task or taskforce is automatically
+*** detached from the connection. This is vaguely analogous to Unix where a
+*** process can go away only when its parent has done a wait(). This code
+*** is also used to detach a task or taskforce from a connection.
+***
+*** If the UseCount drops to zero as a result of detaching this task or
+*** taskforce then the thingy is guaranteed to have terminated and to
+*** have no outstanding clients. Hence it can be destroyed.
+**/
+static void remove_from_connection(RmTask task, TfmConn connection)
+{ TaskEntry	*task_entry;
+
+  if (RmIsTaskforce(task))
+   task_entry = (TaskEntry *) RmGetTaskforcePrivate((RmTaskforce) task);
+  else
+   task_entry = GetTaskEntry(task);
+
+  if (task_entry->Connection eq connection)
+   { Remove(&(task_entry->ConnectionNode));
+     task_entry->Connection = NULL;
+     task_entry->UseCount--;
+     if (task_entry->UseCount eq 0)
+      { if (RmIsTaskforce(task))
+         taskforce_Destroy((RmTaskforce) task);
+        else
+	 task_Destroy(task);
+      }
+   }
+}
+
+/**
+*** When a connection with a client is broken it is necessary to reclaim
+*** any resources associated with that client. This includes owned processors,
+*** see AutomaticRelease() in tfmmap.c, and running tasks and taskforces.
+*** The task or taskforce is detached from the connection, then destroyed
+*** if no longer running, else exterminated.
+**/
+static word kill_task(Node *node)
+{ TaskEntry	*task_entry;
+  RmTask	task;
+
+  task_entry	= (TaskEntry *) (((BYTE *)node) - offsetof(TaskEntry,ConnectionNode));
+  task		= task_entry->Task;
+  Remove(&(task_entry->ConnectionNode));
+  task_entry->Connection = NULL;
+  task_entry->UseCount--;
+  if (task_entry->UseCount eq 0)
+   task_Destroy(task);
+  else
+   task_Exterminate(task);
+  return(0);  
+}
+
+static word kill_taskforce(Node *node)
+{ TaskEntry	*task_entry;
+  RmTaskforce	 taskforce;
+
+  task_entry	= (TaskEntry *) (((BYTE *)node) - offsetof(TaskEntry, ConnectionNode));
+  taskforce	= (RmTaskforce) task_entry->Task;
+
+  Remove(&(task_entry->ConnectionNode));
+  task_entry->Connection = NULL;
+  task_entry->UseCount--;
+  if (task_entry->UseCount eq 0)
+   taskforce_Destroy(taskforce);
+  else
+   taskforce_DoSignal(taskforce, SIGKILL);
+  return(0);
+}
+/*}}}*/
+/*{{{  getting network details */
+/**----------------------------------------------------------------------------
+*** HandleGetNetwork(). This is used to obtain full details of the current
+*** domain.
+**/
+static int  GetNetwork_NetworkFilter(RmNetwork, RmNetwork);
+static int  GetNetwork_ProcessorFilter(RmProcessor, RmProcessor);
+
+static void HandleGetNetwork(TfmConn Connection, int JobId,
+				RmRequest *request, RmReply *reply)
+{ RmFilterStruct	filter;
+
+  filter.SendHardware	= FALSE;
+  filter.Network	= &GetNetwork_NetworkFilter;
+  filter.Processor	= &GetNetwork_ProcessorFilter;
+  filter.Taskforce	= NULL;
+  filter.Task		= NULL;
+  reply->FnRc		= RmE_Success;
+  reply->Network	= Domain;
+  reply->Filter		= &filter;
+
+  (void) ReplyRmLib(Connection, JobId, reply);
+  request = request;
+}
+
+static int GetNetwork_NetworkFilter(RmNetwork real, RmNetwork copy)
+{
+  copy->DirNode.Key	= 0;
+  copy->StructType	= RmL_Existing;
+  if (real eq RmRootNetwork((RmProcessor) real))
+   strcpy(copy->DirNode.Name, NetworkName);
+  return(RmE_Success);
+}
+
+static int GetNetwork_ProcessorFilter(RmProcessor real, RmProcessor copy)
+{
+  copy->ObjNode.Key	= 0;
+  copy->StructType	= RmL_Existing;
+  memset(&(copy->NsCap), 0, sizeof(Capability));
+  memcpy(&(copy->RealCap), &(copy->ReadOnlyCap), sizeof(Capability));
+  copy->Private		= 0;
+  real = real;
+  return(RmE_Success);
+}
+/*}}}*/
+/*{{{  processor allocation options */
+/**----------------------------------------------------------------------------
+*** Cope with requests to change the processor allocation strategy for a
+*** particular processor.
+**/
+static void HandleProcessorAllocation(TfmConn Connection, int JobId, 
+		RmRequest *request, RmReply *reply)
+{ RmProcessor		Processor; 
+  int			rc;
+
+  Processor = RmFindProcessor(Domain, request->Uid);
+  if ((Processor eq RmM_NoProcessor) || (Processor eq RmM_ExternalProcessor))
+   { rc = RmE_NotFound; goto done; }
+   
+  unless(GetAccess(&(request->Cap), Processor->ObjNode.Key) &&
+  	 (request->Cap.Access & AccMask_D))
+   { rc = RmE_NoAccess; goto done; }
+   
+  switch(request->FnRc)
+   { case RmC_ProcessorPermanent :
+   		Processor->AllocationFlags |= RmF_Permanent;  break;
+     case RmC_ProcessorTemporary :
+		Processor->AllocationFlags &= ~RmF_Permanent; break;
+     case RmC_ProcessorExclusive :
+		{ DomainEntry *domain_entry = GetDomainEntry(Processor);
+		  if (domain_entry->NumberUsers > 1)
+		   { rc = RmE_InUse; goto done; }
+		}
+     		Processor->AllocationFlags	|= RmF_Exclusive;
+		Processor->ApplicationId	 = Connection->Id;
+		break;
+     case RmC_ProcessorShareable :
+     		if (Processor->Purpose eq RmP_Native)
+     		 { rc = RmE_BadProcessor; goto done; }
+     		Processor->AllocationFlags	&= ~RmF_Exclusive;
+		Processor->ApplicationId	 = -1;
+		break;
+     case RmC_ProcessorBooked	 :
+     		Processor->AllocationFlags |= RmF_Booked; break;
+     case RmC_ProcessorCancelled :
+     		Processor->AllocationFlags &= ~RmF_Booked; break;
+   }
+  rc = RmE_Success;
+
+done:
+  reply->FnRc = rc;
+  (void) ReplyRmLib(Connection, JobId, reply);
+}
+/*}}}*/
+/*{{{  time stamp for the last change */
+
+/**----------------------------------------------------------------------------
+*** Handle last change. A very simple routine to send back a single integer
+**/
+static void HandleLastChange(TfmConn Connection, int JobId, 
+		RmRequest *request, RmReply *reply)
+{ 
+  reply->FnRc	= (int) RmE_Success;
+  reply->Reply1	= (int) LastChange;
+  (void) ReplyRmLib(Connection, JobId, reply);
+  request = request;
+}
+
+/*}}}*/
+/*{{{  locking the current domain */
+/**----------------------------------------------------------------------------
+*** Locking, this is fairly easy. It is not supported in single-processor
+*** systems to ensure that the domain is always locked and the TFM never
+*** tries to access the Network Server.
+**/
+#ifndef SingleProcessor
+static	void HandleLocking(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{ 
+  if (request->FnRc eq RmC_Lock)
+   DomainLocked = TRUE;
+  else
+   DomainLocked = FALSE;
+
+  reply->FnRc = RmE_Success;   
+  ReplyRmLib(Connection, JobId, reply);
+}
+#endif
+/*}}}*/
+/*{{{  session and application ids */
+/**----------------------------------------------------------------------------
+*** Getting the Session or Application Id. 
+**/
+static void HandleGetId(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{
+#ifndef SingleProcessor
+  if (request->Arg1 > 0)
+   reply->Reply1 = RmGetApplication();
+  else
+#endif
+   reply->Reply1 = Connection->Id;
+  reply->FnRc = RmE_Success;
+  ReplyRmLib(Connection, JobId, reply);
+}
+/*}}}*/
+/*{{{  is processor free ? */
+/**-----------------------------------------------------------------------------
+*** HandleIsProcessorFree(). This can be called with any existing processor,
+*** without special authorisation, to get a snap shot of the processor's
+*** availability. If the processor is currently in the user's domain then
+*** exclusive access etc must be checked. Otherwise the Network Server
+*** must be interrogated.
+**/
+static	void HandleIsProcessorFree(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{ RmProcessor		processor;
+  int			rc, i;
+  DomainEntry		*domain_entry;
+    
+  processor = RmFindProcessor(Domain, request->Uid);
+  if (processor eq RmM_NoProcessor)	/* not in current domain */
+   { processor = RmNewProcessor();
+     if (processor eq (RmProcessor) NULL)
+      { rc = RmE_ServerMemory; goto done; }
+     processor->StructType = RmL_Existing;
+     processor->Uid	   = request->Uid;
+     if (RmIsProcessorFree(processor))
+      rc = RmE_Success;
+     else
+      rc = RmE_InUse;
+     RmFreeProcessor(processor);
+     goto done;
+   }
+
+  domain_entry = GetDomainEntry(processor);
+  if (domain_entry->NumberUsers >= MaxUsersPerProcessor)
+   { rc = RmE_InUse; goto done; }
+
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Connection eq Connection)
+    { rc = RmE_InUse; goto done; }
+
+  if (processor->AllocationFlags & RmF_Exclusive)
+   if (domain_entry->NumberUsers > 0)
+    { rc = RmE_InUse; goto done; }
+   
+  rc = RmE_Success;
+
+done:
+  reply->FnRc	= rc;
+  ReplyRmLib(Connection, JobId, reply);
+}
+/*}}}*/
+#if !(defined(SingleProcessor)) && Native_Supported
+/*{{{  set-native, reboot, reset */
+/**-----------------------------------------------------------------------------
+*** Native network support: set-native, reboot, and reset. 
+***
+*** The request contains a count of the number of processors affected,
+*** and a table of processor details. The access matrices must
+*** be verified. Then the operation must be verified: to set processors
+*** to native the application must have exclusive access; to reset or
+*** reboot processors the processors must currently be native. After
+*** the validation the job is passed on to the Network Server, changing
+*** the capabilities of course. The Network Server attempts to do the
+*** necessary, and if successful or partially successful it will send
+*** back a table of ProcessorUpdate's which must be used to update the
+*** domain and then sent back to the application.
+**/
+
+static	void	HandleNativeStuff(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{ ProcessorDetails	*details = Null(ProcessorDetails);
+  ProcessorUpdate	*updates = Null(ProcessorUpdate); 
+  RmProcessor		processor;
+  int			rc, i;
+  int			count;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  count		= request->Arg1;
+  details	= (ProcessorDetails *) request->VariableData;
+
+  updates = Malloc(count * sizeof(ProcessorUpdate));
+  if (updates eq Null(ProcessorUpdate))
+   { rc = RmE_ServerMemory; goto done; }
+
+  for (i = 0; i < count; i++)
+   { if (details[i].Uid eq RmL_NoUid) continue;
+     processor = RmFindProcessor(Domain, details[i].Uid);
+     if (processor eq (RmProcessor) NULL)
+      { rc = RmE_BadProcessor; goto done; }
+     unless(GetAccess(&(details[i].Cap), processor->ObjNode.Key) &&
+     		(details[i].Cap.Access & AccMask_D))
+      { rc = RmE_NoAccess; goto done; }
+
+	/* Update the capability for the Network Server */
+     details[i].Cap	= processor->NsCap;
+     
+     if (request->FnRc eq RmC_SetNative)
+      { unless(processor->AllocationFlags & RmF_Exclusive)
+         { rc = RmE_NoAccess; goto done; }
+      }
+     else
+      { unless(RmGetProcessorPurpose(processor) eq RmP_Native)
+         { rc = RmE_BadProcessor; goto done; }
+      }
+   }     		           
+
+		/* Now send the request off to the Network server */
+		/* This is mostly copied from rmlib3.c		  */
+  { RmRequest	out_request;
+    RmReply	out_reply;
+
+    Clear(out_request); Clear(out_reply);
+    out_request.FnRc		= request->FnRc;
+    out_request.Arg1		= count;
+    out_request.VariableData	= (BYTE *) details;
+    out_request.VariableSize	= count * sizeof(ProcessorDetails);
+    out_reply.VariableData	= (BYTE *) updates;
+
+    rc = RmXch(&RmParent, &out_request, &out_reply);
+    if (rc eq RmE_CommsBreakdown) rc = RmE_MissingServer;
+   }
+         
+done:
+  if ((rc eq RmE_Success) || (rc eq RmE_PartialSuccess))
+   for (i = 0; i < count; i++)
+    { if (updates[i].Uid eq RmL_NoUid) continue;
+      processor = RmFindProcessor(Domain, updates[i].Uid);
+      if (processor eq (RmProcessor) NULL) continue;
+      processor->ObjNode.Size = updates[i].State & ~RmS_Reset;
+      processor->Purpose = updates[i].Purpose;
+    }
+
+  reply->FnRc		= rc;
+  reply->VariableData	= (BYTE *) updates;
+  if ((rc eq RmE_Success) || (rc eq RmE_PartialSuccess))
+   reply->VariableSize	= count * sizeof(ProcessorUpdate);
+
+  MRSW_FreeWrite();
+  MRSW_GetRead();
+
+  ReplyRmLib(Connection, JobId, reply);
+  if (updates ne Null(ProcessorUpdate)) Free(updates);
+}
+/*}}}*/
+/*{{{  reconfiguring links */
+/**-----------------------------------------------------------------------------
+*** Reconfiguration support
+***
+*** This refers to Revert and MakeConnections. Either way the data
+*** consists of a table of three integers - count, exact, and preserve -
+*** followed by a table of LinkConnections. The processors have to be
+*** verified, and then the request is passed on to the Network Server.
+*** If the Network Server succeeds then it will return a new table of
+*** LinkConnections which must be used to update the domain and then
+*** passed back to the application.
+**/
+static	void	HandleConnectionStuff(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{ LinkConnection	*conns;
+  int			count;
+  RmProcessor		processor;
+  int			rc, i;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  count = request->Arg1;
+  conns	= (LinkConnection *) request->VariableData;
+
+  for (i = 0; i < count; i++)
+   { processor = RmFindProcessor(Domain, conns[i].SourceUid);
+     if (processor eq (RmProcessor) NULL)
+      { rc = RmE_BadProcessor; goto done; }
+
+     unless(GetAccess(&(conns[i].SourceCap), processor->ObjNode.Key) &&
+            (conns[i].SourceCap.Access & AccMask_D))
+      { rc = RmE_NoAccess; goto done; }
+
+     conns[i].SourceCap = processor->NsCap;
+     unless((conns[i].SourceLink >= 0) &&
+            (conns[i].SourceLink < RmCountLinks(processor)))
+      { rc = RmE_BadLink; goto done; }
+      
+     if ((conns[i].DestUid ne RmL_NoUid) &&
+         (conns[i].DestUid ne RmL_ExtUid) &&
+         (conns[i].DestCap.Access ne 0) &&
+         (request->FnRc ne RmC_Revert))
+      { processor = RmFindProcessor(Domain, conns[i].DestUid);
+        if (processor eq (RmProcessor) NULL)
+         { rc = RmE_BadProcessor; goto done; }
+         
+        unless(GetAccess(&(conns[i].DestCap), processor->ObjNode.Key) &&
+               (conns[i].DestCap.Access & AccMask_D))
+         { rc = RmE_NoAccess; goto done; }
+        conns[i].DestCap = processor->NsCap;
+        unless((conns[i].DestLink >= 0) &&
+               (conns[i].DestLink < RmCountLinks(processor)))
+         { rc = RmE_BadLink; goto done; }
+      }
+   }
+		/* Now send the request off to the Network server */
+		/* This is mostly copied from rmlib3.c		  */
+  { RmRequest	out_request;
+    RmReply	out_reply;    
+
+    Clear(out_request); Clear(out_reply);
+    out_request.FnRc		= request->FnRc;
+    out_request.Arg1		= request->Arg1;	/* count	*/
+    out_request.Arg2		= request->Arg2;	/* exact	*/
+    out_request.Arg3		= request->Arg3;	/* preserve	*/
+    out_request.VariableData	= (BYTE *) conns;
+    out_request.VariableSize	= count * sizeof(LinkConnection);
+    out_reply.VariableData	= (BYTE *) conns;
+
+    rc = RmXch(&RmParent, &out_request, &out_reply);
+   }
+
+done:
+  if ((rc eq RmE_Success) || (rc eq RmE_PartialSuccess))
+   for (i = 0; i < count; i++)
+    { RmProcessor source = RmFindProcessor(Domain, conns[i].SourceUid);
+      RmLink	 *link;
+     
+      if (source eq (RmProcessor) NULL) continue;
+      link = RmFindLink(source, conns[i].SourceLink);
+
+	/* update the old neighbour, if any */
+      { RmProcessor neighbour;
+        int	    destlink;
+        neighbour = RmFollowLink(source, conns[i].SourceLink, &destlink);
+        if ((neighbour ne RmM_NoProcessor) && (neighbour ne RmM_ExternalProcessor))
+         { RmLink *link = RmFindLink(neighbour, destlink);
+           if ((link->Target eq source->Uid) &&
+               (link->Destination eq conns[i].SourceLink))
+            { link->Destination = -1;
+              link->Target      = RmL_NoUid;
+            }
+         }
+      }
+
+	/* update this processor */      
+      link->Destination	= conns[i].DestLink;
+      link->Target	= conns[i].DestUid;
+      
+     	/* update the new neighbour, if any */
+      if ((conns[i].DestUid ne RmL_NoUid) &&
+          (conns[i].DestUid ne RmL_ExtUid))
+       { source = RmFindProcessor(Domain, conns[i].DestUid);
+         if (source eq (RmProcessor) NULL) continue;
+         link = RmFindLink(source, conns[i].DestLink);
+         link->Destination = conns[i].SourceLink;
+         link->Target      = conns[i].SourceUid;
+       }
+    }
+
+/*PrintNetwork(Domain);   */
+
+  MRSW_FreeWrite();
+  MRSW_GetRead();
+
+  reply->FnRc		= rc;
+  if ((rc eq RmE_Success) || (rc eq RmE_PartialSuccess))
+   { reply->VariableData = (BYTE *) conns;
+     reply->VariableSize = count * sizeof(LinkConnection);
+   }
+  ReplyRmLib(Connection, JobId, reply);
+}
+/*}}}*/
+#endif	/* SingleProcessor */
+/*{{{  get details of current task/taskforce */
+/**----------------------------------------------------------------------------
+*** Support for examining tasks and taskforces
+**/
+static void HandleGetTaskforce(TfmConn connection, int job_id,
+			RmRequest *request, RmReply *reply)
+{ RmTaskforce		taskforce;
+
+
+	/* Search the /tfm subdirectory for the specified taskforce	*/
+  taskforce = (RmTaskforce) Lookup(&TFM, request->VariableData, TRUE);
+  if (taskforce eq (RmTaskforce) NULL)
+   reply->FnRc  = RmE_NotTaskforce;
+  elif (taskforce->DirNode.Type ne Type_Taskforce)
+   reply->FnRc = RmE_NotTaskforce;
+  else
+   { reply->FnRc	= RmE_Success;
+     reply->Taskforce	= taskforce;
+   }
+  ReplyRmLib(connection, job_id, reply);
+}
+
+static void HandleGetTask(TfmConn connection, int job_id,
+			RmRequest *request, RmReply *reply)
+{ RmTask	task;
+
+	/* Search the /tfm subdirectory for the specified task	*/
+  task = (RmTask) Lookup(&TFM, request->VariableData, TRUE);
+  if (task eq (RmTask) NULL)
+   reply->FnRc  = RmE_NotTask;
+  elif (task->ObjNode.Type ne Type_Task)
+   reply->FnRc = RmE_NotTask;
+  else
+   { reply->FnRc = RmE_Success;
+     reply->Task = task;
+   }
+  ReplyRmLib(connection, job_id, reply);
+}
+/*}}}*/
+
+/*{{{  execute a task or taskforce */
+
+/*{{{  ExtractEnv() */
+
+/**
+*** Extracting an environment given a data vector containing the required
+*** information. The first part of the data vector is four sets of tables,
+*** representing offsets for argv, envv, objv, and strv. For argv and
+*** envv these can be converted into pointers and included directly in
+*** the main environment structure. The strv and objv vectors are
+*** slightly trickier, and require converting the descriptor info to
+*** real objects and streams.
+**/
+static bool ExtractEnv(Environ *env, BYTE *datavec)
+{ int	*cvec = (int *) datavec;
+
+	/* determine the starting points for the various bits,	*/
+	/* including the actual data.				*/
+  env->Argv = (char **) cvec;
+  while (*cvec ne -1) cvec++;
+  cvec++;
+  env->Envv = (char **) cvec;
+  while (*cvec ne -1) cvec++;
+  cvec++;
+  env->Objv = (Object **) cvec;
+  while (*cvec ne -1) cvec++;
+  cvec++;
+  env->Strv = (Stream **) cvec;
+  while (*cvec ne -1) cvec++;
+  cvec++;
+  datavec = (BYTE *) cvec;
+
+  for (cvec = (int *) env->Argv; *cvec ne -1; cvec++)
+   *cvec = (int) &(datavec[*cvec]);
+  *cvec = NULL;
+
+  for (cvec = (int *) env->Envv; *cvec ne -1; cvec++)
+   *cvec = (int) &(datavec[*cvec]);
+  *cvec = NULL;
+
+  for (cvec = (int *) env->Objv; *cvec ne -1; cvec++)
+   if (*cvec ne MinInt)
+    { ObjDesc *o = (ObjDesc *) &(datavec[*cvec]);
+      *cvec = (int) NewObject(o->Name, &(o->Cap));
+      if (*cvec eq NULL) goto fail;
+    }
+  *cvec = NULL;
+
+  for (cvec = (int *) env->Strv; *cvec ne -1; cvec++)
+   if (*cvec ne MinInt)
+    { if ((*cvec & 0xFFFF0000) eq 0xFFFF0000)
+       { int ix = *cvec & 0x0000FFFF;
+         *cvec = (int) (env->Strv[ix]);
+       }
+      else
+      { StrDesc *s = (StrDesc *) &(datavec[*cvec]);
+        int      openonget = (int) (s->Mode & Flags_OpenOnGet);
+        s->Mode &= ~Flags_OpenOnGet;
+        *cvec = (int) NewStream(s->Name, &(s->Cap), s->Mode);
+        if (*cvec eq NULL) goto fail;
+        ((Stream *)(*cvec))->Pos = s->Pos;
+        if (openonget ne 0) ((Stream *)(*cvec))->Flags |= Flags_OpenOnGet;
+      }
+    }
+  *cvec = NULL;
+
+  if (DebugOptions & dbg_Environ)
+   { int	i;
+     report("received environment");
+     for (i = 0; env->Argv[i] ne Null(char); i++)
+      report("argument %d is %s", i, env->Argv[i]);
+     for (i = 0; env->Envv[i] ne Null(char); i++)
+      report("environment string %d is %s", i, env->Envv[i]);
+     for (i = 0; env->Strv[i] ne Null(Stream); i++)
+      if (env->Strv[i] ne (Stream *) MinInt)
+       report("stream %d is %S", i, env->Strv[i]);
+     for (i = 0; env->Objv[i] ne Null(Object); i++)
+      if (env->Objv[i] ne (Object *) MinInt)
+       report("object %d is %O", i, env->Objv[i]);
+   }
+  return(TRUE);
+
+fail:
+  Debug(dbg_Environ, ("error receiving environment"));
+	/* BLV - the test for valid Objects/Streams leaves something to	*/
+	/* be desired. Hopefully Close()'ing an invalid object does not	*/
+	/* cause too many problems...					*/
+  { int i, j;
+    for (i = 0; env->Objv[i] != Null(Object); i++)
+     { j = (int) env->Objv[i];
+       if ((j ne MinInt) && ((j < 0) || (j > 2048)))
+       Close(env->Objv[i]);
+     }
+    for (i = 0; env->Strv[i] != Null(Stream); i++)
+     { j = (int) env->Strv[i];
+       if ((j ne MinInt) && ((j < 0) || (j > 2048)))
+       Close(env->Strv[i]);
+     }
+  }
+  env->Argv = NULL;
+  return(FALSE);
+}
+
+/*}}}*/
+/*{{{  HandleExecuteTask() */
+
+/**
+*** This code is responsible for executing a single task, as requested
+*** through the Resource Management library. Parameters are as follows:
+*** 1) the Task field of the request is an RmTask structure which should
+***    have been suitably initialised by the application.
+*** 2) the Uid and Cap may refer to a processor or may be NULL, depending
+***    on whether or not the application has mapped the task already
+*** 3) the VariableData vector contains environment information. Note that
+***    there is potential conflict between the arguments in the environment
+***    vector and the arguments in the RmTask structure.
+***
+*** The work required is as follows.
+*** a) the environment information has to be unpacked.
+*** b) a TaskEntry structure has to be added to the RmTask
+*** c) the argument vector of the environment and the task's arguments
+***    have to be resolved
+*** d) the task code has to be Locate()'ed, if possible
+*** e) the task's name has to be resolved to avoid conflicts
+*** f) the task has to be mapped. If a Uid has been supplied then this
+***    must refer to a processor in the current domain.
+*** g) the task can be executed in the usual way.
+*** h) the environment information can now be sent.
+*** i) the task has to be inserted into the /tfm subdirectory and
+***    associated with this connection, so that it will be aborted if
+***    the client disappears.
+*** i) at this point the task is running, so the client can be sent a reply.
+**/
+
+static void HandleExecuteTask(TfmConn connection, int job_id,
+		 RmRequest *request, RmReply *reply)
+{ Environ	env;
+  word		rc;
+  RmTask	task		= request->Task;
+  RmProcessor	processor;
+  Object	*program	= Null(Object);
+  TaskEntry	*task_entry	= NULL;
+  char		*default_args[8];
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  Debug(dbg_Create, ("request to execute a task"));
+
+  env.Argv	= NULL;
+  unless(ExtractEnv(&env, request->VariableData))
+   { rc = RmE_ServerMemory; goto done; }
+
+  if (task_AddTaskEntry(task) ne RmE_Success)
+   { rc = RmE_ServerMemory; goto done; }
+  task_entry = GetTaskEntry(task);
+
+	/* Make certain that the task will not be freed automatically etc. */
+  request->Task		= (RmTask) NULL;
+  task->MappedTo	= RmL_NoUid;
+  task->ObjNode.Parent	= NULL;
+
+  { char	**junk = env.Argv;
+    env.Argv = NULL;
+    unless(task_FilterArgs(task, &env, junk, default_args))
+     { rc = RmE_ServerMemory; goto done; }
+  }
+
+	/* the user may not have named the task yet...	*/
+  if (strlen(task->ObjNode.Name) < 1)
+   strcpy(task->ObjNode.Name, "<anon>");
+
+	/* Sort out the binary for this program.			*/
+	/* All binaries can be relative to the current directory, and	*/
+	/* may be specified explicitly using RmSetTaskCode() or		*/
+	/* implicitly using the task name.				*/
+  { char *code_name = (char *) RmGetTaskCode(task);
+    if (code_name eq Null(char)) code_name = task->ObjNode.Name;
+    program = Locate(env.Objv[OV_Cdir], code_name);
+    if (program eq Null(Object))
+     { Debug(dbg_Create, ("failed to locate program %s", code_name));
+       rc = RmE_NotFound;
+       goto done;
+     }
+  }
+
+	/*  see if there is already a task or taskforce with this name */
+  { ObjNode *x = Lookup(&TFM, task->ObjNode.Name, TRUE);
+    if (x ne Null(ObjNode))
+     { Wait(&LibraryLock);
+       addint(task->ObjNode.Name, TaskSequenceNumber++);
+       Signal(&LibraryLock);
+     }
+  }
+
+  Debug(dbg_Create, ("sorting out mapping for %T", task));
+  if (request->Uid ne RmL_NoUid)
+   { RmProcessor mappedto = RmFindProcessor(Domain, request->Uid);
+     if (mappedto eq (RmProcessor) NULL)
+      { rc = RmE_BadProcessor; goto done; }
+     unless(GetAccess(&(request->Cap), mappedto->ObjNode.Key) &&
+	    (request->Cap.Access & AccMask_D))
+      { rc = RmE_NoAccess; goto done; }
+     unless(domain_FillInTaskMapping(task, mappedto))
+      { rc = RmE_InUse; goto done; }
+   }
+  else
+   unless(domain_MapTask(task))
+    { rc = RmE_NoResource; goto done; }
+
+  processor = RmFollowTaskMapping(Domain, task);
+  if (processor eq (RmProcessor) NULL)
+   { rc = RmE_NoResource; goto done; }
+  Debug(dbg_Create, ("task %T is mapped to %P", task, processor));
+
+  rc = task_Run(processor, task, program);
+  if (rc ne Err_Null)
+    { Debug(dbg_Create, ("attempt to run task produced error code %x", rc ) );
+     rc = RmE_BadProcessor; goto done; }
+
+  Debug(dbg_Create, ("task %T is running", task));
+
+  rc = task_HandleEnv(task, &env);
+  if (rc ne Err_Null)
+   { task_Exterminate(task);
+     rc = RmE_BadProcessor;
+   }
+  else
+   { Debug(dbg_Create, ("task %T has received its environment", task));
+     AddTail(&(connection->Tasks), &(task_entry->ConnectionNode));
+     task_entry->Connection = connection;
+     task_entry->UseCount++;
+     Insert(&TFM, &(task->ObjNode), FALSE);
+     rc		 = RmE_Success;
+     reply->Task = task;  
+   }
+  
+done:
+  if (rc eq RmE_Success)
+   { Debug(dbg_Create, ("task %T is running", task)); }
+  else
+   { Debug(dbg_Create, ("failed to execute task %T, error %x", task, rc)); }
+
+  reply->FnRc = (int) rc;
+  ReplyRmLib(connection, job_id, reply);
+
+  if ((rc ne RmE_Success) && (task->StructType eq RmL_New))
+   { if (task->MappedTo ne RmL_NoUid)
+      domain_UnmapTask(task);
+     task_Destroy(task);     
+   }
+
+  MRSW_SwitchRead();
+
+	/* Cleaning up the environment stuff. It is necessary to	*/
+	/* consider the following possibilities:			*/
+	/* 1) the supplied environment could not be extracted. env.Argv	*/
+	/*    will be set to NULL.					*/
+	/* 2) the supplied environment could be extracted. The argv	*/
+	/*    vector will have been filtered, which may have resulted	*/
+	/*    in a new argv vector.					*/
+	/* Note that it is necessary to Close all the streams and	*/
+	/* objects to release all the memory, and that some of the	*/
+	/* environment data can overlay the supplied data vector.	*/
+  if ((env.Argv ne NULL) && (env.Argv ne default_args))
+   Free(env.Argv);
+  if (env.Argv eq default_args)
+   env.Argv = (BYTE **) request->VariableData;
+  if (env.Argv ne NULL)
+   { tfm_FreeEnv(&env); request->VariableData = NULL; }
+}
+
+/*}}}*/
+/*{{{  HandleExecuteTaskforce() */
+
+/**
+*** This code is responsible for executing a taskforce, as requested
+*** through the Resource Management library. Parameters are as follows:
+*** 1) the Taskforce field of the request is an RmTaskforce structure which
+***    should have been suitably initialised by the application
+*** 2) the Network field may be NULL or it may contain a set of obtained
+***    processors, with tasks mapped to particular processors
+*** 3) the VariableData vector contains environment information.
+***
+*** The work required is as follows:
+*** a) the environment information has to be unpacked
+*** b) the code associated with every component has to be resolved. Often
+***    this will be relative to the current directory.
+*** c) a TaskEntry structure has to be added to all components and to the
+***    top-level taskforce
+*** d) the taskforce name has to be resolved
+*** e) the taskforce has to be mapped. The exact details of this operation
+***    depend on whether or not a network has been supplied.
+*** f) the taskforce can be executed in the usual way
+*** g) the environment information can be sent
+*** h) the taskforce can be inserted into the /tfm subdirectory and
+***    associated with this connection, so that it will be aborted if
+***    the client disappears.
+*** i) at this point the taskforce is running, so the client can be sent
+***    a reply
+**/
+
+/*{{{  SortOutCode() */
+/**
+*** For flexibility, users need not specify an absolute pathname for
+*** every component. In particular, I want to allow the following options:
+*** 1) an absolute pathname as code. This pathname is not checked at
+***    this point as it will be checked during the taskforce start-up,
+***    and two Locate()'s for the same file is undesirable.
+*** 2) a relative pathname as code. This pathname is assumed relative
+***    to the current directory. The code name is altered to absolute, but
+***    again no attempt is made to Locate() the program.
+*** 3) no code is specified. In this case the component name is taken
+***    as the relate pathname.
+**/
+static int taskforce_SortOutCode(RmTask task, ...)
+{ va_list	args;
+  Object	*cdir;
+  char		*code_name;
+  char		buf[IOCDataMax];
+
+  if (task->ObjNode.Flags & TfmFlags_Special) return(RmE_Success);
+
+  va_start(args, task);
+  cdir = va_arg(args, Object *);
+  va_end(args);
+
+  code_name = (char *) RmGetTaskCode(task);
+  if ((code_name ne NULL) && ((*code_name eq '/') || (*code_name eq '@@')))
+   return(RmE_Success);
+  strcpy(buf, cdir->Name);
+  if (code_name ne NULL)
+   { pathcat(buf, code_name);
+     RmRemoveObjectAttribute((RmObject) task, &(code_name[-5]), TRUE);
+   } 
+  else
+   pathcat(buf, task->ObjNode.Name);
+  return(RmSetTaskCode(task, buf));
+}
+/*}}}*/
+
+static void HandleExecuteTaskforce(TfmConn connection, int job_id, 
+			RmRequest *request, RmReply *reply)
+{ Environ	env;
+  word		rc;
+  RmTaskforce	taskforce	= request->Taskforce;
+  TaskEntry	*task_entry	= NULL;
+
+  Debug(dbg_Create, ("request to execute a taskforce"));
+
+  env.Argv	= NULL;
+  unless(ExtractEnv(&env, request->VariableData))
+   { rc = RmE_ServerMemory; goto done; }
+  Debug(dbg_Create, ("got environment information from client"));
+
+  if ((rc = RmSearchTasks(taskforce, &taskforce_SortOutCode, env.Objv[OV_Cdir])) ne RmE_Success)
+   goto done;
+  Debug(dbg_Create, ("determined binaries for this taskforce"));
+
+	/* Make certain that the taskforce will not be freed automatically */
+	/* It must go via taskforce_Destroy() to release the TaskEntry     */
+	/* structures.							   */
+  request->Taskforce	= (RmTaskforce) NULL;
+
+  if ((task_AddTaskEntry((RmTask) taskforce) ne RmE_Success) ||
+      (RmSearchTasks(taskforce, &task_AddTaskEntry) ne RmE_Success))
+   { rc = RmE_ServerMemory; goto done; }
+  task_entry = (TaskEntry *) RmGetTaskforcePrivate(taskforce);
+  task_entry->Connection	= connection;
+  AddTail(&(connection->Taskforces), &(task_entry->ConnectionNode));
+
+	/* the user may not have named the taskforce yet...	*/
+  if (strlen(taskforce->DirNode.Name) < 1)
+   strcpy(taskforce->DirNode.Name, "<anon>");
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+	/*  see if there is already a task or taskforce with this name */
+  { ObjNode *x = Lookup(&TFM, taskforce->DirNode.Name, TRUE);
+    if (x ne Null(ObjNode))
+     { Wait(&LibraryLock);
+       addint(taskforce->DirNode.Name, TaskSequenceNumber++);
+       Signal(&LibraryLock);
+     }
+  }
+
+  Debug(dbg_Create, ("sorting out mapping for %T", taskforce));
+  unless(domain_MapTaskforce(request->Network, taskforce))
+   { rc = RmE_NoResource; goto done; }
+  task_entry->Mapped = TRUE;
+
+  MRSW_SwitchRead();
+  rc = taskforce_Start(taskforce);
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+  if (rc ne Err_Null)
+   { rc = RmE_BadProcessor; goto done; }
+
+  Debug(dbg_Create, ("taskforce %T is running", taskforce));
+
+  MRSW_SwitchRead();
+  rc = taskforce_HandleEnv(taskforce, &env);
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  if (rc ne Err_Null)
+   { rc = RmE_BadProcessor; 
+     taskforce_DoSignal(taskforce, SIGKILL);
+     goto done;
+   }
+
+  Debug(dbg_Create, ("taskforce %T has received its environment", taskforce));
+  task_entry->UseCount++;
+  Insert(&TFM, (ObjNode *) &(taskforce->DirNode), FALSE);
+  rc = RmE_Success;
+  reply->Taskforce = taskforce;
+  
+done:
+  if (rc eq RmE_Success)
+   { Debug(dbg_Create, ("taskforce %T is running", taskforce)); }
+  else
+   { Debug(dbg_Create, ("failed to execute taskforce %T, error %x", taskforce, rc)); }
+
+  reply->FnRc = (int) rc;
+  ReplyRmLib(connection, job_id, reply);
+
+	/* only destroy here if not running...			*/ 
+  if (task_entry->UseCount eq  0)
+   taskforce_Destroy(taskforce);
+
+  MRSW_SwitchRead();
+  if (env.Argv ne NULL)
+   { tfm_FreeEnv(&env);
+     request->VariableData = NULL;
+   }
+}
+
+/*}}}*/
+
+static void HandleExecute(TfmConn connection, int job_id, RmRequest *request, RmReply *reply)
+{ if (request->Task ne (RmTask) NULL)
+   HandleExecuteTask(connection, job_id, request, reply);
+  else
+   HandleExecuteTaskforce(connection, job_id, request, reply);
+}
+
+/*}}}*/
+/*{{{  get the current state of a task or taskforce */
+
+/**
+*** This routine is used to take a snap-shot of the current state of one
+*** or more tasks, taskforces, or taskforce components. The request vector
+*** defines some number of these. The reply vector consists of a set of
+*** TaskUpdate structures.
+***
+*** It is possible that the specified task(s) etc. no longer exist in
+*** this TFM. This is because their use count had dropped to 0, i.e. they
+*** were no longer attached to a connection and no threads were accessing
+*** them. This is analogous to examining a Unix process that has terminated
+*** and whose parent has performed a wait(). For simplicity the task is
+*** assumed to have terminated with a zero return code.
+***
+*** If a top-level task or taskforce has terminated and is attached to
+*** this connection it will be removed. The client now knows that the
+*** task has terminated, and hence should not access it again.
+**/
+
+
+static void HandleUpdate(TfmConn connection, int job_id, RmRequest *request, RmReply *reply)
+{ int		 count	 = request->VariableSize / sizeof(TaskDetails);
+  TaskUpdate	*updates = NULL;
+  TaskDetails	*details = (TaskDetails *) request->VariableData;
+  int		 rc	 = RmE_Success;
+  int		 i;
+  RmTask	 task;
+  RmTaskforce	 taskforce;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  if (count eq 0) goto done;
+
+  updates = (TaskUpdate *) Malloc((word)count * sizeof(TaskUpdate));
+  if (updates eq NULL)
+   { rc = RmE_ServerMemory; goto done; }
+  memset(updates, 0, count * sizeof(TaskUpdate));
+
+  for (i = 0; i < count; i++)
+   { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+     if (task eq (RmTask) NULL)
+      { updates[i].Errno	= RmE_NotFound;
+        updates[i].StructType	= RmL_Done;
+      }
+     elif (RmIsTask(task))
+      { unless(GetAccess(&(details[i].Cap), task->ObjNode.Key) &&
+		(details[i].Cap.Access & AccMask_D))
+	 { rc = RmE_NoAccess; goto done; }
+	updates[i].StructType	= task->StructType;
+	if (task->StructType eq RmL_Done)
+	 { updates[i].ReturnCode = task->ReturnCode;
+	   remove_from_connection(task, connection);
+	 }
+      }
+     else	/* entry must be a taskforce */
+      { taskforce = (RmTaskforce) task;
+        if (details[i].Uid eq RmL_NoUid)
+         { unless(GetAccess(&(details[i].Cap), taskforce->DirNode.Key) &&
+			(details[i].Cap.Access & AccMask_D))
+	    { rc = RmE_NoAccess; goto done; }
+	   updates[i].StructType	= taskforce->StructType;
+	   if (taskforce->StructType eq RmL_Done)
+	    { updates[i].ReturnCode	= taskforce->ReturnCode;
+	      remove_from_connection(task, connection);
+	    }
+	 }
+	else
+	 { task = RmFindTask(taskforce, details[i].Uid);
+	   if (task eq (RmTask) NULL)
+	    { updates[i].Errno		= RmE_NotFound;
+	      updates[i].StructType	= RmL_Done;
+	    }
+	   else
+	    { unless(GetAccess(&(details[i].Cap), task->ObjNode.Key) &&
+			(details[i].Cap.Access & AccMask_D))
+	       { rc = RmE_NoAccess; goto done; }
+	      updates[i].StructType	= task->StructType;
+	      if (task->StructType eq RmL_Done)
+	       updates[i].ReturnCode	= task->ReturnCode;
+	    }
+	 }
+      }
+   }
+  reply->VariableData	= (BYTE *) updates;
+  reply->VariableSize	= count * sizeof(TaskUpdate);
+
+done:
+  MRSW_SwitchRead();
+  reply->FnRc	= rc;
+  ReplyRmLib(connection, job_id, reply);
+  if (updates ne NULL) Free(updates);
+}
+
+/*}}}*/
+/*{{{  wait for termination of a task or taskforce */
+
+/**
+*** This request is probably the trickiest to handle, as it may involve
+*** blocking for some indeterminate period of time. Note that it runs
+*** in a separate thread from the ConnectionGuardian.
+***
+*** The TaskDetails vector describes one or more tasks, taskforces, or
+*** component tasks. It is necessary to wait for any one of these to
+*** terminate, if they have not already done so, and return update information.
+*** There are four passes.
+***  a) in pass one the various thingies are checked. If any of them no
+***     longer exist or have already terminated there is no point in blocking.
+***     This pass is also used to check capabilities.
+***  b) in pass two (optional), the routine attaches itself to the various
+***     thingies and waits for one of them to terminate. Note that a thingy
+***     "cannot" terminate between a and b, because termination involves a
+***	write lock. The UseCount is incremented to avoid the thingy going
+***     away while this thread is waiting for termination.
+***  c) in pass three the update information is filled in. 
+***  d) in pass four (optional) the work of pass two is undone.
+**/
+
+static void HandleWait(TfmConn connection, int job_id, RmRequest *request, RmReply *reply)
+{ int		 count = request->VariableSize / sizeof(TaskDetails);
+  TaskDetails	*details = (TaskDetails *) request->VariableData;
+  int		 i;
+  TaskWaiter	*waiters = NULL;
+  int		 rc = RmE_Success;
+  TaskUpdate	*updates = NULL;
+  Semaphore	 done;
+  RmTask	 task;
+  RmTaskforce	 taskforce;
+  TaskEntry	*task_entry;
+  bool		 all_running = TRUE;
+
+  InitSemaphore(&done, 0);
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  if (count eq 0) goto done;
+
+  waiters = (TaskWaiter *) Malloc((word)count * sizeof(TaskWaiter));
+  if (waiters eq NULL) { rc = RmE_ServerMemory; goto done; }
+  memset(waiters, 0, count * sizeof(TaskWaiter));
+
+  updates = (TaskUpdate *) Malloc((word)count * sizeof(TaskUpdate));
+  if (updates eq NULL) { rc = RmE_ServerMemory; goto done; }
+  memset(updates, 0, count * sizeof(TaskUpdate));
+
+  /*{{{  loop 1 */
+  for (i = 0; i < count; i++)
+   { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+  	/* if a thingy is missing, it defaults to terminated. */
+     if (task eq (RmTask) NULL)
+      { all_running = FALSE; break; }
+  
+     if (RmIsTask(task))
+      { unless(GetAccess(&(details[i].Cap), task->ObjNode.Key) &&
+  		(details[i].Cap.Access & AccMask_D))
+  	  { rc = RmE_NoAccess; goto done; }
+        if (task->StructType eq RmL_Done)
+         { all_running = FALSE; break; }
+      }
+  
+     taskforce = (RmTaskforce) task;
+     if (details[i].Uid eq RmL_NoUid)
+      { unless(GetAccess(&(details[i].Cap), taskforce->DirNode.Key) &&
+  		(details[i].Cap.Access & AccMask_D))
+  	 { rc = RmE_NoAccess; goto done; }
+        if (taskforce->StructType eq RmL_Done)
+  	 { all_running = FALSE; break; }
+      }
+     else
+      { task = RmFindTask(taskforce, details[i].Uid);
+        if (task eq (RmTask) NULL)
+  	 { all_running = FALSE; break; }
+  	unless(GetAccess(&(details[i].Cap), task->ObjNode.Key) &&
+  		(details[i].Cap.Access & AccMask_D))
+  	 { rc = RmE_NoAccess; goto done; }
+        if (task->StructType eq RmL_Done)
+         { all_running = FALSE; break; }
+      }
+   }
+  /*}}}*/
+
+  if (all_running)
+   /*{{{  loop 2 */
+   for (i = 0; i < count; i++)
+    { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+      if (RmIsTask(task))
+       task_entry = GetTaskEntry(task);
+      else
+       { taskforce = (RmTaskforce) task;
+   	if (details[i].Uid eq RmL_NoUid)
+   	 task_entry = (TaskEntry *) RmGetTaskforcePrivate(taskforce);
+         else
+   	 { task = RmFindTask(taskforce, details[i].Uid);
+   	   task_entry = GetTaskEntry(task);
+   	 }
+       }
+      task_entry->UseCount++;
+      AddTail(&(task_entry->Waiting), &(waiters[i].Node));
+      waiters[i].Sem = &done;
+    }
+   /*}}}*/
+
+  if (all_running)
+   { MRSW_FreeWrite();
+     Wait(&done);
+     MRSW_GetWrite();
+   }
+
+  /*{{{  loop 3 */
+  for (i = 0; i < count; i++)
+   { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+     if (task eq (RmTask) NULL)
+      { updates[i].Errno	= RmE_NotFound;
+  	updates[i].StructType	= RmL_Done;
+      }
+     elif (RmIsTask(task))
+      { updates[i].StructType	= task->StructType;
+  	if (task->StructType eq RmL_Done)
+  	 { updates[i].ReturnCode = task->ReturnCode;
+  	   remove_from_connection(task, connection);
+  	 }
+      }
+     else	/* entry must be a taskforce */
+      { taskforce = (RmTaskforce) task;
+  	if (details[i].Uid eq RmL_NoUid)
+  	 { updates[i].StructType	= taskforce->StructType;
+  	   if (taskforce->StructType eq RmL_Done)
+  	    { updates[i].ReturnCode	= taskforce->ReturnCode;
+  	      remove_from_connection(task, connection);
+  	    }
+  	 }
+  	else
+  	 { task = RmFindTask(taskforce, details[i].Uid);
+  	   if (task eq (RmTask) NULL)
+  	    { updates[i].Errno		= RmE_NotFound;
+  	      updates[i].StructType	= RmL_Done;
+  	    }
+  	   else
+  	    { updates[i].StructType	= task->StructType;
+  	      if (task->StructType eq RmL_Done)
+  	       updates[i].ReturnCode = task->ReturnCode;
+  	    }
+  	 }
+      }
+   }
+  /*}}}*/
+  reply->VariableData	= (BYTE *) updates;
+  reply->VariableSize	= count * sizeof(TaskUpdate);
+
+  if (all_running)
+   /*{{{  loop 4 */
+   for (i = 0; i < count; i++)
+    { List		*list;
+      TaskWaiter	*waiter;
+   	/* go to the end of the list */
+      for (waiter = &(waiters[i]); !EndOfList_(waiter); waiter = Next_(TaskWaiter, waiter));
+        /* now at end of list... */
+      list	 = (List *) (((BYTE *) waiter) - offsetof(List, Earth));
+      task_entry = (TaskEntry *) (((BYTE *) list) - offsetof(TaskEntry, Waiting));
+      task	 = task_entry->Task;
+      Remove(&(waiters[i].Node));
+      task_entry->UseCount--;
+      if ((task_entry->UseCount eq 0) && (task->ObjNode.Parent eq &TFM))
+       { if (RmIsTask(task))
+          task_Destroy(task);
+   	 else
+   	  taskforce_Destroy((RmTaskforce) task);
+       }
+    }
+   /*}}}*/
+
+done:
+  MRSW_SwitchRead();
+  reply->FnRc = rc;
+  ReplyRmLib(connection, job_id, reply);
+  if (waiters ne NULL) Free(waiters);
+  if (updates ne NULL) Free(updates);
+}
+
+/*}}}*/
+/*{{{  send a signal */
+/**
+*** The client will have sent details of one or more tasks, taskforces, or
+*** component tasks which should receive a signal. These are in the form of
+*** a TaskDetails vector. There are two passes. First the TFM checks that
+*** the various thingies are valid and that the client has the required
+*** access. Next the TFM sends the signal.
+**/
+static void HandleSendSignal(TfmConn connection, int job_id, RmRequest *request, RmReply *reply)
+{ TaskDetails	*details	= (TaskDetails *) request->VariableData;
+  int		 count		= request->VariableSize / sizeof(TaskDetails);
+  int		 i;
+  RmTask	 task;
+  RmTaskforce	 taskforce;
+  int		 signo		= request->Arg1;
+  int		 rc		= RmE_Success;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  for (i = 0; i < count; i++)
+   { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+     if (task eq (RmTask) NULL) continue;
+     if (RmIsTask(task))
+      { unless(GetAccess(&(details[i].Cap), task->ObjNode.Key) &&
+		(details[i].Cap.Access & AccMask_D))
+	 { rc = RmE_NoAccess; goto done; }
+      }
+     else	/* must be a taskforce */
+      { taskforce = (RmTaskforce) task;
+	if (details[i].Uid eq RmL_NoUid)
+	 { unless(GetAccess(&(details[i].Cap), taskforce->DirNode.Key) &&
+			(details[i].Cap.Access & AccMask_D))
+	    { rc = RmE_NoAccess; goto done; }
+         }
+	else
+	 { task = RmFindTask(taskforce, details[i].Uid);
+	   if (task eq (RmTask) NULL) continue;
+	   unless(GetAccess(&(details[i].Cap), task->ObjNode.Key) &&
+			(details[i].Cap.Access & AccMask_D))
+	     { rc = RmE_NoAccess; goto done; }
+	 }
+      }		/* taskforce */
+   }		/* first loop */
+
+  for (i = 0; i < count; i++)
+   { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+     if (task eq (RmTask) NULL) continue;
+     if (RmIsTask(task))
+      { if (task->StructType eq RmL_Executing)
+	 task_DoSignal(task, signo);
+      }
+     else	/* must be a taskforce */
+      { taskforce = (RmTaskforce) task;
+	if (details[i].Uid eq RmL_NoUid)
+	 { if (taskforce->StructType eq RmL_Executing)
+	    taskforce_DoSignal(taskforce, signo);
+         }
+	else
+	 { task = RmFindTask(taskforce, details[i].Uid);
+	   if (task eq (RmTask) NULL) continue;
+	   if (task->StructType eq RmL_Executing)
+	    task_DoSignal(task, signo);
+	 }
+      }		/* taskforce */
+   }		/* second loop */
+
+
+done:
+  MRSW_SwitchRead();
+  reply->FnRc	= rc;
+  ReplyRmLib(connection, job_id, reply);
+}
+/*}}}*/
+/*{{{  detach a task or taskforce from this connection */
+/**
+*** The VariableVector of the request specifies a number of top-level
+*** tasks or taskforces which should be detached from this connection.
+*** It is theoretically possible that the thingy no longer exists or is
+*** not owned by this connection, which is a silent error. There are
+*** two passes, one to check for access rights and one to remove the
+*** thingy from the connection. RmLib does not expect any extra information
+*** back.
+**/
+static void HandleLeave(TfmConn connection, int job_id, RmRequest *request, RmReply *reply)
+{ int		rc	= RmE_Success;
+  int		count	= request->VariableSize / sizeof(TaskDetails);
+  int		i;
+  RmTask	task;
+  RmTaskforce	taskforce;
+  TaskDetails	*details = (TaskDetails *) request->VariableData;
+
+  MRSW_FreeRead();
+  MRSW_GetWrite();
+
+  for (i = 0; i < count; i++)
+   { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+     if (task eq (RmTask) NULL) continue;
+     if (RmIsTask(task))
+      { unless(GetAccess(&(details[i].Cap), task->ObjNode.Key) &&
+		(details[i].Cap.Access & AccMask_D))
+	 { rc = RmE_NoAccess; goto done; }
+      }
+     else
+      { taskforce = (RmTaskforce) task;
+	unless(GetAccess(&(details[i].Cap), taskforce->DirNode.Key) &&
+		(details[i].Cap.Access & AccMask_D))
+	 { rc = RmE_NoAccess; goto done; }
+      }
+   }
+
+  for (i = 0; i < count; i++)
+   { task = (RmTask) Lookup(&TFM, details[i].Name, TRUE);
+     if (task ne (RmTask) NULL)
+      remove_from_connection(task, connection);
+   }
+
+done:
+  MRSW_SwitchRead();
+  reply->FnRc	= rc;
+  ReplyRmLib(connection, job_id, reply);
+}
+/*}}}*/
+@
+
+
+1.22
+log
+@added debugging for when task running fails
+@
+text
+@d16 1
+a16 1
+/* RcsId: $Header: /hsrc/network/RCS/tfmjobs.c,v 1.21 1993/12/20 13:25:26 nickc Exp nickc $*/
+d1205 1
+a1205 1
+    { Debug(dbg_Create, ("attempt to run task produced error code %x", rc );
+@
+
+
+1.21
+log
+@fixed compile time warnings for ARM world
+@
+text
+@d16 1
+a16 1
+/* RcsId: $Header: /hsrc/network/RCS/tfmjobs.c,v 1.20 1993/08/12 14:13:33 nickc Exp nickc $*/
+d1205 2
+a1206 1
+   { rc = RmE_BadProcessor; goto done; }
+@
+
+
+1.20
+log
+@fixed compile time warnings
+@
+text
+@d16 1
+a16 1
+/* RcsId: $Header: /hsrc/network/RCS/tfmjobs.c,v 1.19 1993/08/11 10:53:54 bart Exp nickc $*/
+d60 1
+d104 1
+a104 1
+   { TfmConn	new_conn = Malloc(sizeof(TfmConnStruct));
+d162 1
+d307 1
+a307 1
+      { request->VariableData = Malloc(request->VariableSize);
+d1470 1
+a1470 1
+  updates = Malloc((word)count * sizeof(TaskUpdate));
+@
+
+
+1.19
+log
+@1) sorted out stack sizes
+2) native networks only supported on certain processor types
+@
+text
+@d16 1
+a16 1
+/* RcsId: $Header: /hsrc/network/RCS/tfmjobs.c,v 1.18 1993/01/26 16:41:58 bart Exp $*/
+d163 1
+d253 1
+a253 1
+   { int rc;
+d627 1
+d634 2
+a635 2
+  reply->FnRc	= RmE_Success;
+  reply->Reply1	= LastChange;
+d639 1
+d987 1
+d989 1
+d1042 1
+a1042 1
+        int      openonget = (s->Mode & Flags_OpenOnGet);
+d1088 1
+d1091 1
+d1123 1
+a1123 1
+  int		rc;
+d1228 1
+a1228 1
+  reply->FnRc = rc;
+d1256 1
+d1259 1
+d1329 1
+a1329 1
+  int		rc;
+d1409 1
+a1409 1
+  reply->FnRc = rc;
+d1422 1
+d1431 1
+d1434 1
+d1468 1
+a1468 1
+  updates = Malloc(count * sizeof(TaskUpdate));
+d1527 1
+d1530 1
+d1572 1
+a1572 1
+  waiters = (TaskWaiter *) Malloc(count * sizeof(TaskWaiter));
+d1576 1
+a1576 1
+  updates = (TaskUpdate *) Malloc(count * sizeof(TaskUpdate));
+@
+
+
+1.18
+log
+@Attempted to fix various problems with the exit handling, cleaning up
+the sockets etc.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmjobs.c,v 1.17 1992/09/23 11:24:57 bart Exp $*/
+d152 1
+a152 1
+     if (Fork(2000, &connection_guardian, sizeof(TfmConn), new_conn))
+d177 1
+a177 1
+#ifndef SingleProcessor
+d180 2
+d220 1
+a220 1
+#ifndef SingleProcessor 
+d326 1
+a326 1
+	 { until(Fork(2000, &guardian_aux, 20, connection, JobId, i, request, reply))
+d723 1
+a723 1
+#ifndef SingleProcessor
+@
+
+
+1.17
+log
+@Fixed some memory leaks
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmjobs.c,v 1.16 1992/09/09 11:46:29 bart Exp $*/
+d131 1
+a131 1
+      goto fail;
+d133 1
+d135 5
+a139 3
+      { close(new_conn->Socket_ctos);
+        close(new_conn->Socket_stoc);
+        goto terminate;
+d141 1
+a141 1
+	
+a159 4
+
+terminate:
+  close(Socket_ctos);
+  close(Socket_stoc);
+@
+
+
+1.16
+log
+@Added CreateDup2() routine, plus extended RmExecuteTaskforce() to support
+the farm library
+@
+text
+@d16 1
+a16 1
+/*$Header: /hsrc/network/RCS/tfmjobs.c,v 1.15 1992/07/21 11:04:51 bart Exp $*/
+d348 10
+a357 8
+   close(connection->Socket_ctos);
+   close(connection->Socket_stoc);
+   MRSW_GetWrite();
+   (void) WalkList(&(connection->Processors), &AutomaticRelease);
+   (void) WalkList(&(connection->Tasks), &kill_task);
+   (void) WalkList(&(connection->Taskforces), &kill_taskforce);
+   MRSW_FreeWrite();
+   Free(connection);
+d1079 1
+d1127 1
+d1231 10
+d1243 4
+d1325 1
+d1407 4
+a1410 1
+  if (env.Argv ne NULL) Free(env.Argv);
+@
+
+
+1.15
+log
+@1) cleaned up the diagnostics routines
+2) now uses RmLookupProcessor instead of TfmLookupProcessor
+3) fixed bug in executing mapped taskforces through the Resource Management
+   library.
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmjobs.c,v 1.14 1992/04/24 15:46:31 bart Exp $*/
+d431 24
+d941 1
+a941 1
+/**-----------------------------------------------------------------------------
+d1278 2
+d1285 1
+a1285 1
+  if ((code_name ne NULL) && (*code_name eq '/'))
+d1324 2
+a1368 2
+  AddTail(&(connection->Taskforces), &(task_entry->ConnectionNode));
+  task_entry->Connection = connection;
+@
+
+
+1.14
+log
+@Improved the capability handling, and now uses the new form of
+task_FilterArgs() to reduce small malloc()'s
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmjobs.c,v 1.13 1992/03/25 18:03:41 bart Exp $*/
+d311 1
+a311 1
+      report("request %x, jobid %x, Network %x,\n          Taskforce %x, Processor %x, Task %x, size %d",
+d385 1
+a385 1
+   report("reply %x, jobid %x, Network %x,\n          Taskforce %x, Processor %x, Task %x, size %d",
+d1029 1
+a1029 1
+       report("stream %d is %s", i, env->Strv[i]->Name);
+d1032 1
+a1032 1
+       report("object %d is %s", i, env->Objv[i]->Name);
+d1145 1
+a1145 1
+  Debug(dbg_Create, ("sorting out mapping for %s", Taskname(task)));
+a1152 1
+     task->MappedTo = RmL_NoUid;
+d1163 1
+a1163 1
+  Debug(dbg_Create, ("task %s is mapped to %s", Taskname(task), Procname(processor)));
+d1169 1
+a1169 1
+  Debug(dbg_Create, ("task %s is running", Taskname(task)));
+d1177 1
+a1177 1
+   { Debug(dbg_Create, ("task %s has received its environment", Taskname(task)));
+d1188 1
+a1188 1
+   { Debug(dbg_Create, ("task %s is running", Taskname(task))); }
+d1190 1
+a1190 1
+   { Debug(dbg_Create, ("failed to execute task %s, error %x", Taskname(task), rc)); }
+d1315 1
+a1315 1
+  Debug(dbg_Create, ("sorting out mapping for %s", Taskforcename(taskforce)));
+d1327 1
+a1327 1
+  Debug(dbg_Create, ("taskforce %s is running", Taskforcename(taskforce)));
+d1340 1
+a1340 1
+  Debug(dbg_Create, ("taskforce %s has received its environment", Taskforcename(taskforce)));
+d1350 1
+a1350 1
+   { Debug(dbg_Create, ("taskforce %s is running", Taskforcename(taskforce))); }
+d1352 1
+a1352 1
+   { Debug(dbg_Create, ("failed to execute taskforce %s, error %x", Taskforcename(taskforce), rc)); }
+@
+
+
+1.13
+log
+@Various changes including:
+1) first attempt at C40 support
+2) RmLib execute support (not yet fully tested)
+3) faster bootstrap, taskforce load, and better mapping
+@
+text
+@d16 1
+a16 1
+/*$Header: /users/bart/hsrc/network/RCS/tfmjobs.c,v 1.12 1992/01/15 11:04:39 bart Exp $*/
+d126 3
+a128 6
+     new_conn->FullAccess	= FALSE;
+     if (cap.Access ne 0)
+      { word access_mask = GetAccess(&cap, Root.Key);
+        if (access_mask & AccMask_D)
+         new_conn->FullAccess	= TRUE;
+      }
+d263 1
+a263 1
+	 
+d1093 1
+d1114 1
+a1114 1
+    unless(task_FilterArgs(task, &env, junk))
+d1204 2
+a1205 1
+  if (env.Argv ne NULL) Free(env.Argv);
+@
+
+
+1.12
+log
+@Major update of networking sources, to incorporate the fault-tolerance
+work as demonstrated at the IED meeting 10.1.92
+@
+text
+@d11 1
+a11 2
+--	This module of the Taskforce Manager deals with RmLib requests,	--
+--	including processor allocations.				--
+d16 1
+a16 1
+/*$Header: /users/bart/netbak/RCS/tfmjobs.c,v 1.3 1991/08/21 16:07:10 bart Exp $*/
+d18 1
+d21 1
+d42 2
+a43 1
+
+d58 2
+a59 1
+
+d165 2
+a166 1
+
+a175 1
+
+d188 5
+d194 51
+d247 2
+a248 2
+  RmRequest	request;
+  RmReply	reply;
+d251 3
+a253 1
+  forever
+d255 1
+d257 9
+a265 1
+     Clear(request); Clear(reply);
+d273 4
+a276 2
+        if ((Result2(pipe) & EG_Mask) eq EG_Timeout) continue;
+	goto broken;
+d286 2
+a287 2
+     rc = FullRead(pipe, (BYTE *) &request, sizeof(RmRequest), -1);
+     if (rc < (int) sizeof(RmRequest)) goto broken;
+d289 3
+a291 3
+     if ((request.Network ne (RmNetwork) NULL) ||
+         (request.Taskforce ne (RmTaskforce) NULL))
+      if ((rc = RmReadStream(pipe, &(request.Network), &(request.Taskforce)))
+d293 1
+a293 1
+       goto broken;
+d295 2
+a296 2
+     if (request.Processor ne (RmProcessor) NULL)
+      if ((rc = RmReadProcessor(pipe, &(request.Processor), FALSE))
+d298 1
+a298 1
+       goto broken;
+d300 2
+a301 2
+     if (request.Task ne (RmTask) NULL)
+      if ((rc = RmReadTask(pipe, &(request.Task), FALSE))
+d303 1
+a303 1
+       goto broken;
+d305 6
+a310 6
+     if (request.VariableSize > 0)
+      { request.VariableData = Malloc(request.VariableSize);
+        if (request.VariableData eq NULL)
+         goto broken;
+        if (FullRead(pipe, request.VariableData, request.VariableSize, -1) < 0)
+	 goto broken;
+d315 3
+a317 3
+		request.FnRc, JobId, request.Network, request.Taskforce, 
+		request.Processor, request.Task,
+		request.VariableSize);
+d321 11
+a331 76
+     switch(request.FnRc)
+      { case RmC_GetNetwork :
+		HandleGetNetwork(connection, JobId, &request, &reply);
+		endcase;
+
+	case RmC_ProcessorPermanent :
+	case RmC_ProcessorTemporary :
+	case RmC_ProcessorExclusive :
+	case RmC_ProcessorShareable :
+	case RmC_ProcessorBooked    :
+	case RmC_ProcessorCancelled :
+		HandleProcessorAllocation(connection, JobId, &request, &reply);
+		endcase;
+	case RmC_LastChange :
+		HandleLastChange(connection, JobId, &request, &reply);
+		endcase;
+	case RmC_ObtainProcessor :
+		HandleObtainProcessor(connection, JobId, &request, &reply);
+		endcase;
+	case RmC_ReleaseProcessor :
+		HandleReleaseProcessor(connection, JobId, &request, &reply);
+		endcase;
+	case RmC_ObtainExactNetwork :
+	case RmC_ObtainNetwork :
+		HandleObtainNetwork(connection, JobId, &request, &reply);
+		endcase;
+	case RmC_ReleaseNetwork :
+		HandleReleaseNetwork(connection, JobId, &request, &reply);
+		endcase;
+#ifndef SingleProcessor
+	case RmC_Lock	:
+	case RmC_Unlock :
+		HandleLocking(connection, JobId, &request, &reply);
+		endcase;
+#endif
+
+	case RmC_IsProcessorFree :
+		HandleIsProcessorFree(connection, JobId, &request, &reply);
+		endcase;
+
+	case RmC_ObtainProcessors :
+	case RmC_ObtainExactProcessors :
+		HandleObtainProcessors(connection, JobId, &request, &reply);
+		endcase;
+
+#ifndef SingleProcessor			
+	case RmC_Reboot		 :
+	case RmC_ResetProcessors :
+	case RmC_SetNative	 :
+		HandleNativeStuff(connection, JobId, &request, &reply);
+		endcase;
+			
+	case RmC_Revert		 :
+	case RmC_MakeConnections :
+		HandleConnectionStuff(connection, JobId, &request, &reply);
+		endcase;
+#endif			
+	case RmC_GetId	:
+		HandleGetId(connection, JobId, &request, &reply);
+		endcase;
+
+	case RmC_ReportProcessor :
+		HandleReportProcessor(connection, JobId, &request, &reply);
+		endcase;
+
+	case RmC_GetTaskforce	:
+		HandleGetTaskforce(connection, JobId, &request, &reply);
+		endcase;
+
+	case RmC_GetTask	:
+		HandleGetTask(connection, JobId, &request, &reply);
+		endcase;
+
+      	default : report("unexpected request %x", request.FnRc);
+		MRSW_FreeRead();
+		abend broken;
+d333 4
+d340 7
+a346 5
+     if (request.Network ne (RmNetwork) NULL) RmFreeNetwork(request.Network);
+     if (request.Taskforce ne (RmTaskforce) NULL) RmFreeTaskforce(request.Taskforce);
+     if (request.Processor ne (RmProcessor) NULL) RmFreeProcessor(request.Processor);
+     if (request.Task ne (RmTask) NULL) RmFreeTask(request.Task);
+     if (request.VariableData ne NULL) Free(request.VariableData);
+a350 2
+broken:
+
+d353 5
+a357 9
+   MRSW_GetRead();
+   unless(EmptyList_(connection->Processors))
+    { MRSW_FreeRead();
+      MRSW_GetWrite();
+      (void) WalkList(&(connection->Processors), &AutomaticRelease);
+      MRSW_FreeWrite();
+    }
+   else
+    MRSW_FreeRead();
+d361 22
+d433 15
+d449 59
+d551 2
+a552 1
+
+d576 1
+a576 2
+		{ DomainEntry *domain_entry = (DomainEntry *)
+			RmGetProcessorPrivate(Processor);
+d600 2
+a601 1
+
+d613 2
+a614 1
+
+d633 2
+a634 1
+
+d650 2
+a651 1
+
+d680 1
+a680 1
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(processor);
+d698 1
+a698 1
+
+d700 1
+d793 2
+a794 1
+
+d917 1
+a917 1
+
+d919 1
+a919 1
+
+d957 1
+d959 13
+d973 804
+@
+
+
+1.11
+log
+@Minor changes to match Helios1_2_2_Native final release
+@
+text
+@d17 1
+a18 2
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/tfmjobs.c,v 1.4 1991/09/20 10:13:37 bart Exp $";
+
+d34 2
+d42 6
+a47 1
+static	int	AllocationId	= 1;
+d49 1
+a49 1
+static	bool	DomainLocked	= TRUE;
+d51 1
+a51 1
+static	bool	DomainLocked	= FALSE;
+d54 1
+a54 16
+/**
+*** A little utility routine to cope with the fact that pipe reads do
+*** not necessarily return the amount of data requested.
+**/
+word FullRead(Stream *pipe, BYTE *buffer, word amount, word timeout)
+{ word	read = 0;
+  word	temp;
+
+  forever  
+  { temp = Read(pipe, &(buffer[read]), amount - read, timeout);
+    if (temp < 0)
+     return((read eq 0) ? temp : read);
+    read += temp;
+    if (read >= amount) return(read);
+    if (timeout ne -1) return(read);
+  }
+d57 7
+a63 7
+/*----------------------------------------------------------------------------*/
+/**
+*** This routine gets called when the resource management library opens
+*** a stream to a tfm. All that should happen on this stream is a single
+*** RmC_Init request, which means that some client wants a pipe to talk
+*** to the tfm. This pipe is created, details are sent back, and the
+*** client can now perform sensible communication with the tfm.
+d65 1
+a65 1
+static	void	accept_connection(MCB *m, bool);
+d67 5
+a71 16
+void do_open_rmlib(ServInfo *servinfo, MCB *m, Port reqport)
+{ ObjNode	*f		= servinfo->Target;
+  BYTE		*data		= m->Data;
+  bool		FullAccess	= FALSE;  
+  IOCMsg2	*req		= (IOCMsg2 *) (m->Control);
+  
+  if (CheckMask(req->Common.Access.Access, AccMask_D))
+   FullAccess = TRUE;
+   
+  f->Account++;
+  UnLockTarget(servinfo);
+  forever
+   { word e;
+     m->MsgHdr.Dest = reqport;
+     m->Timeout     = -1;
+     m->Data        = data;
+d73 4
+a76 7
+     e = GetMsg(m);
+     if (e == EK_Timeout) break;
+     if (e < Err_Null) continue;
+     
+     Wait(&f->Lock);
+     
+     m->MsgHdr.FnRc = SS_TFM;
+d78 5
+a82 16
+     if (e eq (FC_Private + RmC_Init))
+      accept_connection(m, FullAccess);
+     elif ((e & FC_Mask) ne FC_GSP)
+      ErrorMsg(m, EC_Error + EG_WrongFn + EO_Message);
+     else
+      switch(e & FG_Mask)
+       {
+         case FG_Close :
+                     if (m->MsgHdr.Reply != NullPort) ErrorMsg(m, Err_Null);
+                     Signal(&f->Lock);
+                     goto done;
+                     
+         default       :
+                     ErrorMsg(m, EC_Error + SS_TFM + EG_FnCode + EO_File);
+                     break;
+       }
+d84 2
+a85 2
+     Signal(&f->Lock);
+   }
+d87 5
+a91 3
+done:
+  f->Account--;
+}
+d93 2
+a94 13
+/**
+*** Private protocol messages. The only private protocol message currently
+*** sent to a stream is RmC_Init, requesting a new pipe connection. Space
+*** is allocated for a suitable data structure to remember details about
+*** this connection, then a ``new'' pipe is created. The current pipe
+*** server does not guarantee that Create() will produce a new unique
+*** object, it will fail if the specified pipe already exists. If the
+*** pipe can be created and opened happily, a reply is sent to the client
+*** with details of the new pipe. The Resource Management library
+*** immediately opens its own end of this pipe, writes a synchronisation
+*** integer, and reads one back. On this end I can now create a
+*** ConnectionGuardian process.
+**/
+d96 2
+a97 1
+static void	ConnectionGuardian(TfmConn Connection);
+d99 4
+a102 9
+static	void	accept_connection(MCB *m, bool FullAccess)
+{ TfmConn	Connection		= Malloc(sizeof(TfmConnStruct));
+  Object	*PipeServer		= Null(Object);
+  Object	*NewPipe		= Null(Object);
+  char		PipeName[16];
+  static int	NextPipeID		= 1;
+  static int	NextConnectionId	= 1;
+  int		rc;
+  int		retries;
+d104 6
+a109 10
+  if (Connection eq (TfmConn)NULL)
+   { rc = EC_Error + EG_NoMemory + EO_Server; goto error1; }
+  Connection->Pipe		= Null(Stream);
+  Connection->Program		= m->Control[0];
+  InitSemaphore(&(Connection->WriteLock), 1);
+  InitList(&(Connection->Processors));
+  InitList(&(Connection->Tasks));
+  InitList(&(Connection->Taskforces));    
+  Connection->FullAccess = FullAccess;
+  Connection->Id	 = NextConnectionId++;
+d111 2
+a112 3
+  PipeServer = Locate(Null(Object), "/pipe");
+  if (PipeServer eq Null(Object))
+   { rc = EC_Error + EG_Unknown + EO_Pipe; goto error1; }
+d114 2
+a115 7
+	/* Attempt to create a unique pipe, but do not try very hard */
+  strcpy(PipeName, "TFM");
+  addint(PipeName, NextPipeID++);
+  NewPipe = Create(PipeServer, PipeName, Type_Pipe, 0, Null(BYTE));
+  Close(PipeServer);
+  if (NewPipe eq Null(Object))
+   { rc = EC_Error + EG_Create + EO_Pipe; goto error1; }
+d117 5
+a121 3
+  Connection->Pipe = PseudoStream(NewPipe, O_ReadWrite);
+  if (Connection->Pipe eq Null(Stream))
+   { rc = EC_Error + EG_Open + EO_Pipe; goto error1; }
+d123 6
+a128 5
+	/* Send a reply back to the client with enough info for it to */
+	/* open its end of the pipe */
+  InitMCB(m, 0, m->MsgHdr.Reply, NullPort, Err_Null);
+  MarshalStream(m, Connection->Pipe);
+  if (PutMsg(m) ne Err_Null) goto error2;
+d130 2
+a131 2
+	/* Attempt to synchronise with the client */
+  rc = EC_Error;  
+d133 9
+a141 12
+  for (retries = 0; retries < 10; retries++)
+   { WORD synch;
+     if (Read(Connection->Pipe, (BYTE *) &synch, sizeof(WORD), OneSec) eq
+     	 sizeof(WORD))
+      { rc = Err_Null; break; }
+     else
+      Delay(OneSec / 4);
+   }
+   
+  if (Write(Connection->Pipe, (BYTE *) &rc, sizeof(WORD), OneSec) ne
+            sizeof(WORD))
+   goto error2;
+d143 18
+a160 20
+  Close(NewPipe);
+    
+ 	/* Both sides are happy, Fork off the ConnectionGuardian() */
+  unless(Fork(2000, ConnectionGuardian, 4, Connection)) goto error2;
+   
+  return;
+  
+error1:
+  ErrorMsg(m, rc);
+error2:
+  if (Connection ne (TfmConn)NULL)
+   { if (Connection->Pipe ne Null(Stream))
+      Close(Connection->Pipe);
+     Free(Connection);
+   }
+  if (NewPipe ne Null(Object))
+   { (void) Delete(NewPipe, Null(char));
+     Close(NewPipe);
+   }
+  return;
+a175 4
+static void HandleObtainProcessor	( TfmConn, int, RmRequest *, RmReply *);
+static void HandleReleaseProcessor	( TfmConn, int, RmRequest *, RmReply *);
+static void HandleObtainNetwork		( TfmConn, int, RmRequest *, RmReply *);
+static void HandleReleaseNetwork	( TfmConn, int, RmRequest *, RmReply *);
+a176 1
+static void HandleObtainProcessors	( TfmConn, int, RmRequest *, RmReply *);
+d183 2
+d186 1
+a186 1
+static void ConnectionGuardian(TfmConn Connection)
+d191 1
+a191 1
+  
+d197 1
+a197 1
+     rc = Read(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+d203 1
+a203 1
+        if ((Result2(Connection->Pipe) & EG_Mask) eq EG_Timeout) continue;
+d214 2
+a215 2
+     rc = FullRead(Connection->Pipe, (BYTE *) &request, sizeof(RmRequest), -1);
+     if (rc < sizeof(RmRequest)) goto broken;
+d219 1
+a219 1
+      if ((rc = RmReadStream(Connection->Pipe, &(request.Network), &(request.Taskforce)))
+d224 1
+a224 1
+      if ((rc = RmReadProcessor(Connection->Pipe, &(request.Processor), FALSE))
+d229 1
+a229 1
+      if ((rc = RmReadTask(Connection->Pipe, &(request.Task), FALSE))
+d237 1
+a237 1
+        if (FullRead(Connection->Pipe, request.VariableData, request.VariableSize, -1) < 0)
+d247 2
+a248 1
+     Wait(&(SingleStep));
+d251 2
+a252 2
+		HandleGetNetwork(Connection, JobId, &request, &reply);
+		break;
+d260 2
+a261 2
+		HandleProcessorAllocation(Connection, JobId, &request, &reply);
+		break;
+d263 2
+a264 2
+		HandleLastChange(Connection, JobId, &request, &reply);
+		break;
+d266 2
+a267 2
+		HandleObtainProcessor(Connection, JobId, &request, &reply);
+		break;
+d269 2
+a270 2
+		HandleReleaseProcessor(Connection, JobId, &request, &reply);
+		break;
+d273 2
+a274 2
+		HandleObtainNetwork(Connection, JobId, &request, &reply);
+		break;
+d276 2
+a277 2
+		HandleReleaseNetwork(Connection, JobId, &request, &reply);
+		break;
+d281 2
+a282 2
+		HandleLocking(Connection, JobId, &request, &reply);
+		break;
+d286 2
+a287 2
+		HandleIsProcessorFree(Connection, JobId, &request, &reply);
+		break;
+d291 2
+a292 2
+		HandleObtainProcessors(Connection, JobId, &request, &reply);
+		break;
+d298 2
+a299 2
+		HandleNativeStuff(Connection, JobId, &request, &reply);
+		break;
+d303 2
+a304 2
+		HandleConnectionStuff(Connection, JobId, &request, &reply);
+		break;
+d307 2
+a308 2
+		HandleGetId(Connection, JobId, &request, &reply);
+		break;
+d310 12
+d323 2
+a324 2
+		  Signal(&SingleStep);
+		  goto broken;
+a325 1
+     Signal(&(SingleStep));
+d327 2
+d340 8
+a347 5
+   Close(Connection->Pipe);
+   unless(EmptyList_(Connection->Processors))
+    { Wait(&SingleStep);
+      (void) WalkList(&(Connection->Processors), &AutomaticRelease);
+      Signal(&SingleStep);
+d349 3
+a351 1
+   Free(Connection);
+d354 3
+a356 2
+static int ReplyRmLib(TfmConn Connection, int JobId, RmReply *reply)
+{ int rc = RmE_CommsBreakdown;
+d363 4
+a366 2
+  Wait(&(Connection->WriteLock));
+  if (Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1) ne sizeof(int))
+d369 1
+a369 1
+  if (Write(Connection->Pipe, (BYTE *) reply, sizeof(RmReply), -1) ne sizeof(RmReply))
+d374 1
+a374 1
+   if ((rc = RmWriteStream(Connection->Pipe, reply->Network, reply->Taskforce, reply->Filter))
+d379 1
+a379 1
+   if ((rc = RmWriteProcessor(Connection->Pipe, reply->Processor, reply->Filter))
+d384 1
+a384 1
+   if ((rc = RmWriteTask(Connection->Pipe, reply->Task, reply->Filter))
+d389 1
+a389 1
+   if (Write(Connection->Pipe, reply->VariableData, reply->VariableSize, -1)
+d393 1
+a393 1
+  Signal(&(Connection->WriteLock));
+d399 1
+a399 1
+		Connection->Pipe->Name);
+d401 1
+a401 1
+  Signal(&(Connection->WriteLock));
+a543 23
+/**----------------------------------------------------------------------------
+*** ObtainProcessor(). This is where the fun starts.
+***
+*** 1) housekeeping, read the processor template from the client, allocate
+***    any buffers required, check that the client is authorised to obtain
+***    processors inside this TFM...
+*** 2) if the request is for an existing processor, then this may or may
+***    not be inside the current domain. If it is fine. Otherwise an
+***    attempt is made to get the specified processor from the system pool.
+*** 3) if the request contains a puid attribute life is much the same as
+***    in step 2.
+*** 4) an initial search is made in the domain to find a processor that
+***    may be suitable. This search is quite restrictive. However, the
+***    best match to date is remembered (this may be null for a weird request)
+*** 5) if the search is unsuccessful an attempt is made to get another
+***    processor from the system pool. If that succeeds fine.
+*** 6) otherwise if the search revealed any suitable processor at all,
+***    that processor is used. If the domain does not contain a suitable
+***    processor and the system pool could not provide one, tough.
+**/
+static int		ObtainProcessor_filter(RmProcessor, RmProcessor);
+static RmProcessor	GetFromPool(RmProcessor template, int *rc);
+static int		ObtainProcessorSearch(RmProcessor, ...);
+a544 1441
+static void HandleObtainProcessor(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{ RmProcessor		template	= (RmProcessor) NULL;
+  RmProcessor		result		= (RmProcessor) NULL;
+  RmFilterStruct	filter;
+  DomainEntry		*domain_entry;
+  int			rc;
+  int			i;
+  RmProcessor		LeastBusy;
+  int			LowestCost;
+
+  Debug(dbg_Allocate, ("request for a single processor"));
+           
+  unless(Connection->FullAccess)
+   { rc = RmE_NoAccess; goto done; }
+  template = request->Processor;
+
+  if (template->StructType eq RmL_Existing)
+   { 
+     Debug(dbg_Allocate, ("request is for an existing processor"));
+     result = RmFindProcessor(Domain, template->Uid);
+     if ((result eq RmM_NoProcessor) || (result eq RmM_ExternalProcessor))
+      if (!DomainLocked)
+       if ((result = GetFromPool(template, &rc)) eq (RmProcessor)NULL)
+        goto done;
+
+     goto found;
+   }
+
+  { char *puid = RmGetObjectAttribute((RmObject) template, "puid", FALSE);
+    
+    if (puid ne Null(char))
+     { Debug(dbg_Allocate, ("puid has been specified"));
+       result = LookupProcessor(Domain, ++puid);
+       if (result eq (RmProcessor)NULL)
+        if (!DomainLocked)
+         if ((result = GetFromPool(template, &rc)) eq (RmProcessor) NULL)
+          { rc = RmE_NotFound; goto done; }
+       goto found;
+     }
+  }
+
+	/* No particular processor is required. Perform a search of the	*/
+	/* current domain.						*/
+   LeastBusy	= (RmProcessor) NULL;
+   LowestCost	= MaxInt;
+   Debug(dbg_Allocate, ("searching current domain for a free processor"));
+
+   result = (RmProcessor) RmSearchProcessors(Domain, &ObtainProcessorSearch,
+   		template, &LeastBusy, &LowestCost);
+   if (result ne (RmProcessor) NULL) goto found;
+
+   if (!DomainLocked)
+    { result = GetFromPool(template, &rc);
+      if (result ne (RmProcessor) NULL) goto found;
+    }
+    
+   if (LeastBusy eq (RmProcessor) NULL) goto done;
+   Debug(dbg_Allocate, ("making do with an existing processor"));
+   result = LeastBusy;
+        
+	/* At this point, result should point to a valid processor	*/
+	/* that meets the user's requirements. This does not mean	*/
+	/* it is safe to allocate...					*/
+	/* BLV - check processor purpose as well */
+found:
+
+  Debug(dbg_Allocate, ("selected processor %s", result->ObjNode.Name));
+
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(result);
+  if (domain_entry->NumberUsers >= MaxUsersPerProcessor)
+   { rc = RmE_InUse; goto done; }
+  if ((result->AllocationFlags & RmF_Exclusive) &&
+      (domain_entry->NumberUsers > 0))
+   { rc = RmE_InUse; goto done; }
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Connection eq Connection)
+    { rc = RmE_InUse; goto done; }
+  for (i = 0; i < MaxUsersPerProcessor; i++)    
+   if (domain_entry->AllocationTable[i].Id eq 0)
+    { domain_entry->AllocationTable[i].Id		= AllocationId++;
+      domain_entry->AllocationTable[i].Connection	= Connection;
+      AddTail(	&(Connection->Processors),
+      		&(domain_entry->AllocationTable[i].Node));
+      break;
+    }
+
+  Debug(dbg_Allocate, ("successfully obtained a processor"));
+  rc = RmE_Success;
+  domain_entry->NumberUsers++;
+  if (template->AllocationFlags & RmF_Exclusive)
+   { result->AllocationFlags	|= RmF_Exclusive;
+     result->ApplicationId 	 = Connection->Id;
+   }
+  else
+   result->ApplicationId	= -1;
+
+  LastChange = result->ObjNode.Dates.Access = GetDate();
+  
+done:
+  reply->FnRc = rc;
+  if (rc eq RmE_Success)
+   { filter.Processor	= &ObtainProcessor_filter;
+     reply->Filter	= &filter;     
+     reply->Processor	= result;
+   }
+  (void) ReplyRmLib(Connection, JobId, reply);
+}
+
+static	int	ObtainProcessor_filter(RmProcessor real, RmProcessor copy)
+{ DomainEntry	*domain_entry;
+
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(real);
+  copy->ObjNode.Key	= 0;
+  copy->ObjNode.Parent	= Null(DirNode);
+  copy->Root		= (RmNetwork) NULL;
+  copy->StructType	= RmL_Obtained;
+  NewCap(&(copy->NsCap), &(real->ObjNode), AccMask_R + AccMask_W + AccMask_D);
+  copy->Private		= 0;
+  return(RmE_Success);
+}
+
+static	int	ObtainProcessorSearch(RmProcessor Processor, ...)
+{ va_list	args;
+  RmProcessor	template;
+  DomainEntry	*domain_entry;
+  RmProcessor	*LeastBusy;
+  int		*LowestCost;
+  int		cost_factor;
+    
+  va_start(args, Processor);
+  template	= va_arg(args, RmProcessor);
+  LeastBusy	= va_arg(args, RmProcessor *);
+  LowestCost	= va_arg(args, int *);
+  va_end(args);
+  
+	/* Booked access means that the processor cannot be allocated	 */
+	/* to meet an arbitrary request.				 */
+  if (Processor->AllocationFlags & RmF_Booked) return(0);
+
+	/* If the processor does not match the template's requirements	*/
+	/* forget it							*/  
+  unless(MatchProcessor(Processor, template)) return(0);
+
+      	/* This processor appears to stand a chance. If the number of	*/
+      	/* users is currently zero than this processor is ideal.	*/
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+  if (domain_entry->NumberUsers eq 0) return((int) Processor);
+
+ 	/* If the number of users is greater than zero than it is	*/
+ 	/* necessary to calculate a cost factor for using this processor*/
+ 	/* This equation may need fine-tuning.				*/
+  cost_factor = domain_entry->NumberUsers;
+  if (RmGetProcessorMemory(Processor) > 0x100000) cost_factor--;
+  if (cost_factor < *LowestCost)
+   { *LeastBusy		= Processor;
+     *LowestCost	= cost_factor;
+   }
+
+	/* However, this processor is not ideal and there may be a	*/
+	/* better one.							*/
+  return(0);
+}
+  
+/**----------------------------------------------------------------------------
+*** ReleaseProcessor(). A single set of Processor details will be sent.
+*** If valid, the number of users for that processor is decremented and
+*** the slot in the DomainEntry structure will be released. If the number
+*** of users has decremented to zero then the processor may be returned to
+*** the system pool.
+**/
+static void HandleReleaseProcessor(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{ RmProcessor		Processor;
+  DomainEntry		*domain_entry;
+  int			rc;
+  int			i;
+
+  Debug(dbg_Release, ("release-processor request"));
+    
+  Processor = RmFindProcessor(Domain, request->Uid);
+  if ((Processor eq RmM_NoProcessor) || (Processor eq RmM_ExternalProcessor))
+   { rc = RmE_NotFound; goto done; }
+
+  Debug(dbg_Release, ("processor affected is %s", Processor->ObjNode.Name));
+  unless(GetAccess(&(request->Cap), Processor->ObjNode.Key) &&
+         (request->Cap.Access & AccMask_D))
+   { rc = RmE_NoAccess; goto done; }
+
+  LastChange = Processor->ObjNode.Dates.Access = GetDate();
+  /* Processor->ApplicationId	= -1;*/
+  
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Connection eq Connection)
+    { domain_entry->AllocationTable[i].Connection = (TfmConn) NULL;
+      domain_entry->AllocationTable[i].Id	  = 0;
+      Remove(&(domain_entry->AllocationTable[i].Node));
+      break;
+    }
+  domain_entry->NumberUsers--;
+  if (domain_entry->NumberUsers eq 0)
+   { if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor)) eq 0)
+      ReturnProcessorToPool(Processor);
+     else
+      Processor->AllocationFlags &= ~RmF_Exclusive;
+   }
+  
+  rc = RmE_Success;
+         
+done:
+  reply->FnRc	= rc;
+  ReplyRmLib(Connection, JobId, reply);
+}
+
+/**----------------------------------------------------------------------------
+*** ObtainNetwork(). This is the big one.
+***
+*** 1) do some housekeeping. Basically this involves reading in the
+***    starting position from the search (which is ignored) and the template
+***    network, and building a network hierarchy structure for the results
+***    as they are produced.
+*** 2) as a first step, walk down the template and look for existing processors
+***    or processors with puid attributes. If these can be matched inside
+***    the domain move them from the template to the allocation unit, zapping
+***    the data structure. If the processor contains the NEW attribute then
+***    step 3 should be skipped
+*** 3) second step, try to match processors in the template with processors
+***    in the domain (except the existing ones or ones with puid's). Again,
+***    following a match move the processor from the template to the result
+*** 4) the template now contains only processors which cannot be matched
+***    satisfactorily with processors in the domain. A request is made to
+***    the network server to get these from the system pool. Any processors
+***    that matched can now be moved from the template to the result
+*** 5) a final search is made in the template, to see if a less satisfactory
+***    match can be found. I.e. is it possible to share certain processors
+***    between users.
+*** 6) the results are processed.
+BLV
+BLV the current algorithm only works for simple cases. What should happen
+BLV is an initial search of the template, putting the processors into a
+BLV linked list in order of how restrictive the template is. The processors
+BLV should then be processed in that list order.
+**/
+static RmNetwork BuildHierarchy(void);
+static int	 ObtainNetwork_Search1(RmProcessor, ...);
+static int	 ObtainNetwork_Search2(RmProcessor, ...);
+static int	 GetNetworkFromPool(RmNetwork, TfmConn, RmNetwork);
+static int	 ObtainNetwork_Search3(RmProcessor, ...);
+static void	 AbortObtainNetwork(RmNetwork, TfmConn);
+static bool	 MoveProcessor(RmProcessor, RmProcessor, RmNetwork, TfmConn);
+static void	 CleanOutResult(RmNetwork);
+static bool	 CheckAvailable(RmProcessor real, TfmConn, RmProcessor);
+
+static void ReallyObtainNetwork(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply, RmNetwork template);
+	
+static void HandleObtainNetwork(TfmConn Connection, int JobId, 
+		RmRequest *request, RmReply *reply)
+{ 
+  Debug(dbg_Allocate, ("request for a network of processors"));
+  ReallyObtainNetwork(Connection, JobId, request, reply, request->Network);
+}
+
+static	void HandleObtainProcessors(TfmConn Connection, int JobId, 
+		RmRequest *request, RmReply *reply)
+{ RmNetwork	template = RmNewNetwork();
+  int		count, i;
+    
+  Debug(dbg_Allocate, ("request for a group of processors"));
+
+  count = request->Arg2;
+  for (i = 0; i < count; i++)
+   { RmProcessor	junk;
+     if (RmReadProcessor(Connection->Pipe, &junk, FALSE) ne RmE_Success)
+      goto error;
+     RmAddtailProcessor(template, junk);
+   }
+  
+  ReallyObtainNetwork(Connection, JobId, request, reply, template);
+  return;
+
+error:
+	/* BLV - improve */
+  Debug(dbg_Allocate, ("communication error"));
+}
+
+static	void ReallyObtainNetwork(TfmConn Connection, int JobId,
+		RmRequest  *request, RmReply *reply, RmNetwork template)
+{ int		start_from	= request->Arg1;
+  int		number_to_match;
+  int		number_to_get;
+  int		rc = RmE_Success;
+  RmNetwork	result = (RmNetwork) NULL;
+
+  result = BuildHierarchy();
+  if (result eq (RmNetwork) NULL)
+   { rc = RmE_ServerMemory; goto done; }
+   
+  number_to_get = number_to_match = RmCountProcessors(template);
+  if (number_to_match eq 0)
+   { rc = RmE_Success; goto done; }
+
+  Debug(dbg_Allocate, ("the request is for %d processors", number_to_match));
+     
+  number_to_match -= RmApplyProcessors(template, &ObtainNetwork_Search1, Connection, result);
+  if (number_to_match eq 0) goto finished;
+
+  Debug(dbg_Allocate, ("examining domain for suitable processors"));
+  number_to_match -= RmApplyProcessors(template, &ObtainNetwork_Search2, Connection, result);
+  if (number_to_match eq 0) goto finished;
+
+  if (!DomainLocked)
+   { Debug(dbg_Allocate, ("attempting to get some processors from the free pool"));
+        number_to_match -= GetNetworkFromPool(template, Connection, result);
+     if (number_to_match eq 0) goto finished;
+   }
+   
+  Debug(dbg_Allocate, ("trying to make do with existing processors"));
+  number_to_match -= RmApplyProcessors(template, &ObtainNetwork_Search3, Connection, result);
+
+finished:
+
+  number_to_match = RmCountProcessors(result);
+  if (number_to_match eq 0)
+   { rc = RmE_NotFound; goto done; }
+   
+  number_to_get -= number_to_match;
+  if (number_to_get ne 0)
+   { if ((request->FnRc eq RmC_ObtainExactNetwork) ||
+         (request->FnRc eq RmC_ObtainExactProcessors))
+      rc = RmE_NotFound;
+     else
+      rc = RmE_PartialSuccess;
+   }
+
+  Debug(dbg_Allocate, ("failed to match %d processors", number_to_get));
+  
+done:
+
+  reply->FnRc	= rc;
+  if ((rc eq RmE_Success) || (rc eq RmE_PartialSuccess))
+   reply->Network = result;
+  elif (result ne (RmNetwork) NULL)
+   AbortObtainNetwork(result, Connection);
+  ReplyRmLib(Connection, JobId, reply);
+
+  if (result ne (RmNetwork) NULL) CleanOutResult(result);
+}
+
+/**
+*** Make a copy of the network hierarchy. To avoid running out of memory at
+*** an awkward moment, enough Uid tables are also allocated.
+**/
+static	int	BuildHierarchyAux(RmProcessor, ...);
+
+static	RmNetwork	BuildHierarchy(void)
+{ RmNetwork	result = RmNewNetwork();
+  int		rc = RmE_Success;
+  int		i, j;
+  
+  if (result eq (RmNetwork) NULL) return(result);
+  strcpy(result->DirNode.Name, NetworkName);
+  result->StructType = RmL_Obtained;
+  
+  { RmUidTableEntry	**tab;
+    tab = (RmUidTableEntry **) Malloc(Domain->NoTables * sizeof(RmUidTableEntry *));
+    if (tab eq Null(RmUidTableEntry *))
+     { RmFreeNetwork(result); return((RmNetwork) NULL); }
+    for (i = 0; i < Domain->NoTables; i++)
+     { tab[i] = (RmUidTableEntry *) Malloc(RmL_SlotsPerTable * sizeof(RmUidTableEntry));
+       if (tab[i] eq Null(RmUidTableEntry))
+        { for (j = 0; j < i; j++) Free(tab[i]);
+          Free(tab);
+          RmFreeNetwork(result);
+          return((RmNetwork) NULL);
+        }
+       for (j = 0; j < RmL_SlotsPerTable; j++)
+        { (tab[i])[j].Cycle	= 0;
+          (tab[i])[j].Free	= TRUE;
+          (tab[i])[j].Target	= (void *) RmL_NoObject;
+        }
+     }
+    result->NoTables	= Domain->NoTables;
+    result->Tables	= tab;
+  }
+  
+  if (Domain->NoSubnets > 0)
+   rc = RmSearchNetwork(Domain, &BuildHierarchyAux, result);
+  if (rc ne RmE_Success)
+   { RmFreeNetwork(result); return((RmNetwork)NULL); }
+  else
+   return(result);
+}
+
+static int BuildHierarchyAux(RmProcessor Processor, ...)
+{ va_list	args;
+  RmNetwork	parent;
+  RmNetwork	new;
+  RmNetwork	actual;
+    
+  unless(RmIsNetwork(Processor)) return(RmE_Success);
+  va_start(args, Processor);
+  parent = va_arg(args, RmNetwork);
+  va_end(args);
+
+  actual	= (RmNetwork) Processor;
+  new		= RmNewNetwork();
+  if (new eq (RmNetwork)NULL) return(RmE_ServerMemory);
+  strcpy(new->DirNode.Name, Processor->ObjNode.Name);
+  new->StructType = RmL_Obtained;
+  if (RmAddtailProcessor(parent, (RmProcessor) new) eq (RmProcessor) NULL)
+   { RmFreeNetwork(new); return(RmE_Corruption); }
+
+  if (actual->NoSubnets > 0)
+   return(RmSearchNetwork(actual, &BuildHierarchyAux, new));
+  else
+   return(RmE_Success);
+}
+
+/**
+*** The first phase in the mapping algorithm. For every processor in the
+*** template that already exists or that has a puid:
+*** 1) if the processor is already in the domain and is available, allocate
+***    it.
+*** 2) If it is not available remove it from the template and get rid of it.
+*** 3) If it is not in the domain, leave it alone for a subsequent
+***    RmObtainNetwork().
+**/
+
+static int	 ObtainNetwork_Search1(RmProcessor template, ...)
+{ va_list	args;
+  TfmConn	Connection;
+  RmNetwork	result;
+  
+  va_start(args, template);
+  Connection = va_arg(args, TfmConn);
+  result     = va_arg(args, RmNetwork);
+  va_end(args);
+  
+  template->ObjNode.Account	= TfmProcessor->ObjNode.Account;
+  
+  RmSetProcessorPrivate(template, 0);
+  
+  if (template->StructType eq RmL_Existing)
+   { RmProcessor match = RmFindProcessor(Domain, template->Uid);
+
+     Debug(dbg_Allocate, ("request for existing processor %s",\
+     		template->ObjNode.Name));
+     RmSetProcessorPrivate(template, 1);
+     
+     if ((match eq RmM_NoProcessor) || (match eq RmM_ExternalProcessor))
+      return(0);
+
+     if (CheckAvailable(match, Connection, template))
+      if (MoveProcessor(template, match, result, Connection))
+       return(1); 
+     RmFreeProcessor(RmRemoveProcessor(template));
+     return(1);
+   }
+
+  { char *puid = RmGetObjectAttribute((RmObject) template, "puid", FALSE);
+    if (puid ne Null(char))
+     { RmProcessor match = LookupProcessor(Domain, ++puid);
+
+       Debug(dbg_Allocate, ("puid has been specified"));
+       RmSetProcessorPrivate(template, 1);
+       if (match eq (RmProcessor) NULL) return(0);
+       
+       if (CheckAvailable(match, Connection, template))
+        if (MoveProcessor(template, match, result, Connection))
+         return(1);
+       RmFreeProcessor(RmRemoveProcessor(template));
+       return(1);
+     }
+  }
+
+  if (RmGetObjectAttribute((RmObject) template, "NEW", TRUE) ne Null(char))
+   RmSetProcessorPrivate(template, 1);
+
+  return(0);     
+}
+
+/**
+*** Phase 2 of the search. For every processor left in the template
+*** that has not had its private field set to 1, search the domain
+*** for a suitable processor. Only completely unused processors matching
+*** the description are acceptable in this phase.
+**/
+static int	 ObtainNetwork_Search2Aux(RmProcessor, ...);
+
+static int	 ObtainNetwork_Search2(RmProcessor template, ...)
+{ va_list	args;
+  TfmConn	Connection;
+  RmNetwork	result;
+  RmProcessor	match;
+  
+  va_start(args, template);
+  Connection = va_arg(args, TfmConn);
+  result     = va_arg(args, RmNetwork);
+  va_end(args);
+  
+  if (RmGetProcessorPrivate(template) eq 1) return(0);
+  match = (RmProcessor) RmSearchProcessors(Domain, &ObtainNetwork_Search2Aux,
+  		 template, Connection);
+  if (match eq (RmProcessor) NULL)
+   return(0);
+   
+  if (MoveProcessor(template, match, result, Connection))
+   return(1);
+  else
+   return(0);
+}
+
+static	int ObtainNetwork_Search2Aux(RmProcessor real, ...)
+{ va_list	args;
+  RmProcessor	template;
+  TfmConn	Connection;
+  DomainEntry	*domain_entry;
+
+	/* booked processors cannot be allocated for this */
+  if (real->AllocationFlags & RmF_Booked) return(0);
+  
+  va_start(args, real);
+  template   = va_arg(args, RmProcessor);
+  Connection = va_arg(args, TfmConn);
+  va_end(args);
+  
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(real);
+  if (domain_entry->NumberUsers > 0) return(0);
+  
+  unless(MatchProcessor(real, template)) return(0);
+  unless(CheckAvailable(real, Connection, template)) return(0);
+  return((int) real);
+}
+
+/**
+*** The current domain is not big enough, so more processors have to be
+*** obtained from the system pool. 
+*** 1) Use what is left in the current template to get some more processors
+*** 2) If more processors could be obtained, try to allocate DomainEntry
+***    structures for them all.
+*** 3) Then try to merge them in to the existing domain.
+*** 4) for every processor in the template, if it was mapped onto a processor
+***    in the result, allocate that processor.
+**/   		
+
+static int	GetNetworkFromPool_Aux1(RmProcessor, ...);
+static int	GetNetworkFromPool_Aux2(RmProcessor, ...);
+static int	GetNetworkFromPool_Aux3(RmProcessor, ...);
+
+static int	 GetNetworkFromPool(RmNetwork template, TfmConn Connection,
+			RmNetwork result)
+{ RmNetwork	obtained;
+  int		rc;
+
+  obtained = RmObtainNetwork(template, FALSE, &rc);
+  if (obtained eq (RmNetwork) NULL) return(0);
+
+  Debug(dbg_Allocate, ("got some processors from the pool"));  
+  if (RmSearchProcessors(obtained, &GetNetworkFromPool_Aux1) ne RmE_Success)
+   { RmApplyProcessors(obtained, &GetNetworkFromPool_Aux2);
+     RmReleaseNetwork(obtained);
+     RmFreeNetwork(obtained);
+     return(0);
+   }
+  Wait(&(Domain->DirNode.Lock));
+  RmMergeNetworks(Domain, obtained);
+  Signal(&(Domain->DirNode.Lock));
+  RmFreeNetwork(obtained);
+  return(RmApplyProcessors(template, &GetNetworkFromPool_Aux3, Connection, result));
+}
+
+static int GetNetworkFromPool_Aux1(RmProcessor Processor, ...)
+{ 
+  if (!AddDomainEntry(Processor))
+   return(1);
+
+  Processor->ObjNode.Key = NewKey() + _cputime();
+  LastChange = Processor->ObjNode.Dates.Access = GetDate();
+  return(0);
+}
+
+static int GetNetworkFromPool_Aux2(RmProcessor Processor, ...)
+{ DomainEntry	*domain_entry;
+
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+  if (domain_entry ne Null(DomainEntry))
+   Free(domain_entry);
+  return(0);
+}
+
+static int GetNetworkFromPool_Aux3(RmProcessor template, ...)
+{ va_list	args;
+  TfmConn	Connection;
+  RmNetwork	result;
+  RmProcessor	match;
+  
+  va_start(args, template);
+  Connection = va_arg(args, TfmConn);
+  result     = va_arg(args, RmNetwork);
+  va_end(args);
+  
+  match = RmFindMatchingProcessor(template, Domain);
+  if (match eq (RmProcessor) NULL) return(0);
+  if (MoveProcessor(template, match, result, Connection))
+   return(1);
+  else
+   return(0);
+}
+
+/**
+*** Final phase, similar to phase two but less restrictive.
+**/
+static int	 ObtainNetwork_Search3Aux(RmProcessor, ...);
+
+static int	 ObtainNetwork_Search3(RmProcessor template, ...)
+{ va_list	args;
+  TfmConn	Connection;
+  RmNetwork	result;
+  RmProcessor	match;
+  
+  va_start(args, template);
+  Connection = va_arg(args, TfmConn);
+  result     = va_arg(args, RmNetwork);
+  va_end(args);
+  
+  if (RmGetProcessorPrivate(template) eq 1) return(0);
+  match = (RmProcessor) RmSearchProcessors(Domain, &ObtainNetwork_Search3Aux,
+  		 template, Connection);
+  if (match eq (RmProcessor) NULL)
+   return(0);
+   
+  if (MoveProcessor(template, match, result, Connection))
+   return(1);
+  else
+   return(0);
+}
+
+static	int ObtainNetwork_Search3Aux(RmProcessor real, ...)
+{ va_list	args;
+  RmProcessor	template;
+  TfmConn	Connection;
+  DomainEntry	*domain_entry;
+    
+  va_start(args, real);
+  template   = va_arg(args, RmProcessor);
+  Connection = va_arg(args, TfmConn);
+  va_end(args);
+  
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(real);
+  unless(MatchProcessor(real, template)) return(0);
+  unless(CheckAvailable(real, Connection, template)) return(0);
+  return((int) real);
+}
+
+
+/**
+*** Abort the network in question. Every processor in the specified network
+*** has been allocated to this connection. This must be undone.
+**/
+static int	AbortObtainAux(RmProcessor Processor, ...);
+
+static void	AbortObtainNetwork(RmNetwork Network, TfmConn Connection)
+{ Debug(dbg_Allocate, ("aborting network obtain request"));
+  (void) RmApplyProcessors(Network, &AbortObtainAux, Connection);
+}
+
+static int	AbortObtainAux(RmProcessor Processor, ...)
+{ va_list	args;
+  TfmConn	Connection;
+  DomainEntry	*domain_entry;
+  int		i;
+    
+  va_start(args, Processor);
+  Connection = va_arg(args, TfmConn);
+  va_end(args);
+  
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Connection eq Connection)
+    { domain_entry->AllocationTable[i].Connection	= (TfmConn) NULL;
+      domain_entry->AllocationTable[i].Id		= 0;
+      (void) Remove(&(domain_entry->AllocationTable[i].Node));
+    }
+  domain_entry->NumberUsers--;
+  return(0);
+}
+  
+
+/**
+*** Check that a given processor can be allocated.
+**/
+static bool	CheckAvailable(RmProcessor match, TfmConn Connection,
+		RmProcessor template)     
+{ DomainEntry *domain_entry;
+  int	 i;
+
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(match);
+  if (domain_entry->NumberUsers > 0)
+   { if ((match->AllocationFlags & RmF_Exclusive) ||
+         (template->AllocationFlags & RmF_Exclusive))
+      return(FALSE);
+      
+     if (domain_entry->NumberUsers >= MaxUsersPerProcessor)
+      return(FALSE);
+     for (i = 0; i < MaxUsersPerProcessor; i++)
+      if (domain_entry->AllocationTable[i].Connection eq Connection)
+       return(FALSE);
+   }
+   
+  return(TRUE);
+}
+
+/**
+*** A suitable processor has been found. It must be moved to the
+*** appropriate position in the result network, complete with attribute
+*** information, link information, etc.
+**/
+static bool MoveProcessor(RmProcessor template, RmProcessor real, 
+				RmNetwork result, TfmConn Connection)
+{ RmProcessor	new_proc;
+  DomainEntry	*domain_entry;
+  int		i;
+
+  new_proc = RmNewProcessor();  
+  if (new_proc eq (RmProcessor) NULL) return(FALSE);
+
+  Debug(dbg_Allocate, ("processor %s has been allocated", real->ObjNode.Name));
+
+  memcpy(new_proc, real, sizeof(RmProcessorStruct));  
+  new_proc->ObjNode.Key		= 0;
+  new_proc->StructType		= RmL_Obtained;
+  new_proc->ObjNode.Parent	= Null(DirNode);
+  new_proc->Root		= (RmNetwork) NULL;
+  new_proc->MappedTo		= template->Uid;
+  NewCap(&(new_proc->NsCap), &(real->ObjNode), AccMask_R + AccMask_W + AccMask_D);
+
+  RmInsertProcessor(result, new_proc);
+
+  if (template->AllocationFlags & RmF_Exclusive)
+   { real->AllocationFlags	|= RmF_Exclusive;
+     real->ApplicationId	 = Connection->Id;
+     new_proc->ApplicationId	 = Connection->Id;
+   }
+  else
+   real->ApplicationId = new_proc->ApplicationId = -1;
+
+  RmRemoveProcessor(template);
+  RmFreeProcessor(template);
+
+  domain_entry	= (DomainEntry *) RmGetProcessorPrivate(real);
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Id eq 0)
+    { domain_entry->AllocationTable[i].Id		= AllocationId++;
+      domain_entry->AllocationTable[i].Connection	= Connection;
+      AddTail(	&(Connection->Processors),
+      		&(domain_entry->AllocationTable[i].Node));
+      break;
+    }
+  domain_entry->NumberUsers++;
+
+  return(TRUE);   
+}
+
+/**
+*** Cleaning out the result. The above code has cheated by duplicating
+*** various fields rather than making a new copy. To avoid horrible
+*** problems this must now be undone before the network is freed.
+**/
+static int	CleanOutAux1(RmProcessor, ...);
+
+static void CleanOutResult(RmNetwork Network)
+{ (void) RmApplyProcessors(Network, &CleanOutAux1);
+  RmFreeNetwork(Network);
+}
+
+static int CleanOutAux1(RmProcessor Processor, ...)
+{ 
+  Processor->Connections	= 0;
+  Processor->OtherLinks		= Null(RmLink);
+  Processor->AttribSize		= 0;
+  Processor->AttribFree		= 0;
+  Processor->AttribData		= Null(char);
+  Processor->PAttribSize	= 0;
+  Processor->PAttribFree	= 0;
+  Processor->PAttribData	= Null(char);
+  return(0);
+}
+
+/**----------------------------------------------------------------------------
+*** Releasing a network is mostly a case of ReleaseProcessor() in a loop.
+BLV A minor enhancements would be to collect together all the processors
+BLV being released and call RmReleaseNetwork for the Network Server, but
+BLV the savings are not worthwhile except for big networks
+**/
+static void HandleReleaseNetwork(TfmConn Connection, int JobId,
+		RmRequest *request, RmReply *reply)
+{ int			rc = RmE_Success;
+  ProcessorDetails	*details;
+  RmProcessor		Processor;
+  DomainEntry		*domain_entry;
+  int			i, j;
+
+  Debug(dbg_Release, ("release-network request"));
+ 
+  details = (ProcessorDetails *) request->VariableData;
+
+  for (i = 0; i < request->Arg1; i++)
+   { Processor = RmFindProcessor(Domain, details[i].Uid);
+     if ((Processor eq RmM_NoProcessor) ||(Processor eq RmM_ExternalProcessor))
+      { rc = RmE_NotFound; continue; }
+
+     Debug(dbg_Release, ("releasing processor %s", Processor->ObjNode.Name));
+
+     unless(GetAccess(&(details[i].Cap), Processor->ObjNode.Key) &&
+            (details[i].Cap.Access & AccMask_D))
+      { rc = RmE_NoAccess; continue; }
+
+     LastChange = Processor->ObjNode.Dates.Access = GetDate();
+     /* Processor->ApplicationId	= -1;*/
+     
+     domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+     for (j = 0; j < MaxUsersPerProcessor; j++)
+      if (domain_entry->AllocationTable[j].Connection eq Connection)
+       { domain_entry->AllocationTable[j].Connection	= (TfmConn) NULL;
+         domain_entry->AllocationTable[j].Id		= 0;
+	 Remove(&(domain_entry->AllocationTable[j].Node));
+         break;
+       }
+     domain_entry->NumberUsers--;
+     if (domain_entry->NumberUsers eq 0)
+      { if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor))
+      		 eq 0)
+         ReturnProcessorToPool(Processor);
+        else
+         Processor->AllocationFlags &= ~RmF_Exclusive;
+      }
+   }
+
+  reply->FnRc	= rc;
+  ReplyRmLib(Connection, JobId, reply);
+}
+
+/**
+*** Add the DomainEntry structure to a newly-obtained processor
+**/
+bool	AddDomainEntry(RmProcessor Processor)
+{ DomainEntry	*entry = New(DomainEntry);
+  int		i;
+  
+  if (entry eq Null(DomainEntry)) return(FALSE);
+  entry->NumberUsers		= 0;
+  entry->Processor		= Processor;
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   { entry->AllocationTable[i].Processor	= Processor;
+     entry->AllocationTable[i].Connection	= (TfmConn) NULL;
+     entry->AllocationTable[i].Id		= 0;
+   }
+  RmSetProcessorPrivate(Processor, (int) entry);
+  
+  return(TRUE);
+}
+
+
+/**
+*** When a client shuts down a connection every processor obtained by
+*** that client must be freed. This routine is called in a WalkList
+**/
+word AutomaticRelease(Node *node)
+{ DomainEntry		*domain_entry;
+  RmProcessor		Processor;
+  AllocationInfo	*info = (AllocationInfo *) node;
+
+  Processor		= info->Processor;
+  domain_entry		= (DomainEntry *) RmGetProcessorPrivate(Processor);
+  Debug(dbg_Release, ("automatic processor release activated on %x", Processor));
+
+  domain_entry->NumberUsers--;
+  info->Connection	= (TfmConn) NULL;
+  info->Id		= 0;
+
+  /*Processor->ApplicationId	= -1;*/
+  
+  if (domain_entry->NumberUsers eq 0)
+   { if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor)) eq 0)
+      ReturnProcessorToPool(Processor);
+     else
+      Processor->AllocationFlags &= ~RmF_Exclusive;
+   }
+}
+
+/**
+*** Returning a processor to the pool involves removing it from the directory
+*** structure, free'ing its domain info, and calling ReleaseProcessor()
+**/
+void	ReturnProcessorToPool(RmProcessor Processor)
+{ DomainEntry	*domain_entry;
+
+  if (DomainLocked) return;
+  
+  Debug(dbg_Release, ("returning processor %s to the system pool", Processor->ObjNode.Name));  
+  if (RmRemoveProcessor(Processor) eq (RmProcessor) NULL)
+   { report("internal error returning processor %s to system pool",
+   		Processor->ObjNode.Name);
+     return;
+   }
+
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+  Free(domain_entry);
+  (void) RmReleaseProcessor(Processor);
+  RmFreeProcessor(Processor);
+}
+
+/**
+*** Getting a processor from the pool is another question entirely.
+**/
+static RmProcessor GetFromPool(RmProcessor template, int *rc_ptr)
+{ int		rc;
+  RmProcessor	result;
+
+  if (DomainLocked)
+   { *rc_ptr = RmE_InUse; return((RmProcessor) NULL); }
+   
+  Debug(dbg_Allocate, ("attempting to get a processor from the free pool"));
+      
+  template->ObjNode.Account	= TfmProcessor->ObjNode.Account;
+  result = RmObtainProcessor(template);
+  if (result eq (RmProcessor) NULL) { rc = RmErrno; goto done; }
+  Debug(dbg_Allocate, ("got a processor from the pool"));
+  
+  unless(AddDomainEntry(result))
+   { RmReleaseProcessor(result); 
+     RmFreeProcessor(result);
+     rc = RmE_ServerMemory; 
+     goto done; 
+   }
+
+  if (RmInsertProcessor(Domain, result) eq (RmProcessor) NULL)
+   { DomainEntry *domain_entry;
+     domain_entry = (DomainEntry *) RmGetProcessorPrivate(result);
+     Free(domain_entry);
+     RmReleaseProcessor(result);
+     RmFreeProcessor(result);
+     rc = RmE_Corruption;
+     goto done;
+   }
+
+  result->AllocationFlags = 0;
+  if ((template->AllocationFlags & RmF_Exclusive) ne 0)
+   result->AllocationFlags |= RmF_Exclusive;
+
+  LastChange = result->ObjNode.Dates.Access = GetDate();
+  result->ObjNode.Key = NewKey() + _cputime();
+  
+  rc = RmE_Success;
+     
+done:
+  *rc_ptr = rc;
+  if (rc eq RmE_Success)
+   return(result);
+  else
+   return((RmProcessor) NULL);
+} 
+
+/**
+*** Build the full processor name into the specified buffer
+**/
+char *BuildName(char *buffer, RmProcessor Processor)
+{ const char *name;
+
+  if (Processor eq (RmProcessor) RmRootNetwork(Processor))
+   { 
+     if (NetworkName[0] eq '\0')	/* cope with SingleProcessor system */
+      return(buffer);
+     name = NetworkName;
+     *buffer++ = '/';
+     for ( ; *name ne '\0'; ) *buffer++ = *name++;
+     return(buffer);
+   }
+  else
+   { 
+     buffer = BuildName(buffer, (RmProcessor) RmParentNetwork(Processor));
+     *buffer++ = '/';
+     name = (RmIsNetwork(Processor)) ? RmGetNetworkId((RmNetwork) Processor) :
+     			(const char *) Processor->ObjNode.Name;
+     for ( ; *name ne '\0'; ) *buffer++ = *name++;
+     *buffer = '\0';
+     return(buffer);
+   }
+}
+
+/**
+*** Given a network, look up the processor. Allow for the fact that
+*** the root name is different.
+*** Arguments : Network, the root structure or a subnet
+***             name, something like Cluster/00
+*** 
+*** The routine determines the last bit of the name, e.g. 00, and
+*** searches the network. When a processor is reached whose ID matches
+*** this last bit of the name, the search goes back up the tree trying
+*** to match all the parents.
+**/
+static int	LookupAux1(RmProcessor, ...);
+
+RmProcessor	LookupProcessor(RmNetwork Network, char *name)
+{ char		*temp = name + strlen(name);
+  
+  for ( ; (temp >= name) && (*temp ne '/'); temp--);
+
+  return((RmProcessor) RmSearchProcessors(Network, &LookupAux1, name, ++temp));
+}
+
+static int LookupAux1(RmProcessor Processor, ...)
+{ va_list	args;
+  char		*name;
+  char		*last_name;
+  RmNetwork	current;
+  RmNetwork	root_net;
+  int		amount;
+      
+  va_start(args, Processor);
+  name		= va_arg(args, char *);
+  last_name	= va_arg(args, char *);
+  va_end(args);
+  
+	/* Unless the last bit matches, do not bother to check */  
+  if (strcmp(Processor->ObjNode.Name, last_name)) return(0);
+
+  current	= (RmNetwork) Processor;
+  root_net	= RmRootNetwork(Processor);
+  
+  while (last_name > name)	/* If name is 00, match is immediate	*/
+   { last_name--; last_name--;  /* Skip the / and get to last char	*/
+     for ( amount = 0; (last_name >= name) && (*last_name ne '/'); 
+           last_name--, amount++);
+     last_name++;		/* should now be Cluster */
+     current = RmParentNetwork((RmProcessor) current);
+     if (current eq (RmNetwork) NULL) return(0);
+
+     if (current eq root_net)
+      { if (strncmp(NetworkName, last_name, amount)) return(0);
+      }
+     else
+      { if (strncmp(current->DirNode.Name, last_name, amount)) return(0); 
+      }
+   }
+  return((int) Processor);
+}
+
+/**
+*** Match a processor with a template. This can get quite complicated.
+*** 1) Exclusive access has to be checked. The application may require
+***    exclusive access, or some other application may already have it
+*** 2) purpose must be checked. If the processor is currently native it
+***    is not useful unless the template specifies a native processor.
+***    If the template specifies native then the processor must support it.
+*** 3) if the template has any attributes then the processor must
+***    have the same attributes, but not vice versa
+*** 4) various combinations of processor types may or may not match
+*** 5) the real processor must have at least the amount of memory requested
+**/
+
+bool	MatchProcessor(RmProcessor real, RmProcessor template)
+{ int		attribute_count = RmCountProcessorAttributes(template);
+  int		template_ptype;
+  int		real_ptype;
+
+  if ((template->AllocationFlags & RmF_Exclusive) ||
+      (real->AllocationFlags & RmF_Exclusive))
+   { DomainEntry	*domain_entry;
+     domain_entry = (DomainEntry *) RmGetProcessorPrivate(real);
+     if (domain_entry->NumberUsers > 0)
+      return(FALSE);
+   }
+
+  if (template->Purpose eq RmP_Native)
+   { unless(RmGetProcessorControl(real) & RmC_Native) return(FALSE);
+   }
+  elif (real->Purpose eq RmP_Native)
+   return(FALSE);
+
+  if (attribute_count > 0)
+   { char	*attribs[10];
+     char	**real_attribs;
+     int	i;
+
+	/* very simple test, to start with */
+     if (attribute_count > RmCountProcessorAttributes(real)) return(FALSE);
+
+     if (attribute_count > 10)
+      { real_attribs = (char **) Malloc(attribute_count * sizeof(char *));
+        if (real_attribs eq Null(char *)) return(FALSE);
+      }
+     else
+      real_attribs = attribs;
+     if (RmListProcessorAttributes(template, real_attribs) ne RmE_Success)
+      { if (attribute_count > 10) Free(real_attribs);
+        return(FALSE);
+      }
+     for (i = 0; i < attribute_count; i++)
+      unless(RmTestProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+       { if (attribute_count > 10) Free(real_attribs);
+         return(FALSE);
+       }
+    if (attribute_count > 10) Free(real_attribs); 
+   }
+
+  if (RmGetProcessorMemory(real) < RmGetProcessorMemory(template))
+   return(FALSE);
+
+  template_ptype	= RmGetProcessorType(template);
+  real_ptype		= RmGetProcessorType(real);
+  if (template_ptype ne RmT_Default)
+   { if (template_ptype ne real_ptype)
+     return(FALSE);
+   }
+  elif ((real_ptype ne RmT_Default) && (real_ptype ne RmT_T800) &&
+        (real_ptype ne RmT_T414) && (real_ptype ne RmT_T425) &&
+        (real_ptype ne RmT_T400))
+   return(FALSE);
+
+  return(TRUE);  
+}
+
+/**
+*** Almost the same code, but matching a processor and a task
+BLV cope with native tasks
+**/
+bool	MatchTask(RmProcessor real, RmTask template)
+{ int	attribute_count = RmCountTaskAttributes(template);
+  int	template_ptype;
+  int	real_ptype;
+
+  if (attribute_count > 0)
+   { char	*attribs[10];
+     char	**real_attribs;
+     int	i;
+
+	/* very simple test, to start with */
+     if (attribute_count > RmCountProcessorAttributes(real)) return(FALSE);
+
+     if (attribute_count > 10)
+      { real_attribs = (char **) Malloc(attribute_count * sizeof(char *));
+        if (real_attribs eq Null(char *)) return(FALSE);
+      }
+     else
+      real_attribs = attribs;
+     if (RmListTaskAttributes(template, real_attribs) ne RmE_Success)
+      { if (attribute_count > 10) Free(real_attribs);
+        return(FALSE);
+      }
+     for (i = 0; i < attribute_count; i++)
+      unless(RmTestProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+       { if (attribute_count > 10) Free(real_attribs);
+         return(FALSE);
+       }
+    if (attribute_count > 10) Free(real_attribs); 
+   }
+
+  if (RmGetProcessorMemory(real) < RmGetTaskMemory(template))
+   return(FALSE);
+
+  template_ptype	= RmGetTaskType(template);
+  real_ptype		= RmGetProcessorType(real);
+  if (template_ptype ne RmT_Default)
+   { if (template_ptype ne real_ptype)
+     return(FALSE);
+   }
+  elif ((real_ptype ne RmT_Default) && (real_ptype ne RmT_T800) &&
+        (real_ptype ne RmT_T414) && (real_ptype ne RmT_T425) &&
+        (real_ptype ne RmT_T400))
+   return(FALSE);
+
+  return(TRUE);  
+}
+
+/**
+*** Mapping processor to object, there is a very similar routine in netboot.c
+**/
+Object	*TfmMapProcessorToObject(RmProcessor Processor)
+{ char		*buf = (char *) Malloc(IOCDataMax);
+  Object	*result;
+  Capability	*Cap;
+
+  if (buf eq Null(char)) return(Null(Object));
+  (void) BuildName(buf, Processor);
+
+  Cap = RmGetProcessorCapability(Processor, TRUE);
+  if (*((word *) Cap) eq 0)
+   result = Locate(Null(Object), buf);
+  else
+   result = NewObject(buf, Cap);
+
+  if (result eq Null(Object))
+   if (RmGetProcessorState(Processor) eq RmS_Special)
+    { char	*temp = &(buf[1]);
+      for ( ; *temp ne '\0'; temp++)
+       if (*temp eq '/') 
+        { result = Locate(Null(Object), temp);
+          if (result ne Null(Object)) goto done;
+        }
+    }
+done:       
+  Free(buf);
+  return(result);
+}
+
+/**
+*** Something has gone wrong, oh dear, what a shame, I have not written
+*** the error recovery code  yet
+**/
+void		domain_MarkProcessor(RmProcessor processor)
+{ processor = processor;
+}
+
+/*------------------------------------------------------------------------------
+***
+*** This code deals with mapping tasks and taskforces automatically onto
+*** the available domain, expanding the domain as required.
+***
+*** domain_MapTask() is based very closely on HandleObtainProcessor()
+***
+*** 1) if the request is for an existing processor, then this may or may
+***    not be inside the current domain. If it is fine. Otherwise an
+***    attempt is made to get the specified processor from the system pool.
+*** 2) an initial search is made in the domain to find a processor that
+***    may be suitable. This search is quite restrictive. However, the
+***    best match to date is remembered (this may be null for a weird request)
+*** 3) if the search is unsuccessful an attempt is made to get another
+***    processor from the system pool. If that succeeds fine.
+*** 4) otherwise if the search revealed any suitable processor at all,
+***    that processor is used. If the domain does not contain a suitable
+***    processor and the system pool could not provide one, tough.
+**/
+static int		MapTask_Search(RmProcessor, ...);
+
+bool	domain_MapTask(RmTask task)
+{ RmProcessor		template	= (RmProcessor) NULL;
+  RmProcessor		result		= (RmProcessor) NULL;
+  DomainEntry		*domain_entry;
+  int			rc;
+  int			i;
+  RmProcessor		LeastBusy;
+  int			LowestCost;
+
+  Wait(&SingleStep);
+  
+  Debug(dbg_Mapping, ("mapping a single task"));
+        
+  { char *puid = RmGetObjectAttribute((RmObject) task, "puid", FALSE);
+    
+    if (puid ne Null(char))
+     { Debug(dbg_Mapping, ("puid has been specified"));
+       result = LookupProcessor(Domain, ++puid);
+       if (result eq (RmProcessor)NULL)
+        if (!DomainLocked)
+         { template = RmNewProcessor();
+           if (template eq (RmProcessor) NULL) goto done;
+           RmAddProcessorAttribute(template, &(puid[-5]));
+           if ((result = GetFromPool(template, &rc)) eq (RmProcessor) NULL)
+            { rc = RmE_NotFound; goto done; }
+         }
+       goto found;
+     }
+  }
+
+	/* No particular processor is required. Perform a search of the	*/
+	/* current domain.						*/
+   LeastBusy	= (RmProcessor) NULL;
+   LowestCost	= MaxInt;
+   Debug(dbg_Mapping, ("searching current domain for a free processor"));
+
+   result = (RmProcessor) RmSearchProcessors(Domain, &MapTask_Search,
+   		task, &LeastBusy, &LowestCost);
+   if (result ne (RmProcessor) NULL) goto found;
+
+   if (LowestCost < 3)	/* tfm, shell, one other on same processor */
+    { result = LeastBusy; goto found; }
+
+   if (!DomainLocked)    
+    { Debug(dbg_Mapping, ("attempting to get another processor from the pool"));
+      template = RmNewProcessor();
+      if (template ne (RmProcessor) NULL)
+       { int	attribs;
+         RmSetProcessorType(template, RmGetTaskType(task));
+         RmSetProcessorMemory(template, RmGetTaskMemory(task));
+         attribs = RmCountTaskAttributes(task);
+         if (attribs > 0)
+          { char	*default_attribs[10];
+            char	**real_attribs;
+            if (attribs > 10)
+             real_attribs = (char **) Malloc(attribs * sizeof(char *));
+            else
+             real_attribs = default_attribs;
+            if (real_attribs ne Null(char *))
+             { int i;
+               RmListTaskAttributes(task, real_attribs);
+               for (i = 0; i < attribs; i++)
+                RmAddProcessorAttribute(template, real_attribs[i]);
+               if (attribs > 10)
+                Free(real_attribs);
+             }    
+          }
+         result = GetFromPool(template, &rc);
+         if (result ne (RmProcessor) NULL) goto found;
+       }
+    }
+    
+   if (LeastBusy eq (RmProcessor) NULL) goto done;
+   Debug(dbg_Mapping, ("making do with an existing processor"));
+   result = LeastBusy;
+        
+	/* At this point, result should point to a valid processor	*/
+	/* that meets the user's requirements. This does not mean	*/
+	/* it is safe to allocate...					*/
+	/* BLV - check processor purpose as well */
+found:
+
+  Debug(dbg_Mapping, ("selected processor %s", result->ObjNode.Name));
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(result);
+  if (domain_entry->NumberUsers >= MaxUsersPerProcessor)
+   { rc = RmE_InUse; goto done; }
+  for (i = 0; i < MaxUsersPerProcessor; i++)    
+   if (domain_entry->AllocationTable[i].Id eq 0)
+    { domain_entry->AllocationTable[i].Id = AllocationId;
+      break;
+    }
+  task->MappedTo = result->Uid;
+  { TaskEntry	*task_entry = (TaskEntry *) RmGetTaskPrivate(task);
+    task_entry->Mapped = AllocationId++;
+  }
+  Debug(dbg_Mapping, ("successfully obtained a processor"));
+  rc = RmE_Success;
+  domain_entry->NumberUsers++;
+  LastChange = result->ObjNode.Dates.Access = GetDate();
+  
+done:
+  if (template ne (RmProcessor) NULL) RmFreeProcessor(template);  
+  Signal(&SingleStep);
+  return((rc eq RmE_Success) ? TRUE : FALSE);
+}
+
+static	int	MapTask_Search(RmProcessor Processor, ...)
+{ va_list	args;
+  RmTask	template;
+  DomainEntry	*domain_entry;
+  RmProcessor	*LeastBusy;
+  int		*LowestCost;
+  int		cost_factor;
+    
+  va_start(args, Processor);
+  template	= va_arg(args, RmTask);
+  LeastBusy	= va_arg(args, RmProcessor *);
+  LowestCost	= va_arg(args, int *);
+  va_end(args);
+  
+	/* Booked means that the processor cannot be allocated	*/
+	/* to meet an arbitrary request.			*/
+  if ((Processor->AllocationFlags & RmF_Booked) ne 0) return(0);
+
+	/* If the processor does not match the template's requirements	*/
+	/* forget it							*/  
+  unless(MatchTask(Processor, template)) return(0);
+
+      	/* This processor appears to stand a chance. If the number of	*/
+      	/* users is currently zero than this processor is ideal.	*/
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+  if (domain_entry->NumberUsers eq 0) return((int) Processor);
+
+ 	/* If the number of users is greater than zero than it is	*/
+ 	/* necessary to calculate a cost factor for using this processor*/
+ 	/* This equation may need fine-tuning.				*/
+  cost_factor = domain_entry->NumberUsers;
+  if (RmGetProcessorMemory(Processor) > 0x100000) cost_factor--;
+  if (cost_factor < *LowestCost)
+   { *LeastBusy		= Processor;
+     *LowestCost	= cost_factor;
+   }
+
+	/* However, this processor is not ideal and there may be a	*/
+	/* better one.							*/
+  return(0);
+}
+
+
+/**----------------------------------------------------------------------------
+*** Unmapping a task. This is a bit like HandleReleaseProcessor()
+**/
+void	domain_UnmapTask(RmTask task)
+{ RmProcessor		Processor;
+  DomainEntry		*domain_entry;
+  TaskEntry		*task_entry;
+  int			i;
+
+  Wait(&SingleStep);
+  Debug(dbg_Mapping, ("unmapping a task"));
+  Processor	= RmFindProcessor(Domain, task->MappedTo);
+  domain_entry	= (DomainEntry *) RmGetProcessorPrivate(Processor);
+  task_entry	= (TaskEntry *) RmGetTaskPrivate(task);
+  LastChange	= Processor->ObjNode.Dates.Access = GetDate();  
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Id eq task_entry->Mapped)
+    domain_entry->AllocationTable[i].Id	= 0;
+  domain_entry->NumberUsers--;
+  if (domain_entry->NumberUsers eq 0)
+   { if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor)) eq 0)
+      ReturnProcessorToPool(Processor);
+     else
+      Processor->AllocationFlags &= ~RmF_Exclusive;
+   }
+
+  task->MappedTo = 0;
+  task_entry->Mapped = 0;
+  Signal(&SingleStep);
+}
+
+/**
+*** Following the mapping. The MappedTo field of the task should point
+*** to a suitable Uid...
+**/
+RmProcessor	domain_FollowMapping(RmTask task)
+{ return(RmFindProcessor(Domain, task->MappedTo));
+}
+
+/**
+*** Releasing a taskforce. This is very similar to releasing a single task
+**/
+static int domain_UnmapTaskforceAux(RmTask Task, ...);
+
+void		domain_UnmapTaskforce(RmTaskforce Taskforce)
+{ (void) RmApplyTasks(Taskforce, &domain_UnmapTaskforceAux);
+}
+
+static	int domain_UnmapTaskforceAux(RmTask Task, ...)
+{ 
+  if (Task->MappedTo ne 0)
+   domain_UnmapTask(Task);
+  return(0);
+}
+
+a545 393
+*** Mapping a taskforce, this is where the fun starts.
+***
+*** 1) do some housekeeping.
+*** 2) as a first step, walk down the template and look for 
+***    tasks processors with puid attributes. If these can be matched inside
+***    the domain move them from the template to the allocation unit, zapping
+***    the data structure. 
+*** 3) second step, try to match tasks in the template with processors
+***    in the domain (except the existing ones or ones with puid's). Again,
+***    following a match assign the processor
+*** 4) the template now contains only tasks which cannot be matched
+***    satisfactorily with processors in the domain. A request is made to
+***    the network server to get these from the system pool.
+*** 5) Two searches are made of the taskforce, to try to find a mapping
+***    where every processor has a reasonable number of components.
+*** 6) If the taskforce is still not mapped, a check is made to ensure that
+***    it can be mapped at all.
+*** 7) a final search is made in the template, to see if a less satisfactory
+***    match can be found. A manifest in tfmaux.h, set to 32 at the time of
+***    writing, controls the maximum number of components permitted per
+***    processor.
+*** 7) the results are processed.
+BLV
+BLV the current algorithm only works for simple cases. What should happen
+BLV is an initial search of the template, putting the processors into a
+BLV linked list in order of how restrictive the template is. The processors
+BLV should then be processed in that list order.
+**/
+
+static int	MapTaskforce_Search1(RmTask, ...);
+static int	MapTaskforce_Search2(RmTask, ...);
+static int	MapTaskforce_Check(RmTask, ...);
+static int	Map_GetNetworkFromPool(RmTaskforce);
+static void	AbortMapTaskforce(RmTaskforce);
+static bool	AllocProcessor(RmTask, RmProcessor);
+static bool	Map_CheckAvailable(RmProcessor);
+
+bool		domain_MapTaskforce(RmTaskforce Taskforce)
+{ int		number_to_match;
+  int		limit;
+    
+  Debug(dbg_Mapping, ("mapping a taskforce"));
+ 
+  Wait(&SingleStep);  
+  number_to_match = RmCountTasks(Taskforce);
+  if (number_to_match <= 0) goto finished;
+
+  Debug(dbg_Mapping, ("the request is for %d tasks", number_to_match));
+
+  number_to_match -= RmApplyTasks(Taskforce, &MapTaskforce_Search1);
+  Debug(dbg_Mapping, ("after checking for puid's, %d tasks left", number_to_match));
+  if (number_to_match <= 0) goto finished;
+
+  Debug(dbg_Mapping, ("examining domain for suitable processors"));
+  number_to_match -= RmApplyTasks(Taskforce, &MapTaskforce_Search2, 0);
+  Debug(dbg_Mapping, ("after checking for empty processors, %d tasks left", number_to_match));
+  if (number_to_match <= 0) goto finished;
+
+  if (!DomainLocked)
+   { Debug(dbg_Mapping, ("attempting to get some processors from the free pool"));
+     number_to_match -= Map_GetNetworkFromPool(Taskforce);
+     if (number_to_match <= 0) goto finished;
+   }
+  
+  Debug(dbg_Mapping, ("trying to make do with existing processors, limit 1"));
+  number_to_match -= RmApplyTasks(Taskforce, &MapTaskforce_Search2, 1);
+  if (number_to_match <= 0) goto finished;
+
+  Debug(dbg_Mapping, ("checking taskforce feasibility"));
+  if (RmSearchTasks(Taskforce, &MapTaskforce_Check) ne 0)
+   goto finished;
+   
+  for (limit = 2; limit < MaxComponentsPerProcessor; limit++)
+   { Debug(dbg_Allocate, ("trying to make do with existing processors, limit %d", limit));
+     number_to_match -= RmApplyTasks(Taskforce, &MapTaskforce_Search2, limit);
+     if (number_to_match <= 0) goto finished;
+   }
+
+finished:
+
+  if (number_to_match ne 0)
+   { Debug(dbg_Allocate, ("failed to map taskforce"));
+     AbortMapTaskforce(Taskforce);
+   }
+  Signal(&SingleStep); 
+  return(number_to_match eq 0);
+}
+
+/**
+*** The first phase in the mapping algorithm. For every task in the
+*** template that has a puid:
+*** 1) if the processor is already in the domain and is available, allocate
+***    it.
+*** 2) If it is in the domain but not available, error
+*** 3) If it is not in the domain, leave it alone for a subsequent
+***    RmObtainNetwork().
+**/
+
+static int	 MapTaskforce_Search1(RmTask template, ...)
+{   
+  if (template->MappedTo > 0) return(0);
+  
+  { char *puid = RmGetObjectAttribute((RmObject) template, "puid", FALSE);
+    if (puid ne Null(char))
+     { RmProcessor match = LookupProcessor(Domain, ++puid);
+
+       Debug(dbg_Mapping, ("puid has been specified"));
+       if (match eq (RmProcessor) NULL)
+        { template->MappedTo = -1; return(0); }
+       
+       if (AllocProcessor(template, match))
+         return(1);
+       return(100000);
+     }
+  }
+  return(0);     
+}
+
+/**
+*** Phase 2 of the search. For every processor left in the template
+*** that has not yet been mapped, search the domain
+*** for a suitable processor. The number of existing users of that processor
+*** is important, and a limit is passed as argument. The first time only
+*** completely free processors will be used. If there are no completely
+*** free processors more are obtained from the pool. If there are still
+*** unmapped tasks the restrictions are gradually reduced.
+**/
+static int	 MapTaskforce_Search2Aux(RmProcessor, ...);
+
+static int	 MapTaskforce_Search2(RmTask template, ...)
+{ va_list	args;
+  RmProcessor	match;
+  int		UsageLimit;
+  
+  va_start(args, template);
+  UsageLimit = va_arg(args, int);
+  va_end(args);
+  
+	/* If a puid was specified and this gets called after the	*/
+	/* first search and after more processors have been obtained,	*/
+	/* the mapping cannot be achieved.				*/
+  if ((template->MappedTo eq -1) && (UsageLimit > 0))
+   return(100000);
+  if (template->MappedTo ne 0) return(0);   		
+
+  match = (RmProcessor) RmSearchProcessors(Domain, &MapTaskforce_Search2Aux,
+  		 template, UsageLimit);
+  if (match eq (RmProcessor) NULL) return(0);
+   
+  if (AllocProcessor(template, match))
+   return(1);
+  else
+   return(0);
+}
+
+static	int MapTaskforce_Search2Aux(RmProcessor real, ...)
+{ va_list	args;
+  RmTask	template;
+  int		UsageLimit;
+  DomainEntry	*domain_entry;
+    
+  va_start(args, real);
+  template	= va_arg(args, RmTask);
+  UsageLimit	= va_arg(args, int);
+  va_end(args);
+  
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(real);
+  if (domain_entry->NumberUsers > UsageLimit) return(0);
+  
+  unless(Map_CheckAvailable(real)) return(0);
+  unless(MatchTask(real, template)) return(0);
+  return((int) real);
+}
+
+/**
+*** Check that the taskforce can be mapped at all.
+**/
+
+static int MapTaskforce_CheckAux(RmProcessor, ...);
+
+static int MapTaskforce_Check(RmTask task, ...)
+{
+  if (task->MappedTo > 0) return(0);
+  
+  if (RmSearchProcessors(Domain, &MapTaskforce_CheckAux, task) eq 0)
+   { Debug(dbg_Mapping, ("cannot map %s in the current domain", task->ObjNode.Name));
+     return(1);
+   }
+  else 
+   return(0);
+}  
+
+static int MapTaskforce_CheckAux(RmProcessor processor, ...)
+{ va_list	args;
+  RmTask	task;
+  
+  va_start(args, processor);
+  task = va_arg(args, RmTask);
+  va_end(args);
+  
+  if ((Map_CheckAvailable(processor)) &&
+      (MatchTask(processor, task)))
+   return(1);
+  else
+   return(0);
+}
+  
+/**
+*** The current domain is not big enough, so more processors have to be
+*** obtained from the system pool. 
+*** 1) build a template to get some more processors
+*** 2) If more processors could be obtained, try to allocate DomainEntry
+***    structures for them all.
+*** 3) Then try to merge them in to the existing domain.
+*** 4) Do another two RmApplyTaskforces, checking for puids and 0 usage
+**/   		
+static int	Map_BuildTemplate(RmTask Task, ...);
+static int	Map_CheckPuids(RmTask Task, ...);
+
+static int	 Map_GetNetworkFromPool(RmTaskforce Taskforce)
+{ RmNetwork	template = RmNewNetwork();
+  RmNetwork	obtained;
+  int		rc;
+  int		sum = 0;
+  
+  if (template eq (RmNetwork) NULL) goto final_check;
+
+  Debug(dbg_Mapping, ("building network template"));
+  
+  if (RmSearchTasks(Taskforce, &Map_BuildTemplate, template) ne RmE_Success)
+   goto final_check;
+   
+  obtained = RmObtainNetwork(template, FALSE, &rc);
+  RmFreeNetwork(template);
+  if (obtained eq (RmNetwork) NULL) goto final_check;
+
+  Debug(dbg_Mapping, ("got some processors from the pool"));  
+  if (RmSearchProcessors(obtained, &GetNetworkFromPool_Aux1) ne RmE_Success)
+   { RmApplyProcessors(obtained, &GetNetworkFromPool_Aux2);
+     RmReleaseNetwork(obtained);
+     RmFreeNetwork(obtained);
+     return(0);
+   }
+  Wait(&(Domain->DirNode.Lock));
+  RmMergeNetworks(Domain, obtained);
+  Signal(&(Domain->DirNode.Lock));
+
+  RmFreeNetwork(obtained);
+  sum += RmApplyTasks(Taskforce, &MapTaskforce_Search1);
+  sum += RmApplyTasks(Taskforce, &MapTaskforce_Search2, 0);
+  
+final_check:
+  if (RmSearchTasks(Taskforce, &Map_CheckPuids))
+   return(100000);
+  else
+   return(sum);
+}
+
+static int Map_BuildTemplate(RmTask Task, ...)
+{ va_list	args;
+  RmNetwork	template;
+  RmProcessor	new;
+  int		attribs;
+    
+  va_start(args, Task);
+  template = va_arg(args, RmNetwork);
+  va_end(args);
+  
+  if (Task->MappedTo > 0) return(0);
+
+  new = RmNewProcessor();
+  if (new eq (RmProcessor) NULL) return(1);
+  new->ObjNode.Account	= TfmProcessor->ObjNode.Account;
+  
+  if (Task->MappedTo eq -1)
+   { char *puid = RmGetObjectAttribute((RmObject) Task, "puid", FALSE);
+     if ((puid eq Null(char)) || 
+         (RmAddProcessorAttribute(new, &(puid[-5])) ne RmE_Success) ||
+         (RmAddtailProcessor(template, new) eq (RmProcessor) NULL) )
+      { RmFreeProcessor(new); return(1); }
+     return(0);      
+   }
+     
+  RmSetProcessorType(new, RmGetTaskType(Task));
+  RmSetProcessorMemory(new, RmGetTaskMemory(Task));
+  attribs = RmCountTaskAttributes(Task);
+  if (attribs > 0)
+   { char	*default_attribs[10];
+     char	**real_attribs;
+     int	i;
+     
+     if (attribs > 10)
+      real_attribs = (char **) Malloc(attribs * sizeof(char *));
+     else
+      real_attribs = default_attribs;
+     if (real_attribs eq Null(char *))
+      { RmFreeProcessor(new); return(1); }
+     RmListTaskAttributes(Task, real_attribs);
+     for (i = 0; i < attribs; i++)
+      RmAddProcessorAttribute(new, real_attribs[i]);
+     if (attribs > 10)
+      Free(real_attribs);
+   } 
+  if (RmAddtailProcessor(template, new) eq (RmProcessor) NULL)
+   { RmFreeProcessor(new); return(1); }
+  else
+   return(0);
+}
+
+static int	Map_CheckPuids(RmTask Task, ...)
+{ 
+  if (Task->MappedTo eq -1)
+   return(1);
+  else
+   return(0);
+}
+
+/**
+*** Abort the mapping. Some of the tasks in the taskforce may have been
+*** mapped already. This must now be undone.
+**/
+static int	AbortMapTaskforceAux(RmTask Task, ...);
+
+static void	AbortMapTaskforce(RmTaskforce Taskforce)
+{ Debug(dbg_Mapping, ("aborting mapping"));
+  (void) RmApplyTasks(Taskforce, &AbortMapTaskforceAux);
+}
+
+static int	AbortMapTaskforceAux(RmTask Task, ...)
+{ RmProcessor	mapped_to;
+  TaskEntry	*task_entry;
+  DomainEntry	*domain_entry;
+  int		i;
+    
+  if (Task->MappedTo eq -1) Task->MappedTo = 0;
+  if (Task->MappedTo eq 0) return(0);
+
+  mapped_to = RmFindProcessor(Domain, Task->MappedTo);
+  Task->MappedTo = 0;
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(mapped_to);
+  task_entry   = (TaskEntry *) RmGetTaskPrivate(Task);  
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Id eq task_entry->Mapped)
+    { domain_entry->AllocationTable[i].Id = 0; break; }
+  domain_entry->NumberUsers--;
+  task_entry->Mapped = 0;
+  if (domain_entry->NumberUsers eq 0)
+   if ((mapped_to->AllocationFlags & (RmF_Permanent || RmF_TfmProcessor)) eq 0)
+    ReturnProcessorToPool(mapped_to);
+  return(0);
+}
+  
+
+/**
+*** Check that a given processor can be allocated
+**/
+static bool	Map_CheckAvailable(RmProcessor match)
+{ DomainEntry *domain_entry;
+
+  if (match->AllocationFlags & RmF_Booked) return(FALSE);
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(match);
+  if (domain_entry->NumberUsers >= MaxUsersPerProcessor) return(FALSE);
+  if (domain_entry->NumberUsers > 0)
+   if (match->AllocationFlags & RmF_Exclusive)
+    return(FALSE);
+  return(TRUE);
+}
+
+/**
+*** A suitable processor has been found.
+**/
+static bool AllocProcessor(RmTask template, RmProcessor match)
+{ DomainEntry	*domain_entry;
+  TaskEntry	*task_entry;
+  int		i;
+
+  Debug(dbg_Mapping, ("using processor %s", match->ObjNode.Name));
+
+  domain_entry	= (DomainEntry *) RmGetProcessorPrivate(match);
+  for (i = 0; i < MaxUsersPerProcessor; i++)
+   if (domain_entry->AllocationTable[i].Id eq 0)
+    { domain_entry->AllocationTable[i].Id = AllocationId;
+      break;
+    }
+  domain_entry->NumberUsers++;
+  task_entry		= (TaskEntry *) RmGetTaskPrivate(template);
+  task_entry->Mapped	= AllocationId++;
+  template->MappedTo	= match->Uid;
+  return(TRUE);   
+}
+
+
+/**-----------------------------------------------------------------------------
+d616 3
+d679 3
+d704 3
+d798 3
+d810 40
+@
+
+
+1.11.1.1
+log
+@The booked flag was being ignored in the final phase of the network
+allocation algorithm.
+@
+text
+@d1251 1
+a1252 4
+	/* Booked access means that the processor cannot be allocated	 */
+	/* to meet an arbitrary request.				 */
+  if (real->AllocationFlags & RmF_Booked) return(0);
+
+d1258 1
+@
+
+
+1.10
+log
+@major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/tfmjobs.c,v 1.3 1991/08/21 16:07:10 bart Exp $";
+d702 3
+d798 1
+a798 1
+  Processor->ApplicationId	= -1;
+d1353 3
+d1428 1
+a1428 1
+     Processor->ApplicationId	= -1;
+d1490 1
+a1490 1
+  Processor->ApplicationId	= -1;
+@
+
+
+1.9
+log
+@Unnecessary FreePort() in open_rmlib()
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/tfmjobs.c,v 1.8 1991/05/18 12:09:51 bart Exp bart $";
+d142 3
+a144 3
+{ TfmConn	Connection = Malloc(sizeof(TfmConnStruct));
+  Object	*PipeServer = Null(Object);
+  Object	*NewPipe = Null(Object);
+d146 2
+a147 1
+  static int	NextPipeID = 1;
+d160 2
+a161 1
+  
+d224 6
+a229 2
+*** dispatcher. It reads two integers from the pipe, a job id and
+*** a request code.
+d232 10
+a241 7
+static void HandleGetNetwork(TfmConn, int);
+static void HandleProcessorAllocation(TfmConn, int, int );
+static void HandleLastChange(TfmConn, int, int);
+static void HandleObtainProcessor(TfmConn, int);
+static void HandleReleaseProcessor(TfmConn, int);
+static void HandleObtainNetwork(TfmConn, int, int);
+static void HandleReleaseNetwork(TfmConn, int);
+d243 3
+a245 1
+static void HandleLocking(int, TfmConn, int);
+d249 4
+a252 3
+{ int	JobId;
+  int	Request;
+  int	timeouts = 0;
+d256 2
+d266 1
+a266 9
+	Close(Connection->Pipe);
+
+	unless(EmptyList_(Connection->Processors))
+	 { Wait(&SingleStep);
+	   (void) WalkList(&(Connection->Processors), &AutomaticRelease);
+	   Signal(&SingleStep);
+	 }
+	Free(Connection);
+     	return;
+d276 25
+a300 4
+     rc = Read(Connection->Pipe, (BYTE *) &Request, sizeof(int), -1);
+     if (rc < 0)
+      {
+      	 return;	/* BLV - release resources */
+d303 6
+d310 4
+a313 3
+     switch(Request)
+      { case RmC_GetNetwork :	HandleGetNetwork(Connection, JobId);
+				break;
+d319 4
+a322 2
+			HandleProcessorAllocation(Connection, JobId, Request);
+			break;
+d324 2
+a325 2
+			HandleLastChange(Connection, JobId, Request);
+			break;
+d327 2
+a328 2
+			HandleObtainProcessor(Connection, JobId);
+			break;
+d330 2
+a331 2
+			HandleReleaseProcessor(Connection, JobId);
+			break;
+d334 2
+a335 2
+			HandleObtainNetwork(Connection, JobId, Request);
+			break;
+d337 2
+a338 2
+			HandleReleaseNetwork(Connection, JobId);
+			break;
+d342 2
+a343 2
+			HandleLocking(Request, Connection, JobId);
+			break;
+d345 29
+a373 8
+				
+      	default : report("unexpected request %x", Request);
+      		  Close(Connection->Pipe);
+		  unless(EmptyList_(Connection->Processors))
+		   (void) WalkList(&(Connection->Processors), &AutomaticRelease);
+      		  Signal(&SingleStep);
+      		  Free(Connection);
+      		  return;
+d376 6
+d383 12
+d397 48
+d447 1
+a447 1
+*** network.
+d452 3
+a454 3
+static void HandleGetNetwork(TfmConn Connection, int JobId)
+{ int	rc;
+  RmFilterStruct	filter;
+d461 3
+d465 2
+a466 6
+  Wait(&(Connection->WriteLock));
+  (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+  rc = RmE_Success;
+  (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+  rc = RmWriteStream(Connection->Pipe, Domain, (RmTaskforce) NULL, &filter);
+  Signal(&(Connection->WriteLock));
+d484 1
+a484 1
+  copy->RmLib	= 0;
+d493 2
+a494 1
+static void HandleProcessorAllocation(TfmConn Connection, int JobId, int request)
+a495 1
+  ProcessorDetails	details;
+d498 1
+a498 5
+  if (FullRead(Connection->Pipe, (BYTE *) &details, sizeof(ProcessorDetails), 
+      	-1) ne sizeof(ProcessorDetails))
+   { rc = RmE_CommsBreakdown; goto done; }
+   
+  Processor = (RmProcessor) RmFindUid((RmSet) Domain, details.Uid);
+d502 2
+a503 2
+  unless(GetAccess(&(details.Cap), Processor->ObjNode.Key) &&
+  	 (details.Cap.Access & AccMask_D))
+d506 1
+a506 1
+  switch(request)
+d512 8
+a519 1
+     		Processor->AllocationFlags |= RmF_Exclusive;  break;
+d521 9
+a529 1
+     		Processor->AllocationFlags &= ~RmF_Exclusive; break;
+d534 2
+a535 6
+  if (rc ne RmE_CommsBreakdown)
+   { Wait(&(Connection->WriteLock));
+     (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+     (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+     Signal(&(Connection->WriteLock));  
+   }    
+d541 2
+a542 1
+static void HandleLastChange(TfmConn Connection, int JobId, int request)
+d544 3
+a547 4
+  Wait(&(Connection->WriteLock));
+  (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+  (void) Write(Connection->Pipe, (BYTE *) &LastChange, sizeof(int), -1);
+  Signal(&(Connection->WriteLock));
+d550 1
+a550 1
+/**
+d556 4
+a559 4
+static	void HandleLocking(int request, TfmConn Connection, int JobId)
+{ int	x = RmE_Success;
+
+  if (request eq RmC_Lock)
+d563 3
+a565 5
+   
+  Wait(&(Connection->WriteLock)),
+  (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+  (void) Write(Connection->Pipe, (BYTE *) &x, sizeof(int), -1);
+  Signal(&(Connection->WriteLock));
+d570 15
+d608 2
+a609 1
+static void HandleObtainProcessor(TfmConn Connection, int JobId)
+d620 1
+a620 4
+        
+  rc = RmReadProcessor(Connection->Pipe, &template, FALSE);
+  if (rc ne RmE_Success) goto done;
+   
+d623 1
+d628 1
+a628 1
+     result = (RmProcessor) RmFindUid((RmSet) Domain, template->Uid);
+d656 1
+a656 1
+   result = (RmProcessor) RmSearchNetwork(Domain, &ObtainProcessorSearch,
+d676 1
+d680 3
+d698 4
+d705 5
+a709 9
+  if (rc ne RmE_CommsBreakdown)
+   { Wait(&(Connection->WriteLock));
+     (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+     (void) Write(Connection->Pipe, (BYTE *) &rc , sizeof(int), -1);
+     if (rc eq RmE_Success)
+      { filter.Processor = &ObtainProcessor_filter;
+        (void) RmWriteProcessor(Connection->Pipe, result, &filter);
+      }
+     Signal(&(Connection->WriteLock));
+d711 1
+a711 2
+
+  if (template ne (RmProcessor) NULL) RmFreeProcessor(template);  
+d723 1
+a723 1
+  copy->RmLib		= 0;
+d741 1
+a741 5
+  if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &ObtainProcessorSearch,
+   		template, LeastBusy, LowestCost));
+
+	/* Exclusive access means that the processor cannot be allocated */
+d743 1
+a743 1
+  if ((Processor->AllocationFlags & RmF_Exclusive) ne 0) return(0);
+a753 5
+	/* If the number of users is greater than zero and the template	*/
+	/* specified exclusive access then this processor is not	*/
+	/* acceptable.							*/
+  if ((template->AllocationFlags & RmF_Exclusive) ne 0) return(0);
+     
+d776 3
+a778 3
+static void HandleReleaseProcessor(TfmConn Connection, int JobId)
+{ ProcessorDetails	details;
+  RmProcessor		Processor;
+d785 1
+a785 5
+  if (FullRead(Connection->Pipe, (BYTE *) &details, sizeof(ProcessorDetails), -1)
+  	 ne sizeof(ProcessorDetails))
+   { rc = RmE_CommsBreakdown; goto done; }
+
+  Processor = (RmProcessor)RmFindUid((RmSet) Domain, details.Uid);
+d790 2
+a791 2
+  unless(GetAccess(&(details.Cap), Processor->ObjNode.Key) &&
+         (details.Cap.Access & AccMask_D))
+d795 1
+d807 5
+a811 2
+   if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor)) eq 0)
+    ReturnProcessorToPool(Processor);
+d816 2
+a817 6
+  if (rc ne RmE_CommsBreakdown)
+   { Wait(&(Connection->WriteLock));
+     (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+     (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+     Signal(&(Connection->WriteLock));
+   }  
+d857 1
+a857 1
+static bool	 CheckAvailable(RmProcessor real, TfmConn, bool excl);
+d859 9
+a867 7
+static void HandleObtainNetwork(TfmConn Connection, int JobId, int request)
+{ int		number_to_match;
+  int		number_to_get;
+  int		start_from;
+  int		rc;
+  RmNetwork	template = (RmNetwork) NULL;
+  RmNetwork	result = (RmNetwork) NULL;
+d869 5
+d875 8
+d884 2
+a885 3
+  if (Read(Connection->Pipe, (BYTE *) &start_from, sizeof(int), -1) ne
+  	sizeof(int))
+   { rc = RmE_CommsBreakdown; goto done; }
+d887 4
+a890 2
+  rc = RmReadStream(Connection->Pipe, &template, Null(RmTaskforce));
+  if (rc ne RmE_Success) goto done;
+d892 8
+d902 1
+a902 1
+   { rc = RmE_NoMemory; goto done; }
+d910 1
+a910 1
+  number_to_match -= RmApplyNetwork(template, &ObtainNetwork_Search1, Connection, result);
+d914 1
+a914 1
+  number_to_match -= RmApplyNetwork(template, &ObtainNetwork_Search2, Connection, result);
+d919 1
+a919 1
+     number_to_match -= GetNetworkFromPool(template, Connection, result);
+d924 1
+a924 1
+  number_to_match -= RmApplyNetwork(template, &ObtainNetwork_Search3, Connection, result);
+d934 2
+a935 1
+   { if (request eq RmC_ObtainExactNetwork)
+d945 1
+a945 3
+  Wait(&(Connection->WriteLock));
+  (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+  (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+d947 1
+a947 1
+   (void) RmWriteNetwork(Connection->Pipe, result, (RmFilter) NULL);
+d950 2
+a951 2
+  Signal(&(Connection->WriteLock));
+  if (template ne (RmNetwork) NULL) RmFreeNetwork(template);
+d1013 1
+a1013 1
+  if (new eq (RmNetwork)NULL) return(RmE_NoMemory);
+d1016 1
+a1016 1
+  if (RmAddTailProcessor(parent, (RmProcessor) new) eq (RmProcessor) NULL)
+a1044 4
+  if (RmIsNetwork(template))
+   return(RmApplyNetwork((RmNetwork) template, &ObtainNetwork_Search1,
+   		Connection, result));
+
+d1050 1
+a1050 1
+   { RmProcessor match = (RmProcessor)RmFindUid((RmSet) Domain, template->Uid);
+d1059 1
+a1059 1
+     if (CheckAvailable(match, Connection, FALSE))
+d1074 1
+a1074 1
+       if (CheckAvailable(match, Connection, FALSE))
+a1106 4
+  if (RmIsNetwork(template))
+   return(RmApplyNetwork((RmNetwork) template, &ObtainNetwork_Search2,
+   		Connection, result));
+   		
+d1108 1
+a1108 1
+  match = (RmProcessor) RmSearchNetwork(Domain, &ObtainNetwork_Search2Aux,
+d1124 4
+a1127 1
+    
+a1132 4
+  if (RmIsNetwork(real))
+   return(RmSearchNetwork((RmNetwork) real, &ObtainNetwork_Search2Aux,
+   		template, Connection));
+
+d1137 1
+a1137 1
+  unless(CheckAvailable(real, Connection, TRUE)) return(0);
+d1165 2
+a1166 2
+  if (RmSearchNetwork(obtained, &GetNetworkFromPool_Aux1) ne RmE_Success)
+   { RmApplyNetwork(obtained, &GetNetworkFromPool_Aux2);
+d1175 1
+a1175 1
+  return(RmApplyNetwork(template, &GetNetworkFromPool_Aux3, Connection, result));
+d1179 1
+a1179 2
+{ if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &GetNetworkFromPool_Aux1));
+a1190 3
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &GetNetworkFromPool_Aux2));
+
+a1207 4
+  if (RmIsNetwork(template))
+   return(RmApplyNetwork((RmNetwork) template, &GetNetworkFromPool_Aux3,
+   		Connection, result));
+  
+a1231 4
+  if (RmIsNetwork(template))
+   return(RmApplyNetwork((RmNetwork) template, &ObtainNetwork_Search3,
+   		Connection, result));
+   		
+d1233 1
+a1233 1
+  match = (RmProcessor) RmSearchNetwork(Domain, &ObtainNetwork_Search3Aux,
+a1254 4
+  if (RmIsNetwork(real))
+   return(RmSearchNetwork((RmNetwork) real, &ObtainNetwork_Search3Aux,
+   		template, Connection));
+
+d1257 1
+a1257 1
+  unless(CheckAvailable(real, Connection, TRUE)) return(0);
+d1270 1
+a1270 1
+  (void) RmApplyNetwork(Network, &AbortObtainAux, Connection);
+a1282 3
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &AbortObtainAux, Connection));
+
+d1296 1
+a1296 4
+*** Check that a given processor can be allocated. This may or may not
+*** involve checking the allocation strategy flag for exclusive, depending
+*** on whether the processor was selected because of a puid or existing,
+*** or whether it is being examined during a network search
+d1299 1
+a1299 1
+		bool	TestAvailable)     
+d1305 2
+a1306 1
+   { if (domain_entry->NumberUsers >= MaxUsersPerProcessor)
+d1308 3
+a1315 4
+  if (TestAvailable)
+   if (match->AllocationFlags & RmF_Exclusive)
+    return(FALSE);
+    
+d1345 5
+a1349 4
+  if ((template->AllocationFlags & RmF_Permanent) ne 0)
+   real->AllocationFlags |= RmF_Permanent;
+  if ((template->AllocationFlags & RmF_Exclusive) ne 0)
+   real->AllocationFlags |= RmF_Exclusive;
+d1375 1
+a1375 1
+{ (void) RmApplyNetwork(Network, &CleanOutAux1);
+a1380 3
+  if (RmIsNetwork(Processor))
+   return(RmApplyNetwork((RmNetwork) Processor, &CleanOutAux1));
+
+d1398 2
+a1399 1
+static void HandleReleaseNetwork(TfmConn Connection, int JobId)
+d1401 1
+a1401 1
+  ProcessorDetails	details;
+d1404 1
+a1404 1
+  int			i;
+d1407 2
+a1408 6
+      
+  forever 
+   { if (FullRead(Connection->Pipe, (BYTE *) &details, sizeof(ProcessorDetails),
+   		-1) ne sizeof(ProcessorDetails))
+      { rc = RmE_CommsBreakdown; goto done; }
+     if (details.Uid eq -1) break;
+d1410 2
+a1411 1
+     Processor = (RmProcessor) RmFindUid((RmSet) Domain, details.Uid);
+d1414 1
+d1417 3
+a1419 3
+     unless(GetAccess(&(details.Cap), Processor->ObjNode.Key) &&
+            (details.Cap.Access & AccMask_D))
+      { rc = RmE_NoAccess; goto done; }
+d1422 1
+d1425 5
+a1429 5
+     for (i = 0; i < MaxUsersPerProcessor; i++)
+      if (domain_entry->AllocationTable[i].Connection eq Connection)
+       { domain_entry->AllocationTable[i].Connection	= (TfmConn) NULL;
+         domain_entry->AllocationTable[i].Id		= 0;
+	 Remove(&(domain_entry->AllocationTable[i].Node));
+d1434 1
+a1434 1
+      if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor))
+d1436 4
+a1439 1
+       ReturnProcessorToPool(Processor);
+d1442 2
+a1443 8
+done:
+  if (rc ne RmE_CommsBreakdown)
+   { 
+     Wait(&(Connection->WriteLock));
+     (void) Write(Connection->Pipe, (BYTE *) &JobId, sizeof(int), -1);
+     (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+     Signal(&(Connection->WriteLock));
+   }      
+d1483 2
+d1487 5
+a1491 2
+   if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor)) eq 0)
+    ReturnProcessorToPool(Processor);
+d1499 1
+a1499 2
+{ int		rc;
+  DomainEntry	*domain_entry;
+d1529 2
+a1530 2
+  result = RmObtainProcessor(template, &rc);
+  if (result eq (RmProcessor) NULL) goto done;
+d1536 1
+a1536 1
+     rc = RmE_NoMemory; 
+a1552 2
+  if ((template->AllocationFlags & RmF_Permanent) ne 0)
+   result->AllocationFlags |= RmF_Permanent;
+d1575 2
+d1586 2
+a1587 2
+     name = (RmIsNetwork(Processor)) ? RmGetNetworkID((RmNetwork) Processor) :
+     			Processor->ObjNode.Name;
+d1612 1
+a1612 1
+  return((RmProcessor) RmSearchNetwork(Network, &LookupAux1, name, ++temp));
+a1627 3
+  if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &LookupAux1, name, last_name));
+
+d1654 6
+a1659 1
+*** 1) if the template has any attributes then the processor must
+d1661 2
+a1662 2
+*** 2) various combinations of processor types may or may not match
+*** 3) the real processor must have at least the amount requested
+d1666 3
+a1668 3
+{ int	attribute_count = RmCountProcessorAttributes(template);
+  int	template_ptype;
+  int	real_ptype;
+d1670 14
+d1703 1
+a1703 1
+      unless(RmIsAProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+d1729 1
+d1755 1
+a1755 1
+      unless(RmIsAProcessorAttribute(real, real_attribs[i]) eq RmE_Success)
+d1875 1
+a1875 1
+   result = (RmProcessor) RmSearchNetwork(Domain, &MapTask_Search,
+d1959 3
+a1961 3
+  if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &MapTask_Search,
+   		template, LeastBusy, LowestCost));
+a1962 4
+	/* Exclusive access means that the processor cannot be allocated */
+	/* to meet an arbitrary request.				 */
+  if ((Processor->AllocationFlags & RmF_Exclusive) ne 0) return(0);
+
+d1999 4
+a2002 4
+  Processor = (RmProcessor) RmFindUid((RmSet) Domain, task->MappedTo);
+  domain_entry = (DomainEntry *) RmGetProcessorPrivate(Processor);
+  task_entry   = (TaskEntry *) RmGetTaskPrivate(task);
+  LastChange   = Processor->ObjNode.Dates.Access = GetDate();  
+d2008 5
+a2012 2
+   if ((Processor->AllocationFlags & (RmF_Permanent | RmF_TfmProcessor)) eq 0)
+    ReturnProcessorToPool(Processor);
+d2024 1
+a2024 1
+{ return((RmProcessor) RmFindUid((RmSet) Domain, task->MappedTo));
+d2033 1
+a2033 1
+{ (void) RmApplyTaskforce(Taskforce, &domain_UnmapTaskforceAux);
+d2037 1
+a2037 2
+{ if (RmIsTaskforce(Task))
+   return(RmApplyTaskforce((RmTaskforce) Task, &domain_UnmapTaskforceAux));
+d2093 1
+a2093 1
+  number_to_match -= RmApplyTaskforce(Taskforce, &MapTaskforce_Search1);
+d2098 1
+a2098 1
+  number_to_match -= RmApplyTaskforce(Taskforce, &MapTaskforce_Search2, 0);
+d2109 1
+a2109 1
+  number_to_match -= RmApplyTaskforce(Taskforce, &MapTaskforce_Search2, 1);
+d2113 1
+a2113 1
+  if (RmSearchTaskforce(Taskforce, &MapTaskforce_Check) ne 0)
+d2118 1
+a2118 1
+     number_to_match -= RmApplyTaskforce(Taskforce, &MapTaskforce_Search2, limit);
+a2143 3
+  if (RmIsTaskforce(template))
+   return(RmApplyTaskforce((RmTaskforce) template, &MapTaskforce_Search1));
+
+a2181 4
+  if (RmIsTaskforce(template))
+   return(RmApplyTaskforce((RmTaskforce) template, &MapTaskforce_Search2,
+   		UsageLimit));
+
+d2189 1
+a2189 1
+  match = (RmProcessor) RmSearchNetwork(Domain, &MapTaskforce_Search2Aux,
+a2209 4
+  if (RmIsNetwork(real))
+   return(RmSearchNetwork((RmNetwork) real, &MapTaskforce_Search2Aux,
+   		template, UsageLimit));
+
+a2225 3
+  if (RmIsTaskforce(task))
+   return(RmSearchTaskforce((RmTaskforce) task, &MapTaskforce_Check));
+
+d2228 1
+a2228 1
+  if (RmSearchNetwork(Domain, &MapTaskforce_CheckAux, task) eq 0)
+a2243 3
+  if (RmIsNetwork(processor))
+   return(RmSearchNetwork((RmNetwork) processor, &MapTaskforce_CheckAux, task));
+
+d2273 1
+a2273 1
+  if (RmSearchTaskforce(Taskforce, &Map_BuildTemplate, template) ne RmE_Success)
+d2281 2
+a2282 2
+  if (RmSearchNetwork(obtained, &GetNetworkFromPool_Aux1) ne RmE_Success)
+   { RmApplyNetwork(obtained, &GetNetworkFromPool_Aux2);
+d2292 2
+a2293 2
+  sum += RmApplyTaskforce(Taskforce, &MapTaskforce_Search1);
+  sum += RmApplyTaskforce(Taskforce, &MapTaskforce_Search2, 0);
+d2296 1
+a2296 1
+  if (RmSearchTaskforce(Taskforce, &Map_CheckPuids))
+a2311 3
+  if (RmIsTaskforce(Task))
+   return(RmSearchTaskforce((RmTaskforce) Task, &Map_BuildTemplate, template));
+
+d2322 1
+a2322 1
+         (RmAddTailProcessor(template, new) eq (RmProcessor) NULL) )
+d2347 1
+a2347 1
+  if (RmAddTailProcessor(template, new) eq (RmProcessor) NULL)
+d2354 1
+a2354 2
+{ if (RmIsTaskforce(Task))
+   return(RmSearchTaskforce((RmTaskforce) Task, &Map_CheckPuids));
+d2369 1
+a2369 1
+  (void) RmApplyTaskforce(Taskforce, &AbortMapTaskforceAux);
+a2377 3
+  if (RmIsTaskforce(Task))
+   return(RmApplyTaskforce((RmTaskforce) Task, &AbortMapTaskforceAux));
+
+d2381 1
+a2381 1
+  mapped_to = (RmProcessor) RmFindUid((RmSet) Domain, Task->MappedTo);
+d2391 1
+a2391 1
+   if ((mapped_to->AllocationFlags & RmF_Permanent) eq 0)
+d2403 1
+d2406 3
+a2408 1
+  if (match->AllocationFlags & RmF_Exclusive) return(FALSE);
+d2436 253
+@
+
+
+1.8
+log
+@Changed the handling of ObtainProcessor requests, since the PUID is
+now a private attribute and does not have to be sent separately.]
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/tfmjobs.c,v 1.7 1991/04/07 13:20:21 bart Exp $";
+a122 1
+  FreePort(reqport);
+@
+
+
+1.7
+log
+@Added support for Tiny Helios. Various bits of the networking software can
+now be compiled with options such as -DSingleProcessor, to produce reduced
+versions of Helios.
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/tfmjobs.c,v 1.6 90/11/25 20:09:19 bart Exp $";
+a472 1
+  char			*puid_buf	= Null(char);
+a484 4
+  puid_buf = (char *) Malloc(IOCDataMax);
+  if (puid_buf eq Null(char))
+   { rc = RmE_NoMemory; goto done; }
+
+a553 1
+  (void) BuildName(puid_buf, result);
+a563 3
+        rc = strlen(puid_buf);
+        (void) Write(Connection->Pipe, (BYTE *) &rc, sizeof(int), -1);
+        (void) Write(Connection->Pipe, (BYTE *) puid_buf, rc, -1);
+a567 1
+  if (puid_buf ne Null(char)) Free(puid_buf);
+a1204 1
+  char		*puid_buf;
+a1209 3
+  puid_buf	= (char *) Malloc(IOCDataMax);
+  if (puid_buf eq Null(char))
+   { RmFreeProcessor(new_proc); return(FALSE); }
+a1220 3
+  strcpy(puid_buf, "PUID=");
+  (void) BuildName(&(puid_buf[5]), real);
+  RmAddObjectAttribute((RmObject) new_proc, puid_buf, TRUE);
+a1221 2
+  RmRemoveObjectAttribute((RmObject) new_proc, puid_buf, TRUE);
+  Free(puid_buf); puid_buf = Null(char);
+@
+
+
+1.6
+log
+@It is no longer an error to fail to release processors. The processor
+may no longer be part of the network, because an external subnet has
+disappeared.
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/tfmjobs.c,v 1.2 90/09/14 13:49:11 bart Exp $";
+a40 5
+#if 0
+#pragma	-s1
+#pragma -g0
+#endif
+
+d42 3
+d46 1
+d234 1
+d236 1
+d304 1
+d309 1
+d423 3
+a425 1
+*** Locking, this is fairly easy.
+d427 1
+d440 3
+a442 1
+ }
+@
+
+
+1.5
+log
+@sources update after visit to Parsytec 22.10.90-31.10.90
+@
+text
+@d1402 1
+a1402 3
+  if ((rc = RmReleaseProcessor(Processor)) ne RmE_Success)
+   report("internal error %x returning processor %s to system pool", rc,
+   		Processor->ObjNode.Name);
+@
+
+
+1.4
+log
+@minor bug fixes in time for Helios 1.2 beta1 release
+@
+text
+@d41 1
+d44 1
+d47 1
+d235 1
+d240 2
+a241 1
+
+d246 5
+a250 2
+     if (rc < 0)
+      { 
+d263 1
+d265 2
+a266 1
+      { IOdebug("tfm : private protocol received down pipe");
+d303 4
+d379 1
+a379 1
+  if (Processor eq (RmProcessor) NULL)
+d419 16
+d486 4
+a489 3
+     if (result eq (RmProcessor) NULL)
+      if ((result = GetFromPool(template, &rc)) eq (RmProcessor)NULL)
+       goto done;
+d500 3
+a502 2
+        if ((result = GetFromPool(template, &rc)) eq (RmProcessor) NULL)
+         { rc = RmE_NotFound; goto done; }
+d517 5
+a521 3
+   result = GetFromPool(template, &rc);
+   if (result ne (RmProcessor) NULL) goto found;
+   
+d532 1
+a532 1
+  Debug(dbg_Allocate, ("selected processor %s", RmGetProcessorID(result)));
+d658 1
+a658 1
+  if (Processor eq (RmProcessor) NULL)
+d729 1
+a729 1
+static bool	 CheckAvailable(RmProcessor real, TfmConn);
+d765 6
+a770 4
+  Debug(dbg_Allocate, ("attempting to get some processors from the free pool"));
+  number_to_match -= GetNetworkFromPool(template, Connection, result);
+  if (number_to_match eq 0) goto finished;
+
+d906 1
+a906 1
+     		RmGetProcessorID(template)));
+d909 2
+a910 1
+     if (match eq (RmProcessor) NULL) return(0);
+d912 1
+a912 1
+     if (CheckAvailable(match, Connection))
+d927 1
+a927 1
+       if (CheckAvailable(match, Connection))
+d995 1
+a995 1
+  unless(CheckAvailable(real, Connection)) return(0);
+d1131 1
+a1131 1
+  unless(CheckAvailable(real, Connection)) return(0);
+d1173 4
+a1176 1
+*** Check that a given processor can be allocated
+d1178 2
+a1179 2
+static bool	CheckAvailable(RmProcessor match,
+		TfmConn Connection)     
+d1191 5
+d1305 1
+a1305 1
+     if (Processor eq (RmProcessor) NULL)
+d1332 2
+a1333 1
+   { Wait(&(Connection->WriteLock));
+d1391 2
+d1396 1
+a1396 1
+   		RmGetProcessorID(Processor));
+d1404 1
+a1404 1
+   		RmGetProcessorID(Processor));
+d1415 3
+d1479 1
+a1479 1
+     			RmGetProcessorID(Processor);
+d1524 1
+a1524 1
+  if (strcmp(RmGetProcessorID(Processor), last_name)) return(0);
+d1541 1
+a1541 1
+      { if (strncmp(RmGetNetworkID(current), last_name, amount)) return(0); 
+d1733 7
+a1739 6
+        { template = RmNewProcessor();
+          if (template eq (RmProcessor) NULL) goto done;
+          RmAddProcessorAttribute(template, &(puid[-5]));
+          if ((result = GetFromPool(template, &rc)) eq (RmProcessor) NULL)
+           { rc = RmE_NotFound; goto done; }
+        }
+d1756 12
+a1767 20
+    
+   Debug(dbg_Mapping, ("attempting to get another processor from the pool"));
+   template = RmNewProcessor();
+   if (template ne (RmProcessor) NULL)
+    { int	attribs;
+      RmSetProcessorType(template, RmGetTaskType(task));
+      RmSetProcessorMemory(template, RmGetTaskMemory(task));
+      attribs = RmCountTaskAttributes(task);
+      if (attribs > 0)
+       { char	*default_attribs[10];
+         char	**real_attribs;
+         if (attribs > 10)
+          real_attribs = (char **) Malloc(attribs * sizeof(char *));
+         else
+          real_attribs = default_attribs;
+         if (real_attribs ne Null(char *))
+          { int i;
+            RmListTaskAttributes(task, real_attribs);
+            for (i = 0; i < attribs; i++)
+             RmAddProcessorAttribute(template, real_attribs[i]);
+d1769 14
+a1782 2
+             Free(real_attribs);
+          } 
+a1783 2
+      result = GetFromPool(template, &rc);
+      if (result ne (RmProcessor) NULL) goto found;
+d1796 1
+a1796 1
+  Debug(dbg_Mapping, ("selected processor %s", RmGetProcessorID(result)));
+d1934 9
+a1942 4
+*** 5) a final search is made in the template, to see if a less satisfactory
+***    match can be found. I.e. is it possible to share certain processors
+***    between users.
+*** 6) the results are processed.
+d1952 1
+d1960 2
+a1961 1
+  
+d1979 7
+a1985 5
+  Debug(dbg_Mapping, ("attempting to get some processors from the free pool"));
+  number_to_match -= Map_GetNetworkFromPool(Taskforce);
+  if (number_to_match <= 0) goto finished;
+
+  Debug(dbg_Allocate, ("trying to make do with existing processors, limit 1"));
+d1989 9
+a1997 7
+  Debug(dbg_Allocate, ("trying to make do with existing processors, limit 2"));
+  number_to_match -= RmApplyTaskforce(Taskforce, &MapTaskforce_Search2, 2);
+  if (number_to_match <= 0) goto finished;
+
+  Debug(dbg_Allocate, ("trying to make do with existing processors, limit 3"));
+  number_to_match -= RmApplyTaskforce(Taskforce, &MapTaskforce_Search2, 3);
+  if (number_to_match <= 0) goto finished;
+a1998 3
+  Debug(dbg_Allocate, ("trying to make do with existing processors, limit 4"));
+  number_to_match -= RmApplyTaskforce(Taskforce, &MapTaskforce_Search2, 4);
+  
+d2024 1
+a2024 1
+  if (template->MappedTo ne 0) return(0);
+d2107 39
+d2164 3
+d2221 1
+d2306 1
+d2323 1
+a2323 1
+    { domain_entry->AllocationTable[i].Id		= AllocationId;
+@
+
+
+1.3
+log
+@Plugged various memory leaks
+@
+text
+@d1781 1
+a1781 1
+   return(RmSearchNetwork((RmNetwork) Processor, &ObtainProcessorSearch,
+@
+
+
+1.2
+log
+@part of the file had gone missing, retrieved from PC disk
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/tfmjobs.c,v 1.1 90/09/12 15:14:50 jon Exp $";
+d252 1
+a252 1
+     	return;	/* BLV - release resources */
+d705 1
+a705 1
+  Debug(dbg_Allocate, ("request for a whole network"));
+d710 1
+a710 1
+   
+d713 1
+a713 1
+   
+d717 1
+a717 1
+
+d776 1
+a776 1
+  int		rc;
+d995 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header$";
+d2211 16
+a2226 1
+  Debug(dbg_Mapping, ("using processor %s"
+@

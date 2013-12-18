@@ -1,0 +1,489 @@
+head	1.4;
+access;
+symbols
+	Helios_1_3_1:1.4
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	C40_Field_Test_R1:1.2
+	Helios13_beta:1.2
+	Helios1_2_2:1.2
+	Helios1_2_2Beta:1.2
+	Helios1_2_1:1.2
+	Helios1_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	93.07.12.12.22.50;	author nickc;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.10.07.13.32.21;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.31.26;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.37.00;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@file removal routine - also removes directories
+@
+
+
+1.4
+log
+@fixed compile time warnings
+@
+text
+@char *rcsid = "$Header: /hsrc/cmds/com/RCS/rm.c,v 1.3 1992/10/07 13:32:21 nickc Exp nickc $";
+
+#include <stdio.h>
+#include <syslib.h>
+#include <gsp.h>
+#include <string.h>
+
+extern void exit(int);
+
+/* will hold anything from objectinfo */
+typedef union {
+	DirEntry	DirEntry;
+	ObjInfo		Oinfo;
+	Link_Info	Linfo;
+	byte		buff[IOCDataMax];
+} Dinfo;
+
+int     errors = 0;
+int     fflag = 0;
+int     iflag = 0;
+int     rflag = 0;
+
+void usage () {
+    fprintf(stderr,"Usage: rm [-f] [-i] [-r] <file list>\n");
+    exit (1);
+}
+
+void
+del( char * name )
+{
+  if (strcmp ("..", name) && strcmp (".", name))
+    {
+      word e;
+
+      e = Delete(CurrentDir,name);
+
+      if ( e < 0 && !fflag ) 
+	{
+	  fprintf(stderr,"rm: Cannot remove %s: %lx\n",name,e);
+	  errors++;
+	}
+    }
+} /* del */
+
+int confirm () {
+    char    c,
+            t;
+    c = getchar();
+    t = c;
+    while (t != '\n' && t != -1)
+	t = getchar();
+    return (c == 'y' || c == 'Y');
+}
+
+void
+rm( char * name )
+{
+  DirEntry *	b;
+  DirEntry *	m;
+  word		no_entries;
+  word		i;
+  word		size;
+  word		dirsize;
+  Stream *	s;
+  char		rname[ 128 ];
+  word		isdir;
+  word		islink;
+  Dinfo		obinfo;  
+  Object *	o = Locate( CurrentDir, name );
+
+  
+  if ( ObjectInfo(CurrentDir,name,obinfo.buff) != 0)
+    {
+      if (!fflag)
+	fprintf(stderr,"Cannot find %s : %lx\n",name,
+		Result2(CurrentDir));
+      errors++;
+      return;
+    }
+  
+  islink = obinfo.DirEntry.Type & Type_Link;
+  isdir  = o->Type & Type_Directory;
+  
+  if (iflag) 
+    {
+      fprintf(stderr,"rm: delete %s %s? ", 
+	      (isdir ? "directory" : "file"), name);
+
+      fflush(stderr);
+      if (!confirm ())
+	return;
+    }
+  
+  /* If a simple file or directory, delete it */
+  
+  if ( islink || !(isdir && rflag))
+    {
+      del(name); 
+      return;
+    }
+  
+  /* More complicated case - scan a directory */
+  
+  s = Open(o,NULL,O_ReadOnly);
+  
+  if ( s == Null(Stream) )
+    {
+      fprintf(stderr,"Cannot open %s : %lx\n",name,Result2(o));
+      errors++;
+      return;
+    }
+  
+  dirsize = GetFileSize(s);
+  
+  no_entries = dirsize/sizeof(DirEntry);
+  
+  if (no_entries > 0)
+    {
+      m = b = (DirEntry *) Malloc(dirsize);
+      
+      if (b == Null(DirEntry))
+	{
+	  fprintf(stderr,"rm: Out of memory\n");
+	  exit(1);
+	}
+      
+      size = Read(s,(char *)b,dirsize,-1);
+      
+      if ( size != dirsize)
+	{
+	  fprintf(stderr,"Read failure %lx\n",Result2(s));
+	  errors++;
+	  return;
+	}
+      
+      for ( i = 0 ; i < no_entries; i++ )
+	{ 
+	  if (strcmp ("..", m->Name) && strcmp (".", m->Name))
+	    {
+	      strcpy (rname, name);
+	      strcat (rname, "/");
+	      strcat (rname, m->Name);
+	      rm (rname);
+	    }
+	  m++;
+	}
+      
+      Free(b);
+    }
+  
+  Close(s);
+  Close(o);
+
+  del (name);
+
+  return;
+  
+} /* rm */
+
+int
+main(
+     int     	argc,
+     char *  	argv[] )
+{
+  int 		exstatus;
+  char *	opt;
+  
+
+  if (argc < 2)
+    usage ();
+
+  ++argv;
+  --argc;
+
+  while (**argv == '-')
+    {
+      opt = *argv;
+
+      while (*++opt != '\0')
+	switch (*opt)
+	  {
+	  case 'f': 
+	    fflag++;
+	    break;
+	  case 'i': 
+	    iflag++;
+	    break;
+	  case 'r': 
+	    rflag++;
+	    break;
+	  default: 
+	    fprintf(stderr,"rm: unknown option %c\n",*opt);
+	    usage ();
+	    break;
+	  }
+      argc--;
+      ++argv;
+    }
+
+  if (argc < 1)
+    usage ();
+
+  while (argc--)
+    rm (*argv++);
+
+  exstatus = (errors == 0 ? 0 : 1);
+
+  if (fflag)
+    exstatus = 0;
+
+  return (exstatus);
+
+} /* main */
+@
+
+
+1.3
+log
+@fixed bug preventing deletion of empty directories
+@
+text
+@d1 1
+a1 1
+char *rcsid = "$Header: /hsrc/cmds/com/RCS/rm.c,v 1.2 1990/08/23 10:31:26 james Exp nickc $";
+a22 6
+void usage (void);
+void rm (char *);
+void delete (char *);
+int confirm (void);
+
+
+d29 27
+d98 1
+a98 1
+      delete(name); 
+d154 1
+a154 1
+  delete (name);
+a158 27
+
+void
+delete( char * name )
+{
+  word e;
+
+  if (strcmp ("..", name) && strcmp (".", name))
+    {
+      e = Delete(CurrentDir,name);
+
+      if ( e < 0 && !fflag ) 
+	{
+	  fprintf(stderr,"rm: Cannot remove %s: %lx\n",name,e);
+	  errors++;
+	}
+    }
+} /* delete */
+
+int confirm () {
+    char    c,
+            t;
+    c = getchar();
+    t = c;
+    while (t != '\n' && t != -1)
+	t = getchar();
+    return (c == 'y' || c == 'Y');
+}
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d1 1
+a2 2
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/rm.c,v 1.1 90/08/22 16:37:00 james Exp Locker: james $";
+
+a7 1
+extern Object *CurrentDir;
+a27 37
+int main (argc, argv)
+int     argc;
+char   *argv[];
+{   int exstatus;
+    char   *opt;
+
+    if (argc < 2)
+	usage ();
+    ++argv;
+    --argc;
+    while (**argv == '-') {
+	opt = *argv;
+	while (*++opt != '\0')
+	    switch (*opt) {
+		case 'f': 
+		    fflag++;
+		    break;
+		case 'i': 
+		    iflag++;
+		    break;
+		case 'r': 
+		    rflag++;
+		    break;
+		default: 
+		    fprintf(stderr,"rm: unknown option %c\n",*opt);
+		    usage ();
+		    break;
+	    }
+	argc--;
+	++argv;
+    }
+    if (argc < 1) usage ();
+    while (argc--) rm (*argv++);
+    exstatus = (errors == 0 ? 0 : 1);
+    if (fflag) exstatus = 0;
+    return (exstatus);
+}
+d34 2
+a35 2
+void rm (name)
+char   *name;
+d37 64
+a100 12
+	DirEntry *b;
+	DirEntry *m;
+	int no_entries;
+	word i, size, dirsize;
+	Stream *s;
+	char    rname[128];
+	int     isdir, islink;
+	Dinfo	obinfo;
+
+	Object *o = Locate(CurrentDir,name);
+
+	if( ObjectInfo(CurrentDir,name,obinfo.buff) != 0)
+d102 2
+a103 23
+		if (!fflag)
+			fprintf(stderr,"Cannot find %s : %x\n",name,
+					Result2(CurrentDir));
+		errors++;
+		return;
+	}
+
+	islink = obinfo.DirEntry.Type & Type_Link;
+	isdir = o->Type & Type_Directory;
+
+    	if (iflag) 
+	{ 	fprintf(stderr,"rm: delete %s %s? ", 
+			(isdir ? "directory" : "file"), name);
+		fflush(stderr);
+		if (!confirm ())
+	    		return;
+	}
+
+	/* If a simple file or directory, delete it */
+
+	if ( islink || !(isdir && rflag))
+	{	delete(name); 
+		return;
+d105 4
+a108 6
+
+	/* More complicated case - scan a directory */
+
+	s = Open(o,NULL,O_ReadOnly);
+
+	if( s == Null(Stream) )
+d110 15
+a124 3
+		fprintf(stderr,"Cannot open %s : %x\n",name,Result2(o));
+	    	errors++;
+		return;
+d126 12
+d139 4
+a142 1
+	dirsize = GetFileSize(s);
+d144 3
+a146 16
+	no_entries = dirsize/sizeof(DirEntry);
+	m = b = (DirEntry *) Malloc(dirsize);
+	
+	if(b == Null(DirEntry))
+	{
+		fprintf(stderr,"rm: Out of memory\n");
+		exit(1);
+	}
+
+	size = Read(s,(char *)b,dirsize,-1);	
+	if( size != dirsize)
+	{
+		fprintf(stderr,"Read failure %x\n",Result2(s));
+	  	errors++;
+		return;
+	}
+d148 1
+a148 1
+	for( i = 0 ; i < no_entries; i++ )
+d150 2
+a151 7
+		if (strcmp ("..", m->Name) && strcmp (".", m->Name))
+		{   strcpy (rname, name);
+		    strcat (rname, "/");
+		    strcat (rname, m->Name);
+		    rm (rname);
+		}
+  	        m++;
+a152 14
+	Free(b);
+	Close(s);
+	Close(o);
+	delete (name);
+}
+
+void delete( name )
+char *name;
+{ int e;
+  if (strcmp ("..", name) && strcmp (".", name))
+  { e = Delete(CurrentDir,name);
+    if ( e < 0 && !fflag ) 
+    { fprintf(stderr,"rm: Cannot remove %s: %x\n",name,e);
+      errors++;
+d154 1
+a154 2
+  }
+}
+d165 55
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d2 1
+a2 1
+static char rcsid[] = "$Header$";
+@

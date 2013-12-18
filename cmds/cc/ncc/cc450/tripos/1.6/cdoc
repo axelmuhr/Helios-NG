@@ -1,0 +1,1570 @@
+
+Norcroft C compiler 1.00                                    1 Sept 1986
+------------------------ 
+
+Small changes to reflect new options in version 1.60        20 Jan 1988
+Small changes to reflect new options in version 1.57        30 Nov 1987
+Small changes to reflect new options in version 1.49        24 July 1987
+
+
+PART 1 - OVERVIEW AND INTRODUCTION
+==================================
+
+
+
+0.  In the file admin.log there are notes giving highlights of
+    changes made since previous issues of this software.
+
+1.  INSTALLATION
+
+    Ensure that the following directories exist:
+
+        <somewhere suitable>    used for executable images
+        $.arm.clib.h            C header files (standard place)
+        $.arm.clib.h.unix       extension header files (may be UNIX-useful)
+        $.arm.clib.o            C library (compiled version)
+        cc.admin                where I keep cdoc
+        bench.c                 source code of a few test programs
+        bench.h                 for headers local to the bench directory
+        bench.o                 place for object files
+        bench.p                 place for executable files
+        $.tmp                   also used for temporary files
+
+    From 0.29 onwards the directory $.arm.clib.h is for documentation
+    and extension only - the compiler contains the text of standard header
+    files within itself.
+
+    The code compiled by C does floating point arithmetic  using Acorn's
+    FPE (version 2).  Previous versions of the FPE used a different
+    encoding of floating point instructions.  On the co-processor
+    run FPE before executing C programs which use floating point.
+    Failure to do this will result in a 'illegal instruction' exception.
+    If nonsensical answers are obtained check your FPE is FPE2.
+
+1.A If you obtain C on a single density (otherwise known as FM or DFS)
+    disc see section 1.B. The double density disc has this file as $.cdoc,
+    and then a collection of directories all of which should be transferred
+    to the working file system (here assumed to be a Winchester disc). The
+    directory $.Library on the floppy contains cc as an executable
+    program image.  $.arm.c.o one file, ansilib, that is
+    the C library. The cc command generates a call to the linker that
+    expects to find these files in $.arm.clib.o on the current filing
+    system, so do not try to rename them.
+    $.arm.clib.h is not needed to use C, but are copies of the header files
+    available via #include <xxx>.
+    
+    $.bench.c contains some test programs.
+    The file $.install can be edited to obtain a file containing a sequence
+    of commands to copy files from floppy to Winchester disc.
+
+1.A For single density floppy distribution it may be that either (a) some
+    of the files mentioned here are not distributed or (b) two discs are
+    used. In either case the following instructions apply (two each disc if
+    two are used).
+
+    Inspect the file :0.x.install on the floppy, and copy files from
+    the floppy to your hard disc in the way that it describes. The install
+    file suggests putting cc in a directory called p - you should
+    change that to put those files in whatever directory you usually use
+    for executable binary files.
+
+    Ensure that the file will be found as a command,
+    either by copying them into your library directory or by going
+    something like 'lib p'.
+
+
+    NOTE: whenever the command cc with the option -spool (see below)
+    is used there MUST be a directory
+    called $.tmp and you must be able to write to it. If it is not present
+    (and if subdirectories o and p do not exist) the compilation will fail.
+
+
+    SPECIAL NOTES FOR FILESERVER USERS
+
+    The current use of the absolute pathnames $.tmp and $.arm.clib.o may
+    cause trouble - all users of C need to be able to create files in
+    $.tmp, and when installing C you need to be able to create $.arm.clib.o
+    and write into it. Until a sensible set of instructions for achieving
+    this have been worked out (and maybe the C library changed to put
+    temporary files elsewhere) it may be easiest to log on as a system
+    manager.
+
+    A further problem when using the net is that command lines > 80 characters
+    cause trouble (they can lead to the message 'Net error (161)'. This
+    gives trouble when linking compiled C code. At least a temporary
+    workaround is to keep the linker cached in memory (avoiding reference
+    to the net at a critical moment). The incantation is something
+    like:
+        cache $.lib*.link link
+    and for improved speed of compilation you may well like to go
+        cache $.lib*.cc    cc
+    as well.  This facility is not available in early releases of the
+    ARM executive, and is NOT needed by C except to work around this
+    fileserver oddity. Contact technical support at Acorn if you run into
+    this problem.
+
+
+
+2.  QUICK TESTS
+
+    go
+        cc bench.sieve -link
+
+    This compiles bench.c.sieve putting an object file in bench.o.sieve and
+    then invokes Link to join this with the library to make bench.p.sieve.
+    Then
+        run bench.p.sieve
+    tries the results.
+
+    (Otherwise:
+        dir bench
+        cdir $.tmp              if not done already
+        cc sieve -link
+        run p.sieve
+        dir ^
+    )
+
+    Similarly other files in the bench directory can be compiled and tested.
+    To make files fit on the distribution disc the various benchmark tests
+    have all been concatenated into one file - you need to use an editor to
+    unpick this before trying them out.
+
+    Other programs should be put in a directory called <whatever>.c with
+    corresponding headers in <whatever>.h and with directories <whatever>.o
+    and <whatever>.p for object & binary files. The command
+        cc <whatever>.a <whatever>.b <whatever>.c -link
+    will compile the three files named and link all together to produce
+    an executable image in <whatever>.p.a
+    If you choose to work in directory <whatever> then
+        cc a b c -link serves the same purpose.
+    If cc is given the option -spool compiler output will be sent to the
+    file $.tmp.clog.  If -test is given the compiler runs in testing mode
+    with slightly annotated assembly code sent to stdout.
+
+
+3.  CHARACTERISTICS
+
+    See part 2 of this note for a comprehensive description of the
+    behavious of the compiler. The representation of basic data types
+    is:
+        char            unsigned 8 bits
+        signed char     signed 8 bits
+        short           16 bits
+        int, long       32 bits
+        float           32 bits
+        double          64 bits
+        long double     64 bits
+        all pointers    32 bits
+
+
+4.  LIMITATIONS & BUGS
+
+
+    bitfields in structures:
+                size of a structure including bitfields is not what one
+                might have expected, but is as required by draft ANSI
+                standard.
+
+    In version 1.00 the stack is of fixed size (16 Kbytes), and stack
+    overflow is checked for and raises an exception. Future versions are
+    expected to have a stack extension capability.
+
+    The freestore package assumes that memory from above the loaded code
+    to the top of memory (e.g. 4Mbytes - a little bit) is available for
+    carving up via malloc. No provision is made for people who want to
+    hold back memory for other purposes.
+
+    List of things in the library known or suspected to be unfinished:
+
+                I would be amazed if there are not some cases where field
+                widths in scanf, and the %n conversion in printf/scanf
+                are wrong.  Now believed OK, but subject to mutterings
+                concerning draft standard ambiguities.  E.g. %0d etc.
+
+                Use of library facilities within assynchronously invoked
+                signal handlers is generally suspect if the library fn
+                invoked could have been being executed when the signal was
+                raised. malloc & free try to avoid this trouble by
+                diverting exceptions while they work (c.f. the idea of
+                callback in Brazil), so SHOULD be safe.  ANSI give
+                a general warning in this regard.
+
+
+    It seems very probable that there will be a horde of bugs in the
+    compiler as yet (although it compiles itself and has also compiled
+    another large C program successfully).
+
+    PLEASE REPORT BUGS, LIMITATIONS, INCOMPATIBILITIES ETC WHATEVER THEY
+    MAY BE.
+
+
+
+5.  EXTRA FEATURES
+
+    After
+        #pragma -c1
+    the compiler generates code that validates memory accesses and
+    produces a backtrace if an invalid access is attempted.
+    This facility can only control the codegenerator at the level of
+    complete functions.
+        #pragma -c0
+    switches testing off again.
+
+    #pragma -b0 switches off error messages about implicit casting between
+    pointers and integers.  Prefer option -ec below.
+
+    #pragma -a0 / -a1 controls the generation of messages about the use
+    of undeclared functions (which are treated as extern int()).
+    Prefer option -wf below.
+
+    #pragma -s1     disable stack overflow checking. This option should
+                    NOT be used except when compiling those library
+                    functions that are to do with stack overflow recovery.
+
+    Other #pragma options should not be used, please! Furthermore these
+    particular options are subject to alteration without us giving much
+    consideration to backwards compatibility.  Prefer command line options
+    also note the -p option below for setting pragmas from the command line.
+
+
+    The cc command can be given options:
+        -b                  change order of bitfields within a word in
+                            bitfield structures
+        -d<symbol>          as #define <symbol> 1        at start of file
+        -d<symbol>=<value>  as #define <symbol> <value>  at start of file
+        -g<letters>   On implementing machines (currently ARM only)
+                      produce debugging tables (on ARM into AOF file).
+            (Options on ARM)
+                a     maximal debugging -- i.e. -ga == -gflv
+                f     debugging tables for top level variables only.
+                l     debugging tables for line/code address translation
+                      (affects code quality (e.g. peephole)).
+                v     debugging tables for local variables
+                      (affects code quality (e.g. peephole)).
+        -i<dir1>.,<dirn>.   list of places to scan for #include "xxx"
+                      Note that these are prefixed to the (possibly modified)
+                      xxx.  E.g. on ARM #include "abc.h" with -ifoo.,@.,z
+                      will look in turn for foo.h.abc, @.h.abc, zh.abc.
+        -j<dir1>.,<dirn>.   list of places to scan for #include <xxx>
+                      Same as -i with <> for "".
+        -k                  generated code counts entries to procs
+        -K                  full statistics gathering in code
+        -o                  disable optimiser (no longer supported)
+        -w<letters>   supress various warnings (when):
+                a       '=' occurs in condition context.
+                d       (some) deprecated features are used.
+                f       functions are implicitly declared as extern int().
+                s       when 'short' is used the first time
+                v       when void functions are written without 'void'.
+        -e<letters>   supress various (non-serious) errors (when):
+                c       ANSI disallowed casts are used.
+                p       Junk occurs after #else and #endif.
+                v       (facility used by the compiler's developers).
+                z       Zero sized arrays occur.
+        -f<letters>   enable various extra features (when):
+                a       Dataflow anomalies occur.  Currently just reports
+                        when it cannot be proved that an uninitialised
+                        variable's value is never used.
+                e       (version 1.58+) check that extern symbols are
+                        unique in 6 char monocase as required by ANSI.
+                f       Supress insertion of function names in code image
+                        (reduces the output information given by _backtrace()
+                        and _mapstore() if an untrapped exception occurs but
+                        saves ~5% of code size typically).
+                h       (For policing software quality requirements):
+                        1. require all extern function definitions to be
+                           preceded by a declaration (presumably from a header
+                           file) thus guaranteeing type consistency.
+                        2. report on all forward static declarations which
+                           are unused when the function is defined.
+                i          -l source listing includes "" included files
+                j          -l source listing includes <> included files
+                m       Give one warning for each #defined but unused macro.
+                s       Annotate listing given with -s option.
+                u          give -l source listing unexpanded (i.e. before
+                           preprocessor macroprocessing)
+                v       Give one warning for each declared but unused
+                        variable or function.
+                x       Do less (msdos/unix) mapping on #include files.
+                        Set by -msdos option (q.v.)
+        -l<filename>  send source or macro-expanded source to named file.
+                      See -fuij.
+        -m<filename>  read _write_profile() data written by previous
+                      execution and print profile counts therefrom with
+                      -l source listing.
+        -p<letter><int>   simulate #pragma -<letter><int>
+        -s<filename>  send assembly code to named file
+        -Q<letters>   enable various debugging facilities
+                      N.B. These are for compiler debugging only and
+                      and not generally useful  (if you do not understand the
+                      explanation then the option is not for you!!!).
+                      Note:  the compiler is constructed that these may be
+                      selectively removed for production versions.
+                a       print syntax trees of each function
+                b       trace the manipulation of variable bindings
+                d       debug data segment generation interactively
+                f       print name of function as parser first sees it
+                g       show something of codegenerator internal workings
+                h       debug auto/register variable spill code
+                i       debug #include file name mapping/search list
+                l       trace behaviour of lexical analysis
+                m       do a _mapstore() at end of compilation
+                o       debug trace on object code formatting
+                p       debug option in preprocessor
+                q       debug source level debugger symbol tables
+                r       trace of register allocator's behaviour
+                s       syntax analysis information
+                t       typechecker trace
+                u       display store usage in various parts of the compiler
+                w       extra detail to -qu
+                x       generate code that will print a message at entry to
+                        each function (some machines (including ARM)) only.
+                y       debugging flag for loop optimiser
+                z       each 'z' increments a flag relating to how much
+                        information is displayed when the compiler detects
+                        an internal error in itself.  Also supresses
+                        the exit() treatment of SIGINT.
+        -x      (On the ARM) special option to compile code with r12 and r13
+                interchanged.  N.B. this means that the standard library
+                binary will not work!
+        -xNAME  (On the 370) special option to set the 'CSECT' name for the
+                code segment to be @NAME and the datasegment $NAME.
+                By default both sections are 'blank CSECT', and thus can
+                never clash, but cannot be link-edited out.
+
+    In addition the following keywords are supported on the command line
+    (these are currently only built into the ARM version):
+        -spool  copy compiler output onto $.tmp.clog.
+        -link   invoke the linker on all object files produced, e.g.
+                  cc a b c -link
+                compile c.a c.b c.c to o.a o.b o.c and
+                link o.a,o.b,o.c to p.a using the standard library.
+        -test   allow no files to be specified for interactive test
+                compilation with code printed on screen.
+        -msdos  Do file name mapping appropriate to running
+                as a IBM PC processor card running under MSDOS.
+        -arthur Search extra files with -link (to be installed/specified by
+                Acorn)
+
+    Various of these options, particularly the -Q ones, are intended for
+    use by the compiler's developers, and will change from release to
+    release. Some of them will switch on long and ill-formatted debugging
+    traces, which are not intended to be of use to the general public.
+    In the final release of this compiler various of these options will
+    probably have been removed.
+
+    The profile statistics collected if -k or -K is selected can be seen
+    if _mapstore() is called by the user's program.
+
+    If cc -test is called without a destination file being specified it
+    writes annotated assembly code to the standard output (i.e. to the
+    terminal). This (together with *spool so it can be captured) is a
+    useful way finding out about codegeneration bugs (I hope you do not
+    fall over any of same!)
+
+    It is intended that a "make" utility will be provided sometime soon,
+    so a file called Makefile is present on the disc. This can not be used
+    directly yet but gives prototypes for how to drive the compiler
+    directly rather than via 'cc'. The recipes are subject to change
+    without notice!
+
+
+
+6.  ARM MACHINE CODE INTERFACE
+
+See Acorn's procedure calling standard for more details on this section.
+
+; Here is some sample assembly code to be linked with C compiled code
+
+a1      RN      0         ; argument 1/integer result
+a2      RN      1         ; argument 2
+a3      RN      2         ; argument 3
+a4      RN      3         ; argument 4
+v1      RN      4         ; register variable
+v2      RN      5         ; register variable
+v3      RN      6         ; register variable
+v4      RN      7         ; register variable
+v5      RN      8         ; register variable
+v6      RN      9         ; register variable
+fp      RN      10        ; top of current stack frame/arg vector pointer
+ip      RN      11        ; used as temp workspace
+sp      RN      12        ; lower end of current stack frame
+sl      RN      13        ; stack limit
+lr      RN      14        ; link address on calls/workspace
+pc      RN      15        ; program counter
+
+f0      FN      0         ; floating point result
+f1      FN      1         ; <other FP registers are all workspace>
+
+        AREA    |C$$code|, CODE, READONLY
+        IMPORT  |ffff|
+        EXPORT  |gggg|
+
+; gggg is a function of 2 args that needs one register variable (v1)
+
+ggggx   DCB     "gggg", 0           ; name of the function
+        ALIGN                       ; padded to whole number of words
+ggggy   DCD     &ff000000 + ggggy - ggggx   ; distance to name start
+
+gggg    MOV     ip, sp
+        STMFD   sp!, {a1, a2, v1, fp, ip, lr, pc}
+        SUB     fp, ip, #4          ; points at saved PC
+        CMPS    sp, sl
+        BLLO    |x$stack_overflow|  ; handler procedure
+        ....
+        MOV     v1, ...             ; use a register variable
+        BL      |gggg|
+        ...     v1 ...              ; rely on its value after gggg()
+        ...
+
+Within the body of the procedure arguments are used from registers if
+possible, otherwise they are addressed relative to FP. IN the two
+argument case shown above arg1 is at [FP, #-24] and arg2 is at [FP, #-20],
+but as discussed below, args will sometimes be stacked with positive offsets
+relative to FP. Local variables are NEVER addressed offset from FP - they
+ALWAYS have positive offsets relative to SP. In code that changes SP this
+means that the offsets used may vary from place to place in the code. The
+reason for this oddity is that it permits the procedure at x$stack_overflow
+to recover by setting SP (and SL) to some new stack segment as necessary.
+As part of this mechanism x$stack_overflow may alter memory offset from
+FP by negative amounts, e.g. [FP, #-64] and downwards, provided that it
+adjusts SP to provide workspace for the called routine. If the function is
+going to use more than 256 bytes of stack it must go
+        SUB     ip, sp, #<my stack size>
+        CMPS    ip, sl
+        BLLO    |x$stack_overflow_1|
+instead of the two-instruction test shown above. System code ensures that
+there are always 512 bytes of memory below where SL points that can be used
+by the program and the stack recovery stuff. Here I allow the procedure to
+encroach into 256 of these, with an extra 60 bytes or so stacked on the way
+into something that it calls, leaving a guaranteed 192 bytes for the code
+that performs recovery services.
+
+At the end of the procedure one returns a value by:
+
+        ...
+        <result in a1, or f0 if double or float>
+        LDMDB   fp, {v1, fp, sp, pc}^   ; return
+
+
+        END
+
+
+The passing of arguments is as if the following sequence of operations
+was performed (note that it will often be possible to avoid the stack
+manipulation described - but this description is to give a reference for
+the effect not the mechanism):
+    (1) push each argument onto the stack, starting with the last and
+        finishing with the first. (No guarantee is implied about the
+        order of evaluation of args, just about the way in which they
+        end up on the stack (sp) with arg1 at the lowest address).
+        Integer and pointer args are pushed as 32-bit values, doubles
+        as 64-bit values. Structures will be pushed as a sequence of
+        32-bit words.
+    (2) pop the first 4 32-bit arg segments off the stack into a1 - a4
+        as by "LDMFD sp!, {a1,a2,a3,a4}". If less than 16 bytes of
+        argument values were pushed in step (1) only pop the number of
+        words that were pushed.
+    (3) Call the function, as by  "BL functionname". If the function
+        is an expression this is to be taken to mean load pc with
+        the value of that expression, with lr set to a return address
+        (which should have the condition codes set in its top few bits).
+    (4) If more that 16 bytes of arguments were passed the stack has
+        to be adjusted after the call by "ADD sp, sp, #(argbytes-16)".
+    (5) On return from a function an integer/pointer result will have
+        been left in a1, a floating point result is in f0. The treatment
+        of structure results will be documented later.
+
+Functions that accept structures as arguments are called just as described
+above - the argument will be passed as a succession of words. A function
+that returns a structure result (let SS be a structure type) is subject to
+an effective transformation whereby
+      SS fname(a,b,c) { .... return d; }
+becomes
+      void fname(SS *p, a,b,c) { .... *p = d; return; }
+
+Calling a function disturbs registers a1, a2, a3, a4, ip and lr. It
+preserves v1, v2, v3, v4, v5 and v6, and also fp. The stack pointer sp is
+not altered across the function call itself, but if many args are being
+passed it changes during the process of pushing arguments. The limit
+register sl may change at any time, but must always be a valid limit to
+the downwards growth of sp, and it is not expected that ordinary user
+code will touch it.
+
+If a function expects no more than 16 bytes of arguments it can push
+all args onto the stack at the same time as saving its old fp & its
+return address (see the example above), and arguments are then saved
+contiguously in memory with arg1 having the lowest address. A function
+that expects more than 16 bytes of arguments has code at its head:
+
+        MOV     ip, sp
+        STMFD   sp!, {a1, a2, a3, a4}
+        STMFD   sp!, {v1, v2, fp, ip, lr, pc}   ; v1-v6 saved as necessary
+        SUB     fp, ip, #20                 ; point at saved PC
+        CMPS    sp, sl
+        BLLO    |x$stack_overflow|
+        ...
+        ...
+        LDMDB   fp, {v1, v2, fp, sp, pc}^   ; restore register vars & return
+
+where the header arranges that arguments (however many there are) lie
+in consecutive words of memory, and the return sequence that sp is always
+the lowest address on the stack that still contains useful data. Of course
+functions that do not call other functions or which satisfy other relevant
+limitations can miss out these sequences of instructions.
+Note that preserving register variables (callee saves discipline) can
+be done as part of STM/LDM pairs already needed. The registers a1 to a4
+and ip can be used as caller-saves workspace and it is up to the
+compiler to allocate values to the more suitable sort of register.
+
+Note that I am still worrying about what to do at x$stack_overflow and
+that I hope one NEVER gets there!
+
+7.  THE ADOBE TEST SUITE
+
+    This section was intended as internal comment as requested by Acorn.
+    It is not generally useful.
+    The file we were given compiles and runs. The problems observed are:
+        (a) the test suite expects 'char' to be signed, and uses
+            'unsigned char' for an unsigned 8-bit field. For our compiler
+            one should say 'signed char' for a signed byte. The result
+            is a message about signed rightshifts.
+        (d) The messages about 'Illegal bit field type' are an oddity
+            in the adobe code - our reading of C specifications suggests
+            that struct {short a:15;} SHOULD have been written as
+            struct {int a:15;}
+        (e) A missing ';' in the file is noted,
+        (f) An unused variable is noted,
+        (g) A missing declaration is noted,
+        (i) the line that tries to save the result of signal() moans
+            about the cast it has to do (but will generate the expected code),
+            This is because of a disagreement between old and new C re the
+            type returned by the functional argument passed to signal (void
+            vs. int).
+        (j) bitfield structures having the wrong length is moaned about.
+        (k) various implicit casts are noted.
+
+    All of these seem to me to be troubles with the test code not with
+    this compiler.  See also ANSI on point (j).
+
+
+8.  RECENT CHANGES
+
+    This list of changes is not comprehensive, but may help users understand
+    what is going on.
+
+    1.49 vs 1.31
+        (a) The compiler now does tail recursion removal.
+        (b) FPE2 format floating point is now supported.
+        (c) s/f/printf and s/f/scanf formats are now checked to some extent
+            for compatibility with their actual parameters.
+        (d) Compiler space efficiency much improved.
+    1.01 vs 1.00
+        (a) the compiler is now in one part (p.cc), and unless the
+            command line option -spool is used it does not need the
+            directory $.tmp
+        (b) single precision floating point arirhmetic now uses single
+            precision operations.
+        (c) there is a profile option (-k or -K), and _mapstore() to
+            display the statistics that are collected.
+
+    1.00 vs 0.31
+
+        (a) more bug fixes based on further Acorn reports.
+        (b) some loop invariants are moved out of loops, leading to
+            better performance.
+        (c) improved register allocation strategy.
+        (d) treatment of formals of type float (rather then double)
+            now correct.
+        (e) fseek() now implemented.
+        (f) more use of structures within the compiler source.
+
+    0.31 vs 0.29
+        (a) bug fixes to respond to Acorn reports (based on the SoftLab
+            validation suite)
+        (b) procedures that do not call any others now do not save a
+            full amount of status on the stack as they enter. This will
+            sometimes lead to much improved code if lots of very tiny
+            leaf procedures are used.
+        (c) the source of the compiler has been adjusted to use structures
+            in more places, and hence to give the type system more chance
+            to notice errors in it.
+
+    0.29 vs 0.26
+        (a) register conventions are now different, converging towards
+            what I hope will become an Acorn standard,
+        (b) there are checks for stack overflow,
+        (c) procedures that have very large stackframes can now access
+            their local variables without running out of addressability,
+        (d) #include <xxx> searches an in-store filing system for the
+            specified header before resorting to access to the host
+            file system.
+        (e) structure results are now compiled by giving the function
+            concerned an extra invisible first argument that indicates
+            where the results structure should be dumped.
+
+    0.26 vs 0.24
+        (a) there is now some pretence that float works (as well as double)
+        (b) scanf performed floating point conversions wrongly in 0.24
+        (c) #if now exists, as does defined()
+        (d) cast error messages and detection has been improved
+        (e) there has been more work on the library: floor, ceil, modf,
+            fmod, remove, rename, tmpfil, realloc ....
+
+    0.24 vs 0.19
+        (a) bug fixes in math library,
+        (b) bug fix for compilation with floating point or structure args
+        (c) bug fix for functions with a header including ellipsis (for
+            use with va_args
+        (d) improvements in library, with more of it implemented and brought
+            into line with current ANSI information bulletin.
+        (e) compiled code accesses automatic variables using SP relative
+            rather than FP relative addressing. This is a move towards an
+            option (at least) where FP will not be needed.
+        (f) debugging options ONLY recognized after -Q.
+
+
+    0.19 vs 0.11
+
+        (a) improvements in bitfields withing structures.
+        (b) graph colouring register allocation enabled by default.
+        (c) signal() now provided. Default action on an event is the
+            generation of a backtrace. In bad enough cases this may be
+            unhelpful or neverending!
+        (d) timer functions available, math library improved. Generally
+            more library functions implemented.
+        (e) the function prototype    extern f(void)  now behaves itself.
+        (f) register declarations used to guide the register colouring code
+            in those cases where there are not enough real registers.
+
+
+
+
+
+
+
+
+PART 2 - IMPLEMENTATION CHARACTERISTICS
+=======================================
+
+
+Implementation limits and characteristics
+=========================================
+
+(1) Limits on the values that can be taken by expressions of integral type
+
+CHAR_BIT        8           number of bits in a character
+CHAR_MAX        255         largest value for (unqualified) char value
+CHAR_MIN        0           smallest value for (unqualified) char value
+INT_MAX         2147483647  (= 0x7fffffff)  integers are 32 bits long
+INT_MIN         -2147483648 (= 0x80000000)  ... and use twos complement.
+LONG_MAX        2147483647  (= 0x7fffffff)  long int is the same as int
+LONG_MIN        -2147483648 (= 0x80000000)
+SCHAR_MAX       127         largest value for signed char
+SCHAR_MIN       -128        smallest value for signed char
+SHRT_MAX        32767       (=0x7fff) short integers are 16 bits long
+SHRT_MIN        -32768      (=0x8000) ... and use twos complement
+UCHAR_MAX       255         largest value for explicitly unsigned character
+UINT_MAX        4294967295  (=0xffffffff) largest unsigned int
+ULONG_MAX       4294967295  (=0xffffffff) largest unsigned long
+USHRT_MAX       65535       largest unsigned short
+
+
+(2) Limits on floating point values
+
+Since this section was written, both Acorns FPE emulator and ANSI draft
+have changed.  Treat all statements below with suspicion.
+[The values given here correspont to Acorn's floating point emulator, which
+uses IEEE format arithmetic. float is 32 bits, double and long double are
+64 bits. Note that under FPE version 17 (and earlier) the POS_EPS values
+given here are not in precise agreement with reality. This discrepancy will
+be resolved later. Also FP registers are wider that numbers in store, so
+some values may be computed to higher precision than would be suggested by
+the parameters quoted here.]
+
+FLT_RADIX           2                           base 2 arithmetic
+FLT_ROUNDS          1                           rounds
+FLT_GUARD           1                           keeps some guard digits
+FLT_NORMALIZE       1                           operands must be normalised
+
+DBL_DIG             15                          15 digit accuracy for doubles
+DBL_EXP_DIG         11                          11 bits of exponent
+DBL_MANT_DIG        52                          52 bits of mantissa
+DBL_MAX             1.79769313486231571e+308    largest double value
+DBL_MAX_10_EXP      308                         log10(DBL_MAX) rounded down
+DBL_MAX_EXP         1023                        log2(DBL_MAX) rounded down
+DBL_MIN             2.22507385850720138e-308    smallest nonzero double
+DBL_MIN_10_EXP      -307                        log10(DBL_MIN) rounded up
+DBL_MIN_EXP         -1022                       log2(DBL_MIN) exactly
+DBL_NEG_EPS         1.1102230246251565e-16      1.0 - DBL_NEG_EPS != 1.0
+DBL_NEG_EPS_EXP     -53                         log2 of above value
+DBL_POS_EPS         2.2204460492503131e-16      1.0 + DBL_POS_EPS != 1.0
+DBL_POS_EPS_EXP     -52                         log2 of above value
+
+FLT_DIG             7                           7 digit accuracy for floats
+FLT_EXP_DIG         8
+FLT_MANT_DIG        24
+FLT_MAX             3.4028234663852886e+38      largest float value
+FLT_MAX_10_EXP      38
+FLT_MAX_EXP         127
+FLT_MIN             1.17549435082228751e-38     smallest float value
+FLT_MIN_10_EXP      -37
+FLT_MIN_EXP         -126
+FLT_NEG_EPS         2.9802322387695312e-08      1.0 - FLT_NEG_EPS != 1.0
+FLT_NEG_EPS_EXP     -25
+FLT_POS_EPS         5.9604644775390625e-08      1.0 + FLT_POS_EXP != 1.0
+FLT_POS_EPS_EXP     -24
+
+LDBL_DIG            15                          long double = double
+LDBL_EXP_DIG        11
+LDBL_MANT_DIG       52
+LDBL_MAX            1.79769313486231571e+308
+LDBL_MAX_10_EXP     308
+LDBL_MAX_EXP        1023
+LDBL_MIN            2.22507385850720138e-308
+LDBL_MIN_10_EXP     -307
+LDBL_MIN_EXP        -1022
+LDBL_NEG_EPS        1.1102230246251565e-16
+LDBL_NEG_EPS_EXP    -53
+LDBL_POS_EPS        2.2204460492503131e-16
+LDBL_POS_EPS_EXP    -52
+
+
+(3) Warnings
+
+See appendix 5.5 of the ANSI information bulletin (May 1986) for motivation
+for this section.
+
+Where I am not sure of the behaviour of our compiler (e.g. because the
+given facility has not been completely implemented yet or is expected to
+change before the final version) I mark the entry with a collection of
+stars as here. In the final version of this note all these should have
+been removed! *****************************************************************
+
+(3.1)   Block with initialised automatic variable is jumped into.
+                    not detected.
+
+(3.2)   Character constant with more than one character.
+                    a warning message flags this as non-portable.
+
+(3.3)   Character sequence '/*' found within a comment
+                    a warning message is generated.
+
+(3.4)   An implicit narrowing operation is found.
+                    no action is taken on implicit conversions on arithmetic
+                    types. Unless supressed by a pragma all implicit
+                    conversions between distinct pointer types are noted.
+
+(3.5)   A function is called but no prototype has been provided.
+                    Warning message to say that 'extern int fff()' is assumed.
+
+(3.6)   Arguments in function call do not agree in number or type
+        with those of the formals in a function definition.
+                    Partially checked - future releases will be more
+                    comprehensive.
+*******************************************************************************
+
+(3.7)   An object is defined but not used.
+                    Warning message for objects defined with local extent,
+                    a compiler option can generate similar warnings about
+                    unused top-level declarations, but this is usually
+                    unhelpful because of the number of library functions
+                    defined in headers but not used in the given file.
+
+(3.8)   A value is given to an object of an enumeration type other than
+        via use of a suitable enumeration constant.
+                    ???
+*******************************************************************************
+
+(3.9)   An aggregate has a partly bracketed initialization.
+                    ???
+*******************************************************************************
+
+(3.10)  A statement cannot be reached.
+                    No code corresponding to the unreachable statement will
+                    be produced (usually!), but no comment about this will
+                    appear.
+
+(3.11)  A statement with no apparent effect is encountered.
+                    No warning is issued for this.
+
+(3.12)  A constant expression is used as the controlling expression in
+        a selection statement.
+                    No warning is issued for this.
+
+(3.13)  A function has return statements with and without expressions.
+                    No warning is issued for this, BUT
+                    A warning is (from version 1.40) issued for any
+                    non-void function which contains an implicit return.
+
+
+
+
+
+(4) Behaviours left unspecified by the ANSI document
+
+The list of issues discussed here is taken form the May 1986 ANSI
+information bulletin.
+
+(4.1)   Statics are initialised at load time, with initialisation information
+        captured in the relocatable binary (AOF) format of object files.
+
+(4.2)   The behavious on printing a printable character at the final position
+        on a line is not specified by the C system - it will be a property
+        of lower level software and hardware combinations.
+
+(4.3)   The effect of printing a backspace at the start of a line is as in 4.2
+
+(4.4)   The effect of printing a horizontal tab character near the end of
+        a line is as discussed in 4.2
+
+(4.5)   Vertical tabulation: see 4.2
+
+(4.6)   Floating point representations:
+            float:  32 bits, IEEE format.
+            double: 64 bits, IEEE format, the word holding the more
+                    significant part of the mantissa + the exponent and sign
+                    is stored at the lower machine address. See Acorn FPE
+                    documentation.
+            long double is treated as just double.
+
+(4.7)   The compiler reserves the right to evaluate expressions in any order
+        it sees fit, regardless of parentheses. Unary + can be used to
+        restrict it. Different releases of the compiler may be expected to
+        choose different orders to evaluate subexpressions in, with increasing
+        tendancies to radical rearrangement of the users code to achieve
+        better performance.
+
+(4.8)   The order in which side effects take place is subject to the same
+        considerations as 4.7.
+
+(4.9)   The order in which function arguments are evaluated is not specified,
+        and will vary from release to release of the compiler.
+
+(4.10)  The layout of store for formal parameters is unspecified except when
+        at least one formal parameter appears as the operand of the '&'
+        operator. The proper use of va_start ensures that parameters are
+        laid out in store in a defined way, and it is strongly suggested that
+        users ONLY exploit this layout via the macro va_arg.
+        When & has been used formal parameters are laid out at consecutive
+        machine addresses with the first parameter at the lowest address.
+        All parameters will have been widened to be a multiple of 4 bytes.
+        In the future it should be expected that any formal parameters that
+        have register storage class might not appear in the block of
+        consecutive storage locations described here.
+
+(4.11)  No specification is given concerning the order and contiguity of
+        storage allocated by the functions calloc, malloc, realloc. Users
+        should not rely an any such properties.
+
+(4.12)  The qsort function does not implement a stable sorting method, and
+        thus members that compare as equal will frequently be permuted in
+        the process of sorting a complete array.
+
+(4.13)  Calendar time as returned by the time() function should only be
+        used with the associated conversion functions: it is however expressed
+        in units of 1 second from a base date on 1st January 1970.
+
+
+
+(5) Behaviours left undefined by the ANSI document
+
+Cases listed here correspond to erroneous program text or execution, but
+ANSI does not require any particular response from the compiler - a
+compiler can deal with these cases in any way it sees fit from giving
+sensible results, through generating diagnostics to producing random and
+non-reproducible values.
+
+(5.1)   String literals are held as part of the program image, and two
+        separate strings will always be stored as separate objects. Thus
+        string literals behave like static arrays. If in future Acorn
+        systems program memory becomes read-only attempts to modify string
+        literals will lead to a signal reporting illegal acces to memory.
+
+(5.2)   Identifiers are truncated after (about) 256 characters - any characters
+        beyond this limit are totally ignored.
+
+(5.3)   Unspecified escape combinations (with backslash) in character
+        constants or string literals lead to warning messages and then
+        the backslash is ignored. A backslash followed by a space or
+        (horizontal) tab leads to a warning message, then following whitespace
+        is skipped over: thus \ followed by spaces than a newline behaves
+        as \ followed by just a newline.
+
+(5.4)   Integral arithmetic conversions never cause exceptions to be raised.
+        The behaviour in cases where the result of a conversion is outside
+        the range of values that can be represented is that the result
+        field is filled with bits from the twos complement representation
+        of the true result, and this is then masked or sign extended so as
+        to have the correct precision.
+        Conversions to floating point modes raise an exception if the result
+        exceeds the range of the relevant floating type. Conversions from
+        floating to integral types raise an exception if the floating point
+        value is too large to fit in a long integer (or long unsigned integer
+        as appropriate). Conversions of the form (short)<floating value>
+        behave as if they had been done in two stages as
+            (short) (long) <floating value>.
+**** I have to ensure that this is so!!
+
+(5.5)   If an attempt is made to modify a const object via a pointer without
+        the const attribute the effect achieved is undefined and may very from
+        release to release of the compiler: it can be expected that the
+        object will indeed be modified, but the compiler may nevertheless
+        rely on its value not altering, and re-use a quantify held in a
+        register or elsewhere as if it was the value of the object. In
+        implementations of this compiler on some computers some objects with
+        the const attribute may be allocated in write-protected memory, and
+        in these (for the moment hypothetical) implementations the modify
+        attempt may fail, with or without an exception being raised.
+
+(5.6)   If attempts are made to reference a volatile object by means of a
+        pointer to a type that does not have the volatile attribute there is
+        no guarantee that a reference will be made, or that the status of
+        any particular piece or code in this respect will remain unchanged
+        across releases of the compiler. The implications of this will
+        depend, of course, on the nature of the particular volatile object
+        involved. Note that the fact that early releases of the compiler
+        do not optimise away many indirect memory accesses does not indicate
+        an intention on the part of the compiler's developers that this state
+        of affairs should persist.
+
+(5.7)   Fixed point division by zero causes an exception to be raised.
+        Floating point underflow is not detected, and the over-small value
+        is replaced by an exact zero. Floating point overflow and floating
+        point division by zero lead to exceptions, although the exact
+        nature of these exceptions is currently subject to change as Acorn
+        completes the definition of its floating point environment.
+        If operations on integral arithmetic types produce results that are
+        out of range the result will be the low order bits of the twos
+        complement representation of the true result, and no notification
+        of the overflow will be made.
+
+(5.8)   If a function call is made and no prototype is in scope the actual
+        arguments are packed as a contiguous block of words, with the first
+        argument at the lowest address. Integral types (including pointers)
+        take 4 bytes and doubles take 8 bytes. Structures are passed as as
+        many words as the structure involves. The data beyond the last argument
+        so prepared will be in an indeterminate state, but may share store
+        with local variables of the calling function or with control
+        information (e.g. return addresses) needed by the calling function.
+        The called function will expect to find memory laid out as described
+        but if its formal argument list does not match the actual arguments
+        passed its interpretation of the arguments will be based on grouping
+        the words into ints, doubles and structs in the way that its formal
+        argument list suggests. Note that if a function is called without
+        enough arguments, and that function assigns to a variable that was
+        a formal parameter this may alter the local variables of the
+        caller, and can corrupt return addresses and the chaining of stack
+        frames, leading to unpredictable and generally undesirable results.
+        [Note: The above paragraph defines a behaviour for function calls
+        where caller and callee do not agree about the number or types of
+        arguments. The calling mechanism actually used passes up to four
+        words of argument data in registers (for speed) while matching the
+        above semantics.]
+
+(5.9)   The presence of a prototype containing an ellipsis does not alter the
+        way in which a function is called, thus if a function the expects
+        a variable number of arguments is called without such a prototype
+        being in scope the bahaviour will be just as if there had been a
+        suitable prototype.
+
+(5.10)  Invalid memory references can occur as a result of invalid array
+        references, reference via a NULL pointer or access to automatic
+        storage that belonged to a block that has been left. Extreme cases
+        of invalid array references will lead to accessing exceptions that
+        will be trapped and will cause an exception to be reported to the
+        user. A NULL pointer points to address zero on the underlying
+        computer, and access to this (and other reserved locations) will
+        have effects that may depend on the exact release of operating
+        software in use. Reads from defunct automatic storage will not be
+        trapped or reported to the user, but the contents of the store
+        will be unpredictable (e.g. an assynchronous event could have been
+        signalled, leading to to re-use of the relevant store). Writes to
+        defunct automatic storage could lead to arbitrary corruption of
+        store.
+
+(5.11)  The behaviour when a pointer of a function is coerced into a pointer
+        to some other type of function and then called depends on the original
+        and new types involved. The consequences can be deduced from a
+        description of the conventions used to return values:
+        (a) integral result types are returned in one of the computer's
+            general purpose registers,
+        (b) floating result types are returned in one of the computer's
+            floating point registers. On the ARM these registers can hold
+            either float or double values, but the effect of loading a
+            register with one of these types then accessing it as the other
+            is undefined.
+        (c) functions that return a structure type have an implicit extra
+            first argument, which is expected to be a pointer to a place to
+            plant the result.
+        Thus if the cast concerned converts between functions returning
+        integral and floating types, or between float and double results
+        the effect will be that the function call will complete successfully
+        but the value returned will be corrupted. In the floating point case
+        this corruption may lead to an arithmetic exception, but is not
+        guaranteed to. Casts involving structure-returning function types can
+        lead to effects as if the function had been called with incorrect
+        arguments, and hence arbitrary ill behaviour.
+
+(5.12)  Adding or subtracting to the value of a pointer will yield a pointer
+        to a machine address suitably offset from the original pointer.
+        Addresses are held as (long) integers, with an increase in 1 in the
+        value of the integer corresponding to the address difference between
+        two adjacent bytes. Pointers produced in this way can be meaningful
+        in terms of real machine addresses where storage layouts are known,
+        but these layouts will generally depend on fine details of how the
+        compiler works and are in general subject to change without notice.
+
+(5.13)  When two pointers are subtracted the difference is computed as if by
+            ((int)a - (int)b) / sizeof(<thing pointed to>)
+        If the pointers are to objects with size up to 4 bytes (e.g. char,
+        short, int, float) and the pointers a and b are legitimate values then
+        alignment ensures that the division will be exact even if a and b
+        are not pointers into the same array. For doubles and structures
+        the division may not be exact unless a and b point into the same
+        array, and if it is not the quotient may sometimes be rounded up and
+        sometimes down, potentially in an inconsistent way. For instance the
+        compiler reserves the right (in this case) to convert between division
+        by a power of two and a signed right shift. When the division is not
+        exact these two schemes can round differently.
+
+(5.14)  Quantities used to control shifts are interpreted as unsigned
+        8-bit values. Left shifts of 32 or more leave a zero result,
+        right shifts of 32 leave zero (unsigned) or either 0 or -1 (signed).
+        If the shift value is a constant and it is overlarge the compiler
+        issues a warning message. Shifts on shorts and bytes are treated as
+        if the operand was widened to an int before shifting, and no warning
+        is given for shifing (e.g.) a short right by more than 16 bits.
+
+(5.15)  The comparison of pointers that are not in the same aggregate is
+        implemented as a machine-level comparison of the addresses. The
+        result will be defined if there is some system specific reason to
+        know what order two objects are at in the address space. All
+        machine addresses are positive values, so it is irrelevant whether the
+        compaison is taken to be signed or unsigned. The result of address
+        comparisons is self-consistent, even though detailed memory layouts
+        (e.g. the ordering of addresses returned by successive calls to
+        malloc) are not defined.
+
+(5.16)  If an object is assigned to an overlapping object the behaviour
+        observed may depend on detailed context (e.g. number of free registers
+        available to the compiler at the place where the assignment is
+        performed). No assumptions should be made either about the order in
+        which bytes are moved between source and destination nor about the
+        unit of transfer of data, as different releases of the compiler
+        reserve the right to implement structure assignments (in particular)
+        in a variety of ways.
+
+(5.17)  Uninitialised objects with automatic storage class (including ones
+        subject to register declarations) are not specifically initialised
+        by this compiler, and so if they are used before being set the
+        results will be unpredictable, depending on the past history of the
+        computation in a way that can change dramatically with small changes
+        to either source code or to the compiler.
+
+(5.18)  If the value of a function is used but no value was returned the
+        system will use whatever value is found in the CPU register noted
+        in 5.11. This will sometimes be an intermediate result or value
+        computed within the function body, but may well be junk.
+
+(5.19)  If a function that is intended to accept a variable number of
+        arguments is defined without an ellipsis (and va_start is used within
+        it) the results delivered by va_arg will be correct so long as the
+        argument values being fetched fit in a number of words not exceeding
+        the number of words defined by the formal parameter list. If the
+        formal parameter list specifies at least 5 words of argument data
+        the effect will be as if a final ellipsis has been appended to the
+        formal parameter list.
+        Thus va_arg will in general succeed if either (a) the formal
+        parameter list ends with an ellipsis or (b) the formal parameter
+        list specifies at least 5 words of arguments (e.g. 5 integer values).
+
+(5.20)  If a function prototype is in scope when a function is defined but
+        not everywhere that that function is called, and if the function
+        prototype specifies arguments of type float then the function may be
+        compiled so as to expect its actual arguments not to have been
+        widened, but the code that calls it may perform widening. Thus the
+        caller may pass two words for a floating point value (formatted as
+        a double) and the function will try to use the first of these as
+        a float. The results are definable in terms of the bit patterns for
+        floats and doubles, but do not seem useful!
+[This mode of compilation is not performed yet - all arguments are always
+widened]***********************************************************************
+
+(5.21)  If the result of the use of the ## concatenation operator is not a
+        proper token a disgnostic will be generated.
+
+(5.22)  If a library function is called with invalid arguments and the
+        specification does not make it explicit what effect will be produced
+        the effect is undefined and may change from release to release of
+        the library.
+
+(5.23)  If the preprocessor directive "#undef assert" is used access to the
+        library provided assert() facility is disabled, and the symbol
+        assert is left free for use as a user symbol. If not defined in
+        some user program or alternative library it will be noted by the
+        linker as an undefined symbol.
+
+(5.24)  Many of the character handling functions defined in <ctype.h> are
+        implemented using a lookup table. If these are invoked with an
+        argument that is not a proper character and which is not EOF the
+        effect is as for reading outside array bounds - for some values
+        an arbitrary result will occur, for others an address exception may
+        be generated and possibly for others access will be made to volatile
+        memory locations thereby disturbing the computer's operation in an
+        arbitrary way.
+
+(5.25)  If automatic variables (that are not declared volatile) are changed
+        between use of setjmp and longjmp the following occurs:
+        (a) Those values that the compiler happens to have managed to
+            allocate to registers are restored to the value they had when
+            the setjmp was obeyed.
+        (b) Values that the compiler had stored on the stack both where
+            the setjmp occured and where the longjmp was obeyed take the
+            value most recently assigned to them.
+        (c) If the compiler can assign a variable to a register for part
+            of its scope but has to return it to the stack otherwise, and
+            several assignments to that variable take place between the
+            setjmp and longjmp then some intermediate value may get
+            restored to that variable.
+        (d) The detailed treatment of any particular variable may vary
+            in different compiler releases.
+        Moral: use the volatile qualifier if in doubt here.
+        [Note: the effect of 'volatile' on local variables is very similar to
+        taking its address.]
+
+(5.26)  I don't know what happens about longjmp form a nested signal routine!
+*******************************************************************************
+
+(5.27)  The behaviour if va_arg is used with type specifiers that do not agree
+        with the types of actual arguments passed is very similar to the
+        situation when a function is called with actual arguments that do
+        not match its formal parameters in number or type.
+
+(5.28)  In this implementation va_end is a null operation, and is not needed
+        except to ensure that code is portable to systems where it has some
+        significance.
+
+(5.29)  If the format string in fprintf or fscanf (or their relatives) is not
+        in agreement with the actual arguments passed the behaviour is as one
+        would expect had the call to fprintf been replaced by one that
+        had a fixed formal parameter list defining exactly the number and
+        types of arguments indicated in the format string.
+
+(5.30)  An unrecognized conversion character in fprintf is treated by
+        displaying the unrecognized character in a field width and with
+        padding as specified. The (defined) case of %% is treated in this
+        way. In future further format controlling characters may be defined
+        to have special effects, so the present state of affairs should
+        not be relied upon too heavily.
+
+(5.31)  If an aggregate type is passed to fprintf and that type is an array
+        the value passed is the address of the start of the array. With the %s
+        format directive bytes will be displayed from the array as if the
+        address had been cast to (char *). If a structure is passed to
+        fprintf the successive words going to make up that structure will
+        be passed, and if the format contains directives that correspond
+        neatly to the structure's fields useful values can be displayed.
+        It should be noted that any code that relies on this is not portable.
+
+(5.32)  A single conversion in printf can produce any number of characters
+        subject to arithmetic overflow limits. If a field width or precision
+        is given as a number that overflows a long int the overflow will be
+        ignored and the resulting value will be used. A floating point
+        conversion using %f can produce several hundred digits before the
+        decimal point if asked to print a very large number.
+
+(5.33)  Values displayed by %p are absolute machine addresses and there is
+        no guarantee that they will remain valid between program executions.
+
+(5.34)  ungetc can be called once on any stream that getc has been called on.
+        The effect of calling it twice or more will depend on the number of
+        characters that have been read from the current buffer for the stream:
+        sometimes there will be space to perform the ungetc, other times there
+        will not and ungetc will return EOF to indicate that fact.
+
+(5.35)  The behaviour of atof, atoi and atol in overflow cases is just the
+        same as that of strtod and strtol except that errno is never changed
+        by these functions.
+
+(5.36)  If the argument to free or realloc is not a pointer value previously
+        issued by calloc, malloc or realloc, or if the object referred to
+        has already been released by a previous call to free or realloc, the
+        effects are undefined, and may range from a detected and reported
+        error to arbitrary corruption of code or data.
+
+(5.37)  If reference is made to space that has been deallocated by free or
+        realloc is is guaranteed that read access will not cause an
+        exception, but the data returned is not defined. Writes to such
+        space can cause arbitrary damage.
+
+(5.38)  It is not defined what happens if a function registered with onexit
+        accesses an object with automatic duration.  [Onexit is now called
+        atexit].
+
+(5.39)  If a function is registered more than once by onexit, it is called
+        more than  once on exit.
+
+(5.40)  If the result of abs, div, labs or ldiv can not be represented the
+        value returned is the true one truncated to fit in 32 bits.
+        The obvious case in point is labs(0x80000000) = 0x80000000 which
+        is still negative.
+
+(5.41)  If the destination array for a copying or concatenation function
+        (or sprintf) is too small the effects are as for any other write
+        access outside array bounds and can range from the corruption of
+        variables that happen to have been allocated store near the given
+        array to complete corruption of the user program.
+
+(5.42)  strcpy and strncpy have been implemented so as to copy data byte
+        by byte, starting with the lowest addressed byte of the source.
+        Thus if the source and destination overlap and the source is
+        at a higher address than the destination the destination will end
+        up containing a faithful copy of what the source originally contained.
+        If however the source is at a lower address than the destination
+        the destination may end up filled with repeated copies of some
+        initial segment of the source data. People who want to rely on
+        effects of this nature are invited to code and document their own
+        copying functions and not use the built in ones.
+
+
+(6) Environment considerations
+
+(6.1)   main() receives two arguments, int argc and  char *argv[],
+        which indicate how the compiled program was invoked.
+
+(6.2)   Symbols WITHOUT external linkage have 255 significant characters.
+
+(6.3)   symbols WITH external linkage are limited to 255 significant
+        characters by this compiler, and the Acorn linker will treat all
+        these characters as significant.
+[check with Acorn]*************************************************************
+
+(6.4)   External symbols are case sensitive.
+
+(6.5)   The characters available in the source and execution character sets
+        are as provided by the host operating system, as documented
+        elsewhere by Acorn.
+
+(6.6)   Invalid characters in the source text lead to warning or error
+        messages.
+
+(6.7)   If a multi-character character literal is seen up to 4 characters
+        can be fitted into an int, and the first of these characters is
+        fitted into the least significant 8 bits of the value.
+
+(6.8)   The execution character set is based on 8-bit characters.
+
+(6.9)   The source and execution character sets are identical.
+
+(6.10)  If an unspecified escape sequence is found in a character constant
+        or string the '\' is ignored and a disgnostic is issued.
+
+(6.11)  All character constants that can be written have values in the
+        execution character set.
+
+(6.12)  If a declaration is made with type specifier 'char' it is treated
+        as 'unsigned char'.  Where required the explicit request 'signed char'
+        can be used to obtain signed character-sized values.
+
+(6.13)  The ranges of integer values are as indicated in <limits.h>, and
+        correspond to short being 16 bits, int and long being 32 bits.
+        All signed integer arithmetic used twos complement.
+
+(6.14)  If an integer is converted to a shorter signed integer or to a signed
+        character the value is obtained by masking the integer down to the
+        width indicated for the shorter value, and then sign extending.
+
+(6.15)  Bitwise operations on signed integers follow the rules that arise
+        naturally from a twos complement representation of the numbers.
+
+(6.16)  The remainder on integer division has the same sign as the
+        divisor.
+
+(6.17)  Right shifts on signed quantities are arithmetic. Note that
+        unqualified chars are unsigned, so for 8-bit values that shift
+        right in an arithmetic way use a 'signed char' declaration.
+
+(6.18)  Floating point ranges are noted in <float.h>, and follow IEEE
+        layout with float being 32 bits, double and long double both
+        being 64 bits wide.
+
+(6.19)  When a floating point number is truncated from double to float
+        rounding is to the nearer representable value.
+
+(6.20)  The properties of floating point arithmetic are as documented
+        elsewhere by Acorn.
+
+(6.21)  Casting between integers and pointers does not result in any change
+        of representation. All pointers are positive integers, and successive
+        bytes have addresses that differ by 1.
+
+(6.22)  Arrays can have sizes up to the limit of memory on the computer,
+        and the type of sizeof is int (i.e. a 32-bit integer).
+        It is not safe to assume that a short is big enough to hold either
+        the size of an array or the difference between two pointers: use
+        an int or a long.
+
+(6.23)  The number of registers available for register variables is
+        variable, depending on (e.g.) the use of function calls. There
+        are 5 machine registers used to implement register variables,
+        and for very local use other registers may be found suitable. The
+        compiler will try to allocate all non-volatile integral variables
+        to registers, and user-provided register declarations are just used
+        to help it decide what to do if there are more local variables than
+        real registers available.
+        At present floating point values are never put in register variables.
+
+(6.24)  If a member of a structure or union is accessed using a member of
+        a different type the bit pattern stored will be retrieved. If the
+        value is treated as a floating type this may lead to an exception.
+
+(6.25)  Members of structures are aligned to word boundaries.  Except
+        that a bitfield will continue a storage unit started by another
+        bitfield, and a char or short will align to a char or short boundary
+        after another char or short.
+
+(6.26)  A bitfield of type 'int' is treated as one of type 'unsigned int',
+        though before it participates in any arithmetic operation the
+        usual conversions widen it to type 'signed int' (even if it is a
+        bit field of width 32).
+
+(6.27)  If a bitfield will not fit in the space remaining in an int, the
+        next int is started.
+
+(6.28)  Bitfields are allocated within ints so that the first-specified
+        field fills the least significant bits of the word. (note: this
+        is true on the ARM, on a machine where the addresses of bytes
+        within a word are the other way round, e.g. 68000, the order of
+        bitfields within an int would be swapped).
+
+(6.29)  Bitfields can not straddle the boundary between two ints, but can
+        cross the divisions that separate bytes and shorts.
+
+(6.30)  The only limits on the number of declarators that can modify a
+        basic type are imposed by the amount of store available to the
+        compiler.
+
+(6.31)  There is no predefined limit on the number of case values in a switch
+        statement. Ultimately there is a limit set by the amount of store
+        available to the compiler, but it should not be reached by any
+        imaginable code.
+
+(6.32)  Single-character constants, in preprocessing contexts as elsewhere,
+        always have positive values.
+
+(6.33)  Includable source files are searched for in directories that are
+        made known to the compiler via command line options, but the
+        defaults are:
+            <xxx.h>         looks in an in-store file system that is
+                            part of the compiler and that contains the
+                            standard ANSI headers: if the
+                            file is not found there it looks for
+                            $.arm.clib.h.xxx
+                            The prefix is a command-line option (-j) for
+                            the compiler.
+            "xxx.h"         looks for yyy.h.xxx where yyy is all but the last
+                            component in the name given for the source file.
+                            The directory concerned is a command line option
+                            (-i) for the compiler.
+[This is potentially subject to change]****************************************
+
+(6.34)  White space between tokens in a macro argument used to create a
+        string literal ... ****************************************************
+
+(6.35)  #pragma directives are documented earlier in this note.
+
+(6.36)  The macro NULL expands to the value 0.
+
+(6.37)  If a program attempts to redefine a reserved external identifier
+        the effect will usually be a compilaint at link time remarking on
+        multiple definitions of the offending symbol.
+
+(6.38)  If an assertion fails a message is printed to stderr in the form
+            *** assertion failed: <message>, file <name>, line <line>
+        and then the SIGABRT exception is raised. The treatment of the
+        exception can be altered by signal.
+
+(6.39)  The characters tested for by isalnum, isalpha, isctrl, islower,
+        isprint and isupper are (to be provided by Acorn, but currently
+        as required for ASCII).
+
+(6.40)  The mathematical functions return values as follows on domain
+        errors:
+            log10       -ve arg:        -HUGE_VAL
+            log         -ve arg:        -HUGE_VAL
+            atan2       (0.0, 0.0)      0.0
+            asin        abs(arg)>1.0    0.0
+            acos        abs(arg)>1.0    0.0
+            sqrt        -ve arg         sqrt(fabs(arg))
+            exp         large arg       HUGE_VAL
+            sinh        large arg       HUGE_VAL
+            cosh        large arg       HUGE_VAL
+
+(6.41)  The mathematical functions do not set errno in the case of underflow
+        range error.
+
+(6.42)  setjmp may be called from any context
+[Think carefully about this, untrue]*******************************************
+
+(6.43)  The set of signals for the signal function are as shown in <signal.h>,
+        i.e.
+            SIGABRT 1   /* abort                        */
+            SIGFPE  2   /* arithmetic exception         */
+            SIGILL  3   /* illegal instruction          */
+            SIGINT  4   /* attention request from user  */
+            SIGSEGV 5   /* bad memory access            */
+            SIGTERM 6   /* termination request          */
+
+(6.44)  The default handling for all signals involves the generation of
+        a diagnostic message (sent to stderr) explaining the cause of the
+        signal, some form of backtrace and then program execution is
+        terminated.
+
+(6.45)  Whenever an exception is raised and a signal handler other than the
+        default or ignore one has been installed, the default handler is
+        reinstalled for that class of exceptions. This includes the case of
+        SIGILL.
+
+(6.46)  Trailing blanks in input lines are transmitted to the user's program.
+        In no case are such blanks discarded by the stream IO functions.
+
+(6.47)  Disc files are normally fully buffered, keyboard input is line
+        buffered and keyboard output is unbuffered. To some extent this
+        state of affairs can be adjusted by use of setbuf etc.
+
+(6.48)  Files of length zero can exist.
+
+(6.49)  Valid files names are composed as documented by Acorn in the
+        description of their operating systems. File names used with
+        #include directives are adjusted prior to being handed to the
+        underlying file system:
+            aaa.bbb.h
+        is mapped into
+            aaa.bbb
+        possibly with some further prefix representing the relevant search
+        path. (e.g. $.arm.clib.h.)
+
+(6.50)  A file may be open for input several times, but can only be open for
+        output or update once. A file that has been opened for output or
+        update may not also be open for input.
+
+(6.51)  If an attempt is made to call remove() on a file that is open will
+        leave the file unaltered.
+[... and may raise an exception?}**********************************************
+
+(6.52)  Extra characters in the type argument of fopen are ignored.
+
+(6.53)  %p conversions in printf are treated as %.8x. If the variant flag #
+        is included, as in %#p, the output will be prefixed by an @ sign.
+
+(6.54)  %p conversions in scanf are treated exactly as %x conversions.
+
+(6.55)  The value returned by ftell is, in all cases, the number of characters
+        from the beginning of the file.
+
+(6.56)  The messages generated by perror are as follows:
+            0       "No error (errno = 0)"
+            EDOM    "EDOM - function argument out of range"
+            ERANGE  "ERANGE - function result not representable"
+            ESIGNUM "ESIGNUM - illegal signal number to signal() or raise()"
+            default "Error code (errno) %d has no associated message"
+
+(6.57)  When the abort function is called it attempts to close all open
+        files.
+
+        Temporary files are created with names like $.tmp.fxxxxxxxx where
+        xxxxxxxx is a collection of hex digits chosen on the basis of
+        the date and a serialising counter. It is the user's responsibility
+        to delete files in the $.tmp directory from time to time. If a
+        directory $.tmp does not exist then tmpfile(), tmpnam() will not
+        be useful.
+
+(6.58)  No environment names are supported for use with getenv.
+*******************************************************************************
+
+(6.59)  The system function passes a string to the host system using the
+        'oscli' system call.
+
+(6.60)  memcmp, strcmp and strncmp treat the characters in the strings that
+        they process as unsigned characters, i.e. integers in the range
+        0 to 255. Thus characters with their top bits set represent values
+        from 128 to 255. The values returned by the comparison functions
+        reflect this interpretation.
+
+(6.61)  The error message strings returned by strerror are as documented above
+        in 6.56.
+
+(6.62)  Local time and daylight savings time are not supported on this
+        implementation except to the extent that the system clock may be
+        expected to be set to reflect them.
+
+(6.63)  The clock function returns an approximation to the cpu time used
+        since the start of the current program. It works in units of
+        0.01 second, and in effect disables the clock while waiting for
+        keyboard input.
+
+
+
+(7) Extensions to the C language and libraries
+
+This section indicates a few areas where other C compilers provide
+extensions to the language, and comments on the extent to which this
+compiler supports the extensions.
+
+(7.1)   No characters beyond letters, digits and underscores are legal in
+        identifiers.
+
+(7.2)   All characters (up to 255) in all identifiers are significant, and
+        case distinctions are observed.
+
+(7.3)   Objects declared within a block (even when they are functions are
+        declared with the keyword extern) are available only within that
+        block. In the case of external objects, a separate extern declaration
+        elsewhere can, of course, give access to the object.
+
+(7.4)   Provided code is loaded into a modifyable segment of memory string
+        literals are modifiable. All string literals, even when identically
+        spelt, are kept distinct.
+
+(7.5)   There are no arithmetic types beyond those that form part of the
+        standard.
+
+(7.6)   It is possible to cast between pointers to functions and pointers to
+        data, thereby making it possible to invoke data as a function or
+        inspect the code of a function.
+
+(7.7)   The only types that are valid in bit fields are int, unsigned int and
+        signed int. If other integral types (char, short, long) are specified
+        a warning message is generated and the field is treated as int.
+
+(7.8)   The fortran keyword is not used in this implementation.
+
+(7.9)   At present the asm keyword is not supported in this implementation.
+        Doing so contravenes the ANSI draft spec.
+
+(7.10)  Multiple external definitions of the same identifier cause a linker
+        error.
+
+(7.11)  A macro ARM is predefined. Other macros may be prefefined as a result
+        of command line options to the compiler.
+
+
+
+(8) Limitations
+
+Some of these may be withdrawn in future releases.
+
+(8.1)   malloc, realloc, calloc, free should not be called from signal
+        routines, since the implementation of them is not re-entrant.
+
+(8.2)   If a directory $.tmp does not exist then the temporary file
+        functions will fail.
+
+(8.3)   Temporary files are not deleted at the end of a run.
+
+(8.4)   The range of commands available via system() is very limited.
+
+(8.5)   getenv() has no useful effect. 
+
+... end of cdoc.

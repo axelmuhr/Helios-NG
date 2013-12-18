@@ -1,0 +1,2600 @@
+head	1.25;
+access;
+symbols
+	Helios_1_3_1:1.24
+	Helios_C40_1_3_Official_Release:1.24
+	Alenia_release:1.23
+	Helios1_3:1.23
+	C40_Field_Test_2:1.23
+	C40_Field_Test_R1:1.22
+	Helios13_beta:1.22
+	Helios1_2_2:1.20
+	Helios1_2_2Beta:1.20
+	Helios1_2_1:1.20
+	Helios1_2:1.17;
+locks; strict;
+comment	@ * @;
+
+
+1.25
+date	94.03.14.16.14.37;	author nickc;	state Exp;
+branches;
+next	1.24;
+
+1.24
+date	93.03.15.10.35.01;	author nickc;	state Exp;
+branches;
+next	1.23;
+
+1.23
+date	92.09.09.11.38.28;	author craig;	state Exp;
+branches;
+next	1.22;
+
+1.22
+date	92.06.15.10.01.48;	author craig;	state Exp;
+branches;
+next	1.21;
+
+1.21
+date	92.02.05.16.19.19;	author martyn;	state Exp;
+branches;
+next	1.20;
+
+1.20
+date	91.03.26.15.51.27;	author martyn;	state Exp;
+branches;
+next	1.19;
+
+1.19
+date	91.03.26.11.30.44;	author martyn;	state Exp;
+branches;
+next	1.18;
+
+1.18
+date	91.03.07.16.41.15;	author al;	state Exp;
+branches;
+next	1.17;
+
+1.17
+date	90.10.30.12.28.56;	author martyn;	state Exp;
+branches;
+next	1.16;
+
+1.16
+date	90.10.18.17.45.20;	author martyn;	state Exp;
+branches;
+next	1.15;
+
+1.15
+date	90.10.18.17.36.31;	author martyn;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	90.10.16.13.32.52;	author martyn;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	90.10.16.13.11.24;	author martyn;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	90.10.15.18.07.29;	author martyn;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	90.10.15.17.35.11;	author martyn;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	90.09.26.19.10.45;	author paul;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	90.09.17.09.57.34;	author jon;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	90.09.13.16.53.35;	author jon;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	90.09.10.13.08.12;	author jon;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.09.07.11.50.21;	author jon;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.09.07.10.45.14;	author jon;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.09.06.15.25.32;	author jon;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.06.12.47.03;	author jon;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.23.10.22.43;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.22.16.32.06;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@file viewing on a page by page basis
+@
+
+
+1.25
+log
+@fixed compile time warnings
+@
+text
+@/* 
+ *	Author : Andy England  ( - messed around by Tony Cruickshank ).
+ *
+ *	Currently the program can perform most of the commands inputted
+ *	while viewing a file (such as <space>, search, :p, etc).  
+ *	The program can also handle the options +linenumber and +/pattern
+ * 	used when the program is first called.  Most other such options
+ *	are ignored.
+ *
+ *	Futher hacking by NC 29/11/88
+ *
+ *	Yet more hacking by PRH alias paulh alias harwoodp 13/9/90 to sort
+ *	out keyboard input stream read ops...
+ *
+ *	Lots of bugs fixed 15/10/90 MJT - more is more BSD-like now. Also
+ *      fixed bugs ref 434. Still needs B command adding.
+ *
+ *	26/03/91
+ *	MJT tidied up keyboard stream processing - use stdin for keyboard
+ *	input unless data is on a pipe - then use controlling window.
+ *	Also fixed Bug #582
+ *
+ *	crf: 05/06/92
+ *	MJT added code to reset attributes of input stream at termination
+ *	(05/02/92). However, this only handles the case when you explicilty
+ *	quit from more - not the case when more terminates normally.
+ *	Have moved the above code from Quit() and made it into a new
+ *	function (reset_attr()). This function is now called by Quit()
+ *	and also at the end of main().
+ *	Note: this fixes Bug 773 which was reported as an ftp bug
+ *
+ */
+
+#ifdef __TRAN
+static char *rcsid = "$Header: /users/nickc/RTNucleus/cmds/textutil/RCS/more.c,v 1.24 1993/03/15 10:35:01 nickc Exp nickc $";
+#endif
+
+#include <helios.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <syslib.h>
+#include <ctype.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <attrib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <unistd.h>
+#include <string.h>
+
+#define CTRL_B 		2
+#define CTRL_D 		4
+#define BACKSPACE 	8
+#define	NEWLINE		'\n'
+#define CTRL_L 		12
+#define	CARRIAGE_RETURN	'\r'
+#define DELETE 		127
+
+#ifndef TRUE
+#define FALSE 		0
+#define TRUE  		1
+#endif
+
+#define END       	0
+#define MORE      	1
+#define NOPROMPT  	2
+#define PROMPT    	3
+
+#define ERROR        	1
+#define SPACE        	2
+#define ONELINE      	3
+#define SCROLL       	4
+#define SPACERESET   	5
+#define SKIPLINES    	6
+#define SKIPSCREENS  	7
+#define QUIT         	8
+#define LINENUM      	9
+#define ED           	10
+#define HELP         	11
+#define SEARCH       	12
+#define TAKEBACK     	13
+#define PREVFILE     	14
+#define NEXTFILE     	15
+#define DISPCURRENT	16
+#define BACK		17
+#define REFRESH		18
+
+#define	DISPLAY		1
+#define NODISPLAY	0
+
+#define MAXSTR		256
+
+FILE * 	Debug;
+FILE * 	File;
+FILE * 	InputStr;
+int     Column      	= 0;
+int     Screenful   	= 23;
+int	WindowSize  	= 23;
+int     ScrollSize  	= 11;
+int     ScreenWidth 	= 80;
+char    Expr[ MAXSTR ];
+char    PrevExpr[ MAXSTR ];
+char    Comm[ MAXSTR ];
+char    PrevComm[ MAXSTR ];
+int     FileSize;
+
+char*	progname;
+char*	editor;
+
+int 	HeaderFlg 	= FALSE;
+int	HeaderPrntd 	= FALSE;
+int	NoAdd 		= FALSE;
+int 	PipePresent 	= FALSE;
+int	WriteInfo 	= PROMPT;
+int	DisplayError 	= FALSE;
+int	splitline	= FALSE;
+int	OutputToScreen	= FALSE;
+
+int 	FileNumber 	= 0;
+int	LineNumber 	= 0;
+int	LastLine 	= 0;
+long	Position 	= 0;
+long	LastPos 	= 0;
+long	SearchStrtP 	= 0;
+int 	SearchStrtLn 	= 0;
+char **	FileList;
+char **	FilePntr;
+int	Command;
+int	LastComm;
+int	Count;
+int	CountPresent;
+
+int	FormFeed 	= FALSE;
+int	Underlining 	= FALSE;
+int	Page 		= FALSE;
+int	Squeeze 	= FALSE;
+int	NoFold 		= FALSE;
+int	ExprStrt 	= FALSE;
+int	LineStrt 	= FALSE;
+
+int	Search( int n );
+int	Interpret( char c );
+int	Process_Data(int n , int dflag);
+void	Clear(void);
+char   *Command_Parse(char *p);
+char   *nstrcpy(char *to, char *from, char *start);
+#ifdef __HELIOS
+void reset_attr(void) ;
+#endif
+
+void
+Usage( void )
+{
+	fprintf( stderr, "Usage: %s [-cdfls] [-n] [+linenum | +/pattern] [name ...]\n" , progname );
+}
+
+void
+Wipeout( void )
+{
+	if(OutputToScreen)
+		{
+		fprintf( stdout, "\r                                                                               \r" );
+		fflush( stdout );
+		}
+}
+
+void
+Quit( void )
+{
+    Wipeout();
+    fclose( File);
+
+#ifdef __HELIOS
+    reset_attr() ;
+#endif
+	
+    exit( 0 );
+}
+
+void	
+onintr( void )
+{
+	Quit();
+}
+
+void
+Initialize(
+	int     	argc,
+	char **		argv )
+{
+	char *		p;
+	Stream *	output = fdstream( fileno( stdout ) );
+	Attributes	attr;
+
+	progname = *argv;
+	
+	if (( editor = getenv ( "EDITOR" )) == NULL ) {		/* EDITOR defines the system text editor */
+		editor = (char*) malloc ( 6 * sizeof ( char ));
+		strcpy ( editor , "emacs" );
+	}
+
+	if(isatty(fileno(stdout)))
+		{
+			
+		GetAttributes( output, &attr );
+	
+		ScreenWidth = attr.Time;
+		Screenful   = attr.Min - 2;
+		WindowSize  = Screenful;
+		}
+
+	if (argc == 1 && isatty( fileno( stdin ) ))
+	{
+		Usage();
+		exit( 1 );
+	}
+
+	if (isatty( fileno( stdout ) ))
+		OutputToScreen = TRUE;
+
+#if 0
+	while ( **(++argv) == '-' || **argv == '+' )
+#else
+/*
+-- crf: 08/09/92 - protect against NULL pointer access
+*/
+	while (( *(++argv) != NULL ) &&
+	      ( **argv == '-' || **argv == '+' ))
+#endif
+	{
+		--argc;
+		p = *argv;
+
+		if (*p == '-')
+		{
+			++p;
+
+			if (isdigit( *p ))
+			{
+				WindowSize = 0;
+				do
+				{
+					WindowSize = WindowSize * 10 + *p -'0';
+					++p;
+				}
+				while (isdigit( *p ));
+			}
+			else
+			{
+				while (*p)
+				{
+					switch (*p)
+					{
+					case 'c' :
+						Page = TRUE;
+						WindowSize++;
+						break;
+					case 'd' :
+						DisplayError = TRUE;
+						break;
+					case 'f' :
+						NoFold = TRUE;
+						break;
+					case 'l' :
+						FormFeed = TRUE;
+						break;
+					case 's' :
+						Squeeze = TRUE;
+						break;
+					case 'u' :
+						Underlining = TRUE;
+						break;
+					}
+
+					++p;
+				}
+			}
+		}
+		else
+		{
+			if (*(++p) == '/')
+			{
+				ExprStrt     = TRUE;
+				LineStrt     = FALSE;
+				Count        = 1;
+				CountPresent = FALSE;
+
+				strcpy( Expr, ++p );
+			}
+			else
+			{
+				ExprStrt     = FALSE;
+				LineStrt     = TRUE;
+				Count        = 0;
+				CountPresent = TRUE;
+
+				while (isdigit( *p ))
+				{
+					Count = Count * 10 + (*p - '0');
+					++p;
+				}
+
+				--Count; /* start at Count not skip Count */
+					 /* many lines                    */
+			}
+		}
+	}
+
+	FileNumber = argc - 1;
+	FileList   = argv;
+
+#ifdef __HELIOS
+	if (GetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+	{
+		exit( 4 );
+	}
+	
+	AddAttribute(    &attr, ConsoleRawInput );
+	RemoveAttribute( &attr, ConsoleEcho );
+		
+	if (SetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+	{
+		exit( 5 );
+	}
+#else
+	system( "stty -echo" );
+	system( "stty raw" );
+#endif
+
+	signal( SIGINT, (VoidFnPtr) onintr );
+}
+
+int
+FSkipBack( void )
+{
+	Wipeout();
+
+	fprintf( stdout, "\n...skipping\n\r" );
+		
+	Count = CountPresent ? Count : 1;
+	
+	if (NoAdd)
+		FilePntr--;
+	
+	while ( Count-- )
+		if (FilePntr != FileList)
+			FilePntr--;
+
+	fprintf( stdout, "...skipping back to %s\n\n\r", *FilePntr );
+
+	return END;
+}
+
+int
+Invoke( char * command )
+{
+
+	Wipeout();
+	fprintf( stdout, "%s\r", command );
+	fflush(  stdout );
+	system(  command );
+	fprintf( stdout, "------------------------\n\r" );
+	fflush(  stdout );
+
+	return MORE;
+}
+
+int
+GetLine(
+	char    Prompt,
+	char *	Buffer )
+{
+	int 	count = 0;
+	int 	c;
+
+
+	Wipeout();
+
+	putchar( Prompt );
+	fflush( stdout );
+
+	while ((c = fgetc( InputStr )) != CARRIAGE_RETURN && c != NEWLINE)
+	{
+		if (isprint( c ))
+		{
+			putchar( c );
+			fflush( stdout );
+			Buffer[ count++ ] = c;
+		}
+		else
+		{
+			if (c == DELETE || c == BACKSPACE)
+			{
+				putchar( '\b' );
+				putchar( ' ' );
+				putchar( '\b' );
+				fflush( stdout );
+
+				if (count == 0)
+				{
+					Buffer[ 0 ] = '\0';
+					return ( 0 );
+				}
+
+				count--;
+			}
+		}
+	}
+
+	putchar( CARRIAGE_RETURN );
+	fflush( stdout );
+
+	Buffer[ count ] = '\0';
+
+	return 1;
+}
+
+void
+TakeBack( void )
+{
+	Wipeout();
+
+	fprintf( stdout, "\n\r*** Back ***\n\r\n\r" );
+
+	fseek( File, SearchStrtP, 0 );
+
+	Position   = SearchStrtP;
+	LineNumber = SearchStrtLn;
+}
+
+void
+Refresh( void )
+{
+	Clear();
+
+	fseek( File, LastPos, 0 );
+
+	Position   = LastPos;
+	LineNumber = LastLine;
+}
+
+
+/* Skip forward n many lines */
+
+int
+SkipForward( int n )
+{
+	if (WriteInfo != NOPROMPT && OutputToScreen)
+	{
+		Wipeout();
+		fprintf( stdout, "\n\r...skipping %d lines\n\r\n\r", n );
+	}
+
+	return Process_Data(n, NODISPLAY);
+}
+
+int
+Help( void )
+{
+	Wipeout();
+
+	if(Page)
+		Clear();
+
+	fprintf( stdout, "Most commands optionally preceded by integer argument.  Defaults in brackets.   \n" );
+	fprintf( stdout, "Star (*) indicates argument becomes new default.                                \n" );
+	fprintf( stdout, "--------------------------------------------------------------------------------\n" );
+	fprintf( stdout, "\n");
+	fprintf( stdout, "<space>                           - next page                                   \n" );
+	fprintf( stdout, "z                                 - set scrolling window size to (1) *          \n" );
+	fprintf( stdout, "<return>                          - next line                        *          \n" );
+	fprintf( stdout, "d or ctrl-D                       - scroll forwards (11) line(s)     *          \n" );
+	fprintf( stdout, "q or Q or <interrupt>             - quit                                        \n" );
+	fprintf( stdout, "s                                 - skip forward (1) line(s)                    \n" );
+	fprintf( stdout, "f                                 - skip forward (1) screenful(s)               \n" );
+	fprintf( stdout, "'                                 - skip to start of previous search            \n" );
+	fprintf( stdout, "/<regular expression>             - search forward                              \n" );
+	fprintf( stdout, "n                                 - repeat last search                          \n" );
+	fprintf( stdout, "h                                 - this message                                \n" );
+	fprintf( stdout, "!<cmd> or :!<cmd>                 - shell escape                                \n" );
+	fprintf( stdout, "v                                 - invoke editor on the file                   \n" );
+	fprintf( stdout, "=                                 - report current line number                  \n" );
+	fprintf( stdout, ":n                                - skip forwards (1) file                      \n" );
+	fprintf( stdout, ":p                                - skip backwards (1) file                     \n" );
+	fprintf( stdout, ":f                                - report current filename and linenumber      \n" );
+	fprintf( stdout, ".                                 - repeat last command                         \n" );
+	fprintf( stdout, "ctrl-L                            - redraw screen                               \n" );
+	fprintf( stdout, "--------------------------------------------------------------------------------\n" );
+
+	return MORE;
+}
+
+void
+PrintHdr( void )
+{
+	if (FileNumber > 1 && !HeaderFlg &&
+	    Command != PREVFILE && Command != NEXTFILE && Command != ED)
+	{
+		Wipeout();
+
+		if(Page)
+			Clear();
+		fprintf( stdout, "::::::::::::::\n\r" );
+		fprintf( stdout, "%s\n\r", *FilePntr );
+		fprintf( stdout, "::::::::::::::\n\r" );
+
+		HeaderFlg   = TRUE;
+		HeaderPrntd = TRUE;
+	}
+	else
+		HeaderPrntd = FALSE;
+}
+
+void
+Start( void ) 
+{
+	if (ExprStrt)
+	{
+		Command   = SEARCH;
+		WriteInfo = NOPROMPT;
+		ExprStrt  = FALSE;
+		return;
+	}
+	else if (LineStrt)
+	{
+		Command   = SKIPLINES;
+		WriteInfo = NOPROMPT;
+		LineStrt  = FALSE;
+		return;
+	}
+	else
+		Command   = SPACE;
+}
+
+void
+Reset( void )
+{
+	LastLine = LineNumber = SearchStrtLn = 0;
+	LastPos = Position   = SearchStrtP  = 0;
+	Column     = 0;
+	splitline = FALSE;
+}
+
+void
+GetComm( void )
+{
+	int c;
+
+	/* Check for piped stdout */
+
+	if (!isatty( fileno( stdout )))
+	{
+		Command = SPACE;
+		return;
+	}
+
+	Count        = 0;
+	CountPresent = FALSE;
+	
+	c = fgetc( InputStr );
+
+	/* catch end of file - this can happen if someone types ctrl-C */
+	
+	if (c == EOF)
+	  {
+	    Command = QUIT;
+	    return;
+	  }
+	
+	if (isdigit( c ))
+	{
+		CountPresent = TRUE;
+
+		do
+		{
+			Count = Count * 10 + (c - '0');
+			c     = fgetc( InputStr );
+		}
+		while (isdigit ( c ));
+	}
+
+	unless (Count)
+		Count = 1;
+
+	Command = Interpret( tolower (c) );
+}
+
+int
+Display( int n , int clearscreen)
+{
+	LastPos = Position;
+	LastLine = LineNumber;
+
+	if ( n >= Screenful || clearscreen)
+	{
+		if(Page && !HeaderPrntd)
+			Clear();
+		else
+			Wipeout();
+	}
+	else
+	{
+		Wipeout();
+	}
+
+	return Process_Data(n, DISPLAY);
+}
+
+int
+CarryOut( void )
+{
+	int 	scr; 
+	char 	comm[ MAXSTR ];
+	
+ 
+	if (!PipePresent)
+		PrintHdr();
+
+	switch (Command)
+	{
+	default: 
+		return MORE;
+
+	case SPACE :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		if (HeaderPrntd && Screenful - 2 < WindowSize)
+			scr = (Page ? Screenful - 2 : Screenful - 3 ) ;
+		else
+			scr = WindowSize ;
+
+		return (Display( CountPresent ? Count : scr , TRUE));
+
+	case ONELINE :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		if (HeaderPrntd && Screenful - 2 < Count)
+			scr = Screenful - 2;
+		else
+			scr = Count;
+
+		if (CountPresent)
+			ScrollSize = Count;
+
+		return (Display( scr , FALSE));
+
+	case SCROLL :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		if (CountPresent)
+			ScrollSize = Count;
+
+		return (Display( ScrollSize , FALSE));
+
+	case SPACERESET :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		if (CountPresent)
+			WindowSize = Count;
+
+		return (Display( WindowSize , TRUE));
+
+	case SKIPLINES :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		if (SkipForward( Count ) == END)
+			return END;
+		else
+			return (Display( WindowSize - 1 , TRUE));
+
+	case SKIPSCREENS :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		if (SkipForward( Count * WindowSize ) == END)
+			return END;
+		else
+			return (Display( WindowSize - 1 , TRUE));
+
+	case QUIT :
+		fclose( File );
+
+		Quit();
+
+		return END;
+
+	case LINENUM :
+		Wipeout();
+
+		fprintf( stdout, "%d\r", LineNumber );
+
+		fflush( stdout );
+
+		return NOPROMPT;
+
+	case ED : 
+		if (PipePresent)
+			return ERROR;
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		if (strcmp(editor,"emacs") == 0)
+			sprintf( comm, "emacs %s", *(--FilePntr) );
+		else
+		if (strcmp(editor,"vi") == 0)
+			sprintf( comm, "vi +%d %s", LineNumber, *(--FilePntr) );
+		else
+			sprintf( comm, "%s %s", editor, *(--FilePntr) );
+
+		Wipeout();
+
+		Invoke( comm );
+
+		FilePntr++;
+
+		return MORE;
+
+	case HELP :
+		return (Help());
+
+	case SEARCH :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		splitline = FALSE;
+		
+		return (Search( Count ));
+
+	case TAKEBACK :
+		if (PipePresent)
+			return ERROR;
+
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		TakeBack();
+
+		splitline = FALSE;
+
+		return (Display( WindowSize , TRUE));
+
+	case REFRESH :
+		if (PipePresent)
+			return ERROR;
+
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		Refresh();
+
+		return (Display( WindowSize , TRUE));
+
+	case PREVFILE :
+		if (PipePresent)
+			return ERROR;
+
+		splitline = FALSE;
+		return (FSkipBack());
+
+	case NEXTFILE :
+		Wipeout();
+
+		if (!PipePresent)
+		{
+			if (!NoAdd) ++FilePntr;
+
+			while ( CountPresent && (*FilePntr != NULL) && --Count )
+				FilePntr++;
+				
+			if (*FilePntr == NULL)
+				FilePntr--;
+				
+			fprintf( stdout, "\n...skipping\n\r" );
+			fprintf( stdout, "...skipping to %s\n\n\r", *FilePntr );
+		}
+
+		splitline = FALSE;
+
+		return END;
+		
+	case DISPCURRENT :
+		Wipeout();
+		
+		fprintf( stdout, "\"%s\" line %d\r" , (FilePntr != FileList ) ? *(FilePntr-1) : *FilePntr , LineNumber );
+		
+		fflush( stdout );
+		
+		return NOPROMPT;
+		
+	}
+}
+
+int
+Interpret( char c )
+{
+	int retval = ERROR;
+
+
+	switch (c)
+	{
+	default: 
+		break;
+
+	case ' ': 
+		retval = SPACE;
+		break;
+
+	case CARRIAGE_RETURN: 
+	case NEWLINE: 
+		retval = ONELINE;
+		break;
+
+	case CTRL_D: 
+	case 'd': 
+		retval = SCROLL;
+		break;
+
+	case 'z': 
+		retval = SPACERESET;
+		break;
+
+	case 's': 
+		retval = SKIPLINES;
+		break;
+
+	case 'f': 
+		retval = SKIPSCREENS;
+		break;
+
+	case 'q': 
+		Quit();
+
+	case '=': 
+		retval = LINENUM;
+		break;
+
+	case 'v': 
+		retval = ED;
+		break;
+
+	case 'h': 
+		retval = HELP;
+		break;
+
+	case '/': 
+		nstrcpy ( PrevExpr, Expr , PrevExpr);
+		if (GetLine( '/', Expr ))
+			{
+			if(Expr[0] == '\0')
+				nstrcpy ( Expr, PrevExpr , Expr);
+			retval = SEARCH;
+			}
+		else
+			{
+			nstrcpy ( Expr, PrevExpr , Expr);
+			retval = ERROR;
+			}
+		break;
+
+	case 'n': 
+		retval = SEARCH;
+		break;
+
+	case '\'': 
+		retval = TAKEBACK;
+		break;
+
+	case 'b': 
+	case CTRL_B:
+		retval = BACK;
+		break;
+
+	case CTRL_L:
+		retval = REFRESH;
+		break;
+
+	case '!': 
+		nstrcpy ( PrevComm, Comm , PrevComm);
+		if (GetLine( '!', Comm ))
+			Invoke( Command_Parse ( Comm ) );
+		else
+			nstrcpy ( Comm, PrevComm , Comm);
+		break;
+
+	case ':': 
+		switch (tolower(fgetc( InputStr )))
+		{
+		case 'p' :
+			retval = PREVFILE;
+			break;
+		case 'n' :
+			retval = NEXTFILE;
+			break;
+		case 'f' :
+			retval = DISPCURRENT;
+			break;
+		case '!':
+			nstrcpy ( PrevComm, Comm , PrevComm);
+			if (GetLine( '!', Comm ))
+				Invoke( Command_Parse ( Comm ) );
+			else
+				nstrcpy ( Comm, PrevComm , Comm);
+			break;
+		case 'q' :
+			Quit();
+		default :
+			retval = ERROR;
+			break;
+		}
+		break;
+
+	case '.' :
+		retval = LastComm;
+		break;
+
+	}
+
+	if (retval != ERROR && c != '.')
+		LastComm = retval;
+
+	return (retval);
+}
+
+int
+Search( int n )
+{
+	int 	c;
+	char	buffer[ MAXSTR ];
+	int 	expr_pntr = 0,
+		buff_pntr = 0;
+	long 	buf_start = 0;
+	long	npos;
+	int	nline;
+
+	buf_start = npos = Position;
+	nline = LineNumber;
+
+	if(Expr[0] == '\0' && OutputToScreen)
+		{
+		fprintf( stdout, "\rNo previous search pattern\r");
+		fflush ( stdout );
+		return NOPROMPT;
+		}
+	
+	if(OutputToScreen)
+		{
+		Wipeout();
+
+		fprintf( stdout, "/%s\r", Expr);
+		fflush(stdout);
+		}
+
+	buffer[0] = '\0';
+
+	while( ( c = fgetc( File ) ) != EOF )
+	{
+		npos++;
+
+		buffer[ buff_pntr ] = c;
+
+		++buff_pntr;
+
+		buffer[ buff_pntr ] = '\0';
+
+		if ( Expr[ expr_pntr ] == c )
+			++expr_pntr;
+		else
+		        expr_pntr = 0;
+
+		if ( Expr[ expr_pntr ] == '\0' )
+		{
+		    --n;
+		    expr_pntr = 0;
+		}
+
+		if (c == NEWLINE)
+		{
+			nline++;
+
+			buf_start = npos;
+
+			buff_pntr = 0;
+
+			buffer[ 0 ] = '\0';
+		}
+
+		if ( n == 0 )
+		{
+			SearchStrtLn = LineNumber;
+			SearchStrtP  = Position;
+
+			if(OutputToScreen && (nline -LineNumber) > 1)
+				{
+				fprintf( stdout, "\n\r...skipping %d lines\n\r\n\r", nline - LineNumber );
+				fflush( stdout );
+				}
+
+			if (PipePresent)
+			{
+				/* Fill buffer - */
+				while ( (c = fgetc ( File )) != NEWLINE && c != EOF)
+				{
+					buffer[ buff_pntr ] = c;
+
+					++buff_pntr;
+
+					buffer[ buff_pntr ] = '\0';
+				}
+
+				fprintf( stdout, "%s\n\r", buffer );
+			}
+
+			else
+			{
+				fseek( File, buf_start, 0 );
+				Position = buf_start;
+			}
+
+			LineNumber = nline;
+
+			return( Display( WindowSize - 1 , TRUE));
+		}
+	}
+
+	if (PipePresent)
+	{
+		if(OutputToScreen)
+			fprintf( stdout, "\rPattern not found\r\n" );
+		return END;
+	}
+	else
+	{
+		fseek( File, Position, 0 );	 /* rewind to start */
+
+		if(OutputToScreen)
+			{
+			Wipeout();
+
+			fprintf( stdout, "\rPattern not found\r" );
+
+			fflush( stdout );
+			}
+
+		return NOPROMPT;
+	}
+}
+
+void
+More( void )
+{
+	int res;
+	do
+	{
+		res = CarryOut();
+
+		WriteInfo = PROMPT;
+
+		if (res == MORE && OutputToScreen)
+		{
+			Wipeout();
+
+			fprintf( stdout, "--More--" );
+
+			fflush( stdout );
+
+			if (!PipePresent && FileSize)
+			{
+				fprintf( stdout, "(%ld%%)", (Position * 100) / FileSize );
+				fflush(  stdout );
+			}
+
+			if (DisplayError)
+			{
+				fprintf( stdout, "[Press space to continue, 'q' to quit.]");
+				fflush( stdout );
+			}
+		}
+
+		if (res != END)
+			GetComm();
+	}
+	while (res != END);
+
+	HeaderFlg   = FALSE;
+	HeaderPrntd = FALSE;
+	NoAdd       = FALSE;
+
+	fclose ( File );
+}
+
+int
+main(
+	int 	argc,
+	char **	argv )
+{
+	struct stat 	stbuf;
+	char *instr;
+	char *ctermid ( char* );
+
+	if(isatty(fileno(stdin)))
+		InputStr = stdin;
+	else
+		{
+		instr = (char *) (malloc ( L_ctermid * sizeof (char)));
+		InputStr = fopen ( ctermid ( instr ) , "r" );
+		}
+
+	setvbuf(InputStr, NULL, _IONBF, 0);
+	
+	Initialize ( argc , argv );
+
+	Start ();
+
+	/* check for pipe */
+
+	if (!isatty( fileno( stdin ) ))
+	{
+
+		File        = stdin;
+		PipePresent = TRUE;
+
+		Reset();
+		More();
+	}
+
+	PipePresent = FALSE;
+
+	for (FilePntr = FileList; *FilePntr; )
+	{
+		if (stat( *FilePntr, &stbuf ))
+		{
+			fprintf( stderr, "%s: No such file or directory\n\r", *FilePntr );
+			++FilePntr;
+		}
+		else if ((stbuf.st_mode & S_IFMT) == S_IFDIR)
+		{
+			fprintf( stderr, "\n\r*** %s: directory ***\n\r\n\r", *FilePntr );
+			++FilePntr;
+		}
+		else if ((File = fopen( *FilePntr, "rb" )) == NULL)
+		{
+			fprintf( stderr, "Can't open %s\n\r", *FilePntr );
+			++FilePntr;
+		}
+		else
+		{
+			FileSize = (int) stbuf.st_size;
+
+			Reset();
+			More();
+
+			if (*FilePntr != NULL)
+			{
+				if(OutputToScreen)
+					{
+					Wipeout();
+
+					fprintf( stdout, "--More--(Next file: %s)\r", *FilePntr );
+					fflush(  stdout);
+					}
+
+				GetComm();
+			}
+		}
+	}
+#ifdef __HELIOS
+	reset_attr() ;
+#endif
+}
+
+
+int
+Process_Data(int n , int dflag)
+{
+	int 	c, lc, pc;
+	int	gotformfeed = FALSE;
+
+	pc = '\0';
+	lc = NEWLINE;
+
+	while ((c = fgetc( File )) != EOF)
+	{
+		Position++;
+
+		if (c == CARRIAGE_RETURN)
+			continue;
+		if (c == NEWLINE && splitline)
+			{
+			splitline = FALSE;
+			continue;
+			}
+
+		splitline = FALSE;
+
+		if (c == '\f' && !FormFeed && (Position != 1))
+			{
+			if(dflag)
+				{
+				putchar( '^' );
+				putchar( 'L' );
+				}
+			Column++;
+			gotformfeed = TRUE;
+			}
+
+		else
+			{
+			unless (c == NEWLINE)
+				{
+				if(Squeeze && pc == NEWLINE && lc == NEWLINE && dflag)
+					{
+					putchar(NEWLINE);
+					putchar(CARRIAGE_RETURN);
+					}
+				if(dflag && !(c == '\t' && Column > ScreenWidth - 8))
+					putchar( c );
+				}
+			}
+
+		if (c == '\t')
+			while((++Column) % 8);
+
+		if (c != NEWLINE)
+			{
+			if (++Column >= ScreenWidth)
+				unless (NoFold)
+					{
+					c = NEWLINE;
+					splitline = TRUE;
+					}
+			}
+
+		if (c == NEWLINE)
+			{
+
+			LineNumber++;
+
+			if(Squeeze)
+				{
+				if(lc != NEWLINE && dflag)
+					{
+					putchar ( c );
+					putchar (CARRIAGE_RETURN);
+					}
+				}
+			else
+				if(dflag)
+					{
+					putchar(c);
+					putchar (CARRIAGE_RETURN);
+					}
+
+			Column = 0;
+
+			if ((--n == 0) || gotformfeed)
+				{
+				if(dflag)
+					fflush( stdout );
+				return MORE;
+				}
+			}
+
+		pc = lc;
+		lc = c;
+		}
+
+	if(dflag)
+		fflush( stdout );
+	return END;
+}
+
+void
+Clear(void)
+{
+	if(OutputToScreen)
+		{
+		putchar('\f');
+		fflush(stdout);
+		}
+}
+
+char *
+Command_Parse(char *p)
+{
+	char tmpbuffer[MAXSTR], *tp, c;
+
+	tp = tmpbuffer;
+
+	while ((c = *p++) != '\0')
+		switch(c)
+			{
+			case '\\':
+				*tp++ = *p++;
+				continue;
+
+			case '%':
+				if(FilePntr != FileList)
+					{
+					nstrcpy( tp, *(FilePntr-1), tmpbuffer);
+					tp += strlen( *(FilePntr-1));
+					}
+				else
+					{
+					nstrcpy( tp, *FilePntr, tmpbuffer);
+					tp += strlen( *FilePntr);
+					}
+				continue;
+
+			case '!':
+				nstrcpy(tp, PrevComm, tmpbuffer);
+				tp += strlen (PrevComm);
+				continue;
+
+			default:
+				*tp++ = c;
+			}
+	*tp = 0;
+	return nstrcpy(Comm, tmpbuffer, Comm);
+}
+
+char *
+nstrcpy( char *to, char *from, char *start)
+{
+	while ((*to++ = *from++) != '\0')
+		if (to - start >= MAXSTR - 1)
+			break;
+	*to = 0;
+
+	return(start);
+}
+
+#ifdef __HELIOS
+void reset_attr()
+{
+	Attributes attr;
+
+	if (GetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+	{
+		exit( 4 );
+	}
+	
+	RemoveAttribute( &attr, ConsoleRawInput );
+	AddAttribute( &attr, ConsoleEcho );
+		
+	if (SetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+	{
+		exit( 5 );
+	}
+}
+#endif
+@
+
+
+1.24
+log
+@fixed bug 1023 (reported as a debugger bug) and removed compile time warnings
+@
+text
+@d34 2
+a35 2
+#ifndef __C40
+static char *rcsid = "$Header: /hsrc/cmds/textutil/RCS/more.c,v 1.23 1992/09/09 11:38:28 craig Exp nickc $";
+d1183 1
+a1183 1
+			FileSize = stbuf.st_size;
+@
+
+
+1.23
+log
+@Fixed null pointer access
+@
+text
+@d34 3
+a36 1
+static char *rcsid = "$Header: /users/craig/cmds/textutil/RCS/more.c,v 1.5 1992/09/08 21:10:47 craig Exp $";
+d563 8
+d1104 1
+a1104 1
+				fprintf( stdout, "(%d%%)", (Position * 100) / FileSize );
+d1325 1
+a1325 1
+	while( c = *p++ )
+d1360 2
+a1361 2
+	while(*to++ = *from++)
+		if(to - start >= MAXSTR - 1)
+@
+
+
+1.22
+log
+@reset attributes of input stream on exit from program (previous fix only
+catered for the case where you explicitily quitted from more)
+@
+text
+@d34 1
+a34 1
+static char *rcsid = "$Header: /hsrc/cmds/textutil/RCS/more.c,v 1.21 1992/02/05 16:19:19 martyn Exp $";
+d220 1
+d222 7
+@
+
+
+1.21
+log
+@added code to reset attributes of input stream at termination.
+@
+text
+@d22 10
+d34 1
+a34 1
+static char *rcsid = "$Header: /hsrc/cmds/textutil/RCS/more.c,v 1.20 1991/03/26 15:51:27 martyn Exp martyn $";
+d146 3
+a168 1
+    Attributes	attr;
+d173 1
+a173 12
+	if (GetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+	{
+		exit( 4 );
+	}
+	
+	RemoveAttribute( &attr, ConsoleRawInput );
+	AddAttribute( &attr, ConsoleEcho );
+		
+	if (SetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+	{
+		exit( 5 );
+	}
+a315 1
+	
+d1184 3
+d1349 20
+@
+
+
+1.20
+log
+@TAB fix for bug #262
+@
+text
+@d24 1
+a24 1
+static char *rcsid = "$Header: /hsrc/cmds/com/RCS/more.c,v 1.19 1991/03/26 11:30:44 martyn Exp $";
+d156 1
+d160 15
+@
+
+
+1.19
+log
+@fixed keyboard stream problems with debugger
+(debugger really needs changing !)
+fixed bug #582
+@
+text
+@d24 1
+a24 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/more.c,v 1.18 91/03/07 16:41:15 al Exp $";
+d1214 1
+a1214 1
+				if(dflag)
+d1224 1
+a1224 1
+			if (++Column == ScreenWidth)
+@
+
+
+1.18
+log
+@Error message when file or directory could not be found changed from
+"Can't locate status info for ?????" to "?????: No such file or directory"
+@
+text
+@d12 2
+a13 1
+ *	Yet more hacking by PRH alias paulh alias harwoodp 13/9/90 to sort out keyboard input stream read ops...
+d17 5
+d24 1
+a24 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/cmds/com/RCS/more.c,v 1.17 90/10/30 12:28:56 martyn Exp Locker: al $";
+a39 3
+#define CTERMID_WORKS	1
+/* Nasty hack to get the damm thing working - paulh */
+
+d656 1
+a656 1
+			return (Display( WindowSize , TRUE));
+d668 1
+a668 1
+			return (Display( WindowSize , TRUE));
+a1098 1
+#ifdef CTERMID_WORKS
+a1099 1
+#ifdef __HELIOS
+a1100 9
+#endif
+	instr = (char *) (malloc ( L_ctermid * sizeof (char)));
+#ifdef __HELIOS
+	instr = ctermid ( instr );
+#endif
+	InputStr = fopen ( instr , "r" );
+#else
+	InputStr = stdin;
+#endif
+d1102 9
+a1110 1
+	setvbuf(InputStr,NULL,_IONBF,0);
+a1119 6
+
+#ifndef CTERMID_WORKS
+		fprintf ( stderr , "%s:- will not work when input is redirected", argv[0] );
+		fflush ( stderr );
+		exit (-1);
+#endif
+@
+
+
+1.17
+log
+@fixed bug where more would hang if output to pipe
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.16 90/10/18 17:45:20 martyn Exp $";
+d1140 1
+a1140 1
+			fprintf( stderr, "Can't locate status info for %s\n\r", *FilePntr );
+@
+
+
+1.16
+log
+@*** empty log message ***
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.10 90/09/26 19:10:45 paul Exp Locker: martyn $";
+d180 3
+d184 1
+a184 1
+	GetAttributes( output, &attr );
+d186 4
+a189 3
+	ScreenWidth = attr.Time;
+	Screenful   = attr.Min - 2;
+	WindowSize  = Screenful;
+d284 9
+d294 1
+a294 27
+		Attributes	attr;
+		
+		if (GetAttributes( fdstream( fileno( stdout ) ), &attr ) < 0)
+		{
+			exit( 2 );
+		}
+		
+/*		AddAttribute(    &attr, ConsoleRawOutput );  This supposedly makes things happen faster... */
+		RemoveAttribute( &attr, ConsoleEcho );
+		
+		if (SetAttributes( fdstream( fileno( stdout ) ), &attr ) < 0  )
+		{
+			exit( 3 );
+		}
+		
+		if (GetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+		{
+			exit( 4 );
+		}
+		
+		AddAttribute(    &attr, ConsoleRawInput );
+		RemoveAttribute( &attr, ConsoleEcho );
+		
+		if (SetAttributes( fdstream( fileno( InputStr ) ), &attr ) < 0)
+		{
+			exit( 5 );
+		}
+d296 1
+a301 3
+/* 
+        if (signal( SIGINT, SIG_IGN ) != SIG_IGN);
+ */
+a1050 1
+
+a1095 1
+	
+d1113 1
+a1113 1
+	
+@
+
+
+1.15
+log
+@*** empty log message ***
+@
+text
+@d1030 1
+a1030 1
+				Position = npos;
+@
+
+
+1.14
+log
+@*** empty log message ***
+@
+text
+@d154 1
+d525 2
+a526 2
+	LineNumber = SearchStrtLn = 0;
+	Position   = SearchStrtP  = 0;
+d528 1
+d701 1
+a701 1
+		else
+d703 3
+a705 5
+			if (!NoAdd)
+			{
+				++FilePntr;
+				NoAdd = TRUE;
+			}
+d707 9
+a715 7
+			if (strcmp(editor,"emacs") == 0)
+				sprintf( comm, "emacs %s", *(--FilePntr) );
+			else
+			if (strcmp(editor,"vi") == 0)
+				sprintf( comm, "vi +%d %s", LineNumber, *(--FilePntr) );
+			else
+				sprintf( comm, "%s %s", editor, *(--FilePntr) );
+d717 1
+a717 1
+			Wipeout();
+d719 1
+a719 1
+			Invoke( comm );
+d721 1
+a721 1
+			FilePntr++;
+a722 3
+			return MORE;
+		}
+
+d740 2
+a741 1
+		else
+d743 3
+a745 5
+			if (!NoAdd)
+			{
+				++FilePntr;
+				NoAdd = TRUE;
+			}
+d747 1
+a747 1
+			TakeBack();
+d749 1
+a749 1
+			splitline = FALSE;
+d751 1
+a751 2
+			return (Display( WindowSize , TRUE));
+		}
+d756 2
+a757 1
+		else
+d759 3
+a761 5
+			if (!NoAdd)
+			{
+				++FilePntr;
+				NoAdd = TRUE;
+			}
+d763 1
+a763 1
+			Refresh();
+d765 1
+a765 2
+			return (Display( WindowSize , TRUE));
+		}
+a844 1
+	case 'Q': 
+a845 1
+		break;
+d868 2
+d871 1
+d895 2
+d900 1
+a900 1
+		switch (fgetc( InputStr ))
+d912 1
+d915 2
+a918 1
+		case 'Q' :
+a919 1
+			break;
+d945 6
+a950 2
+	int 	LinesUsed = 0;
+	long 	CharsRead = 0;
+d969 1
+a969 1
+	while( ( c = getc( File ) ) != EOF )
+d971 1
+a971 1
+		CharsRead++;
+d992 3
+a994 1
+			++LinesUsed;
+d1006 6
+d1015 1
+a1015 1
+				while ( (c = getc ( File )) != NEWLINE && c != EOF)
+d1024 1
+a1024 7
+				if(OutputToScreen)
+					{
+					fprintf( stdout, "\n\r...skipping\n\r" );
+					fflush( stdout );
+					fprintf( stdout, "%s\n\r", buffer );
+					}
+				return( Display( WindowSize - 1 , TRUE));
+d1026 1
+d1029 5
+a1033 1
+				fseek( File, -CharsRead, 1 );
+d1035 1
+a1035 8
+				if (LinesUsed > 2)
+				{
+					SkipForward( LinesUsed - 2 );
+					return ( Display( WindowSize , TRUE));
+				}
+				else
+					return (Display( WindowSize - LinesUsed , TRUE));
+			}
+d1047 1
+a1047 1
+		fseek( File, -CharsRead, 1 );	 /* rewind to start */
+d1210 2
+d1213 1
+@
+
+
+1.13
+log
+@*** empty log message ***
+@
+text
+@d66 7
+a72 8
+#define PATTERN      	12
+#define SEARCH       	13
+#define TAKEBACK     	14
+#define PREVFILE     	15
+#define NEXTFILE     	16
+#define DISPCURRENT	17
+#define BACK		18
+#define REFRESH		19
+d88 1
+a726 11
+	case PATTERN :
+		if (!NoAdd)
+		{
+			++FilePntr;
+			NoAdd = TRUE;
+		}
+
+		splitline = FALSE;
+
+		return (Search( Count ));
+
+d867 1
+d869 5
+a873 1
+			retval = PATTERN;
+d954 8
+@
+
+
+1.12
+log
+@*** empty log message ***
+@
+text
+@d37 1
+a37 1
+#define CTRL_B 		8
+d39 2
+d42 2
+d78 2
+d88 3
+a90 1
+char    Expr[ 256 ];
+d101 1
+d103 1
+d131 2
+d137 1
+a137 1
+	fprintf( stderr, "Usage: %s [-cdflsu] [-n] [+linenum | +/pattern] [name ...]\n" , progname );
+d143 5
+a147 2
+	printf( "\r                                                                               \r" );
+	fflush( stdout );
+d192 3
+d225 1
+a225 1
+						;
+d343 3
+a345 1
+	fprintf( stdout, "\r" );
+d368 1
+a368 1
+	while ((c = fgetc( InputStr )) != '\r' && c != '\n')
+d378 1
+a378 1
+			if (c == 0x7F || c == 0x08)
+d396 1
+a396 1
+	putchar( '\r' );
+d434 1
+a434 1
+	if (WriteInfo != NOPROMPT)
+d562 1
+a562 1
+	Command = Interpret( c );
+d590 1
+a590 1
+	char 	comm[ 50 ];
+a716 2
+			fprintf( stdout, "%s\r", comm );
+
+d838 2
+a839 2
+	case '\r': 
+	case '\n': 
+d902 3
+a904 2
+		if (GetLine( '!', Expr ))
+			Invoke( Expr );
+d920 2
+a921 2
+			if (GetLine( '!', Expr ))
+				Invoke( Expr );
+d949 1
+a949 1
+	char	buffer[ 256 ];
+d955 6
+d985 1
+a985 1
+		if (c == '\n')
+d1002 1
+a1002 1
+				while ( (c = getc ( File )) != '\n' && c != EOF)
+d1011 6
+a1016 3
+				printf( "\n\r...skipping\n\r" );
+				fflush( stdout );
+				printf( "%s\n\r", buffer );
+d1036 2
+a1037 1
+		fprintf( stdout, "\rPattern not found\r\n" );
+d1044 3
+a1046 1
+		Wipeout();
+d1048 1
+a1048 1
+		fprintf( stdout, "\rPattern not found\r" );
+d1050 2
+a1051 1
+		fflush( stdout );
+d1068 1
+a1068 1
+		if (res == MORE)
+d1072 1
+a1072 1
+			printf( "--More--" );
+d1081 6
+d1160 1
+a1160 1
+		else if ((File = fopen( *FilePntr, "r" )) == NULL)
+d1174 3
+a1176 1
+				Wipeout();
+d1178 3
+a1180 2
+				fprintf( stdout, "--More--(Next file: %s)\r", *FilePntr );
+				fflush(  stdout);
+d1196 1
+a1196 1
+	lc = '\n';
+d1202 1
+a1202 1
+		if (c == '\n' && splitline)
+d1204 2
+d1222 1
+a1222 1
+			unless (c == '\n')
+d1224 1
+a1224 1
+				if(Squeeze && pc == '\n' && lc == '\n' && dflag)
+d1226 2
+a1227 2
+					putchar('\n');
+					putchar('\r');
+d1237 1
+a1237 1
+		if (c != '\n')
+d1242 1
+a1242 1
+					c = '\n';
+d1247 1
+a1247 1
+		if (c == '\n')
+d1254 1
+a1254 1
+				if(lc != '\n' && dflag)
+d1257 1
+a1257 1
+					putchar ('\r');
+d1264 1
+a1264 1
+					putchar ('\r');
+d1289 55
+a1343 2
+	putchar('\f');
+	fflush(stdout);
+@
+
+
+1.11
+log
+@*** empty log message ***
+@
+text
+@d119 1
+d934 1
+a934 1
+	int 	CharsRead = 0;
+@
+
+
+1.10
+log
+@arm integration with 1.2
+@
+text
+@d14 2
+d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.9 90/09/17 09:57:34 jon Exp $";
+d37 1
+d39 1
+d68 2
+d71 3
+d93 1
+d97 1
+d99 1
+d119 1
+d130 1
+a130 1
+	printf( "\r                           \r" );
+d203 1
+d271 1
+a271 1
+		if (SetAttributes( fdstream( fileno( stdout ) ), &attr ) < 0)
+d338 1
+a338 1
+	int 	Count = 0;
+d347 1
+a347 1
+	while ((c = fgetc( InputStr )) != '\r')
+d353 1
+a353 1
+			Buffer[ Count++ ] = c;
+d357 1
+a357 1
+			if (c == 0x7F)
+d360 2
+d364 1
+a364 1
+				if (Count == 0)
+d370 1
+a370 1
+				Count--;
+d378 1
+a378 1
+	Buffer[ Count ] = '\0';
+d396 11
+a412 3
+	int     c;
+
+
+d419 1
+a419 20
+	while ((c = fgetc( File )) != EOF)
+	{
+		Position++;
+
+		if (c == '\n')
+			LineNumber++;
+
+		if (++Column == ScreenWidth) 
+			c = '\n';
+
+		if (c == '\n')
+		{
+			Column = 0;
+
+			if (--n == 0)
+				return MORE;
+		}
+	}
+
+	return END;
+d427 3
+d433 1
+d435 3
+a437 3
+	fprintf( stdout, "z                                 - set scrolling window size to (1)            \n" );
+	fprintf( stdout, "<return>                          - next line                                   \n" );
+	fprintf( stdout, "d or ctrl-D                       - scroll forwards (11) line(s)                \n" );
+d441 1
+a441 1
+	fprintf( stdout, ",                                 - skip backwards                              \n" );
+d450 1
+d452 1
+d466 3
+a468 1
+		fprintf( stdout, "::::::::::::\n\r" );
+d470 1
+a470 1
+		fprintf( stdout, "::::::::::::\n\r" );
+d521 1
+a521 1
+	Count        = 1;
+a527 1
+		Count        = 0;
+d538 3
+d545 1
+a545 1
+Display( int n )
+d547 2
+a548 7
+	int 	c, lc;
+
+
+	/*
+	  if (Page && (n >= Screenful)) HomeCursor();
+	  else
+	*/
+d550 1
+a550 1
+	if ( n >= Screenful )
+d552 4
+a555 1
+		putchar( '\f' );
+d562 1
+a562 45
+	lc = '\0';
+
+	while ((c = fgetc( File )) != EOF)
+	{
+		Position++;
+
+		unless (Squeeze && c == '\n' && lc == '\n')
+		{
+			putchar( c );
+		}
+
+		if (c == '\n')
+			LineNumber++;
+
+		if (c == '\f' && !FormFeed)
+		{
+			putchar( c );
+			fflush( stdout );
+			return MORE;
+		}
+
+		if (++Column == ScreenWidth)
+			unless (Squeeze && c == '\n' && lc == '\n')
+			{
+				putchar( c = '\n' );
+			}
+
+		if (c == '\n')
+		{
+			putchar( '\r' );
+
+			Column = 0;
+
+			if (--n == 0)
+			{
+				fflush( stdout );
+				return MORE;
+			}
+		}
+
+		lc = c;
+	}
+
+	fflush( stdout );
+	return END;
+d578 1
+a578 1
+		return NOPROMPT;
+d588 1
+a588 3
+		{
+			scr = Screenful - 1;
+		}
+d590 1
+a590 1
+			scr = WindowSize + 1;
+d592 1
+a592 1
+		return (Display( CountPresent ? Count : scr ));
+d606 4
+a609 1
+		return (Display( scr ));
+d621 1
+a621 1
+		return (Display( ScrollSize ));
+d633 1
+a633 1
+		return (Display( WindowSize ));
+d645 1
+a645 1
+			return (Display( WindowSize ));
+d657 1
+a657 1
+			return (Display( WindowSize ));
+d689 1
+d691 2
+d715 2
+d725 2
+d743 3
+a745 1
+			return (Display( WindowSize ));
+d748 16
+d767 3
+a769 2
+		else
+			return (FSkipBack());
+d788 2
+d795 1
+a795 1
+		fprintf( stdout, "Filename : %s Line number : %d\r" , (FilePntr != FileList ) ? *(FilePntr-1) : *FilePntr , LineNumber );
+d869 1
+a869 1
+	case ',': 
+d873 9
+d899 4
+d988 1
+a988 1
+				return( Display( WindowSize - 1 ));
+d997 1
+a997 1
+					return ( Display( WindowSize ));
+d1000 1
+a1000 1
+					return (Display( WindowSize - LinesUsed ));
+d1014 2
+d1043 1
+a1043 1
+			if (!PipePresent)
+d1144 103
+@
+
+
+1.9
+log
+@small mod so that typing space prints correct number of lines to the window
+previously printed one line to few always....
+@
+text
+@d16 1
+a16 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.8 90/09/13 16:53:35 jon Exp $";
+@
+
+
+1.8
+log
+@replaced code to determine file* for keyboard input with code from
+deprecated version of more
+@
+text
+@d16 1
+a16 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.7 90/09/10 13:08:12 jon Exp $";
+d32 3
+d154 1
+a154 1
+	Screenful   = attr.Min - 1;
+d262 1
+a262 1
+		if (GetAttributes( fdstream( fileno( stdin ) ), &attr ) < 0)
+d270 1
+a270 1
+		if (SetAttributes( fdstream( fileno( stdin ) ), &attr ) < 0)
+d620 1
+a620 1
+			scr = Screenful - 2;
+d623 1
+a623 1
+			scr = WindowSize;
+d1055 14
+d1070 1
+a1070 8
+	char *		instr = Heliosno(stdout)->Name;
+	
+	if ((InputStr = fopen(instr,"r")) == NULL)
+	{
+		fprintf ( stderr , "Unable to open '%s'\n",instr);
+		exit(1);
+	}
+	setvbuf(InputStr,NULL,_IONBF,0);  /* Ensure single char works */
+d1072 1
+a1072 1
+	Initialize( argc, argv );
+d1074 1
+a1074 1
+	Start();
+d1080 7
+@
+
+
+1.7
+log
+@replacement of getc by call to read to speed up command interpretation
+also implementation of default entry options via envirionment variable
+MORE.....
+@
+text
+@d11 3
+d16 1
+a16 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.6 90/09/07 11:50:21 jon Exp Locker: jon $";
+d64 1
+a64 1
+FILE * 	InputStr    	= NULL;
+d251 1
+a251 1
+		AddAttribute(    &attr, ConsoleRawOutput );
+d330 1
+a330 1
+	while ((c = getc( InputStr )) != '\r')
+a435 1
+	fprintf( stdout, "ctrl-L                            - redraw screen                               \n" );
+d507 2
+a508 4
+
+	/*	c = getc( InputStr );	*/
+
+	read ( 0 , (char *) &c , 1 );
+d518 1
+a518 1
+			c     = getc( InputStr );
+d878 1
+a878 1
+		switch (getc( InputStr ))
+a1051 6
+#ifdef CTERMID_WORKS
+	char *		instr;
+#ifdef __HELIOS
+	char *		ctermid( int );
+#endif
+#endif
+d1053 9
+a1065 14
+#ifdef CTERMID_WORKS
+
+	instr = (char *)(malloc( L_ctermid * sizeof( char ) ));
+
+#ifdef __HELIOS
+	instr = ctermid( instr );
+#endif
+
+	InputStr = fopen( instr, "r" );
+
+#else
+	InputStr = stdin;		/* ie read commands from stdin - hence will not work if attached to a pipe */
+#endif
+
+a1069 7
+#ifndef CTERMID_WORKS
+		fprintf( stderr, "%s:- will not work when input is redirected", argv[0] );
+		fflush(  stderr );
+		
+		exit( -1 );
+#endif
+		
+@
+
+
+1.6
+log
+@misl. corrections prior to beta release
+@
+text
+@d13 1
+a13 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.5 90/09/07 10:45:14 jon Exp Locker: jon $";
+d248 1
+a248 2
+		/* Raw output is too slow...
+		AddAttribute(    &attr, ConsoleRawOutput ); */
+d506 3
+a508 1
+	c = getc( InputStr );
+@
+
+
+1.5
+log
+@inadequate error message for failure of stat call replaced
+@
+text
+@d13 1
+a13 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.4 90/09/06 15:25:32 jon Exp Locker: jon $";
+a58 2
+#define S_IFMT	0000000070000
+
+d147 2
+a148 2
+	ScreenWidth = attr.Min;
+	Screenful   = attr.Time - 1;
+d262 1
+a262 2
+		/* Raw input is too slow...
+		AddAttribute(    &attr, ConsoleRawInput ); */
+d423 1
+a423 1
+	fprintf( stdout, "d or ctrl-D                       - scroll forwards (1) line(s)                 \n" );
+d435 2
+a436 2
+	fprintf( stdout, ":n                                - next file                                   \n" );
+	fprintf( stdout, ":p                                - previos file                                \n" );
+@
+
+
+1.4
+log
+@raw input and output now buffered for speed
+@
+text
+@d13 1
+a13 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.3 90/09/06 12:47:03 jon Exp Locker: jon $";
+d1103 1
+a1103 1
+			fprintf( stderr, "Can't stat %s\n\r", *FilePntr );
+@
+
+
+1.3
+log
+@#ifdef helios replaced by #ifdef __HELIOS on all occourances
+@
+text
+@d13 1
+a13 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.2 90/08/23 10:22:43 james Exp Locker: jon $";
+d250 2
+a251 1
+		AddAttribute(    &attr, ConsoleRawOutput );
+d264 2
+a265 1
+		AddAttribute(    &attr, ConsoleRawInput );
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d13 1
+a13 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/com/RCS/more.c,v 1.1 90/08/22 16:32:06 james Exp Locker: james $";
+d241 1
+a241 1
+#ifdef helios
+d1054 1
+a1054 1
+#ifdef helios
+d1067 1
+a1067 1
+#ifdef helios
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d13 1
+a13 1
+static char rcsid[] = "$Header$";
+@

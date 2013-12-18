@@ -1,0 +1,337 @@
+Helios-ARM Porting Notes
+========================
+
+Paul Beskeen
+Oct '92
+
+The Helios-ARM executive is based on the std. C based generic executive.
+
+Notes on Interrupt and Dispatch latency:
+
+Where possible the executive has been made pre-emptible. The interrupt
+latency has been reduced where possible, especially with regard to FIQ's.
+The dispatch latency has also been reduced to a minimum. All interrupt handlers
+check to see what new threads have been scheduled, if a thread higher than the
+current priority is available then it is immediatly sliced to. Also note that
+System() checks to see if any new threads have been scheduled after it returns
+to its normal priority. Internal interrupt handlers should not compare their
+new threads pri with the HighestAvailPri, but with the CurrentPri. If higher,
+they should set HighestAvailPri and immediately slice, otherwise they should
+continue the thread. This is because System() for example, sets the CurrentPri
+= HIGHPRI, but not HighestAvailPri (so that it can detect re-scheduled threads).
+
+User level interrupt handlers should simply set the HighestAvailPri if they
+re-schedule a higher pri thread than HighestAvailPri. The end of interrupt
+handler will slice if required.
+
+
+Memory Map
+----------
+
+    Hi
+0x3ffffff	End of memory on ARM2/3
+0x3800000	MEMC CAM space
+0x3600000	MEMC control space
+0x3400000	VIDC space
+0x3200000	IOC space
+0x3000000	External expansion card I/O space
+
+0x2000000	Physical Memory start / end of MEMC logical (mapped) memory
+
+0x1fd8000	Start of screen memory on Archi.
+
+0x04b4000	4Mb limit
+
+0x03d8000	end of user memory on Archi.
+
+0x03d7000	4k Trace vector start / End of User Memory
+
+0xxxxxxxx	User Memory starts
+
+0xxxxxxxx	Config vector
+
+0x002c000	KernelRoot (Approx for nuc size of ~165k)
+
+0x000a000	Ram loaded Nucleus
+(0x003000)	Defined in armexec.m (but should be passed by bootstrap to
+		kstart).
+
+		2k (0x800) space for ExecRoot.
+
+		Nuc addr of 0x3000 leaves Execroot expansion of only a few
+		bytes (currently 40).
+
+		Execroot is mainly startup stack of 384 words (1.5k). This can
+		be reduced if required when no KDebugs are required.
+
+0x00009800	ExecRoot structure base (current xroot size = 984/0x3d8)
+(0x0002800)	Defined in armexec.[mh]
+
+		4k = 1k SWI entries
+0x00008800	SWI table
+(0x0001800)
+		2k IRQ stack
+0x00008000	IRQ stack base
+(0x0001000)
+
+		No longer used.	2k FIQ stack
+		0x00008000	FIQ stack base
+		(0x0000800)
+
+		2k code
+0x0000001c	FIQ handler code area
+
+		0x1c entries
+0x00000000	ARM Exception vectors
+
+   Lo
+
+
+Possible Optimisations speed/code space:
+----------------------------------------
+
+SPACE&	Removal of swi stubs and replacement of most of kernel modtab codetab
+
+SPEED	with C calling traps as if they were function calls (_trap()).
+
+SPEED	FIQ handler could be copied into FIQ code space (help lower
+	interrupt latency).
+
+SPACE	SWI initialisation could be converted into a loop that copies
+	a table of self relative function addresses, converting them into
+	absolute addresses and then storing them in the SWI table.
+
+space	Exception vectors init similar to above.
+
+SPACE	Can disable function name insertion into code - both the relevant C
+	pragma and an ampp flag should be set. The ampp flag disabling the
+	'Function' macro from inserting the name. A #define should also be
+	set so the stack backtrace, procname, etc code that depends on these
+	names can be disabled.
+
+SPEED	Interrupt handler can be slightly recoded so that the RootEvent handler
+	is downcoded to assembler + IRQ SP top can be aligned to boundary to
+	remove need for sub sp, 1 + do we need fp = 0?
+
+speed	FIQ interrupt handler can be copied to ram directly after the FIQ
+	interrupt vector - would save 5 cycle branch penalty.
+
+speed	Easy optimisation in FIQ/IRQ interrupt handlers: we don't need to
+	save variable registers (other than v1) as due to strict PCS
+	conformance, these registers should be saved by the callers if they
+	wish to corrupt them. - will have to be saved if DispatchFromIRQ/FIQ:
+	is called - would save 4 cycle register stacking penalty.
+
+speed	Interrupt source indentification for IOC in FIQ/IRQ handlers could be
+	reduced by separating down to individual IOC request register nibbles.
+
+speed/flex
+	ExecRoot pointer could be added to all module tables as slot 0's
+	codeptr table mt[1]. This would allow the size to be variable and not
+	fixed and would not be a hit as the indirection required goes through
+	a register. Jamie gets a medal for this idea.
+
+flex	HardwareConfiguration structure to be passed to kernel at startup.
+	This defines memory map, clock, link hadler code, etc. Similar in
+	concept to the C40 IDROM.
+
+
+Areas Where Interrupt latency may be compromised
+------------------------------------------------
+
+	System interrupt handlers - do not allow nested interrupts.
+
+	Exception handlers - late AllIntsOn.
+
+	Task Kill code.
+
+	Nick's new Priority change code. - and possibly other parts of the
+	Mutex.
+
+
+Areas Where Dispatch latency may be compromised
+-----------------------------------------------
+
+	Any code that uses system, or disables interrupts.
+
+
+
+Big List of Thinks ToDo
+=======================
+
++ = done.
+- = to do.
+
+
+Bootstrap
+---------
+	- Implement with Acorn toolkit
+	- Perhaps in screen memory?
+	- See what old code we can use from ABC port.
+
+
+Include
+-------
+	- Ifdef all abc'isms to __ABC (inferred __ARM)
+
+	- add new C headers
+		+ armxxx
+		+ ioc, memc, vidc, xcb.h, swi.h
+			- remove acornisms
+		+/- hw_archi.h needs updating with full range.
+
+	- add new AMPP headers
+		+ arm.m
+		- ioc, memc, vidc, xcb.m, swi.m
+		- armmodt.m
+		+ arm.h (InterruptVectors)
+		+ check structs.m works for arm
+
+	- sort out size of interrupt vectors in root.[mh]
+
+	- convert genhdr to automatically produce AMPP headers from their C
+	equivalents. Or implement ANSI CPP compatible as assembler front-end.
+
+ 
+Kernel
+------
+	- Find a solution to supporting multiple types of base hardware
+	(links, clocks, mmu's, etc) in the kernel. - Kernel device drivers, or
+	simply conditional compilation/assembly. This leads to multiple kernel /
+	nucleus versions via sysbuild.
+
+
+Debugging
+---------
+
+	- screen can be set to character mode?
+		- kdebug -> screen
+	- runtime memory editor (mex?, hexpert?)
+		- add ARM/C40 disassembler
+	- alter I/O Server to have built in debugger for ARM
+		- halt and debug command
+		- disassembler
+	- scheduler trace vector
+		- on each re-schedule note:
+			the new thread
+			the reason for de-scheduling current thread
+			the current time.
+	- fname
+		- given address, should find and print function name
+		associated with it (if any).
+
+	- Use of ARMulator
+
+Packages
+--------
+	- X Windows
+		- X Lib.
+		- X server.
+
+	- network
+		- port tcpip
+		- local ethernet driver.
+
+	- local Console
+		- keyboard
+		- window
+		- mouse
+
+	- UFS file system
+		- raw driver.
+		- driver for SCSI
+		- driver for ST506
+		- driver for IDE
+
+	- ADFS file system
+		- driver for SCSI
+		- driver for ST506
+		- driver for IDE
+		- driver for floppy
+
+	- MSDOS filesystem
+		- driver for floppy
+
+	- various
+		- parallel
+		- rs232
+
+
+
+
+Outstanding Questions
+---------------------
+
+	Asked Dave Roberts to send info on:
+		Why is IOC rated at 8Mhz when its RCLK will be either 10 or
+		12Mhz?
+			- Is RCLK generated by MEMC, or from the backplane?
+
+		Backplane is 8Mhz, on machines other than 5000, 540 where it is
+		12Mhz?
+
+		MEMC on 3000, 300, 440 is 10 Mhz, 12Mhz on 540, 5000?
+
+		What is MEMC1A?
+			- Its needed if you add a scsi podule, but more than
+			that I don't know.
+		What is MEMC2?
+
+		How do we distinguish between ARM2, ARM2S, ARM250, ARM3,
+		ARM6/60/600?
+
+		Details of the Acorn backplane.
+
+		Technical reference manual for the 440.
+
+
+	Info required on FP instruction formats (see ncc src headers).
+		mumonics and syntax in vlsi doc.
+
+	Where can we get a FPU emulator from? Acorn? ARM Ltd? VLSI?
+		VLSI in object format in their tools.
+
+	Why does IOC timer0 give 125nS ticks when the documentation says that
+	it should give 2mS ticks? Is this because of the ARM3 upgrade?
+
+	Info required on exact details of Archi hardware and podules:
+		Internal:
+			ST506
+			IDE
+			SCSI
+			floppy
+			serial
+			parallel
+			sound (mute)
+			econet?
+			keyboard
+
+		Podules:
+			Ethernet
+			SCSI
+			link adapters:
+				Gnome (OK)
+				Nexus
+
+	How do we know if a particular machine provides the unix backplane?
+	I.E. can detect which cards are raiseing interrupts (see xcb.h)?
+
+	Does _word() allow you to do things like:
+		#define _TRAP(x) \
+			 _word(push lr); \
+			 _word(bl fn); \
+			 _word(pop lr);
+	i.e. are the _words() guaranteed to be stored in sequence?
+
+
+	ARM6 Qs:
+		What happens if you do a movs pc, xxx in user mode,
+		the doc. pg.16 state that this form shall not be used in
+		user mode?
+
+		What happens if you do an MRS/MSR with the SPSR as the target
+		in User mode, again the doc. pg.18 states that no attempt
+		should be made in user mode.
+
+		What do the 26 bit data and program modes do - do they allow
+		complete arm2 compatibility?

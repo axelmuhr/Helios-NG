@@ -1,0 +1,472 @@
+-- File:	c40flashbt.a
+-- Subsystem:	'C40 Helios executive
+-- Author:	Tony Cruickshank
+-- Date:	December 1994
+--
+-- Description: 'C40 specific initial boot code.
+--
+--		This code is downloaded from a Hunt Eng. FLASH ROM Booting TIM-40
+--		using the on-chip 'C40 boot sequence.  It is booted into internal
+--		RAM, where upon it performs the following steps -
+--		1.  Initialises the C40 from values held in the idrom file
+--		c40idrom.m (mainly the timers).
+--		2.  Sets up the system base.  This is one of the local or global
+--		buses, specified by defining one of SystemBaseLocal0, SystemBaseLocal1
+--		SystemBaseGlobal0, SystemBaseGlobal1.
+--		3.  Sets up the C address base.  This is set to the same value as the
+--		system base to ensure that all data structure are addressable under C
+--		programs.
+--		4.  Sets up the ExecRoot address, placed in TVTP and set to the
+--		chosen system base.
+--		5.  Sets up the nucleus load address.  This is specified by the 
+--		NucleusBase definition, and should be a separate strobe to the system
+--		base for efficient memory usage.
+--		6.  Fills in fields in the ExecRoot for later use by Helios.
+--		7.  Sets up space for the interrupt vector table and the kernel root
+--		structure.
+--		8.  Downloads the nucleus from the Hunt Eng. FLASH ROM TIM-40.
+--		9.  Copies the IDROM into the ExecRoot structure.
+--		10. Copies the Helios Configuration vector into the Kernel Root
+--		structure.
+--		11. Sets up the C PCS conformant world, and jumps into the kernel.
+
+	----------------------------------------------------------------------
+	----------------------------------------------------------------------
+	-- AMPP macro include files.
+
+	include basic.m
+	include c40.m
+	include tim40.m
+	include c40mmap.m
+	include ../gexec.m
+	include module.m
+	include config.m
+	include root.m
+	include link.m
+
+	----------------------------------------------------------------------
+	----------------------------------------------------------------------
+	-- Useful definitions ...
+
+	----------------------------------------
+	-- User changable things.
+	----------------------------------------
+
+	-- where we are going to load the nucleus
+	_def	'NucleusBase	0x80000000	-- GBASE0
+	
+	-- set only ONE of the following
+	_def	'SystemBaseLocal0	true
+--	_def	'SystemBaseGlobal0	true
+--	_def	'SystemBaseLocal1	true
+--	_def	'SystemBaseGlobal1	true
+
+	----------------------------------------------------------------------
+	----------------------------------------------------------------------
+	-- Bootstrap header
+
+	-- Coming out of the squirter, we will need to have the correct values
+	-- for the boot loader.
+
+	word	0x1e4a4000				-- GBCR	
+	word	0x1e4a4000				-- LBCR	
+	word	(BootstrapCodeEnd - BootstrapCodeStart)	-- Block Size
+	word	0x2ff800				-- Load Address
+
+BootstrapCodeStart:
+	-- Upon entry the 'C40 will be in its reset state with interrupts
+	-- disabled and AR3 points to the cpcr of the link we were
+	-- booted down. This register must NOT be corrupted, as we need to
+	-- read the rest of the nucleus from it.
+
+	or	ST_CE, st		-- enable cache for fast boot
+
+	----------------------------------------------------------------------
+	----------------------------------------------------------------------
+	-- A) System specific CPU and memory initialisation.
+	--
+	-- The bootstrap uses data in an 'IDROM' to initialise the C40 from
+	-- and which it then copies into a private kernel structure. An IDROM
+	-- is a structure used to define a C40 board's characteristics such as
+	-- memory size and location. The Helios nucleus refers to the IDROM in
+	-- order to adapt to the environment in which it finds itself running.
+	--
+	-- The IDROM used by the bootstrap is defined at the end of this file.
+
+	-- Load address of ROMed copy of boards IDROM.
+	ldabs32_unsafe BoardIDROM ar5
+
+	-- Load base addr of C40's internal periperal map.
+	ldperimap ar0
+
+	-- setup timer 1 as this may be needed for DRAM refresh
+	ldi	*+ar5(IDROM.TIMER1_PERIOD), r0
+	sti	r0, *+ar0(timer1_period)
+
+	ldi	*+ar5(IDROM.TIMER1_CTRL.w_offset), r0
+	-- Timer1 actually in upper 16 bits of word
+	lsh	-IDROM.TIMER1_CTRL.shift, r0
+	-- set the timer to run on when a JTAG halt is in effect
+	-- this ensures that DRAM refresh continues.
+	ldhi	((tcr_dbgcont1 | tcr_dbgcont2) >> 16) & 0xffff, r1
+	or	r1, r0
+	sti	r0, *+ar0(timer1_control)
+
+	-- setup timer 0 for a 1mS period, but do not start it
+	ldi	*+ar5(IDROM.TIMER0_PERIOD), r0
+	sti	r0, *+ar0(timer0_period)
+
+	-- Setup ar1 to control IDROM recall and mapping.
+	ldaperi timer0_control ar1	-- control addr for TCLK0 pin.
+
+	-- Allow normal accesses to Local RAM, not ID ROM
+	stik	tcr_io, *ar1		-- TCLK0 = output + output 0
+
+	----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- B) System self test if required.
+	--
+	-- Any system self test code should be inserted at this point.
+
+	----------------------------------------------------------------------
+	----------------------------------------------------------------------
+	-- C) Helios memory map setup, including copy of nucleus from ROM
+	--    (or other storage media) to RAM if required.
+	--
+	-- The Helios memory map:
+	--
+	--	     Hi addr.
+	--
+	--	------------------
+	--	Trace Vector		Set up by Helios.
+	--	------------------
+	--
+	--	Poss. second strobe
+	--	memory block.
+	--
+	--	------------------	Memory pools as set up by Helios.
+	--	Poss. dummy block	Used to stitch together noncontigous
+	--	------------------	strobe 0/1 if both contain RAM.
+	--
+	--	Main Memory Pool
+	--
+	--	------------------
+	--	Config vector		Initialised by ROM bootstrap.
+	--	------------------
+	--	Kernel Root
+	--	------------------
+	--	Interrupt vectors       256 bytes (must be 2kb boundary aligned).
+	--	------------------
+	--	System Stack (1kb)
+	--	------------------
+	--	ExecRoot (1kb)		Contains IDROM initialised by bootstrap.
+	--	------------------
+	--	Copied Nucleus		(Only if copied into RAM from flash/ROM/disk)
+	--	------------------	< Base of local/global bus strobe 0/1
+	--
+	--	     Lo addr.
+	--
+
+	-----------------------------------------------------------------------
+	-- Set base of RAM. Helios holds the main system structures just above
+	-- this point, such as the ExecRoot, system stack, interrupt vector
+	-- table, kernel root, Config structure and C addressable user RAM.
+	-- It may be located on the local or global bus and either strobe
+	-- on these busses.
+	--
+	-- The nucleus location is completely independent of this and may
+	-- be located on any strobe on either bus.
+	--
+	-- The Helios C address base is the base address to which all C byte
+	-- addresses are added to get a machine address. The IR0 register
+	-- (referred to by the R_BASE alias) is dedicated to hold this value.
+	-- The C address base is usually set to the start of RAM, but if the
+	-- last word of this RAM is within byte addressability range of the
+	-- on-chip RAM, then the C address base should be set to the start of
+	-- the on-chip RAM. This allows on-chip RAM to be directly accessable
+	-- from C.
+
+	-- OK, by default R_BASE (IR0) will start at 0x002ff800 (the start of
+	-- on chip RAM).  This will allow C programs to access this resource.
+	-- There are two cases where this is not done:
+	--
+	--  1.  Only Strobe 0 is being used, and all of strobe 0 is within
+	--      the first quadrant (1 giga word) of the address space.
+	--      In this case R_BASE is set to zero for backwards compatibilty
+	--      with Beta test versions of Helios.
+	--
+	--  2.  The start or end of both strobes of memory lie outside the
+	--      range 0x002ff800 -> 0x402ff800.  In this case it would not
+	--      be possible to access all of the memory on at least one of
+	--	the strobes, a highly undesirable situation.
+
+	-- Set up the system base.  One of the following should have been set
+	-- earlier.
+
+	_test _defp 'SystemBaseLocal0 [
+		ldi	*+ar5(IDROM.LBASE0), ar1
+	][
+		_test _defp 'SystemBaseGlobal0 [
+			ldi	*+ar5(IDROM.GBASE0), ar1
+		][
+			_test _defp 'SystemBaseLocal1 [
+				ldi	*+ar5(IDROM.LBASE1), ar1
+			][
+				-- SystemBaseGlobal1
+				ldi	*+ar5(IDROM.GBASE1), ar1
+			]
+		]
+	]
+
+	-- set the C address base to the system base.
+	ldi	ar1, R_BASE
+
+	-- at this point:
+	-- ar1  - holds base address of selected strobe
+	-- ar5  - points to IDROM
+	-- ar4  - is free
+
+	-- Setup address of ExecRoot.
+	-- This is held in the tvtp expansion register.
+	-- tvtp and ivtp must lie on a 512 word (2k) boundary.
+
+	-- Use the base memory address as the execroot pointer.
+	ldpe	ar1, tvtp	-- set trap vector table (execroot) position
+				-- GetExecRoot will load this address from tvtp
+
+	-- Save address of nucleus in ExecRoot, defined earlier.
+	-- Nucleus location is held as a word pointer on C40.
+	ldhi	((NucleusBase >> 16) & 0xffff), ar2
+	or	(NucleusBase & 0xffff), ar2
+
+	sti	ar2, *+ar1(ExecRoot.Nucleus)
+
+	-- Save standard address base in nucleus.
+	sti	R_BASE,	*+ar1(ExecRoot.CAddressBase)
+
+	-- Set default HW_Config sent to bootstrap when booting other
+	-- processors down a link (a copy of HW_Config is sent to bootstrap
+	-- booted down a link). In link booted systems the HW_Config word
+	-- determines what bus/strobe to load the nucleus to. Use the
+	-- HW_NucleusXXXXXXX flags in config.m if you  wish to set the default
+	-- nucleus load address for CPU's booted from this processor.
+	stik	0, *+ar1(ExecRoot.HWConfig)
+
+	-- Position system stack pointer directly after execroot.
+	-- Execroot and SSP are nominally 1kb in size each.
+	-- (system stack builds upwards)
+	-- .sizeof defined in terms of bytes.
+	ldi	ar1, R_SSP
+	addi	ExecRoot.sizeof / 4, R_SSP
+
+	-- Align interrupt vectors to 0x200 word boundary after execroot
+	-- and system stack.
+	ldi	R_SSP, ar4
+	addi	0x200-1, ar4
+	andn	0x200-1, ar4
+	ldpe	ar4, ivtp	-- set interrupt vector position
+
+	addi	0x40, ar4	-- add size of interrupt vector table
+				-- to give root kernel position
+
+	-- The Kernel root struct is located directly after the interrupt
+	-- vector table.
+
+	ldi	ar4, r0
+	C40CAddress r0				-- Convert to BPTR.
+	sti	r0, *+ar1(ExecRoot.KernelRoot)	-- Save in ExecRoot.
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- D) Download Nucleus.
+	--
+	-- Expects simple boot protocol of SIZE in words,
+	-- followed by SIZE words of data.
+	-- @@@ extend protocol to add peek / poke / exec / boot / worm on cmd?
+
+	-- Download nucleus to RAM address pointed at by ar2
+
+	--   The Hunt squirter (unfortunately) does not appear to wait for the
+	-- data it sends out to be read before sending the next word, so while
+	-- I've been busy setting up registers, data areas etc, its been sending
+	-- stuff.  
+	--   The nasty hack around this is to place pad words between the bootstrap
+	-- and the following nucleus.  Also, we can't do any instructions to convert
+	-- the nucleus size (the first word of the nucleus) from bytes to words before
+	-- reading the next word of the nucleus.
+	--   The upshot of all this is that the squirter program, which actually chucks
+	-- all the stuff into the squirter, will use the first word of the nucleus for
+	-- the pad value.
+
+	ldi	ar2, ar6		-- ar2 points to nucleus load area
+
+	_test _defp UsingJTAG [
+
+		-- When using JTAG to debug the bootstrap and nucleus, the squirter
+		-- sends a word every time an instruction is stepped through.  These
+		-- words will be ignored, and hence we make sure they are unimportant.
+		-- In order to use JTAG, use the -j option with the squirter program,
+		-- which will place 32 pad words (actually the nucleus size) between
+		-- the bootstrap and the nucleus.
+
+		-- Read the pad marker (the nucleus size)
+		ldi	*+ar3(1), r0
+
+		-- Save this value into r2
+		ldi	r0, r2
+
+		-- Size is in bytes, so convert to words.  (Meanwhile the squirter
+		-- merrily squirts.)
+		sti	r0, *ar6++		-- save size as part of image
+		lsh	-2, r0			-- / sizeof(word) - convert to # words
+		subi	4, r0			-- initialise for rpts
+
+		-- Continue reading any more pad values
+ReadPad:
+		ldi	*+ar3(1), r1		-- initialise r1 for parallel loop
+		cmpi	r1, r2
+		beq	ReadPad
+	][
+		-- Assume no pad words
+		ldi	*+ar3(1), r0	-- read size (1st word of nucleus)
+
+		sti	r0, *ar6++
+		lsh	-2, r0		-- convert to words
+		subi	3, r0		-- initialise for rpts
+					-- -1 size, -2 rpts and || correction
+
+		-- (following instruction now done as part of the pad reading loop)
+		ldi	*+ar3(1), r1		-- initialise r1 for parallel loop
+	]
+
+	-- Download image
+	rpts	r0			-- loops r0 + 1
+		ldi	*+ar3(1), r1 || sti	r1, *ar6++
+	sti	r1, *ar6++		-- store final value
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- E) Initialise IDROM in ExecRoot.
+	--
+	-- Copy IDROM into ExecRoot structure
+	-- ar5 points to base of IDROM in the bootstrap code
+	-- ar1 points to ExecRoot base.
+
+	addi	ExecRoot.ID_ROM, ar1, ar6
+	ldi	*ar5, r0
+IDROM_save:
+	ldi	*ar5++, r1
+	sti	r1, *ar6++
+	subi	1, r0
+	bnz	IDROM_save
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- F) Initialisation of Helios kernel's internal copy of the Config
+	--    structure.
+	--
+	-- Config is a Helios specific structure used to define information
+	-- required to initialise the Helios nucleus for this particular
+	-- environment.
+	--
+	-- See near the file "c40config.m" for the example config structure.
+	--
+	-- On entry to this code fragment:
+	--	AR4 = WPTR to kernel Root structure.
+
+	-- Get address of the kernel's internal copy of the Config structure.
+	-- This is held directly after the Root structure. As AR4 holds the
+	-- address of the kernel Root, simply add its size to get Config's
+	-- address (.sizeof returns byte size, hence the divide by four).
+
+	addi	Root.sizeof / 4, ar4
+
+	-- Load address of ROMed copy of Config.
+	ldabs32_unsafe	BoardConfig ar5
+
+	-- Get size of Config structure and convert to # words.
+	lsh	-2, *+ar5(Config.ImageSize), r0
+
+	-- Copy Config into internal position.
+Config_Copy:
+	ldi	*ar5++, r1
+	sti	r1, *ar4++
+	subi	1, r0
+	bnz	Config_Copy
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- G) Initialise C PCS conformant world.
+	--
+	-- kernel called thus:
+	-- 	void Kstart(Channel bootlink, word *nucbase)
+	--
+	-- On entry:
+	--	AR0 = peri map
+	--	AR1 = execroot
+	--	AR2 = nucleus address (WPTR)
+	--	AR3 = CPCR address of boot link
+
+CallKStart:
+
+	-- Setup initial C stack.
+	-- Falling stack using the dispatch stack for initialisation.
+	-- This relies on the initial kernel thread NEVER blocking
+	-- and interrupts NOT being enabled until a new C addressable
+	-- stack has allocated from an initialised memory system.
+	ldi	ExecRoot.DispatchStack + DISPATCHSTACKSIZE - 1, R_USP
+	addi	ar1, R_USP
+
+	-- All registers set the flags.
+	or	ST_SET_COND, R_ST
+
+	-- Module table pointer not required by kernel.
+	
+	-- Setup arguments and root structure pointer.
+
+	-- Bootlink is -1 to signify ROM booted system.
+	ldi	-1, R_A1			-- bootlink is arg 1
+
+	-- Nucleus is a word address.
+	ldi	*+ar1(ExecRoot.Nucleus), R_A2	-- nucleus base is arg 2
+
+	-- Jump to initial kernel module (kmodule)
+	-- jmp addr = *(GetNucBase() + 1) + (GetNucBase() + 1) + sizeof(Module)
+
+	-- Point at kernel slot.
+	addi	1, ar2
+
+	-- Convert kernel rptr to address of kernel.
+	ldi	*ar2, ar1	-- get kernel rptr - offset to kernel
+
+	lsh	-2, ar1		-- convert to number of words
+	addi	ar2, ar1	-- add in address of rptr
+
+	-- Step over module header (.sizeof in terms of bytes).
+	addi	Module.sizeof / 4, ar1
+
+	-- Jump to startup code.
+	b	ar1	-- geronimo .... 
+
+	include c40idrom.m
+
+	include c40config.m
+
+BootstrapCodeEnd:
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- C40 CPU boot loader tail.
+
+	word	0		-- 0 size block causes bootloader to stop.
+	word	0		-- IVTP - actually setup in bootstrap.
+	word	0		-- TVTP - actually setup in bootstrap.
+	word	0x300000	-- End of boot IACK address (start of RAM).
+
+BootstrapEnd:
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- End of c40rombt.a

@@ -1,0 +1,1978 @@
+-- File:	c40linkio.a
+-- Subsystem:	'C40 Helios executive
+-- Author:	P.A.Beskeen
+-- Date:	Feb '92
+--
+-- Description: 'C40 specific low level link I/O functions
+--
+--		These functions implement the lowest level link I/O routines.
+--		Both the blocking and DMA variants.
+--
+--
+-- RcsId: $Id: c40linkio.a,v 1.19 1993/11/26 10:31:32 nickc Exp $
+--
+-- (C) Copyright 1992 Perihelion Software Ltd.
+-- 
+-- RcsLog: $Log: c40linkio.a,v $
+-- Revision 1.19  1993/11/26  10:31:32  nickc
+-- fixed bug in TxHasCompletedOK: code
+--
+-- Revision 1.18  1993/05/10  11:36:27  nickc
+-- re-enabled fix for lost interrupts (whereby when AbortRX is called because of timeout, it detectes whether an interrupt is lost, and if so, recovers from it).
+--
+-- Revision 1.17  1993/02/25  10:22:34  paul
+-- fixed up small typos in source
+--
+-- Revision 1.16  1993/01/26  10:09:50  paul
+-- Fixed LinkTx/Rx lost interrupt silicon problem with a work around. Now
+-- checks Tx completion in Rx interrupts and vis-versa. Also reduced the
+-- dispatch latency when resuming Rx/Tx threads
+--
+-- Revision 1.15  1993/01/25  09:06:57  paul
+-- minor improvements plus IR0 (R_BASE) saveing and restoring
+--
+-- Revision 1.14  1992/12/17  14:23:20  paul
+-- minor fix to cope with non zero ir0
+--
+-- Revision 1.13  1992/12/17  11:42:16  paul
+-- added fixup for lost end of Tx DMA interrupt.
+-- Changed DMA priority to be equal with CPU
+--
+-- Revision 1.12  1992/11/23  10:10:27  paul
+-- converted all link tx/rx call to take word addresses and word size arguments
+--
+-- Revision 1.11  1992/11/20  15:43:46  paul
+-- address base reg IR0 is now defined to be a constant, user code must
+-- not change its value.
+-- interrupt routines now assume that IR0 is correct
+--
+-- Revision 1.10  1992/11/18  14:39:49  paul
+-- fixed up interrupt handlers to stop assuming IR0 is 0, instead they assume
+-- >> GetExecRoot (tvtp) is synonymous with the std C address base
+--
+-- Revision 1.9  1992/11/12  20:54:42  paul
+-- made C40Word/CAddress compatible with IR0 != 0
+--
+-- Revision 1.8  1992/09/25  09:38:13  paul
+-- now uses gexec.m and fixed an error in the interrupt driven link code.
+--
+-- Revision 1.7  1992/09/22  15:59:19  paul
+-- updated comment
+--
+-- Revision 1.6  1992/09/21  10:34:10  paul
+-- fixed problem with DMA overrun on Hema DSP1 boards, these boards are so
+-- quick that the reset of the DMA engines is still taking place after
+-- the next instruction, if the next instr. was loading the count reg. then
+-- the reg is instead zeroed. Re-ordered instructions to avoid this problem.
+--
+-- Revision 1.5  1992/06/30  19:26:05  paul
+-- remove dbg
+--
+-- Revision 1.4  1992/06/19  18:25:46  paul
+-- added note of threads status when it is re-scheduled
+--
+-- Revision 1.3  1992/06/15  13:42:19  paul
+-- various minor fixes
+--
+-- Revision 1.2  1992/05/14  08:21:38  paul
+-- pretty much near as dammit must be robust and clean now version
+--
+-- Revision 1.1  1992/04/21  09:54:56  paul
+-- Initial revision
+--
+--
+
+include ../gexec.m	-- Executive manifests
+include c40mmap.m
+include c40intr.m
+include link.m
+include root.m
+
+
+-- The C40 has a bug where the act of reading a link FIFO by hand makes
+-- the CPU hang when a new start value is written to the DMA control reg
+-- for the associated split mode link. This situation can only be resolved by
+-- resetting the DMA engines each time you use them. This problem currently
+-- only seems to manifest itself on Rx DMA.
+_def 'readfifo 1	-- fix problem as I do read FIFO directly
+
+_def 'writefifo 1	-- The fix does not seem to be required for writing
+			-- directly to the fifo, but for safety do reset of DMA
+			-- engines before Tx use.
+
+			-- Two ways of recovering from (Aleged) C40 silicon
+			-- problem where Tx interrupts are sometimes 'lost'
+			-- on heavily bi-directional loaded comms links.
+_def 'C40BUG_LostIntr1 1
+			-- Recover from lost Tx interrupt when link times-out
+			-- in AbortLinkTx (causes 10 sec delay on link comms).
+
+_def 'C40BUG_LostIntr2 1
+			-- Recover from lost Tx interrupt by detecting
+			-- outstanding comms. and DMA engine count = 0.
+			-- causes small overhead on each end of DMA
+			-- transaction.
+
+
+-- Std DMA control settings
+-- dcr_dmapri: DMA priority is higher than CPU
+-- dcr_syncmode:  both source and dest sync (as specified by die reg)
+-- dcr_splitmode: use split mode (primary channel = Tx, aux chan = Rx)
+-- dcr_tranmode: transfers are terminated by count reg == zero
+-- dcr_tcc : send end of DMA interrupt to CPU
+
+_test _defp 'CPUHASHIGHERPRI [
+_def    'set_control            [(dcr_syncmodeM | dcr_splitmode |
+                                dcr_tranmode[0b01] | dcr_tcc |
+                                dcr_auxtranmode[0b01] | dcr_auxtcc)]
+][
+-- Equal priority between CPU and DMA (alternate accesses)
+_def    'set_control            [(dcr_dmapri[0b01] | dcr_syncmodeM |
+                                dcr_splitmode |
+                                dcr_tranmode[0b01] | dcr_tcc |
+                                dcr_auxtranmode[0b01] | dcr_auxtcc)]
+]
+
+-- reset both primary and auxiliary channel
+_def    'resetboth_control      [(set_control | dcr_start[0b00] |
+                                dcr_auxstart[0b00])]
+
+-- start both channels
+_def    'goboth_control         [(set_control | dcr_start[0b11] |
+                                dcr_auxstart[0b11])]
+
+_test _true [
+-- STOP ON EITHER DMA READ or WRITE boundary
+
+-- halt both primary and auxiliary channel immediately
+_def    'haltboth_control       [(set_control | dcr_start[0b01] |
+                                dcr_auxstart[0b01])]
+
+
+-- go on primary channel and halt auxiliary
+_def    'gohalt_control         [(set_control | dcr_start[0b11] |
+                                dcr_auxstart[0b01])]
+
+
+-- go on primary channel and reset auxiliary
+_def    'goreset_control	[(set_control | dcr_start[0b11] |
+                                dcr_auxstart[0b00])]
+
+
+-- reset primary channel and go on auxiliary
+_def    'resetgo_control        [(set_control | dcr_start[0b00] |
+                                dcr_auxstart[0b11])]
+
+-- reset primary channel and halt auxiliary immediately
+_def    'resethalt_control      [(set_control | dcr_start[0b00] |
+                                dcr_auxstart[0b01])]
+
+
+-- halt primary and reset auxiliary channel
+_def    'haltreset_control      [(set_control | dcr_start[0b01] |
+                                dcr_auxstart[0b00])]
+
+-- halt primary and go on auxiliary channel
+_def    'haltgo_control         [(set_control | dcr_start[0b01] |
+                                dcr_auxstart[0b11])]
+][
+-- STOP ON TRANSFER BOUNDARY, NOT DMA READ or WRITE boundary
+
+-- halt both primary and auxiliary channel immediately
+_def    'haltboth_control       [(set_control | dcr_start[0b10] |
+                                dcr_auxstart[0b10])]
+
+
+-- go on primary channel and halt auxiliary
+_def    'gohalt_control         [(set_control | dcr_start[0b11] |
+                                dcr_auxstart[0b10])]
+
+
+-- go on primary channel and reset auxiliary
+_def    'goreset_control	[(set_control | dcr_start[0b11] |
+                                dcr_auxstart[0b00])]
+
+
+-- reset primary channel and go on auxiliary
+_def    'resetgo_control        [(set_control | dcr_start[0b00] |
+                                dcr_auxstart[0b11])]
+
+-- reset primary channel and halt auxiliary immediately
+_def    'resethalt_control      [(set_control | dcr_start[0b00] |
+                                dcr_auxstart[0b10])]
+
+
+-- halt primary and reset auxiliary channel
+_def    'haltreset_control      [(set_control | dcr_start[0b10] |
+                                dcr_auxstart[0b00])]
+
+-- halt primary and go on auxiliary channel
+_def    'haltgo_control         [(set_control | dcr_start[0b10] |
+                                dcr_auxstart[0b11])]
+]
+
+
+_def    'hi_resetboth_control   [(resetboth_control >> 16)]
+_def    'lo_resetboth_control   [(resetboth_control & 0xffff)]
+_def    'hi_haltboth_control    [(haltboth_control >> 16)]
+_def    'lo_haltboth_control    [(haltboth_control & 0xffff)]
+_def    'hi_goboth_control      [(goboth_control >> 16)]
+_def    'lo_goboth_control      [(goboth_control & 0xffff)]
+
+_def    'hi_gohalt_control      [(gohalt_control >> 16)]
+_def    'lo_gohalt_control      [(gohalt_control & 0xffff)]
+_def    'hi_goreset_control	[(goreset_control >> 16)]
+_def    'lo_goreset_control	[(goreset_control & 0xffff)]
+
+_def    'hi_haltgo_control      [(haltgo_control >> 16)]
+_def    'lo_haltgo_control      [(haltgo_control & 0xffff)]
+_def    'hi_haltreset_control   [(haltreset_control >> 16)]
+_def    'lo_haltreset_control   [(haltreset_control & 0xffff)]
+
+_def    'hi_resetgo_control     [(resetgo_control >> 16)]
+_def    'lo_resetgo_control     [(resetgo_control & 0xffff)]
+_def    'hi_resethalt_control	[(resethalt_control >> 16)]
+_def    'lo_resethalt_control	[(resethalt_control & 0xffff)]
+
+
+
+
+-- void _LinkTx(word size, Channel link, void *buf);
+--
+-- Simple blocking link reception function. This is used to send a bogus Info
+-- message when debugging early versions of the kernel, and to write bytes
+-- to the link if there is space for all of them in the link FIFO.
+--
+-- size: number of words to send
+-- link: WPTR to the link control register
+-- buf: WPTR to buffer holding data
+--
+-- Called from C so must be PCS conformant
+
+._LinkTx:
+        addi    2, R_A2, R_ATMP         -- link tx addr
+
+	ldi	R_A3, R_ADDR1  		 -- MPtr data buffer
+
+        subi    2, R_A1                 -- adjust for loop
+        bn      OneWordTx
+
+        ldi     *R_ADDR1++, R_A2
+        rpts R_A1
+                sti     R_A2, *R_ATMP || ldi *R_ADDR1++, R_A2
+        sti     R_A2, *R_ATMP
+
+        bu      R_LR
+
+OneWordTx:
+        bud     R_LR
+                ldi     *R_ADDR1++, R_A2
+                sti     R_A2, *R_ATMP
+                nop
+
+
+-- void _LinkRx(word size, Channel link, MPtr buf);
+--
+-- Simple blocking link reception function. This is used to get config vector
+-- in kernel startup, and to read bytes from the link if they are all in the
+-- link FIFO already.
+--
+-- size: number of words to read
+-- link: WPTR to the link control register
+-- buf: WPTR to buffer to hold the data
+--
+-- Called from C so must be PCS conformant
+
+._LinkRx:
+        addi    1, R_A2, R_ATMP         -- link rx addr
+
+	ldi	R_A3, R_ADDR1		-- data buffer
+
+        subi    2, R_A1                 -- adjust for loop
+        bn      OneWordRx
+
+        ldi     *R_ATMP, R_A2
+        rpts R_A1
+                sti     R_A2, *R_ADDR1++ || ldi *R_ATMP, R_A2
+        sti     R_A2, *R_ADDR1++
+
+        bu      R_LR
+
+OneWordRx:
+        bud     R_LR
+                ldi     *R_ATMP, R_A2
+                sti     R_A2, *R_ADDR1++
+                nop
+
+
+-- int RxFIFOSpace(Channel x)
+--
+-- Returns number of BYTES available to read in link's input FIFO.
+-- By judicous shifting and masking, we get a byte result from a word
+-- quantified bitfield in the link control register.
+--
+-- x: WPTR to links CPCR
+--
+-- Called from C so must be PCS conformant
+
+.RxFIFOSpace:
+        ldi     R_A1, R_ATMP
+        lsh     -7, *+R_ATMP(0), R_A2           -- shift and mask to get byte
+        bud     R_LR
+                and     0b011100, R_A2, R_A1    -- result from word quantified
+                tstb    0b100000, R_A2          -- if full, we actually have 8
+                ldinz   32, R_A1                -- words in fifo
+
+
+-- int TxFIFOSpace(Channel x)
+--
+-- Returns number of free BYTES in link's output FIFO.
+-- By judicous shifting and masking, we get a byte result from a word
+-- quantified bitfield in the link control register.
+--
+-- x: WPTR to links CPCR
+--
+-- Called from C so must be PCS conformant
+
+.TxFIFOSpace:
+        ldi     R_A1, R_ATMP
+        lsh     -3, *+R_ATMP(0), R_A2
+        and     0b011100, R_A2, R_A1    -- mask byte size
+        bud     R_LR
+                subri   32, R_A1                -- 32 - bytes used = bytes unused
+                tstb    0b100000, R_A2          -- if completely full however
+                ldinz   0, R_A1                 -- return no bytes avail.
+
+
+_if _false [
+-- Sets up a handler for input fifo full interrupt on link 3
+-- If this hits then we will have serious problems with IOServer
+
+.LinkFIFOTest:
+        -- get address of fifo handler
+        ldabs16 LinkFIFOOverflow R_A1
+
+        -- Setup end of DMA interrupt handler into the correct intr. vector
+        -- get hold of interrupt vector base
+
+        ldep    ivtp, R_ATMP
+	addi	iv_icfull3, R_ATMP
+
+	bud	R_LR
+		sti	R_A1, *R_ATMP
+                ldi     IIE_EICFULL3, R_A1
+                or      R_A1, iie       -- enable interrupt
+
+LinkFIFOOverflow:
+	push	ar1
+        ldi     IIE_EICFULL3, ar1
+        andn	ar1, iie       -- enable interrupt
+	int	0x66ffffff
+	pop	ar1
+	retiu
+]
+
+
+_test _defp 'LINKDMA [
+-- void InitLinkDMA(word DMAEng)
+--
+-- Sets up link and DMA engine for channel x. The same numbered link and DMA
+-- engine must be used together in order to syncronise their acivities with the
+-- ICRDY/OCRDY signals. The DMA engine is set up for split mode use, the
+-- Primary channel being used for Tx and the Aux channel for Rx. Other Items
+-- that remain static such as the index and interrupt handler are initialised
+-- at this point.
+--
+-- Called from C so must be PCS conformant.
+
+.InitLinkDMA:
+        -- move DMA control reg to address reg for indirection
+        ldi     R_A1, R_ADDR1
+
+        -- Set up DMA control registers
+        -- reset DMA engine
+        stik    0, *+R_ADDR1(dma_control)
+
+        -- zero count registers
+        stik    0, *+R_ADDR1(dma_count)
+        stik    0, *+R_ADDR1(dma_auxcount)
+
+        -- indexes is always 1
+        stik    1, *+R_ADDR1(dma_srcindex)
+        stik    1, *+R_ADDR1(dma_dstindex)
+
+        -- Setup end of DMA interrupt handler into the correct intr. vector
+        -- get hold of interrupt vector base
+        ldep    ivtp, R_A3
+                
+        -- convert cpcr WPTR to dma channel number
+        lsh     -4, R_ADDR1, R_ADDR2
+        and     0xf, R_ADDR2
+        subi    0xa, R_ADDR2            -- R_ADDR2 == dma chan number
+
+        -- add in interrupt vector base
+        addi    R_A3, R_ADDR2, R_ADDR3  -- R_ADDR3 == (after +ivdmaint0) =
+                                        --              DMA channel intr vector
+
+        -- get address of this channels handler
+        ldabs16 LinkDMAIntrHandler0 R_A4 -- abs addr of interrupt handler 0
+        mpyi    6, R_ADDR2, R_A3                -- chan * 6 instructions
+        addi    R_A3, R_A4                      -- index to correct handler
+
+        -- store link DMA interrupt handler into interrupt vector.
+        sti     R_A4, *+R_ADDR3(iv_dmaint0)
+
+
+        -- Enable OCRDY write and ICRDY read sync in the DIE reg.
+        -- This  automatically syncronises the DMA reads and writes to link
+        -- write and read ready interrupt/line
+        -- R_ADDR2 == DMA channel number
+        cmpi    1, R_ADDR2
+        bhi     hi_die
+
+        -- Two bit die masking
+        bz      chan_zero
+        -- DMA channel 1
+        bud     end_die_mask
+                andn    0b11110000, die -- set ICRDY/OCRDY DMA sync interrupt
+                or      0b01010000, die
+                nop
+chan_zero:
+        -- DMA channel 0
+        bud     end_die_mask
+                andn    0b1111, die     -- set ICRDY/OCRDY DMA sync interrupt
+                or      0b0101, die
+                nop
+
+
+        _def    'dma_diemask    [0b0011111100000000]
+        _def    'dma_dieIOCRDY  [0b0000100100000000]
+
+hi_die: -- Three bit die masking for channels 2-5
+        ldi     dma_diemask, R_A3
+        subi    2, R_ADDR2, R_A4        -- convert DMA channel to shift for mask
+        mpyi    6, R_A4                 -- (chan - 2) * 6 = shift amount
+        lsh     R_A4, R_A3              -- shift mask
+        andn    R_A3, die               -- mask out old DMA channel intr enable
+
+        ldi     dma_dieIOCRDY, R_A3
+        lsh     R_A4, R_A3
+        or      R_A3, die               -- set new DMA chan. intr enable I/OCRDY
+end_die_mask:
+        -- Enable the end of DMA interupts in IIE
+        -- These interrupts signal the link DMA interrupt handler to resume the
+        -- thread that requested the LinkTx/Rx when the DMA transfer completes.
+
+        _def    'edmaint0       [0b0000001000000000]
+
+        bud     R_LR
+                ldhi    edmaint0, R_A3
+
+                lsh     R_ADDR2, R_A3   -- shift to set end of DMA intr
+                or      R_A3, iie       -- for this DMA channel
+
+
+
+-- void _AbortLinkTx(LinkInfo *link, word linkId)
+--
+-- Abort the split mode primary channel DMA transfer immediately
+-- (but without affecting the other channel)
+--
+-- Called from C so must be PCS complient
+
+._AbortLinkTx:
+        -- get word address of link info
+	-- C40WordAddress R_A1, R_ADDR1
+	lsh	-2, R_A1, R_ADDR1
+	addi	R_BASE, R_ADDR1
+
+        -- shift comms port to ctrl reg field
+        lsh     15, R_A2, R_A4
+
+        -- get WPTR to DMA control reg for this link.
+        ldi     *+R_ADDR1(Link.DMAEng), R_ADDR2
+
+	_if _defp 'C40BUG_LostIntr1 [
+		-- This has been put in as a fix to a (unconfirmed) silicon
+		-- problem where the end of DMA interrupt is lost for Tx comms
+		-- on heavily bi-directionally loaded links.
+
+		cmpi	0, *+R_ADDR2(dma_count)
+		beq	TxHasCompletedOK
+	]
+        -- check to see if the other channel is transmitting
+       	cmpi    0, *+R_ADDR1(Link.RxThread)
+        beq     resetboth
+
+	-- If the Rx channel is still operating, we must take care not to
+	-- simply overwrite its channel start value and either stop or restart
+        -- it at the wrong time.
+
+        ldhi    hi_resethalt_control, R_A1
+        or      lo_resethalt_control, R_A1
+
+        -- this Halts all DMA transfers on either read or write boundary
+        -- and resets the auxiliary channel
+        sti     R_A1, *+R_ADDR2(dma_control)
+		nop     -- Give time for last transfer to complete
+		nop     -- before the halt takes effect. This should be
+		nop     -- for a minimum of 9 cycles in case we are writing to
+
+		nop     -- dynamic RAM and miss the current page
+		nop
+		nop
+
+		nop
+		nop
+		nop
+
+        -- Rx side has now been halted and Tx side reset
+HaltedRx:
+        -- see if the Rx side had just completed anyway
+        ldi     *+R_ADDR2(dma_auxcount), R_A2
+        bz      R_LR            -- yes Tx has completed
+
+        -- no so re-start Rx channel
+        ldhi    hi_resetgo_control, R_A1
+        bud     R_LR
+                or      lo_resetgo_control, R_A1
+
+                -- insert comms port into its control reg field
+                or      R_A4, R_A1
+
+                -- this re-starts the Rx DMA transfer
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+_if _defp 'C40BUG_LostIntr1 [
+        -- This code emulates and End of Tx DMA interrupt.
+	--
+	-- This has been put in as a fix to a (possibly hardware) problem
+	-- where the end of DMA interrupt is lost for Tx comms on heavily
+	-- Tx&Rx loaded links.
+	--
+	-- Entered with:
+	--	R_A1 = LinkInfo * (BPTR)
+	--	R_ADDR1 = LinkInfo * (WPTR)
+	--	R_A2 = Link Id
+	-- Should be PCS conformant, interrupts are disabled throughout.
+
+TxHasCompletedOK:
+        GetExecRoot R_ADDR2             -- get hold of Executive root structure
+
+        -- set XRoot->HighestPri to HIGHPRI (LinkTx/Rx thread always high pri)
+        stik	HIGHPRI, *+R_ADDR2(ExecRoot.HighestAvailPri)
+
+        -- R_ATMP = (WPTR) *LinkInfo
+        ldi     *+R_ADDR1(Link.TxThread), R_ATMP -- R_ATMP = BPTR to SaveState
+        stik    0, *+R_ADDR1(Link.TxThread)      -- link->TxThread == NULL
+        -- C40WordAddress  R_ADDR1
+	lsh3	-2,  R_ATMP, R_ADDR1		 -- R_ADDR1 = WPTR to SaveState
+	addi	R_BASE, R_ADDR1
+
+        stik    0, *+R_ADDR1(SaveState.next)      -- SaveState->next = NULL
+	stik	THREAD_RUNNABLE, *+R_ADDR1(SaveState.status)
+
+        -- Add SaveState (Rx/TxThread) to high priority Q
+        -- R_ADDR1 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar1(ExecRoot.Queue0.tail), R_ADDR1
+        lsh	-2, *+R_ADDR2(ExecRoot.Queue0.tail), R_ADDR1
+	addi	R_BASE, R_ADDR1
+
+	bud	R_LR
+        	-- xroot->queue[0].tail = SaveState
+	        sti     R_ATMP, *+R_ADDR2(ExecRoot.Queue0.tail)
+        	-- xroot->queue[0].tail->next=SaveState
+	        sti     R_ATMP, *+R_ADDR1(SaveState.next)
+		-- Note AbortLinkTx to return NULL
+		ldi	0, R_A1
+]
+
+resetboth:
+        bud     R_LR
+                ldhi    hi_resetboth_control, R_A1
+                or      lo_resetboth_control, R_A1
+
+                -- Resets both the primary and auxiliary channel
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+-- void _AbortLinkRx(Linkinfo *link, word linkId)
+--
+-- Abort the split mode auxiliary channel DMA transfer immediately
+-- (but without affecting the other channel)
+--
+-- Called from C so must be PCS complient
+
+._AbortLinkRx:
+        -- get word address of link info
+	-- C40WordAddress R_A1, R_ADDR1
+	lsh	-2, R_A1, R_ADDR1
+	addi	R_BASE, R_ADDR1
+
+        -- shift comms port to ctrl reg field
+        lsh     15, R_A2,  R_A4
+
+        -- get WPTR to DMA control reg for this link.
+        ldi     *+R_ADDR1(Link.DMAEng), R_ADDR2
+
+        -- check to see if the other channel is transmitting
+        cmpi    0, *+R_ADDR1(Link.TxThread)
+        beq     resetboth
+
+        -- If the Tx channel is still operating, we must take care not to
+        -- simply overwrite its channel start value and either stop or restart
+        -- it at the wrong time.
+
+        ldhi    hi_haltreset_control, R_A1
+        or      lo_haltreset_control, R_A1
+
+        -- this Halts all DMA transfers on either read or write boundary
+        -- and resets the auxiliary channel
+        sti     R_A1, *+R_ADDR2(dma_control)
+
+		nop     -- Give time for last transfer to complete
+		nop     -- before the halt takes effect. This should be
+		nop     -- for a minimum of 9 cycles in case we are writing to
+
+		nop     -- dynamic RAM and miss the current page
+		nop
+		nop
+
+		nop
+		nop
+		nop
+
+
+        -- Tx side has now been halted and Rx side reset
+HaltedTx:
+        -- see if the Tx side had just completed anyway
+        ldi     *+R_ADDR2(dma_count), R_A2
+        bz      R_LR            -- yes Tx has completed
+
+        -- no so re-start Tx channel
+        ldhi    hi_goreset_control, R_A1
+        bud     R_LR
+                or      lo_goreset_control, R_A1
+
+                -- insert comms port into its control reg field
+                or      R_A4, R_A1
+
+                -- this re-starts the Tx DMA transfer
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+
+-- void __LinkTx(LinkInfo *link, word linkId, word size, MPtr buf)
+--
+-- Sets up and starts a DMA transfer to a link using the primary channel of
+-- a split mode DMA engine. C40 version requires word address pointer and
+-- size is specified in words.
+
+--
+-- The sometimes odd ordering of these instructions is designed not to stall the
+-- pipeline - so be careful about changing the order.
+--
+-- Called from C so must be PCS conformant
+
+.__LinkTx:
+        -- get word address of link info
+	-- C40WordAddress R_A1, R_ADDR1
+	lsh	-2, R_A1, R_ADDR1
+	addi	R_BASE, R_ADDR1
+
+        -- get WPTR to DMA control reg for this link.
+        ldi     *+R_ADDR1(Link.DMAEng), R_ADDR2
+
+        -- shift comms port to ctrl reg field
+        lsh     15, R_A2
+
+_if _not _defp 'writefifo [
+        -- load primary channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_count)
+]
+
+        -- store word pointer to source data into DMA source address reg
+        sti     R_A4, *+R_ADDR2(dma_srcaddr)
+
+        cmpi    0, *+R_ADDR2(dma_auxcount)      -- if other split channel
+        bne     CarefulTxStart                  -- is operating take care
+
+_test _defp 'writefifo [
+        -- if we write the link fifo (._LinkTx) by hand we have to reset the
+        -- DMA channel every time we use it (C40 bug).
+
+        -- reset both channels (_reset_both_control equivalent)
+        stik    0, *+R_ADDR2(dma_control)
+
+SimpleTxStart:
+        -- neither split channel is operating if we reach this point
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and reset for the aux chan
+
+        ldhi    hi_goreset_control, R_A1
+        or      lo_goreset_control, R_A1
+
+        -- load prim channel count register with word version of byte count
+        -- must be done after a reset as reset zeros count
+	-- note also the distance from the reset - required as SRAM systems
+	-- (e.g. Hema DSP1) can load count before reset takes effect
+        sti     R_A3, *+R_ADDR2(dma_count)
+][
+SimpleTxStart:
+        -- neither split channel is operating if we reach this point
+
+        ldhi    hi_gohalt_control, R_A1
+        or      lo_gohalt_control, R_A1
+]
+
+        bud     R_LR
+                -- insert comms port into control reg values
+                or      R_A2, R_A1
+		-- disable interrupts so thread will definitely be suspended
+		-- before a quick DMA interrupt resumes it!
+		AllIntsOff
+                -- store Tx attributes in control reg
+                -- THIS STARTS THE DMA TRANSFER
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+CarefulTxStart:
+        -- Rx channel is operating, so we must take care not to simply overwrite
+        -- its channel start value and either stop or restart it at the
+        -- wrong time.
+
+_test _defp 'writefifo [
+        ldhi    hi_resethalt_control, R_A1
+        or      lo_resethalt_control, R_A1
+][
+        ldhi    hi_haltboth_control, R_A1
+        or      lo_haltboth_control, R_A1
+]
+        -- this Halts all DMA transfers on either read or write boundary
+        sti     R_A1, *+R_ADDR2(dma_control)
+        -- previous write will have been lost if CPU and DMA write at the same
+        -- time - however as the DMA engine will only have been writing a halt
+        -- code to the start field we dont care (this is what we were trying to
+        -- do anyway).
+        sti     R_A1, *+R_ADDR2(dma_control)
+
+                nop     -- Give time for last transfer to complete
+                nop     -- before the halt takes effect. This should be
+                nop     -- for a minimum of 9 cycles in case we are writing to
+
+                nop     -- v. slow dynamic RAM and miss the current page
+                nop	-- This is extremely conservative and should never
+                nop	-- actually need to be this long.
+
+                nop
+                nop
+                nop
+
+haltedRx:
+        -- If Rx side was operating, it has now been halted.
+
+_if _defp 'writefifo [
+        -- Reset also resets the count, so we delay setting it until now.
+        -- load prim channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_count)
+]
+
+        -- see if the Rx side had just completed anyway
+        cmpi    0, *+R_ADDR2(dma_auxcount)
+        beq     SimpleTxStart   -- yes Rx has completed - so just start Tx
+
+        -- no start Tx and re-start Rx
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and auxilary channel transfer re-start
+        ldhi    hi_goboth_control, R_A1
+	or      lo_goboth_control, R_A1
+        bud     R_LR
+                -- insert comms port into its control reg field
+                or      R_A2, R_A1
+		-- disable interrupts so thread will definitely be suspended
+		-- before a quick DMA interrupt resumes it!
+		AllIntsOff
+                -- this starts the Tx and restarts the Rx DMA transfer
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+
+-- void __LinkRx(LinkInfo *link, word linkId, word size, MPtr buf)
+--
+-- Sets up and starts a DMA transfer from a link using the auxilary channel of
+-- a split mode DMA engine. C40 version requires word address pointer and
+-- size is specified in words.
+--
+-- Called from C so must be PCS conformant
+
+.__LinkRx:
+        -- get word address of link info
+	-- C40WordAddress R_A1, R_ADDR1
+	lsh	-2, R_A1, R_ADDR1
+	addi	R_BASE, R_ADDR1
+
+        -- get WPTR to DMA control reg for this link.
+        ldi     *+R_ADDR1(Link.DMAEng), R_ADDR2
+
+        -- shift comms port to ctrl reg field
+        lsh     15, R_A2
+
+_if _not _defp 'readfifo [
+        -- load aux channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_auxcount)
+]
+
+        -- store word pointer to destination for  data into DMA reg
+        sti     R_A4, *+R_ADDR2(dma_dstaddr)
+
+        cmpi    0, *+R_ADDR2(dma_count)         -- if other split channel
+        bne     CarefulRxStart                  -- is operating take care
+
+_test _defp 'readfifo [
+        -- if we read the link fifo (._LinkRx) by hand we have to reset the
+        -- DMA channel every time we use it (C40 bug).
+
+        -- reset both channels (_reset_both_control equivalent)
+        stik    0, *+R_ADDR2(dma_control)
+
+SimpleRxStart:
+        -- neither split channel is operating if we reach this point
+        -- load std values to set in DMA control reg
+        -- this value includes auxiliary channel transfer initialisation
+        -- and primary channel reset.
+        ldhi    hi_resetgo_control, R_A1
+	or      lo_resetgo_control, R_A1
+
+        -- load aux channel count register with word version of byte count
+        -- must be done after a reset as reset zeros count
+	-- note also the distance from the reset - required as SRAM systems
+	-- (e.g. Hema DSP1) can load count before reset takes effect
+        sti     R_A3, *+R_ADDR2(dma_auxcount)
+
+][
+SimpleRxStart:
+        -- neither split channel is operating if we reach this point
+        ldhi    hi_haltgo_control, R_A1
+	or      lo_haltgo_control, R_A1
+]
+        bud     R_LR
+                -- insert comms port into control reg values
+                or      R_A2, R_A1
+		-- disable interrupts so thread will definitely be suspended
+		-- before a quick DMA interrupt resumes it!
+		AllIntsOff
+                -- store Rx attributes in control reg
+                -- THIS STARTS THE DMA TRANSFER
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+CarefulRxStart:
+        -- Tx channel is operating, so we must take care not to simply overwrite
+        -- its channel start value and either stop or restart it at the
+        -- wrong time.
+
+_test _defp 'readfifo [
+        ldhi    hi_haltreset_control, R_A1
+        or      lo_haltreset_control, R_A1
+][
+        ldhi    hi_haltboth_control, R_A1   -- @@@ try no resets
+        or      lo_haltboth_control, R_A1
+]
+        -- this Halts all DMA transfers on either read or write boundary
+        sti     R_A1, *+R_ADDR2(dma_control)
+        -- previous write will have been lost if CPU and DMA write at the same
+        -- time - however as the DMA engine will only have been writing a halt
+        -- code to the start field we dont care (this is what we were trying to
+        -- do anyway).
+                nop     -- Give time for last transfer to complete
+                nop     -- before the halt takes effect. This should be
+                nop     -- for a minimum of 9 cycles in case we are writing to
+
+                nop     -- v. slow dynamic RAM and miss the current page
+                nop
+                nop
+
+                nop
+                nop
+                nop
+
+haltedTx:
+        -- If Tx side was running, is should now have been halted
+
+_if _defp 'readfifo [
+        -- Reset also resets the count, so we delay setting it until now.
+        -- load aux channel count register with word version of byte count
+        sti     R_A3, *+R_ADDR2(dma_auxcount)
+]
+
+        -- see if the Tx side had just completed anyway
+        cmpi    0, *+R_ADDR2(dma_count)
+        beq     SimpleRxStart   -- yes Tx has completed - so just start Rx
+
+        -- no so start Rx and re-start Tx
+
+        -- load std values to set in DMA control reg
+        -- this value includes primary channel transfer initialisation
+        -- and auxilary channel transfer re-start
+        ldhi    hi_goboth_control, R_A1
+	or      lo_goboth_control, R_A1
+        bud     R_LR
+                -- insert comms port into its control reg field
+                or      R_A2, R_A1
+		-- disable interrupts so thread will definitely be suspended
+		-- before a quick DMA interrupt resumes it!
+		AllIntsOff
+                -- this starts the Rx and restarts the paused Tx DMA transfer
+                sti     R_A1, *+R_ADDR2(dma_control)
+
+
+
+-- LinkDMAIntrHandlerX
+--
+-- Handles the end of DMA interrupt for DMA to/from the links. It Resumes
+-- the thread that was waiting for the transfer to complete.
+--
+-- The Tx/Rx side that actually completed is noted by the TCINT and AUXTCINT
+-- flags in the DMA channel control register.
+--
+-- The interrupt is vectored through a stub that loads the correct DMA control
+-- register, and then proceeds into the general handler. The control register
+-- is used to ascertain which com port was being used and which direction
+-- of transfer has completed. AUXTCFLAG = Rx complete, TCFLAG = Tx complete.
+
+	-- Import allows us to branch into time-slice mechanism if current
+	-- thread is lower priority that resumed LinkTx/Rx thread.
+	import	extern_slice_now
+
+-- End of DMA interrupt for DMA channel 0
+LinkDMAIntrHandler0:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save users (possibly
+						-- corrupted) C base addr reg
+        bud     GenEDMAHandler
+                push    ar0                     -- save reg we're about to trash
+                ldhi    0x10, ar0               -- get address of this DMA
+                or      dma0_control, ar0       -- channels control register
+
+-- End of DMA interrupt for DMA channel 1
+LinkDMAIntrHandler1:
+        push    ST
+	push	R_BASE
+        bud     GenEDMAHandler
+                push    ar0
+                ldhi    0x10, ar0
+                or      dma1_control, ar0
+
+LinkDMAIntrHandler2:
+        push    ST
+	push	R_BASE
+        bud     GenEDMAHandler
+                push    ar0
+                ldhi    0x10, ar0
+                or      dma2_control, ar0
+
+LinkDMAIntrHandler3:
+        push    ST
+	push	R_BASE
+        bud     GenEDMAHandler
+                push    ar0
+                ldhi    0x10, ar0
+                or      dma3_control,ar0
+
+LinkDMAIntrHandler4:
+        push    ST
+	push	R_BASE
+        bud     GenEDMAHandler
+                push    ar0
+                ldhi    0x10, ar0
+                or      dma4_control, ar0
+
+LinkDMAIntrHandler5:
+        push    ST
+	push	R_BASE
+        push    ar0
+        ldhi    0x10, ar0
+        or      dma5_control, ar0
+
+
+-- General end of DMA interrupt handler
+--
+-- Pseudo code:
+--
+-- void LinkTxRxResume(int comchan, int txrx) /* txrx: tx = 1, rx = 2 */
+-- {
+--      ExecRoot        *xroot = GetExecRoot();
+--      RootStruct      *nroot = GetRoot();
+--
+--      SaveState       *ss;
+--      ThreadQ         *q = &xroot->Queues[0];
+--
+--      if (txrx == 0)
+--              return; /* spurious interrupt */
+--
+--      /* LinkTx/Rx is always high priority */
+--      xroot->HighestAvailPri = 0;
+--
+--      if (txrx & 1) {
+--              ss = nroot->Links[comchan]->TxThread;
+--
+--              if (ss != NULL) {
+--                      nroot->Links[comchan]->TxThread = NULL;
+--
+--                      /* add thread to end of run Q for its priority */
+--                      ss->next = NULL;
+--                      q->tail = q->tail->next = ss;
+--              }
+--      }
+--
+--      if (txrx & 2) {
+--              ss = nroot->Links[comchan]->RxThread;
+--
+--              if (ss == NULL)
+--                      return;
+--
+--              nroot->Links[comchan]->RxThread = NULL;
+--
+--              /* add thread to end of run Q for its priority */
+--              ss->next = NULL;
+--              q->tail = q->tail->next = ss;
+--      }
+-- }
+--
+--
+-- The slightly odd ordering of these instructions is an attempt to stop
+-- stalling the instruction pipeline so often (difficult).
+
+GenEDMAHandler:
+        push    ar1                     -- Save rest of registers we will use
+        push    ar2
+	push	ar3
+
+        or      ST_SET_COND, st         -- set cond codes for addr regs
+
+        ldi     *ar0, ar1               -- load arguments
+        lsh     -15, ar1, ar0           -- shift comport to base of ar0
+        lsh     -20, ar1                -- shift interrupt flags to base of ar1
+
+        GetExecRoot ar3                 -- get hold of Executive root structure
+
+        and     0b11, ar1               -- ar1 = AUXTCINTFLAG | TCINTFLAG
+	-- @@@ should we check here as well for 'lost' end of DMA interrupts?
+        bz      interrupt_return        -- spurious interrupt
+
+	-- Get system C addess base
+	ldi	*+ar3(ExecRoot.CAddressBase), R_BASE
+
+        -- set XRoot->HighestPri to HIGHPRI (LinkTx/Rx thread always high pri)
+        stik	HIGHPRI, *+ar3(ExecRoot.HighestAvailPri)
+
+        -- ar2 = (WPTR)GetRoot()
+	-- C40WordAddress  *+ar3(ExecRoot.KernelRoot), ar2
+	lsh	-2, *+ar3(ExecRoot.KernelRoot), ar2
+	addi	R_BASE, ar2
+
+        cmpi    0b11, ar1
+        beq     TxANDRxInterrupt
+
+        -- get Root->Links
+	-- C40WordAddress  *+ar2(Root.Links), ar2
+	lsh	-2, *+ar2(Root.Links), ar2	-- ar2 = root->Links (WPTR)
+	addi	R_BASE, ar2
+
+        and     0b111, ar0              	-- clean up com port number
+        tstb    0b10, ar1                       -- check for an Rx interrupt 
+        bnzd    RxInterrupt
+                -- get Root->Links[ar0]
+                addi    ar0, ar2                -- ar2=(WPTR)&root->Links[cmprt]
+-- two cycle pipeline register conflict delay here! (ar2)
+                -- C40WordAddress  *+ar2(0), ar0   -- ar0=(WPTR)root->links[cmprt]
+		lsh	-2, *+ar2(0), ar0	-- ar0=(WPTR)root->links[cmprt]
+		addi	R_BASE, ar0
+
+
+-- two cycle pipeline register conflict delay here! (ar0)
+
+TxInterrupt:
+        -- Reach here end of Tx DMA interrupt is detected
+	--
+	-- Entered with:
+        --	ar0 = (WPTR) *LinkInfo
+	--	ar3 = ExecRoot
+
+_if _defp 'C40BUG_LostIntr2 [
+	-- Is there an Rx side comms outstanding?
+	cmpi	0, *+ar0(Link.RxThread)
+	beq	NoLostRxInterrupt
+	-- Check if DMA engine has completed.
+	ldi	*+ar0(Link.DMAEng), ar2
+	cmpi	0, *+ar2(dma_auxcount)
+	-- Completed, so treat as combined Rx/Tx interrupt.
+	beq	TxAndRxInterrupt2
+NoLostRxInterrupt:
+]
+        ldi     *+ar0(Link.TxThread), ar2       -- ar2 = BPTR to SaveState
+        stik    0, *+ar0(Link.TxThread)         -- link->TxThread == NULL
+        -- C40WordAddress  ar2, ar0
+	lsh	-2,  ar2, ar0			-- ar0 = WPTR to SaveState
+        bZ      interrupt_return                -- null savestate (aborted xfer)
+	addi	R_BASE, ar0
+
+        stik    0, *+ar0(SaveState.next)        -- SaveState->next = NULL
+	stik	THREAD_RUNNABLE, *+ar0(SaveState.status)
+
+        -- Add SaveState (Rx/TxThread) to high priority Q
+        -- ar0 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar3(ExecRoot.Queue0.tail), ar0
+        lsh	-2, *+ar3(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+         -- xroot->queue[0].tail = SaveState
+        sti     ar2, *+ar3(ExecRoot.Queue0.tail)
+
+-- single cycle pipeline register conflict delay here! (ar0)
+
+        -- xroot->queue[0].tail->next=SaveState
+        sti     ar2, *+ar0(SaveState.next)
+
+	-- If CurrentPri is not HIGHPRI, then we slice the currently
+	-- interrupted thread and allow the new LinkRx high priority thread
+	-- we have just resumed to run. The Extern_slice_now is imported from
+	-- the timeslice mechanism in c40intr.a.
+	ldi	*+ar3(ExecRoot.CurrentPri), ar1
+	bnz	extern_slice_now
+
+interrupt_return:
+	pop	ar3                     -- pop old state off interrupt stack
+        pop     ar2
+        pop     ar1
+        pop     ar0
+	pop	R_BASE
+        pop     st
+
+        retiU                           -- return from interrupt
+
+RxInterrupt:
+        -- Reach here end of Rx DMA interrupt is detected
+	--
+	-- Entered with:
+        --	ar0 = (WPTR) *LinkInfo
+	--	ar3 = ExecRoot
+
+_if _defp 'C40BUG_LostIntr2 [
+	-- Is there an Tx side comms outstanding?
+	cmpi	0, *+ar0(Link.TxThread)
+	beq	NoLostTxInterrupt
+	-- Check if DMA engine has completed.
+	ldi	*+ar0(Link.DMAEng), ar2
+	cmpi	0, *+ar2(dma_count)
+	-- Completed, so treat as combined Rx/Tx interrupt.
+	beq	TxAndRxInterrupt2
+NoLostTxInterrupt:
+]
+
+        ldi     *+ar0(Link.RxThread), ar2       -- ar2 = BPTR to SaveState
+        stik    0, *+ar0(Link.RxThread)         -- link->RxThread == NULL
+        -- C40WordAddress  ar2, ar0             -- ar0 = WPTR to SaveState
+        lsh	-2, ar2, ar0			-- ar0 = WPTR to SaveState
+        bZ      interrupt_return                -- null savestate (aborted xfer)
+	addi	R_BASE, ar0
+
+        stik    0, *+ar0(SaveState.next)        -- SaveState->next = NULL
+	stik	THREAD_RUNNABLE, *+ar0(SaveState.status)
+
+        -- Add SaveState (Rx/TxThread) to high priority Q
+        -- ar0 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar3(ExecRoot.Queue0.tail), ar0
+        lsh	-2, *+ar3(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+        -- xroot->queue[0].tail = SaveState
+        sti     ar2, *+ar3(ExecRoot.Queue0.tail)
+
+-- single cycle pipeline register conflict delay here! (ar0)
+
+        -- xroot->queue[0].tail->next=SaveState
+        sti     ar2, *+ar0(SaveState.next)
+
+	-- If CurrentPri is not HIGHPRI, then we slice the currently
+	-- interrupted thread and allow the new LinkTx high priority thread
+	-- we have just resumed to run. The Extern_slice_now is imported from
+	-- the timeslice mechanism in c40intr.a.
+	ldi	*+ar3(ExecRoot.CurrentPri), ar1
+	bnz	extern_slice_now
+
+	pop	ar3	                -- pop old state off interrupt stack
+        pop     ar2
+        pop     ar1
+        pop     ar0
+	pop	R_BASE
+        pop     st
+
+        retiU                           -- return from interrupt
+
+
+
+TxANDRxInterrupt:
+        -- If we reach here we have both an end of Rx and end of Tx interrupt.
+        -- We must service both now as the act of reading the control register
+        -- resets the interrupt flags.
+	--
+	-- Entered with:
+	--	ar0 = contents of DMA control register
+        --	ar2 = (WPTR) kernels root structure
+	--	ar3 = ExecRoot
+
+        -- Get Root->Links.
+        -- C40WordAddress  *+ar2(Root.Links), ar2
+        lsh	-2, *+ar2(Root.Links), ar2	-- ar2 = root->Links (WPTR)
+	addi	R_BASE, ar2
+
+        and     0b111, ar0                      -- clean up com port number
+
+        -- get Root->Links[ar0]
+        addi    ar0, ar2                        -- ar2=(WPTR)&root->Links[cmprt]
+
+-- two cycle pipeline register conflict delay here! (ar2)
+
+        -- C40WordAddress  *+ar2(0), ar0
+        lsh	-2, *+ar2(0), ar0		-- ar0=(WPTR)root->links[cmprt]
+	addi	R_BASE, ar0			-- ar0 = (WPTR) *LinkInfo
+
+
+_if _defp 'C40BUG_LostIntr2 [
+	-- Entered here if we have detected a 'lost' end of DMA interrupt.
+	--
+	-- Entered with:
+	--	ar0 = (WPTR) *LinkInfo
+	--	ar3 = ExecRoot
+TxAndRxInterrupt2:
+]
+
+-- one cycle pipeline register conflict delay here! (ar0)
+
+        ldi     *+ar0(Link.RxThread), ar2       -- ar2 = BPTR to Rx SaveState
+        stik    0, *+ar0(Link.RxThread)         -- link->RxThread == NULL
+        ldi     *+ar0(Link.TxThread), ar1       -- ar1 = BPTR to Tx SaveState
+        stik    0, *+ar0(Link.TxThread)         -- link->TxThread == NULL
+
+HandleRxSide:
+	-- Add SaveState (RxThread) to high priority Q
+        -- C40WordAddress  ar2, ar0
+	lsh	-2, ar2, ar0			-- ar0 = WPTR to Rx SaveState
+        bZ      HandleTxSide                    -- null savestate (aborted xfer)
+	addi	R_BASE, ar0
+
+        stik    0, *+ar0(SaveState.next)        -- SaveState->next = NULL
+	stik	THREAD_RUNNABLE, *+ar0(SaveState.status)
+
+        -- Point ar0 at thread Q tail for high priority threads.
+        -- ar0 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar3(ExecRoot.Queue0.tail), ar0
+        lsh	-2, *+ar3(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+        -- xroot->queue[0].tail = SaveState
+        sti     ar2, *+ar3(ExecRoot.Queue0.tail)
+
+-- single cycle pipeline register conflict delay here! (ar0)
+
+        -- xroot->queue[0].tail->next=SaveState
+        sti     ar2, *+ar0(SaveState.next)
+
+
+HandleTxSide:
+	-- Add SaveState (TxThread) to high priority Q
+	-- ar3 = ExecRoot
+	-- ar1 = BPTR to Tx SaveState
+
+        -- C40WordAddress  ar1, ar0
+        lsh	-2, ar1, ar0                    -- ar0 = WPTR to Tx SaveState
+        bZ      TxAndRxReturn                   -- null savestate (aborted xfer)
+	addi	R_BASE, ar0
+
+        stik    0, *+ar0(SaveState.next)        -- SaveState->next = NULL
+	stik	THREAD_RUNNABLE, *+ar0(SaveState.status)
+
+        -- ar0 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar3(ExecRoot.Queue0.tail), ar0
+        lsh	-2, *+ar3(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+        -- xroot->queue[0].tail = SaveState
+        sti     ar1, *+ar3(ExecRoot.Queue0.tail)
+
+-- single cycle pipeline register conflict delay here! (ar0)
+
+        -- xroot->queue[0].tail->next=SaveState
+        sti     ar1, *+ar0(SaveState.next)
+
+	-- If CurrentPri is not HIGHPRI, then we slice the currently
+	-- interrupted thread and allow the new LinkTx high priority thread
+	-- we have just resumed to run. The Extern_slice_now is imported from
+	-- the timeslice mechanism in c40intr.a.
+	ldi	*+ar3(ExecRoot.CurrentPri), ar1
+	bnz	extern_slice_now
+
+TxAndRxReturn:
+        pop     ar3                     -- pop old state off interrupt stack
+        pop     ar2
+        pop     ar1
+        pop     ar0
+	pop	R_BASE
+        pop     st
+
+        retiU                           -- return from interrupt
+
+
+
+][ -- not LINKDMA
+
+-- Interrupt driven __LinkTx/Rx code.
+
+-- *** WARNING *** This link interrupt code has never been tested!!!
+
+-- @@@ This code could be substantially improved by using the fifo full/empty
+-- interrupts when transfers are > fifo size and then swapping back to
+-- interrupts for single words when the transfer amount < fifo size.
+-- + using rpts(fifosize) to transfer data between memory and fifo.
+
+-- @@@ Note that interrupts could also be re-enabled immediately - if we
+-- disabled the specific links rdy/full interrupt.
+
+-- @@@ another opt. is to either ld a reg with the correct lins interrupt mask
+-- in the per link intr. handler, or to store this pre-calculated in the
+-- LinkIn/OutStat structure.
+
+-- @@@ Note that this code will not work with latest systems that do not have
+-- and address base of 0. The use of R_BASE and C40C/WordAddress macros will
+-- have to updated to use the ExecRoot as an R_BASE equivalent. 
+
+-- void InitLink(word channel)  -- channel == channel number
+--
+-- Sets up input and output interrupt handlers for given link channel
+--
+-- Called from C so must be PCS conformant.
+
+.InitLink:
+        -- Setup interrupt handler into the correct intr. vector
+        -- get hold of interrupt vector base
+        ldep    ivtp, R_ADDR1
+        addi    iv_icfull0, R_ADDR1     -- get base of link intr vectors
+        mpyi    4, R_A1, R_A2           -- get offset into link intr vectors
+        addi    R_A2, R_ADDR1           -- points to this links intr vectors
+
+        -- get address of this channels input handler
+        ldabs16 LinkInputIntrHandler0 R_ADDR2 -- abs addr of interrupt handler 0
+        mpyi    8, R_ADDR2              -- chan * 8 instructions
+
+        -- store link DMA interrupt handler into interrupt vector.
+        sti     R_ADDR2, *+R_ADDR1(iv_icrdy)
+
+        -- get address of this channels output handler
+        ldabs16 LinkOutputIntrHandler0 R_ADDR2 -- abs addr of interrupt handler 0
+        mpyi    7, R_ADDR2              -- chan * 7 instructions
+
+        -- store link DMA interrupt handler into interrupt vector.
+        sti     R_ADDR2, *+R_ADDR1(iv_ocrdy)
+
+        b       R_LR
+
+
+
+-- void __LinkTx(LinkInfo *link, word linkId, word size, void *buf)
+--
+-- Sets up and starts a interrupt driven transfer to a link
+--
+-- The sometimes odd ordering of these instructions is designed not to stall the
+-- pipeline - so be careful about changing the order.
+--
+-- Called from C so must be PCS conformant
+
+.__LinkTx:
+        -- get address of link out status structure
+        GetExecRoot R_ADDR1
+        addi    ExecRoot.LinkOutStat0, R_ADDR1
+        mpyi    LinkReq.sizeof / 4, R_A2, R_A1
+        addi    R_A1, R_ADDR1
+
+        -- word address of data to transfer
+        C40WordAddress R_A4
+
+        -- convert byte to word count (guaranteed by caller to be a word multip)
+        lsh     -2, R_A3
+
+        -- save into link status struct
+        sti     R_A4, *+R_ADDR1(LinkReq.Buf)
+        sti     R_A3, *+R_ADDR1(LinkReq.Count)
+
+        mpyi    4, R_A2         -- EOCRDY intr. enable bit = 1 >> link * 4 + 3
+        addi    3, R_A2
+        bud     R_LR
+                ldi     1, R_A1
+                lsh     R_A2, R_A1
+                or      R_A1, IIE       -- enable link output ready interrupts
+
+
+-- void __LinkRx(LinkInfo *link, word linkId, word size, void *buf)
+--
+-- Sets up and starts a DMA transfer from a link using the auxilary channel of
+-- a split mode DMA engine.
+--
+-- Called from C so must be PCS conformant
+
+.__LinkRx:
+        -- get address of link in status structure
+        GetExecRoot R_ADDR1
+        addi    ExecRoot.LinkInStat0, R_ADDR1
+        mpyi    LinkReq.sizeof / 4, R_A2, R_A1
+        addi    R_A1, R_ADDR1
+
+        -- word address of data to transfer
+        C40WordAddress R_A4
+
+        -- convert byte to word count (guaranteed by caller to be a word multip)
+        lsh     -2, R_A3
+
+        -- save into link status struct
+        sti     R_A4, *+R_ADDR1(LinkReq.Buf)
+        sti     R_A3, *+R_ADDR1(LinkReq.Count)
+
+        mpyi    4, R_A2         -- EICRDY intr. enable bit = 1 >> link * 4 + 2
+        addi    2, R_A2
+        bud     R_LR
+                ldi     1, R_A1
+                lsh     R_A2, R_A1
+                or      R_A1, IIE       -- enable link input ready interrupts
+
+
+
+-- Link ready interrupt for input channel 0
+LinkInputIntrHandler0:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenInputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port0_control, ar0      -- channels control register
+                ldi     0, ar1                  -- link number
+
+LinkInputIntrHandler1:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenInputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port1_control, ar0      -- channels control register
+                ldi     1, ar1                  -- link number
+
+LinkInputIntrHandler2:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenInputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port2_control, ar0      -- channels control register
+                ldi     2, ar1                  -- link number
+
+LinkInputIntrHandler3:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenInputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port3_control, ar0      -- channels control register
+                ldi     3, ar1                  -- link number
+
+LinkInputIntrHandler4:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenInputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port4_control, ar0      -- channels control register
+                ldi     4, ar1                  -- link number
+
+LinkInputIntrHandler5:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenInputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port5_control, ar0      -- channels control register
+                ldi     5, ar1                 -- link number
+
+
+-- Link ready interrupt for output channel 0
+LinkOutputIntrHandler0:
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenOutputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port0_control, ar0      -- channels control register
+                ldi     0, ar1                  -- link number
+
+LinkOutputIntrHandler1:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenOutputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port1_control, ar0      -- channels control register
+                ldi     1, ar1                  -- link number
+
+LinkOutputIntrHandler2:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenOutputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port2_control, ar0      -- channels control register
+                ldi     2, ar1                  -- link number
+
+LinkOutputIntrHandler3:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenOutputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port3_control, ar0      -- channels control register
+                ldi     3, ar1                  -- link number
+
+LinkOutputIntrHandler4:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenOutputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port4_control, ar0      -- channels control register
+                ldi     4, ar1                  -- link number
+
+LinkOutputIntrHandler5:
+        -- interrupt vectored to this point 
+        push    ST                              -- MUST save ST here
+	push	R_BASE				-- save user version of R_BASE
+        push    ar0                             -- save reg we're about to trash
+        push    ar1                             -- save reg we're about to trash
+        bud     GenOutputHandler
+                ldhi    0x10, ar0               -- get address of this link
+                or      port5_control, ar0      -- channels control register
+                ldi     5, ar1                  -- link number
+
+
+
+-- General ICRDY interrupt handler
+--
+-- The slightly odd ordering of these instructions is an attempt to stop
+-- stalling the instruction pipeline so often (difficult).
+
+-- ar0 = link control reg address
+-- ar1 = link number
+
+GenInputHandler:
+        -- Save rest of registers we will use
+        --      ar0     -- link control reg addr
+        --      ar1     -- link number
+        push    ar2     -- count
+        push    ar3     -- buffer
+        push    ar4     -- tmp
+        push    ar5     -- LinkReq struct addr
+
+        or      ST_SET_COND, st         -- set cond codes for addr regs
+
+        GetExecRoot ar2                 -- get hold of Executive root structure
+
+	-- Get system C addess base
+	ldi	*+ar2(ExecRoot.CAddressBase), R_BASE
+
+        -- get address of LinkInStat struct for this input link into ar2
+        addi    ExecRoot.LinkInStat0, ar2
+        mpyi    LinkReq.sizeof / 4, ar1, ar5
+        addi    ar2, ar5
+
+        ldi     *+ar5(LinkReq.Count), ar2
+_if _false [ -- used to check for spurious intr.
+        bnz      NoSpuriousInIntr
+	int	0x66ffffff
+	b	SpuriousInIntr
+NoSpuriousInIntr:
+]
+        ldi     *+ar5(LinkReq.Buf), ar3
+
+InputLoop:
+        ldi     *+ar0(port_input), ar4  -- read word from fifo and store in mem
+        sti     ar4, *ar3++
+
+        subi    1, ar2
+        bz      GotEmAll                -- if we recieved all we need
+
+        lsh     -cpcr_input_levelB, *+ar0(port_control), ar4
+        bnz     InputLoop               -- if no more words in input fifo
+
+NoMoreInput:
+        -- save updated pointer and count
+        sti     ar2, *+ar5(LinkReq.Count)
+        sti     ar3, *+ar5(LinkReq.Buf)
+
+SpuriousInIntr:
+        pop     ar5                     -- pop old state off interrupt stack
+        pop     ar4
+        pop     ar3
+        pop     ar2
+        pop     ar1
+        pop     ar0
+	pop	R_BASE
+        pop     st
+
+        retiU                           -- return from interrupt
+
+
+GotEmAll:
+        -- mask out input ready interrupt from IIE reg (ar1 = link num)
+        mpyi    4, ar1, ar3             -- EICRDY intr. enable bit = 1 >> link * 4 + 2
+        addi    2, ar3
+        ldi     1, ar2
+        lsh     ar3, ar2
+        andn    ar2, IIE        -- disable link input ready interrupts
+
+_test _defp 'sstateinstatstruct [
+	-- This code is only used if the savestate pointer has been saved
+	-- in the LinkReq structure, rather than in the LinkInfo struct
+
+        GetExecRoot ar1         -- get hold of Executive root structure
+
+        ldi     *+ar5(LinkReq.Requestor), ar2   -- get save state
+
+        -- C40WordAddress ar2, ar4
+        lsh	-2, ar2, ar4			-- WPTR to save state
+	addi	R_BASE, ar4
+
+        -- set XRoot->HighestPri to HIGHPRI (LinkTx/Rx thread always high pri)
+        stik	HIGHPRI, *+ar1(ExecRoot.HighestAvailPri)
+
+-- @@@ single cycle pipeline register conflict delay here! (ar4)
+
+        stik    0, *+ar4(SaveState.next)        -- SaveState->next = NULL
+
+        -- Add SaveState (Rx/TxThread) to high priority Q
+        -- ar0 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar1(ExecRoot.Queue0.tail), ar0
+        lsh	-2, *+ar1(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+         -- xroot->queue[0].tail = SaveState
+        sti     ar2, *+ar1(ExecRoot.Queue0.tail)
+
+-- @@@ single cycle pipeline register conflict delay here! (ar0)
+
+        -- xroot->queue[0].tail->next=SaveState
+        sti     ar2, *+ar0(SaveState.next)
+][
+        GetExecRoot ar2
+
+        -- set XRoot->HighestPri to HIGHPRI (LinkTx/Rx thread always high pri)
+        stik	HIGHPRI, *+ar2(ExecRoot.HighestAvailPri)
+
+        -- ar3 = (WPTR)GetRoot()
+        -- C40WordAddress  *+ar2(ExecRoot.KernelRoot), ar3
+        lsh	-2, *+ar2(ExecRoot.KernelRoot), ar3
+	addi	R_BASE, ar3
+
+-- @@@ two cycle pipeline register conflict delay here! (ar3)
+
+        -- get Root->Links
+        -- C40WordAddress  *+ar3(Root.Links), ar3
+        lsh	-2, *+ar3(Root.Links), ar3	-- ar3 = root->Links (WPTR)
+        addi	R_BASE, ar3
+
+        -- get Root->Links[ar1]
+        addi    ar1, ar3                -- ar3=(WPTR)&root->Links[cmprt]
+
+-- @@@ two cycle pipeline register conflict delay here! (ar3)
+
+        -- C40WordAddress  *+ar3(0), ar0
+        lsh	-2, *+ar3(0), ar0	-- ar0=(WPTR)root->links[cmprt]
+	addi	R_BASE, ar0
+
+        -- ar0 = (WPTR) *LinkInfo
+        ldi     *+ar0(Link.RxThread), ar1       -- ar1 = BPTR to SaveState
+
+_if _false [ -- used to check for duplicate resumes
+        stik    0, *+ar0(Link.RxThread)         -- link->TxThread == NULL
+        -- C40WordAddress  ar1, ar0
+        lsh	-2, ar1, ar0                    -- ar0 = WPTR to SaveState
+	addi	R_BASE, ar0
+        bnz     OK_RxResume
+        -- null savestate (aborted xfer)
+        int     0x66ffffff                      -- JTAGHalt
+OK_RxResume:
+]
+        stik    0, *+ar0(SaveState.next)        -- SaveState->next = NULL
+
+        -- Add SaveState (Rx/TxThread) to high priority Q
+        -- ar0 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar2(ExecRoot.Queue0.tail), ar0
+        lsh	-2, *+ar2(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+        -- xroot->queue[0].tail = SaveState
+        sti     ar1, *+ar2(ExecRoot.Queue0.tail)
+
+-- single cycle pipeline register conflict delay here! (ar0)
+
+        -- xroot->queue[0].tail->next=SaveState
+        sti     ar1, *+ar0(SaveState.next)
+]
+        pop     ar5                     -- pop old state off interrupt stack
+        pop     ar4
+        pop     ar3
+        pop     ar2
+        pop     ar1
+        pop     ar0
+	pop	R_BASE
+        pop     st
+
+        retiU                           -- return from interrupt
+
+
+
+-- General OCRDY interrupt handler
+--
+-- The slightly odd ordering of these instructions is an attempt to stop
+-- stalling the instruction pipeline so often (difficult).
+
+-- ar0 = link control reg address
+-- ar1 = link number
+
+GenOutputHandler:
+        -- Save rest of registers we will use
+        --      ar0     -- link control reg addr
+        --      ar1     -- link number
+        push    ar2     -- count
+        push    ar3     -- buffer
+        push    ar4     -- tmp
+        push    ar5     -- LinkReq struct addr
+
+        or      ST_SET_COND, st         -- set cond codes for addr regs
+
+        GetExecRoot ar2                 -- get hold of Executive root structure
+
+	-- Get system C addess base
+	ldi	*+ar2(ExecRoot.CAddressBase), R_BASE
+
+        -- get address of LinkOutStat struct for this input link into ar2
+        addi    ExecRoot.LinkOutStat0, ar2
+        mpyi    LinkReq.sizeof / 4, ar1, ar5
+        addi    ar2, ar5
+
+        ldi     *+ar5(LinkReq.Count), ar2
+
+_if _false [ -- used to check for spurious intr.
+        bnz      NoSpuriousOutIntr
+	int	0x66ffffff
+        b	SpuriousOutIntr
+NoSpuriousOutIntr:
+]
+        ldi     *+ar5(LinkReq.Buf), ar3
+
+OutputLoop:
+        ldi     *ar3++, ar4     -- read word from memory and store in link fifo
+        sti     ar4, *+ar0(port_output)
+
+        subi    1, ar2
+        bz      SentEmAll               -- if we have sent all we need
+
+        -- test if the fifo still has more space in it.
+        lsh     -cpcr_output_levelB, *+ar0(port_control), ar4
+        and     0b1000, ar4     -- check last bit (notes full output fifo)
+        bz      OutputLoop
+
+
+        -- save updated pointer and count
+        sti     ar2, *+ar5(LinkReq.Count)
+        sti     ar3, *+ar5(LinkReq.Buf)
+
+SpuriousOutIntr:
+        pop     ar5                     -- pop old state off interrupt stack
+        pop     ar4
+        pop     ar3
+        pop     ar2
+        pop     ar1
+        pop     ar0
+	pop	R_BASE
+        pop     st
+
+        retiU                           -- return from interrupt
+
+
+SentEmAll:
+        -- mask out output ready interrupt from IIE reg (ar1 = link num)
+        mpyi    4, ar1, ar3             -- EOCRDY intr. enable bit = 1 >> link * 4 + 3
+        addi    3, ar3
+        ldi     1, ar2
+        lsh     ar3, ar2
+        andn    ar2, IIE        -- disable link output ready interrupts
+
+_test _defp 'sstateinstatstruct [
+	-- This code is only used if the savestate pointer has been saved
+	-- in the LinkReq structure, rather than in the LinkInfo struct
+
+        GetExecRoot ar1                 -- get hold of Executive root structure
+
+        -- Append SaveState to end of HIGHPRI run Q
+        ldi     *+ar5(LinkReq.Requestor), ar2   -- get save state
+        -- C40WordAddress ar2, ar4
+        lsh	-2, ar2, ar4                 -- WPTR to save state
+	addi	R_BASE, ar4
+
+        -- set XRoot->HighestPri to HIGHPRI (LinkTx/Rx thread always high pri)
+        stik	HIGHPRI, *+ar1(ExecRoot.HighestAvailPri)
+
+-- @@@ single cycle pipeline register conflict delay here! (ar4)
+
+        stik    0, *+ar4(SaveState.next)        -- SaveState->next = NULL
+
+        -- Add SaveState (Rx/TxThread) to high priority Q
+        -- ar0 = xroot->queue[0].tail (WPTR)
+        -- C40WordAddress  *+ar1(ExecRoot.Queue0.tail), ar0
+        lsh	-2, *+ar1(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+         -- xroot->queue[0].tail = SaveState
+        sti     ar2, *+ar1(ExecRoot.Queue0.tail)
+
+-- @@@ single cycle pipeline register conflict delay here! (ar0)
+
+        -- xroot->queue[0].tail->next=SaveState
+        sti     ar2, *+ar0(SaveState.next)
+][
+        GetExecRoot ar2
+
+        -- set XRoot->HighestPri to HIGHPRI (LinkTx/Rx thread always high pri)
+        stik	HIGHPRI, *+ar2(ExecRoot.HighestAvailPri)
+
+        -- ar3 = (WPTR)GetRoot()
+        -- C40WordAddress  *+ar2(ExecRoot.KernelRoot), ar3
+        lsh	-2, *+ar2(ExecRoot.KernelRoot), ar3
+	addi	R_BASE, ar3
+
+-- @@@ two cycle pipeline register conflict delay here! (ar3)
+
+        -- get Root->Links
+        -- C40WordAddress  *+ar3(Root.Links), ar3
+        lsh	-2, *+ar3(Root.Links), ar3	-- ar3 = root->Links (WPTR)
+	addi	R_BASE, ar3
+
+        -- get Root->Links[ar1]
+        addi    ar1, ar3                -- ar3=(WPTR)&root->Links[cmprt]
+
+-- @@@ two cycle pipeline register conflict delay here! (ar3)
+
+        -- C40WordAddress  *+ar3(0), ar0
+        lsh	-2, *+ar3(0), ar0	-- ar0=(WPTR)root->links[cmprt]
+	addi	R_BASE, ar0
+
+        -- ar0 = (WPTR) *LinkInfo
+        ldi     *+ar0(Link.TxThread), ar1       -- ar1 = BPTR to SaveState
+
+_if _false [ -- used to check for duplicate resumes
+        stik    0, *+ar0(Link.TxThread)         -- link->RxThread == NULL
+        -- C40WordAddress  ar1, ar0
+        lsh	-2, ar1, ar0                    -- ar0 = WPTR to SaveState
+	addi	R_BASE, ar0
+
+        bnz     OK_TxResume
+        -- null savestate (aborted xfer)
+        int     0x66ffffff                      -- JTAGHalt
+OK_TxResume:
+]
+	stik	0, *+ar0(SaveState.next)	-- SaveState->next = NULL
+
+	-- Add SaveState (Rx/TxThread) to high priority Q
+	-- ar0 = xroot->queue[0].tail (WPTR)
+	-- C40WordAddress	*+ar2(ExecRoot.Queue0.tail), ar0
+	lsh	-2, *+ar2(ExecRoot.Queue0.tail), ar0
+	addi	R_BASE, ar0
+
+	-- xroot->queue[0].tail = SaveState
+	sti	ar1, *+ar2(ExecRoot.Queue0.tail)
+
+-- single cycle pipeline register conflict delay here! (ar0)
+
+	-- xroot->queue[0].tail->next=SaveState
+	sti	ar1, *+ar0(SaveState.next)
+]
+	pop	ar5			-- pop old state off interrupt stack
+	pop	ar4
+	pop	ar3
+	pop	ar2
+	pop	ar1
+	pop	ar0
+	pop	R_BASE
+	pop	st
+
+	retiU				-- return from interrupt
+
+
+-- void _AbortLinkRx(Linkinfo *link, word linkId)
+--
+-- Abort the interrupt driven transfer immediately
+--
+-- Called from C so must be PCS complient
+
+._AbortLinkRx:
+	-- mask out input ready interrupt from IIE reg (ar1 = link num)
+	mpyi	4, R_A2		-- EICRDY intr. enable bit = 1 >> link * 4 + 2
+	addi	2, R_A2
+	bud	R_LR
+		ldi	1, R_A1
+		lsh	R_A2, R_A1
+		andn	R_A1, IIE	-- disable link output ready interrupts
+
+
+-- void _AbortLinkTx(LinkInfo *link, word linkId)
+--
+-- Abort the interrupt driven transfer immediately
+--
+-- Called from C so must be PCS complient
+
+._AbortLinkTx:
+	-- mask out output ready interrupt from IIE reg (ar1 = link num)
+	mpyi	4, R_A2		-- EOCRDY intr. enable bit = 1 >> link * 4 + 3
+	addi	3, R_A2
+	bud	R_LR
+		ldi	1, R_A1
+		lsh	R_A2, R_A1
+		andn	R_A1, IIE	-- disable link output ready interrupts
+
+]
+
+
+
+-- end of c40linkio.a

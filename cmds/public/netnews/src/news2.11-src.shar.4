@@ -1,0 +1,7944 @@
+#! /bin/sh
+# This is a shell archive, meaning:
+# 1. Remove everything above the #! /bin/sh line.
+# 2. Save the resulting text in a file.
+# 3. Execute the file with /bin/sh (not csh) to create the files:
+#	src/readr.c
+#	src/recmail.c
+#	src/recnews.c
+#	src/rextern.c
+#	src/rfuncs.c
+#	src/rfuncs2.c
+#	src/sendnews.c
+#	src/uname.c
+#	src/unbatch.c
+#	src/uurec.c
+#	src/virtterm.c
+#	src/visual.c
+# This archive created: Wed Mar  1 10:57:59 1989
+export PATH; PATH=/bin:$PATH
+echo shar: extracting "'readr.c'" '(26368 characters)'
+if test -f 'readr.c'
+then
+	echo shar: will not over-write existing file "'readr.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'readr.c'
+	X/*
+	X * This software is Copyright (c) 1986 by Rick Adams.
+	X *
+	X * Permission is hereby granted to copy, reproduce, redistribute or
+	X * otherwise use this software as long as: there is no monetary
+	X * profit gained specifically from the use or reproduction or this
+	X * software, it is not sold, rented, traded or otherwise marketed, and
+	X * this copyright notice is included prominently in any copy
+	X * made.
+	X *
+	X * The author make no claims as to the fitness or correctness of
+	X * this software for any use whatsoever, and it is provided as is. 
+	X * Any use of this software is at the user's own risk.
+	X *
+	X * readr - /bin/mail and msgs interface and associated functions.
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)readr.c	2.66	11/30/87";
+	X#endif /* SCCSID */
+	X
+	X#include "rparams.h"
+	X#include <setjmp.h>
+	X#include <errno.h>
+	X
+	Xextern int errno;
+	X
+	Xchar *Progname = "readnews";	/* used by xerror to identify failing program */
+	X
+	Xstatic char	lbuf[BUFLEN*2];
+	Xlong atol();
+	X
+	X#define	saveart	oobit = bit;strcpy(ofilename1, filename);strcpy(ogroupdir, groupdir);hptr = h;h = hold;hold = hptr;ongsize = pngsize
+	X#define NLINES(h, fp) (h->numlines[0] ? h->intnumlines : (h->intnumlines=linecnt(fp),sprintf(h->numlines, "%d", h->intnumlines), h->intnumlines))
+	X
+	Xchar *tft = "/tmp/folXXXXXX";
+	X
+	X/*
+	X * These were made static for u370 with its buggy cc.
+	X * I judged it better to have one copy with no ifdefs than
+	X * to conditionally compile them as automatic variables
+	X * in readr (which they originally were).  Performance
+	X * considerations might warrant moving some of the simple
+	X * things into register variables, but I don't know what
+	X * breaks the u370 cc.
+	X */
+	X#ifndef SERVER
+	Xstatic char goodone[BUFLEN];		/* last decent article		*/
+	X#endif	/* !SERVER */
+	Xstatic char ogroupdir[BUFLEN];		/* last groupdir		*/
+	Xstatic char address[PATHLEN];		/* for reply copy		*/
+	Xstatic char edcmdbuf[128];
+	Xstatic int rfq = 0;			/* for last article		*/
+	Xstatic long ongsize;			/* Previous ngsize		*/
+	Xstatic long pngsize;			/* Printing ngsize		*/
+	Xstatic char *bptr;			/* temp pointer.		*/
+	Xstatic struct srec srec;		/* srec for sys file entries	*/
+	Xstatic char *tfilename;			/* temporary file name 		*/
+	Xstatic char ofilename1[BUFLEN];		/* previous file name		*/
+	Xstatic struct hbuf hbuf1, hbuf2,	/* for minusing			*/
+	X		*h = &hbuf1,		/* current header		*/
+	X		*hold = &hbuf2,		/* previous header		*/
+	X		*hptr;			/* temporary 			*/
+	Xstatic char *ptr1, *ptr2, *ptr3;	/* for reply manipulation	*/
+	Xstatic int  abs = FALSE;		/* TRUE if we asked absolutely	*/
+	Xstatic char tf[100];
+	Xstatic long oobit;			/* last bit, really		*/
+	Xstatic int dgest = 0;
+	Xstatic FILE *ofp;			/* Current output file to terminal*/
+	Xstatic FILE *fp;			/* current article to be printed*/
+	Xstatic int holdup;			/* 1 iff should stop before hdr */
+	Xstatic int ignorenews;			/* 1 iff readnews -p > /dev/null*/
+	Xstatic time_t timelastsaved;		/* time newsrc last written out */
+	Xstatic jmp_buf sigjmpbuf;		/* for signal processing */
+	Xstatic int canlongjmp;			/* TRUE if setjmp on sigjmp valid */
+	Xshort ospeed;				/* terminal speed NOT STATIC */
+	X					/* used in readnews.c, declared here */
+	X					/* to match declaration in visual.c */
+	X
+	Xint catchcont();
+	Xreadr()
+	X{
+	X	register char *m = getenv("MORE");
+	X	register char *m2, cc;
+	X
+	X	/*
+	X	 * Turn of more's 'l' option, so \f kludge will work.
+	X	 * This is really revolting!
+	X	 */
+	X	if (m2 = m) {
+	X		while (cc = *m++)
+	X			if (cc != 'l')
+	X				*m2++ = cc;
+	X		*m2 = '\0';
+	X	}
+	X
+	X#ifdef DEBUG
+	X	fprintf(stderr, "readr()\n");
+	X#endif	/* DEBUG */
+	X	if (aflag) {
+	X		if (*datebuf) {
+	X			if ((atime = cgtdate(datebuf)) == -1)
+	X				xerror("Cannot parse date string");
+	X		} else
+	X			atime = 0;
+	X	}
+	X
+	X	if (pflag && ignoring())
+	X		ignorenews = TRUE;
+	X
+	X	if (xflag)
+	X		uflag = 0;
+	X	if (uflag)
+	X		(void) time(&timelastsaved);
+	X
+	X	ofp = stdout;
+	X	if (cflag && coptbuf[0] != '\0') {
+	X		(void) umask(022);
+	X		MKTEMP(outfile);	/* get "unique" file name */
+	X		(void) close(creat(outfile,0666));
+	X		ofp = xfopen(outfile, "w");
+	X		(void) umask(N_UMASK);
+	X		cflag = FALSE;
+	X		pflag = TRUE;
+	X	}
+	X
+	X	/* loop reading articles. */
+	X	fp = NULL;
+	X	obit = -1;
+	X	nextng();
+	X	for ( ;; ) {
+	X		if (getnextart(FALSE))
+	X			break;
+	X#ifdef DEBUG
+	X		fprintf(stderr,"after getnextart, fp %x, pos %ld, bit %ld, group '%s', filename '%s'\n",
+	X			fp, ftell(fp), bit, groupdir, filename);
+	X#endif	/* DEBUG */
+	X#ifndef SERVER
+	X		(void) strcpy(goodone, filename);
+	X#endif	/* SERVER */
+	X		if (pflag || lflag || eflag) {
+	X			/* This code should be gotten rid of */
+	X			if (SigTrap) {
+	X				qfflush(ofp);
+	X				fprintf(ofp, "\n");
+	X				cdump(ofp);
+	X				xxit(0); /* kludge! drop when qfflush works */
+	X				return;
+	X			}
+	X			clear(bit);
+	X			nextbit();
+	X			FCLOSE(fp);
+	X			continue;
+	X		}
+	X		for ( ;; ) {
+	X			char *pp;
+	X			int nlines;
+	X			int (*ointr)();
+	X#ifdef	SIGCONT
+	X			int (*ocont)();
+	X#endif	/* SIGCONT */
+	X			(void) setjmp(sigjmpbuf);
+	X			canlongjmp = TRUE;
+	X
+	X			SigTrap = FALSE;
+	X			if (!cflag) {
+	X				if (rfq)
+	X					(void) sprintf(bfr, "Last article.  [qfr] ");
+	X				else {
+	X					nlines = NLINES(h, fp);
+	X					if (nlines <= 0) {
+	X						(void) sprintf(bfr, "(0 lines) Next? [nqfr] ");
+	X						FCLOSE(fp);
+	X					} else {
+	X						(void) sprintf(bfr, "(%d lines) More? [ynq] ", nlines);
+	X					}
+	X				}
+	X			} else
+	X				(void) sprintf(bfr, "? ");
+	X			fprintf(ofp, "%s", bfr);
+	X			(void) fflush(ofp);
+	X			bptr = lbuf;
+	X			ointr = signal(SIGINT, catchcont);
+	X#ifdef SIGCONT
+	X			ocont = signal(SIGCONT, catchcont);
+	X#endif	/* SIGCONT */
+	X			pp = fgets(bptr, BUFLEN, stdin);
+	X			canlongjmp = FALSE;
+	X			(void) signal(SIGINT, ointr);
+	X#ifdef SIGCONT
+	X			(void) signal(SIGCONT, ocont);
+	X#endif	/* SIGCONT */
+	X			if (pp != NULL)
+	X				break;
+	X			if (!SigTrap)
+	X				return;
+	X#ifdef SIGCONT
+	X			if (SigTrap != SIGCONT)
+	X#endif	/* SIGCONT */
+	X				fprintf(ofp, "\n");
+	X		}
+	X		(void) nstrip(bptr);
+	X		while (*bptr == ' ' || *bptr == '\t')
+	X			bptr++;
+	X		if (command())
+	X			break;
+	X	}
+	X
+	X	if (!pflag && !news) {
+	X		fprintf(stderr, "No news.\n");
+	X	}
+	X	cout(ofp);
+	X}
+	X
+	X#define EOL() if (*bptr != '\0') { fprintf(ofp, "? for commands.\n"); return FALSE; }
+	X/*
+	X * Process one command, which has already been typed in.
+	X */
+	Xcommand()
+	X{
+	X	char *findhist();
+	X	long i;
+	X#ifdef SERVER
+	X	char workspace[256];
+	X#endif	/* !SERVER */
+	X
+	X	switch (*bptr++) {
+	X
+	X	/* display list of articles in current group */
+	X	case 'l':
+	X	case 'L':
+	X		list_group(groupdir, atoi(bptr),
+	X			(*(bptr - 1) == 'l') ? FALSE : TRUE, pngsize);
+	X		break;
+	X	
+	X	/* No.  Go on to next article. */
+	X	case 'n':
+	X		EOL();
+	X		readmode = NEXT;
+	X		if (!cflag)
+	X			FCLOSE(fp);
+	X		fprintf(ofp, "\n");
+	X		clear(bit);
+	X		saveart;
+	X		nextbit();
+	X		break;
+	X
+	X	/* Undigestify the article. */
+	X	case 'd':
+	X		dgest = 1;
+	X		/* fall through */
+	X
+	X	/* yes: print this article, go on. */
+	X	case 'y':
+	X		EOL();
+	X		/* fall through. */
+	X
+	X	/* The user hit return.  Default is 'y' unless rfq, then it's 'q'. */
+	X	case '\0':
+	X		if (!bptr[-1] && rfq)
+	X			return TRUE;
+	X		readmode = NEXT;
+	X		showtail(fp);
+	X		clear(bit);
+	X		saveart;
+	X		nextbit();
+	X		break;
+	X
+	X	/*
+	X	 * Unsubscribe to the newsgroup and go on to next group
+	X	 */
+	X	case 'u':
+	X		fprintf(ofp, "To unsubscribe, use 'U'\n");
+	X		break;
+	X
+	X	case 'U':
+	X		fprintf(ofp, "Unsubscribing to newsgroup: %s\n", groupdir);
+	X		obit = -1;
+	X		FCLOSE(fp);
+	X		if (cflag)
+	X			clear(bit);
+	X		else
+	X			putc('\n', ofp);
+	X		rfq = 0;
+	X		zapng = TRUE;
+	X		saveart;
+	X		if (nextng()) {
+	X			if (actdirect == BACKWARD)
+	X				fprintf(ofp, "Can't back up.\n");
+	X			else
+	X				return TRUE;
+	X		}
+	X		break;
+	X
+	X		/* Print the current version of news */
+	X	case 'v':
+	X		fprintf(ofp, "News version: %s\n", news_version);
+	X		break;
+	X
+	X		/* reprint the article */
+	X	case 'p':
+	X		EOL();
+	X		if (!cflag)
+	X			goto minus;
+	X		readmode = NEXT;
+	X		if (!cflag) {
+	X			FCLOSE(fp);
+	X			bit = last;
+	X			putc('\n', ofp);
+	X		}
+	X		obit = -1;
+	X		break;
+	X
+	X		/* decrypt joke */
+	X	case 'D':
+	X		caesar_command();
+	X		readmode = NEXT;
+	X		clear(bit);
+	X		saveart;
+	X		nextbit();
+	X		break;
+	X
+	X		/* write out the article someplace */
+	X	case 's':
+	X	case 'w':
+	X		{
+	X		char *grn = groupdir;
+	X		tfilename = filename;
+	X		if (*bptr == '-') {
+	X			bptr++;
+	X			grn = ogroupdir;
+	X			if (*ofilename1)
+	X				tfilename = ofilename1;
+	X		}
+	X		if (*bptr != '\0' && *bptr != ' ') {
+	X			fprintf(ofp, "Bad file name.\n");
+	X			break;
+	X		}
+	X		while (*bptr == ' ')
+	X			bptr++;
+	X		if (*bptr != '|' && *bptr != '/') {
+	X			char	hetyped[BUFLEN];
+	X			char	*boxptr;
+	X			struct	stat stbf;
+	X  			(void) strcpy(hetyped, bptr);
+	X			if (hetyped[0] == '~' && hetyped[1] == '/') {
+	X  				strcpy(hetyped, bptr+2);
+	X  				strcpy(bptr, userhome);
+	X			} else if (boxptr = getenv("NEWSBOX")) {
+	X 				if (index(boxptr, '%')) {
+	X 					sprintf(bptr, boxptr, grn);
+	X 				    	if (stat(bptr, &stbf) < 0) {
+	X						if (mkdir(bptr, 0777) < 0) {
+	X							fprintf(ofp, "Cannot create directory %s", bptr);
+	X							break;
+	X						}
+	X					} else if ((stbf.st_mode & S_IFMT) != S_IFDIR) {
+	X						fprintf(ofp, "%s is not a directory", bptr);
+	X						break;
+	X					}
+	X				} else
+	X				    strcpy(bptr, boxptr);
+	X			} else
+	X				(void) strcpy(bptr, ".");
+	X			(void) strcat(bptr, "/");
+	X			if (hetyped[0] != '\0')
+	X				(void) strcat(bptr, hetyped);
+	X			else
+	X				(void) strcat(bptr, "Articles");
+	X		}
+	X		fwait(fsubr(save, tfilename, bptr));
+	X		}
+	X		break;
+	X
+	X		/* back up  */
+	X	case '-':
+	Xminus:
+	X		rfq = 0;
+	X		abs = TRUE;
+	X		if (!*ofilename1) {
+	X			fprintf(ofp, "Can't back up.\n");
+	X			break;
+	X		}
+	X		if (cflag)
+	X			clear(bit);
+	X		else {
+	X			FCLOSE(fp);
+	X			putc('\n', ofp);
+	X		}
+	X		hptr = h;
+	X		h = hold;
+	X		hold = hptr;
+	X		(void) strcpy(bfr, filename);
+	X		(void) strcpy(filename, ofilename1);
+	X		(void) strcpy(ofilename1, bfr);
+	X		obit = bit;
+	X		if (STRCMP(groupdir, ogroupdir)) {
+	X			(void) strcpy(bfr, groupdir);
+	X			selectng(ogroupdir, FALSE, FALSE);
+	X			(void) strcpy(groupdir, ogroupdir);
+	X			(void) strcpy(ogroupdir, bfr);
+	X			ngrp = 1;
+	X			back();
+	X		}
+	X		bit = oobit;
+	X		oobit = obit;
+	X		obit = -1;
+	X		(void) getnextart(TRUE);
+	X		return FALSE;
+	X
+	X		/* skip forwards */
+	X	case '+':
+	Xcaseplus:
+	X		if (*bptr == '\0')
+	X			(void) strcat(bptr, "1");
+	X		rfq = 0;
+	X		if (cflag)
+	X			clear(bit);
+	X		saveart;
+	X		last = bit;
+	X		for (i = 0; i < atol(bptr); i++) {
+	X			nextbit();
+	X			if ((bit > pngsize) || (rflag && bit < 1))
+	X				break;
+	X		}
+	X		if (!cflag) {
+	X			putc('\n', ofp);
+	X			FCLOSE(fp);
+	X		}
+	X		obit = -1;
+	X		break;
+	X
+	X	/* exit - time updated to that of most recently read article */
+	X	case 'q':
+	X		EOL();
+	X		return TRUE;
+	X
+	X	/* exit - no time update. */
+	X	case 'x':
+	X		EOL();
+	X		xxit(0);
+	X
+	X	/* cancel the article. */
+	X	case 'c':
+	X		(void) cancel_command();
+	X		break;
+	X#ifndef NOSHELL
+	X	/* escape to shell */
+	X	case '!':
+	X		fwait(fsubr(ushell, bptr, (char *)NULL));
+	X		fprintf(ofp, "\n");
+	X		hdr();
+	X		break;
+	X
+	X	/* mail reply */
+	X#endif	/* !NOSHELL */
+	X	case 'r':
+	X		(void) reply_command();
+	X		break;
+	X
+	X	/* send to some system */
+	X	case 'X':
+	X		xmit_command();
+	X		break;
+	X	/* mark the rest of the articles in this group as read */
+	X	case 'K':
+	X		saveart;
+	X		while (bit <= pngsize && bit >= minartno) {
+	X			clear(bit);
+	X			nextbit();
+	X		}
+	X		FCLOSE(fp);
+	X		break;
+	X
+	X	/* next newsgroup */
+	X	case 'P':
+	X		*bptr = '-';
+	X	case 'N':
+	X		FCLOSE(fp);
+	X		if (next_ng_command())
+	X			return TRUE;
+	X		break;
+	X
+	X	case 'b':	/* back up 1 article */
+	X		i = bit - 1;
+	X		goto tryartnum;
+	X	case '0':	/* specific no. */
+	X	case '1':
+	X	case '2':
+	X	case '3':
+	X	case '4':
+	X	case '5':
+	X	case '6':
+	X	case '7':
+	X	case '8':
+	X	case '9':
+	X		(void) sscanf(--bptr, "%ld", &i);
+	X		if (i == 0) {
+	X			fprintf(ofp, "Bad article no.\n");
+	X			break;
+	X		}
+	X		if (i > pngsize) {
+	X			fprintf(ofp, "Not that many articles.\n");
+	X			break;
+	X		}
+	Xtryartnum:
+	X		readmode = SPEC;
+	X		abs = TRUE;
+	X		bit = i;
+	X		obit = -1;
+	X		if (!cflag) {
+	X			putc('\n', ofp);
+	X			FCLOSE(fp);
+	X		}
+	X		rfq = 0;
+	X		break;
+	X
+	X	/* specific message ID. */
+	X	case '<':
+	X		ptr1 = findhist(--bptr);
+	X		if (ptr1 == NULL) {
+	X			fprintf(ofp, "No such article: %s.\n", bptr);
+	X			break;
+	X		}
+	X		ptr2 = index(ptr1, '\t');
+	X		ptr3 = index(++ptr2, '\t');
+	X		ptr2 = index(++ptr3, ' ');
+	X		if (ptr2)
+	X			*ptr2 = '\0';
+	X		ptr2 = index(ptr3, '/');
+	X		if (!ptr2) {
+	X			if (STRCMP(ptr3, "cancelled") == 0) {
+	X				fprintf(ofp, "Article %s has been cancelled.\n",
+	X					bptr);
+	X				break;
+	X			}
+	X			fprintf(ofp, "Article %s (dated %s) has expired.\n",
+	X				bptr, index(ptr1, '\t')+1);
+	X			break;
+	X		}
+	X		*ptr2++ = '\0';
+	X		abs = TRUE;
+	X		if (cflag)
+	X			clear(bit);
+	X		else {
+	X			FCLOSE(fp);
+	X			putc('\n', ofp);
+	X		}
+	X		saveart;
+	X		(void) strcpy(ogroupdir, ptr3);
+	X		if (STRCMP(groupdir, ogroupdir)) {
+	X			(void) strcpy(bfr, groupdir);
+	X			selectng(ogroupdir, TRUE, PERHAPS);
+	X			(void) strcpy(groupdir, ogroupdir);
+	X			(void) strcpy(ogroupdir, bfr);
+	X			ngrp = 1;
+	X			back();
+	X		}
+	X		(void) sscanf(ptr2, "%ld", &bit);
+	X		oobit = obit;
+	X		obit = -1;
+	X		i = bit;
+	X		(void) getnextart(TRUE);
+	X		if (bit != i || STRCMP(groupdir, ptr3) != 0) {
+	X			(void) fprintf(ofp, "Can't read %s/%ld.\n", ptr3, i);
+	X			goto minus;
+	X		}
+	X		rfq = 0;
+	X		break;
+	X
+	X	/* follow-up article */
+	X	case 'f':
+	X		if (STRCMP(h->followto, "poster") == 0) {
+	X			(void) reply_command();
+	X			break;
+	X		}
+	X
+	X		if (*bptr == '-')
+	X			tfilename = ofilename1;
+	X		else
+	X			tfilename = filename;
+	X#ifdef SERVER
+	X		(void) sprintf(bfr,"%s/%s %s/%s/%ld", BIN, "postnews", 
+	X				SPOOL,groupdir,bit);
+	X#else	/* !SERVER */
+	X		(void) sprintf(bfr,"%s/%s %s", BIN, "postnews", tfilename);
+	X#endif	/* !SERVER */
+	X		(void) system(bfr);
+	X		break;
+	X
+	X	/* erase - pretend we haven't seen this article. */
+	X	case 'e':
+	X		if (rfq || *bptr == '-') {
+	X			if (STRCMP(groupdir, ogroupdir)) {
+	X				i = bit;
+	X				(void) strcpy(bfr, groupdir);
+	X				selectng(ogroupdir, FALSE, PERHAPS);
+	X				set(oobit);
+	X				fprintf(ofp,"Holding article %ld newsgroup %s\n"
+	X					,oobit, ogroupdir);
+	X				(void) strcpy(groupdir, ogroupdir);
+	X				selectng(bfr, FALSE, FALSE);
+	X				bit = i;
+	X			} else {
+	X				fprintf(ofp,"Holding article %ld\n", oobit);
+	X				set(oobit);
+	X			}
+	X		} else {
+	X			fprintf(ofp,"Holding article %ld\n", bit);
+	X			set(bit);
+	X			goto caseplus;	/* skip this article for now */
+	X		}
+	X		break;
+	X
+	X	case 'H':
+	X	case 'h':
+	X		if (!hflag)
+	X			dash(8, ofp);
+	X		if (*bptr == '-') {
+	X			if (oobit > 0)
+	X				fprintf(ofp, "Article %ld:\n", oobit);
+	X			hprint(hold, ofp, 1 + (bptr[-1]=='H'));
+	X		} else {
+	X			fprintf(ofp, "Article %ld of %ld: %s\n",
+	X				rfq ? oobit : bit, pngsize, h->ident);
+	X			hprint(h, ofp, 1 + (bptr[-1]=='H'));
+	X		}
+	X		if (!hflag)
+	X			dash(8, ofp);
+	X		break;
+	X
+	X	case '#':
+	X		fprintf(ofp, "Article %ld of %ld: newsgroup %s\n",
+	X			rfq ? oobit : bit, pngsize, rfq ? ogroupdir : groupdir);
+	X		break;
+	X
+	X		/* error */
+	X	case '?':
+	X		help(ofp);
+	X		break;
+	X	default:
+	X		fprintf(ofp, "? for commands.\n");
+	X		break;
+	X	}
+	X
+	X	return FALSE;
+	X}
+	X
+	Xcancel_command()
+	X{
+	X	int notauthor;
+	X	tfilename = filename;
+	X	hptr = h;
+	X	if (*bptr == '-') {
+	X		if (*ofilename1) {
+	X			tfilename = ofilename1;
+	X			hptr = hold;
+	X		}
+	X		bptr++;
+	X	}
+	X	EOL();
+	X	readmode = SPEC;
+	X	(void) strcpy(rcbuf, hptr->path);
+	X	ptr1 = index(rcbuf, ' ');
+	X	if (ptr1)
+	X		*ptr1 = 0;
+	X	notauthor = STRCMP(username, rcbuf);
+	X	if (uid != ROOTID && uid && notauthor) {
+	X		fprintf(ofp, "Can't cancel what you didn't write.\n");
+	X		return FALSE;
+	X	}
+	X	if (!cancel(ofp, hptr, notauthor) && hptr == h) {
+	X		clear(bit);
+	X		saveart;
+	X		nextbit();
+	X		obit = -1;
+	X		if (!cflag)
+	X			putc('\n', ofp);
+	X		FCLOSE(fp);
+	X	}
+	X	return TRUE;
+	X}
+	X
+	Xreply_command()
+	X{
+	X	register char	*pathptr;
+	X	int edit = 1;
+	X	char *ed, *fbp;
+	X	int idlen;
+	X	FILE *tfp;
+	X	char *replyname();
+	X	char subj[BUFLEN];
+	X	char folbuf[BUFLEN];
+	X	struct stat statb;
+	X	long creatm;
+	X
+	X	hptr = h;
+	X	while (*bptr && index("d-", *bptr)) {
+	X		switch (*bptr) {
+	X		/* Followup the previous article. */
+	X		case '-':
+	X			hptr = hold;
+	X			break;
+	X
+	X		/* Don't edit the headers */
+	X		case 'd':
+	X			edit = 0;
+	X			break;
+	X		}
+	X		bptr++;
+	X	}
+	X	EOL();
+	X	ptr1 = index(MAILPARSER, ' ');
+	X	if (ptr1)
+	X		*ptr1 = '\0';
+	X	if (edit && access(MAILPARSER, 1)) {
+	X#ifdef IHCC
+	X		fprintf(stderr, "Can't edit headers, 'recmail' missing.\n");
+	X#else
+	X		fprintf(stderr, "Can't edit headers without %s\n", MAILPARSER);
+	X#endif
+	X		edit = 0;
+	X	}
+	X	if (ptr1)
+	X		*ptr1 = ' ';
+	X
+	X	*rcbuf = '\0';
+	X	pathptr = replyname(hptr);;
+	X	for (ptr1 = address, ptr2 = pathptr; *ptr2; ptr1++, ptr2++) {
+	X		if (index("\"\\$", *ptr2))
+	X			*ptr1++ = '\\';
+	X		*ptr1 = *ptr2;
+	X	}
+	X	*ptr1 = '\0';
+	X
+	X	folbuf[0] = '\0';		/* References */
+	X	if (hptr->followid[0]) {
+	X		fbp = hptr->followid;
+	X		idlen = strlen(hptr->ident);
+	X
+	X		/*
+	X		 * If the references line is too long, truncate it.
+	X		 * The "3" is for the comma, the space, and the '\0' at
+	X		 * the end of the string.
+	X		 */
+	X		while (fbp && strlen(fbp) + idlen > BUFLEN - 3)
+	X			fbp = index(fbp + 1, '<');
+	X		if (fbp != NULL) {
+	X			(void) strcpy(folbuf, fbp);
+	X			(void) strcat(folbuf, " ");
+	X		}
+	X	}
+	X	(void) strcat(folbuf, hptr->ident);
+	X
+	X	(void) strcpy(subj, hptr->title);	/* Subject */
+	X	while (isspace(*bptr))
+	X		bptr++;
+	X	if (*bptr != '\0')
+	X		(void) strcpy(subj, bptr);
+	X	if (!PREFIX(subj, "Re:")){
+	X		(void) strcpy(bfr, subj);
+	X		(void) sprintf(subj, "Re: %s", bfr);
+	X	}
+	X	if (!edit) {
+	X		fprintf(ofp, "To: %s\n", pathptr);
+	X		ed = index(MAILER, '%');
+	X		if (ed && ed[1] == 's')
+	X			fprintf(ofp, "Subject: %s\n", subj);
+	X		(void) fflush(ofp);
+	X	}
+	X
+	X	/* Put the user in the editor to create the body of the followup. */
+	X	if (edit) {
+	X		int oumask;
+	X
+	X		(void) strcpy(tf, tft);
+	X		MKTEMP(tf);
+	X
+	X		ed = getenv("EDITOR");
+	X		if (ed == NULL)
+	X			ed = DFTEDITOR;
+	X
+	X		oumask = umask(077);
+	X		if ((tfp = fopen(tf, "w")) == NULL) {
+	X			perror(tf);
+	X			creatm = 0L;
+	X		} else {
+	X			fprintf(tfp, "To: %s\n", pathptr);
+	X			fprintf(tfp, "Subject: %s\n", subj);
+	X#ifdef INTERNET
+	X			fprintf(tfp, "News-Path: %s\n", hptr->path);
+	X#endif /* INTERNET */
+	X			fprintf(tfp, "References: %s\n\n", folbuf);
+	X			fstat(fileno(tfp), &statb);
+	X			creatm = statb.st_mtime;
+	X			(void) fclose(tfp);
+	X		}
+	X		(void) umask(oumask);
+	X
+	X		(void) sprintf(edcmdbuf, "%s %s", ed, tf);
+	X		(void) system(edcmdbuf);
+	X		(void) strcpy(rcbuf, MAILPARSER);
+	X		(void) strcat(rcbuf, " -t");
+	X		(void) strcat(rcbuf, " < ");
+	X		(void) strcat(rcbuf, tf);
+	X		if (access(tf, 4) || stat(tf, &statb)) {
+	X			fprintf(stderr, "Reply not sent: no input file.\n");
+	X			return FALSE;
+	X		}
+	X		if (statb.st_mtime == creatm) {
+	X			fprintf(stderr, "Reply not sent: cancelled.\n");
+	X			(void) unlink(tf);
+	X			return FALSE;
+	X		}
+	X		fprintf(ofp,"Sending reply.\n");
+	X		(void) fflush(stdout);
+	X		if (vfork() == 0) {
+	X			(void) system(rcbuf);
+	X			(void) unlink(tf);
+	X			_exit(0);
+	X		}
+	X	} else {
+	X		(void) sprintf(rcbuf, MAILER, hptr->title);
+	X		(void) sprintf(bfr, "%s %s", rcbuf, address);
+	X		(void) system(bfr);
+	X	}
+	X	hdr();
+	X	return TRUE;
+	X}
+	X
+	Xxmit_command()
+	X{
+	X	tfilename = filename;
+	X	if (*bptr == '-') {
+	X		if (*ofilename1)
+	X			tfilename = ofilename1;
+	X		bptr++;
+	X	}
+	X	if (*bptr != '\0' && *bptr != ' ') {
+	X		fprintf(ofp, "Bad system name.\n");
+	X		return;
+	X	}
+	X	while (*bptr == ' ')
+	X		bptr++;
+	X	if (*bptr == '\0') {
+	X		fprintf(ofp, "Missing system name.\n");
+	X		return;
+	X	}
+	X#ifndef SERVER
+	X	if (s_find(&srec, bptr) == 0) {
+	X		fprintf(ofp, "%s not in SYSFILE\n", bptr);
+	X		return;
+	X	}
+	X#endif	/* !SERVER */
+	X	(void) transmit(&srec, tfilename);
+	X}
+	X
+	Xnext_ng_command()
+	X{
+	X	obit = -1;
+	X	if (!*bptr || *bptr == '-') {
+	X		if (cflag)
+	X			clear(bit);
+	X		else
+	X			putc('\n', ofp);
+	X		if (*bptr)
+	X			actdirect = BACKWARD;
+	X		rfq = 0;
+	X		saveart;
+	X		if (nextng()) {
+	X			if (actdirect == BACKWARD)
+	X				fprintf(ofp, "Can't back up.\n");
+	X			else
+	X				return TRUE;
+	X		}
+	X		return FALSE;
+	X	}
+	X	while (isspace(*bptr))
+	X		bptr++;
+	X	if (!validng(bptr)) {
+	X		fprintf(ofp, "No such group.\n");
+	X		return FALSE;
+	X	}
+	X	if (cflag)
+	X		clear(bit);
+	X	else
+	X		putc('\n', ofp);
+	X	readmode = SPEC;
+	X	rfq = 0;
+	X	saveart;
+	X	back();
+	X	selectng(bptr, TRUE, TRUE);
+	X	return FALSE;
+	X}
+	X
+	Xcaesar_command()
+	X{
+	X	char	temp[BUFLEN];
+	X	FILE	*pfp, *popen();
+	X
+	X	fprintf(stderr, "Caesar decoding:\n");
+	X	(void) sprintf(temp, "%s/%s", LIB, "caesar");
+	X	if (*bptr) {
+	X		(void) strcat(temp, " ");
+	X		(void) strcat(temp, bptr);
+	X	}
+	X	if (NLINES(h, fp) > LNCNT && *PAGER) {
+	X		(void) strcat(temp, " | ");
+	X		(void) strcat(temp, PAGER);
+	X	}
+	X	pfp = popen(temp, "w");
+	X	tprint(fp, pfp, FALSE);
+	X	FCLOSE(fp);
+	X	(void) pclose(pfp);
+	X}
+	X
+	X/*
+	X * Show the user the tail, if any, of the message on file
+	X * descriptor fd, and close fd.  The digester is considered,
+	X * and the pager is used if appropriate.
+	X */
+	Xshowtail(fd)
+	XFILE *fd;
+	X{
+	X	if (fd == NULL)
+	X		return;
+	X
+	X	if (dgest) {
+	X		digest(fd, ofp, h);
+	X	} else if (!lflag && !pflag && !eflag) {
+	X		pprint(fd);
+	X	}
+	X	(void) fclose(fd);
+	X}
+	X
+	X/*
+	X * Print out the rest of the article through the pager.
+	X */
+	Xpprint(fd)
+	XFILE *fd;
+	X{
+	X#ifdef PAGE
+	X	/* Filter the tail of long messages through PAGER. */
+	X	if (NLINES(h, fd) > LNCNT && *PAGER) {
+	X		if (!index(PAGER, FMETA)) {
+	X			FILE *pfp, *popen();
+	X
+	X			pfp = popen(PAGER, "w");
+	X			if (pfp == NULL)
+	X				pfp = ofp;
+	X			/*
+	X			 * What follows is an attempt to prevent the
+	X			 * next message from scrolling part of this
+	X			 * message off the top of the screen before
+	X			 * the poor luser can read it.
+	X			 */
+	X			tprint(fd, pfp, FALSE);
+	X			putc('\f', pfp);
+	X			putc('\n', pfp);
+	X			putc(' ', pfp);
+	X			(void) pclose(pfp);
+	X		}
+	X		else
+	X			pout(ofp);
+	X		holdup = TRUE;
+	X	}
+	X	else
+	X#endif	/* PAGE */
+	X		tprint(fd, ofp, FALSE);
+	X}
+	X
+	X/*
+	X * Find the next article we want to consider, if we're done with
+	X * the last one, and show the header.
+	X */
+	Xgetnextart(minus)
+	Xint minus;
+	X{
+	X 	int noaccess;
+	X#ifdef SERVER
+	X	char workspace[256];
+	X#else	/* !SERVER */
+	X 	register DIR *dirp;
+	X 	register struct direct *dir;
+	X#endif	/* !SERVER */
+	X 	long nextnum, tnum;
+	X
+	X 	noaccess = 0;
+	X
+	X	if (minus)
+	X		goto nextart2;	/* Kludge for "-" command. */
+	X
+	X	if (bit == obit)	/* Return if still on same article as last time */
+	X		return 0;
+	X
+	X	SigTrap = FALSE;
+	X
+	Xnextart:
+	X#ifdef DEBUG
+	X	fprintf(stderr,"nextart:\n");
+	X#endif /* DEBUG */
+	X	dgest = 0;
+	X
+	X	if (bit < minartno && !rflag)
+	X		bit = minartno;
+	X
+	X	/* If done with this newsgroup, find the next one. */
+	X	while (ngsize <= 0 || (!rflag && ((long) bit > ngsize)) || (rflag && bit < minartno)) {
+	X		if (nextng()) {
+	X			if (actdirect == BACKWARD) {
+	X				fprintf(ofp, "Can't back up.\n");
+	X				actdirect = FORWARD;
+	X				continue;
+	X			} else
+	X				if (rfq++ || pflag || cflag)
+	X					return 1;
+	X			break;
+	X		}
+	X		if (rflag)
+	X			bit = ngsize + 1;
+	X		else
+	X			bit = minartno - 1;
+	X		if (uflag && !xflag) {
+	X			time_t now;
+	X			(void) time(&now);
+	X			if (now - timelastsaved > 5*60 /* 5 minutes */) {
+	X				if (!xflag)
+	X					fprintf(stderr,"[Saving .newsrc]\n");
+	X				writeoutrc();
+	X				timelastsaved = now;
+	X			}
+	X		}
+	X		noaccess = 0;
+	X	}
+	X
+	Xnextart2:
+	X#ifdef DEBUG
+	X	fprintf(stderr, "article: %s/%ld\n", groupdir, bit);
+	X#endif	/* DEBUG */
+	X	if (rcreadok)
+	X		rcreadok = 2;	/* have seen >= 1 article */
+	X#ifdef SERVER
+	X	if (bit == 0 || (fp = getarticle(groupdir, bit, "ARTICLE")) == NULL)
+	X		goto badart;
+	X	strcpy(filename, article_name());
+	X	(void) fclose(fp);
+	X	fp = NULL;
+	X#else	/* !SERVER */
+	X	(void) sprintf(filename, "%s/%ld", dirname(groupdir), bit);
+	X
+	X	if (rfq && goodone[0])
+	X		strcpy(filename, goodone);
+	X#endif	/* !SERVER */
+	X	if (SigTrap) {
+	X		if (SigTrap == SIGHUP)
+	X			return 1;
+	X		if (!rcreadok)
+	X			xxit(0);
+	X		fprintf(ofp, "Abort (n)?  ");
+	X		(void) fflush(ofp);
+	X		(void) gets(bfr);
+	X		if (*bfr == 'y' || *bfr == 'Y')
+	X			xxit(0);
+	X		SigTrap = FALSE;
+	X	}
+	X#ifdef DEBUG
+	X	fprintf(stderr, "filename = '%s'\n", filename);
+	X#endif	/* DEBUG */
+	X	/* Decide if we want to show this article. */
+	X 	if (bit <= 0 || (fp = art_open(filename, "r")) == NULL) {
+	X		/* don't show the header if the article was specifically
+	X		 * requested and it isn't there
+	X		 */
+	X		if (lbuf[0] == '<') {
+	X			lbuf[0] = '\0';
+	X			bit = -1;
+	X			return 1;
+	X		}
+	X 		/* since there can be holes in legal article numbers, */
+	X 		/* we wait till we hit 5 consecutive bad articles */
+	X 		/* before we haul off and scan the directory */
+	X 		if (++noaccess < 5)
+	X 			goto badart;
+	X		noaccess = 0;
+	X#ifdef SERVER
+	X		if (*groupdir == ' ' || *groupdir == '\0' || 
+	X			set_group(groupdir) == NULL)
+	X			goto badart;
+	X#else	/* !SERVER */
+	X 		dirp = opendir(dirname(groupdir));
+	X 		if (dirp == NULL) {
+	X			if (errno != EACCES)
+	X				fprintf(stderr,"Can't open %s\n", dirname(groupdir));
+	X 			goto badart;
+	X 		}
+	X#endif	/* !SERVER */
+	X 		nextnum = rflag ? minartno - 1 : ngsize + 1;
+	X#ifdef SERVER 
+	X		tnum = nextnum;
+	X		for(;;){
+	X			(void) sprintf(bfr,"STAT %ld",tnum);
+	X			put_server(bfr);
+	X			(void) get_server(workspace,sizeof(workspace));
+	X			if (*workspace != CHAR_OK) {
+	X				if (rflag)
+	X					tnum++;
+	X				else
+	X					tnum--;
+	X				continue;
+	X			}
+	X#else	/* !SERVER */
+	X 		while ((dir = readdir(dirp)) != NULL) {
+	X 			tnum = atol(dir->d_name);
+	X 			if (tnum <= 0)
+	X 				continue;
+	X#endif	/* !SERVER */
+	X 			if (rflag ? (tnum > nextnum && tnum < bit)
+	X 				  : (tnum < nextnum && tnum > bit))
+	X 				nextnum = tnum;
+	X#ifdef SERVER
+	X			break;		/* not exactly right */
+	X#endif	/* !SERVER */
+	X 		}
+	X#ifndef SERVER
+	X 		closedir(dirp);
+	X#endif	/* SERVER */
+	X 		if (rflag ? (nextnum >= bit) : (nextnum <= bit))
+	X 			goto badart;
+	X#ifdef DEBUG
+	X		fprintf(stderr,"nextnum = %ld\n",nextnum);
+	X#endif /* DEBUG */
+	X 		do {
+	X 			clear(bit);
+	X 			nextbit();
+	X 		} while (rflag ? (nextnum < bit) : (nextnum > bit));
+	X 		obit = -1;
+	X 		abs = FALSE;
+	X		if (ignorenews) /* ignored news is still news */
+	X			news = TRUE;
+	X 		goto nextart;
+	X 	} else
+	X 		noaccess = 0;
+	X
+	X 	if (ignorenews || hread(h, fp, TRUE) == NULL
+	X		|| (!rfq && !aselect(h, abs))) {
+	X		if (ignorenews)
+	X			news = TRUE;
+	X badart:
+	X#ifndef SERVER
+	X#ifdef DEBUG
+	X		fprintf(stderr, "Bad article '%s'\n", filename);
+	X#endif	/* DEBUG */
+	X#endif	/* !SERVER */
+	X		FCLOSE(fp);
+	X		clear(bit);
+	X		obit = -1;
+	X		nextbit();
+	X		abs = FALSE;
+	X		goto nextart;
+	X	}
+	X	abs = FALSE;
+	X	actdirect = FORWARD;
+	X	news = TRUE;
+	X	hdr();
+	X	if (pflag)
+	X		tprint(fp, ofp, FALSE);
+	X	else if (cflag && !lflag && !eflag) {
+	X		(void) fflush(ofp);
+	X		pprint(fp);
+	X	}
+	X	if (cflag || lflag || eflag || pflag) {
+	X		SigTrap = FALSE;
+	X		FCLOSE(fp);
+	X	}
+	X	obit = bit;
+	X#ifdef SERVER
+	X	(void) unlink(filename);
+	X#endif	/* SERVER */
+	X	return 0;
+	X}
+	X
+	X/*
+	X * Print out whatever the appropriate header is
+	X */
+	Xhdr()
+	X{
+	X	char *briefdate();
+	X
+	X	if (rfq)
+	X		return;
+	X
+	X	if (lflag || eflag) {
+	X		hprint(h, ofp, 0);
+	X		return;
+	X	}
+	X
+	X	/* Print out a header */
+	X	if (ngrp) {
+	X		pngsize = ngsize;
+	X		ngrp--;
+	X		nghprint(groupdir);
+	X	}
+	X	if (!hflag)
+	X		fprintf(ofp, "Article %ld of %ld, %s.\n",
+	X			bit, pngsize, briefdate(h->subdate));
+	X	hprint(h, ofp, pflag ? 1 : 0);
+	X}
+	X
+	Xnghprint(title)
+	Xchar *title;
+	X{
+	X	char *tstr = "Newsgroup ";
+	X	int l = strlen(title) + strlen(tstr);
+	X
+	X	fprintf(ofp, "\n");
+	X	if (!hflag) {
+	X		dash(l, ofp);
+	X		fprintf(ofp, "%s%s\n", tstr, title);
+	X		dash(l, ofp);
+	X	} else {
+	X		fprintf(ofp, "%s%s, ", tstr, title);
+	X		if (bit == pngsize)
+	X			fprintf(ofp, "%ld\n", pngsize);
+	X		else
+	X			fprintf(ofp, "%ld-%ld\n", bit, pngsize);
+	X	}
+	X	fprintf(ofp, "\n");
+	X}
+	X
+	X/*
+	X * Routine to catch a continue signal.
+	X */
+	Xcatchcont(sig)
+	Xint sig;
+	X{
+	X	(void) signal(sig, catchcont);
+	X	SigTrap = sig;
+	X	(void) fflush(ofp);
+	X#ifdef SIGCONT
+	X	if (fp && sig == SIGCONT)
+	X		hdr();
+	X	if (sig != SIGCONT)
+	X#endif /* SIGCONT */
+	X		putc('\n', ofp);
+	X	if (canlongjmp)
+	X		longjmp(sigjmpbuf,1);
+	X}
+	X
+	Xxxit(status)
+	Xint	status;
+	X{
+	X	(void) unlink(infile);
+	X	(void) unlink(outfile);
+	X#ifdef SORTACTIVE
+	X	if (strncmp(ACTIVE,"/tmp/", 5) == 0)
+	X		(void) unlink(ACTIVE);
+	X#endif /* SORTACTIVE */
+	X#ifdef SERVER
+	X	(void) unlink(active_name());
+	X	close_server();	
+	X#endif	/* SERVER */
+	X	exit(status);
+	X}
+SHAR_EOF
+if test 26368 -ne "`wc -c < 'readr.c'`"
+then
+	echo shar: error transmitting "'readr.c'" '(should have been 26368 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'recmail.c'" '(6020 characters)'
+if test -f 'recmail.c'
+then
+	echo shar: will not over-write existing file "'recmail.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'recmail.c'
+	X/*
+	X * This software is Copyright (c) 1986 by Rick Adams.
+	X *
+	X * Permission is hereby granted to copy, reproduce, redistribute or
+	X * otherwise use this software as long as: there is no monetary
+	X * profit gained specifically from the use or reproduction or this
+	X * software, it is not sold, rented, traded or otherwise marketed, and
+	X * this copyright notice is included prominently in any copy
+	X * made.
+	X *
+	X * The author make no claims as to the fitness or correctness of
+	X * this software for any use whatsoever, and it is provided as is. 
+	X * Any use of this software is at the user's own risk.
+	X *
+	X * recmail: read a mail message on stdin, grab all addresses in To and Cc
+	X * lines, and pass the full message to all addressees.  This is useful to
+	X * send the output of a recently edited mail message (with headers edited too).
+	X * It is similar to sendmail -t, but only assumes /bin/mail.
+	X * To use your own mailer, e. g. nmail, compile with -DMAILER=my_mailer.
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)recmail.c	1.16	9/24/87";
+	X#endif /* SCCSID */
+	X
+	X#include "params.h"
+	X
+	X#ifndef MAILER
+	X#define MAILER "/bin/mail"
+	X#endif
+	Xchar mailer[] = MAILER;
+	X
+	X#define MAXRECIPS 100
+	Xchar *recips[MAXRECIPS];
+	Xint nrecips = 0;
+	X
+	Xmain()
+	X{
+	X	FILE *fd;
+	X	char *tmpf;
+	X	FILE *errfd;
+	X	char *errf;
+	X	char linebuf[1024];
+	X	int i, pid, wpid;
+	X	int exstat;
+	X	char *mypath;
+	X	int goodcnt, badcnt;
+	X	char *mktemp(), *getenv();
+	X
+	X	tmpf = mktemp("/tmp/rmXXXXXX");
+	X	(void) close(creat(tmpf,0666));
+	X	fd = fopen(tmpf, "w");
+	X	errf = mktemp("/tmp/rmXXXXXX");
+	X	(void) close(creat(errf,0666));
+	X	errfd = fopen(errf, "w");
+	X	fprintf(errfd, "Subject: Returned mail\n");
+	X	fprintf(errfd, "\n  ----- Transcript of session follows -----\n");
+	X	(void) fflush(errfd);
+	X	goodcnt = badcnt = 0;
+	X
+	X	while (fgets(linebuf, sizeof linebuf, stdin) != NULL) {
+	X	   	 if ((strncmp(linebuf, "Bcc: ", 5) == 0 ||
+	X		    strncmp(linebuf, "bcc: ", 5) == 0 ||
+	X		    strncmp(linebuf, "BCC: ", 5) == 0)) {
+	X		    if (linebuf[5] != '\n')
+	X			addrecips(linebuf+5);
+	X		    }
+	X		else if (fputs(linebuf, fd) == EOF)
+	X			goto werror;
+	X		if (linebuf[0] == '\n')
+	X			break;
+	X		if ((strncmp(linebuf, "To: ", 4) == 0 ||
+	X		    strncmp(linebuf, "to: ", 4) == 0 ||
+	X		    strncmp(linebuf, "TO: ", 4) == 0 ||
+	X		    strncmp(linebuf, "Cc: ", 4) == 0 ||
+	X		    strncmp(linebuf, "cc: ", 4) == 0 ||
+	X		    strncmp(linebuf, "CC: ", 4) == 0) &&
+	X		     linebuf[4] != '\n')
+	X			addrecips(linebuf+4);
+	X	}
+	X	if (!feof(stdin)) {
+	X		while (fgets(linebuf, sizeof linebuf, stdin) != NULL) {
+	X			if (fputs(linebuf, fd) == EOF) {
+	Xwerror:
+	X				printf("write error on temp file\n");
+	X				exit(2);
+	X			}
+	X		}
+	X	}
+	X	/*
+	X	 * Append the contents of the .signature file (if it exists) to
+	X	 * the end of the mail message
+	X	 */
+	X	{
+	X		char sigbuf[BUFSIZ];
+	X		register c;
+	X		register char *p = getenv("HOME");
+	X		FILE *infp;
+	X			
+	X		if (p) {
+	X			(void) sprintf(sigbuf, "%s/%s", p, ".signature");
+	X			if (infp = fopen(sigbuf, "r")) {
+	X				fprintf(fd,"---\n");
+	X				while ((c = getc(infp)) != EOF)
+	X					putc(c,fd);
+	X				(void) fclose(infp);
+	X			}
+	X		}
+	X	}
+	X	(void) fclose(fd);
+	X
+	X	/*
+	X	 * Force the path to only consider /bin and /usr/bin, since
+	X	 * that's the version of mail we want (not /usr/ucb/mail)
+	X	 */
+	X	if (mailer[0] != '/') {
+	X		register int e;
+	X		extern char **environ;
+	X		for (e = 0; environ[e] != NULL; ++e)
+	X			if (strncmp(environ[e], "PATH=", 5) == 0) {
+	X				environ[e] = "PATH=/bin:/usr/bin";
+	X				break;
+	X			}
+	X	}
+	X	mypath = getenv("PATH");
+	X	if (mypath)
+	X		strcpy(mypath, "/bin:/usr/bin");
+	X
+	X	/*
+	X	 * We send the copies out separately, because of a bug in
+	X	 * USG's /bin/mail which will generate ANOTHER To: line,
+	X	 * even though we already have one, if there are at least
+	X	 * two recipients.
+	X	 */
+	X	for (i=0; i<nrecips; i++) {
+	X		/*
+	X		 * mail recips[i] < tmpf
+	X		 */
+	X		pid = mailto(tmpf, errfd, recips[i]);
+	X		exstat = -1;
+	X		while ((wpid = wait(&exstat)) >= 0 && wpid != pid)
+	X			;
+	X		if (exstat == 0)
+	X			goodcnt++;
+	X		else
+	X			badcnt++;
+	X	}
+	X	if (badcnt) {
+	X		mailback(errfd, tmpf, errf);
+	X		(void) unlink(tmpf);
+	X		(void) unlink(errf);
+	X		exit(1);
+	X	} else if (goodcnt == 0) {
+	X		fprintf(errfd, "recmail: no 'To:' line\n");
+	X		mailback(errfd, tmpf, errf);
+	X		(void) unlink(tmpf);
+	X		(void) unlink(errf);
+	X		exit (1);
+	X	}
+	X	(void) unlink(tmpf);
+	X	(void) unlink(errf);
+	X	exit (0);
+	X}
+	X
+	X#define isok(c) (isprint(c) && (c) != ' ' && c != ',')
+	Xaddrecips(line)
+	Xchar *line;
+	X{
+	X	char *front, *back, *tail;
+	X	char *malloc();
+	X
+	X	tail = line + strlen(line);
+	X	for (front=line; front < tail; ) {
+	X		while (!isok(*front) && front < tail)
+	X			front++;
+	X		if (front >= tail)
+	X			break;	/* skip end of line garbage */
+	X		for (back=front; isok(*back); back++)
+	X			;
+	X		*back=0;
+	X		if (nrecips >= MAXRECIPS) {
+	X			printf("Too many destinations\n");
+	X			exit(2);
+	X		}
+	X		if ((recips[nrecips] = malloc(strlen(front) + 1)) == NULL) {
+	X			printf("Out of space\n");
+	X			exit(2);
+	X		}
+	X		(void) strcpy(recips[nrecips], front);
+	X		nrecips++;
+	X		front = back+1;
+	X	}
+	X}
+	X
+	Xint
+	Xmailto(tmpf, errfd, recip)
+	Xchar *tmpf;
+	XFILE *errfd;
+	Xchar *recip;
+	X{
+	X	register int pid;
+	X
+	X	/*
+	X	 * mail recips < tmpf
+	X	 */
+	X	while ((pid = vfork()) == -1) {
+	X		fprintf(stderr, "fork failed, waiting...\r\n");
+	X		sleep(60);
+	X	}
+	X	if (pid == 0) {
+	X		(void) close(0);
+	X		(void) open(tmpf, 0);
+	X		if (errfd != NULL) {
+	X			(void) close(1);
+	X			(void) dup(fileno(errfd));
+	X			(void) fclose(errfd);
+	X			(void) close(2);
+	X			(void) dup(1);
+	X		}
+	X		execlp(mailer, mailer, recip, (char *)0);
+	X		perror(mailer);
+	X		exit(1);
+	X	}
+	X	return pid;
+	X}
+	X
+	Xmailback(errfd, tmpf, errf)
+	Xregister FILE *errfd;
+	Xchar *tmpf;
+	Xchar *errf;
+	X{
+	X	register FILE *fd;
+	X	register int c;
+	X	int exstat;
+	X	register int pid, wpid;
+	X	char *logn;
+	X	char *getlogin(), *getenv();
+	X	register struct passwd *pwd;
+	X
+	X	if ((fd = fopen(tmpf, "r")) != NULL) {
+	X		fprintf(errfd, "\n   ----- Unsent message follows -----\n");
+	X		while ((c = getc(fd)) != EOF)
+	X			putc(c, errfd);
+	X		(void) fclose(fd);
+	X	}
+	X	(void) fclose(errfd);
+	X	if ((logn = getlogin()) == NULL && (logn = getenv("USER")) == NULL) {
+	X		if ((pwd = getpwuid(getuid())) == NULL)
+	X			return;
+	X		logn = pwd->pw_name;
+	X	}
+	X	pid = mailto(errf, (FILE *)NULL, logn);
+	X	while ((wpid = wait(&exstat)) >= 0 && wpid != pid)
+	X		;
+	X}
+SHAR_EOF
+if test 6020 -ne "`wc -c < 'recmail.c'`"
+then
+	echo shar: error transmitting "'recmail.c'" '(should have been 6020 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'recnews.c'" '(10693 characters)'
+if test -f 'recnews.c'
+then
+	echo shar: will not over-write existing file "'recnews.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'recnews.c'
+	X/*
+	X * recnews [to newsgroup] [from user] [approved by] [exclude site]
+	X *
+	X * Process a news article which has been mailed to some group like msgs.
+	X * Such articles are in normal mail format and have never seen the insides
+	X * of netnews.  If the "to newsgroup" is included, the article is posted
+	X * to this newsgroup instead of trying to intuit it from the headers.
+	X * If the "from user" is included, the return address is forged to look
+	X * like that user instead of what getuid or a from line says.
+	X *
+	X * It is recommended that you always include the to newsgroup, since the
+	X * intuition code is flakey and out of date.  The from user is probably
+	X * appropriate for arpanet mailing lists being funnelled at ucbvax but
+	X * not otherwise.  Sample lines in /usr/lib/aliases (if you run delivermail):
+	X *	worldnews: "|/usr/lib/news/recnews net.general"
+	X *		Allows you to mail to worldnews rather than using inews.
+	X *		Intended for humans to mail to.
+	X *	post-unix-wizards: "|/usr/lib/news/recnews fa.unix-wizards unix-wizards"
+	X *		Causes mail to post-unix-wizards to be fed into fa.unix-wizards
+	X *		and the return address forged as unix-wizards on the local
+	X *		machine.  post-unix-wizards (on the local machine) should
+	X *		be part of the master mailing list somewhere (on a different
+	X *		machine.)
+	X *	in-gamemasters: "|/usr/lib/news/recnews mail.gamemasters '' news"
+	X *
+	X * Recnews is primarily useful in remote places on the usenet which collect
+	X * mail from mailing lists and funnel them into the network.  It is also
+	X * useful if you like to send mail to some user instead of invoking
+	X * inews -t .. -n .. when you want to submit an article.  (Many mailers give
+	X * you nice facilities like editing the message.)  It is not, however,
+	X * essential to use recnews to be able to join usenet.
+	X *
+	X * WARNING: recnews disables the "recording" check - it has to because
+	X * by the time inews is run, it's in the background and too late to
+	X * ask permission.  If you depend heavily on recordings you probably
+	X * should not allow recnews (and thus the mail interface) to be used.
+	X *
+	X * 1) We leave the from line alone.  Just escape the double quotes, but let the
+	X *    mailer do the rest.
+	X * 2) We give precedence to "From:" over "From " or ">From " in determining
+	X *    who the article is really from.
+	X *    Modifications by rad@tek
+	X *
+	X * John@ODU.EDU: add third argument to cause inews to be invoked with -a,
+	X *		 for use with local groups for mailing lists with 2.11.
+	X * pleasant@rutgers.EDU: add fourth argument which uses the -x switch in inews
+	X *
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)recnews.c	2.18	12/4/87";
+	X#endif /* SCCSID */
+	X
+	X#include "params.h"
+	X
+	X/*
+	X * Note: we assume there are 2 kinds of hosts using recnews:
+	X * Those that have delivermail (and hence this program will never
+	X * have to deal with more than one message at a time) and those on the arpanet
+	X * that do not (and hence all messages end with a sentinel).  It is
+	X * supposed that regular v7 type systems without delivermail or some
+	X * other automatic forwarding device will just use rnews.  We do
+	X * not attempt to tell where a message ends on all systems due to the
+	X * different conventions in effect.  (This COULD be fixed, I suppose.)
+	X */
+	X
+	X/*
+	X * Kinds of lines in a message.
+	X */
+	X#define FROM	001		/* From line */
+	X#define SUBJ	002		/* Subject */
+	X#define TO	003		/* To (newgroup based on this) */
+	X#define BLANK	004		/* blank line */
+	X#define EOM	005		/* End of message (4 ctrl A's) */
+	X#define HEADER	006		/* any unrecognized header */
+	X#define TEXT	007		/* anything unrecognized */
+	X#define INCLUSIVE 010		/* newsgroup is already in header */
+	X
+	X/*
+	X * Possible states program can be in.
+	X */
+	X#define SKIPPING	0100	/* In header of message */
+	X#define READING		0200	/* In body of message */
+	X
+	X#define BFSZ 250
+	X
+	X#define EOT	'\004'
+	X
+	Xchar	from[BFSZ];		/* mailing address for replies */
+	Xchar	sender[BFSZ];		/* mailing address of author, if different */
+	Xchar	to[BFSZ];		/* Destination of mail (msgs, etc) */
+	Xchar	subject[BFSZ];		/* subject of message */
+	Xchar	newsgroup[BFSZ];	/* newsgroups of message */
+	Xchar	approved[BFSZ];		/* Approved: */
+	Xchar	not_this_site[BFSZ];	/* Don't post to this site */
+	Xint	fromset;		/* from passed on command line */
+	Xchar	cmdbuf[BFSZ];		/* command to pipeopen */
+	X
+	Xextern	char	*strcat(), *strcpy(), *index();
+	XFILE	*pipeopen();
+	Xchar	*any();
+	X
+	Xmain(argc, argv)
+	Xint argc;
+	Xchar **argv;
+	X{
+	X	char buf[BFSZ], inews[BFSZ];
+	X	register char *p, *q;
+	X	register FILE *pipe = NULL;
+	X	register int state;
+	X
+	X	/* build inews command */
+	X#ifdef LOGDIR
+	X	sprintf(inews, "%s/%s/%s", logdir(HOME), LIBDIR, "inews");
+	X#else	/* !LOGDIR */
+	X	sprintf(inews, "%s/%s", LIBDIR, "inews");
+	X#endif	/* !LOGDIR */
+	X
+	X	if (argc > 1)
+	X		strcpy(to, argv[1]);
+	X	if (argc > 2)
+	X		strcpy(from, argv[2]);
+	X	if (argc > 3 && *argv[3]) {
+	X		sprintf(approved," -a \"%s\"", argv[3]);
+	X	} else
+	X		approved[0] = '\0';
+	X	if (argc > 4 && *argv[4]) {
+	X		sprintf(not_this_site, " -x \"%s\"", argv[4]);
+	X	} else
+	X		not_this_site[0] = '\0';
+	X
+	X	/*
+	X	 * Flag that we know who message is from to avoid trying to 
+	X	 * decipher the From line.
+	X	 */
+	X	if (argc > 2 && (argv[2][0] != '\0'))
+	X		fromset++;
+	X
+	X#ifdef debug
+	X	printf("argv[0] is <%s>, argv[1] is <%s>, argv[2] is <%s>\n",
+	X		argv[0], argv[1], argv[2]);
+	X#endif
+	X	state = SKIPPING;
+	X	while (fgets(buf, BFSZ, stdin) != NULL) {
+	X		if (state == READING) {
+	X			fputs(buf,pipe);
+	X			continue;
+	X		}
+	X		switch (type(buf)) {
+	X
+	X		case FROM:
+	X			frombreak(buf, from);
+	X			break;
+	X
+	X		case SUBJ:
+	X			p = any(buf, " \t");
+	X			if (p == NULL)
+	X				p = buf + 8;
+	X			q = subject;
+	X			while (*++p) {
+	X				if (*p == '"')
+	X					*q++ = '\\';
+	X				*q++ = *p;
+	X			}
+	X			q[-1] = '\0';
+	X			break;
+	X
+	X		case TO:
+	X			if (to[0])
+	X				break;		/* already have one */
+	X			p = any(buf, " \t");
+	X			if (p == NULL)
+	X				p = buf + 3;
+	X			q = to;
+	X			while (*++p) {
+	X				if (*p == '"')
+	X					*q++ = '\\';
+	X				*q++ = *p;
+	X			}
+	X			q[-1] = '\0';
+	X			break;
+	X
+	X		case INCLUSIVE:
+	X			sprintf(cmdbuf,"%s%s -p", inews, not_this_site);
+	X			pipe = pipeopen(cmdbuf);
+	X			if (pipe == NULL){
+	X				perror("recnews: open failed");
+	X				exit(1);
+	X			}
+	X			state = READING;
+	X			fputs(buf,pipe);
+	X			break;
+	X			
+	X		/*
+	X		 * Kludge to compensate for messages without real headers
+	X		 */
+	X		case HEADER:
+	X			break;
+	X
+	X		case BLANK:
+	X			state = READING;
+	X			strcpy(newsgroup, to);
+	X			sprintf(cmdbuf,
+	X				"%s -t \"%s\" -n \"%s\" -f \"%s\"%s%s",
+	X				inews, *subject ? subject : "(none)",
+	X				newsgroup, from, approved, not_this_site);
+	X#ifdef debug
+	X			pipe = stdout;
+	X			printf("BLANK: %s\n", cmdbuf);
+	X#else
+	X			pipe = pipeopen(cmdbuf);
+	X			if (pipe == NULL) {
+	X				perror("recnews: pipeopen failed");
+	X				exit(1);
+	X			}
+	X#endif
+	X			if (sender[0]) {
+	X				fputs(sender, pipe);
+	X				putc('\n', pipe);
+	X			}
+	X			break;
+	X
+	X		case TEXT:
+	X			strcpy(newsgroup, to);
+	X			state = READING;
+	X			if (subject[0] == 0) {
+	X				strcpy(subject, buf);
+	X				if (subject[strlen(subject)-1] == '\n')
+	X					subject[strlen(subject)-1] = '\0';
+	X			}
+	X			sprintf(cmdbuf,
+	X				"%s -t \"%s\" -n \"%s\" -f \"%s\"%s%s",
+	X				inews, subject, newsgroup, from, approved,
+	X				not_this_site);
+	X#ifdef debug
+	X			pipe = stdout;
+	X			printf("TEXT: %s\n", cmdbuf);
+	X#else
+	X			pipe = pipeopen(cmdbuf);
+	X			if (pipe == NULL) {
+	X				perror("pipe failed");
+	X				exit(1);
+	X			}
+	X#endif
+	X			if (sender[0]){
+	X				fputs(sender, pipe);
+	X				putc('\n',pipe);
+	X			}
+	X			break;
+	X		}
+	X	}
+	X	pipeclose(pipe);
+	X	exit(0);
+	X}
+	X
+	Xtype(p)
+	Xregister char *p;
+	X{
+	X	char *firstbl;
+	X	static char lasthdr = 1;		/* prev line was a header */
+	X
+	X	if ((*p == ' ' || *p == '\t') && lasthdr)
+	X		return HEADER;		/* continuation line */
+	X	firstbl = any(p, " \t");
+	X	while (*p == ' ' || *p == '?' || *p == '\t')
+	X		++p;
+	X
+	X	if (*p == '\n' || *p == 0)
+	X		return BLANK;
+	X	if (STRNCMP(p, ">From", 5) == 0 || STRNCMP(p, "From", 4) == 0)
+	X		return FROM;
+	X	if (STRNCMP(p, "Subj", 4)==0 || STRNCMP(p, "Re:", 3)==0 ||
+	X		STRNCMP(p, "re:", 3)==0)
+	X		return SUBJ;
+	X	if (STRNCMP(p, "To", 2)==0)
+	X		return TO;
+	X	if (STRNCMP(p, "\1\1\1\1", 4)==0)
+	X		return EOM;
+	X	if (firstbl && firstbl[-1] == ':' && isalpha(*p))
+	X		return HEADER;
+	X	lasthdr = 0;
+	X	return TEXT;
+	X}
+	X
+	X/*
+	X * Figure out who a message is from.
+	X */
+	Xfrombreak(buf, fbuf)
+	Xregister char *buf, *fbuf;
+	X{
+	X	register char *p, *q;
+	X	if (fbuf[0] && fromset) {	/* we already know who it's from */
+	X		if (sender[0] == 0 || buf[4] == ':') {
+	X#ifdef debug
+	X			printf("sender set to: %s", buf);
+	X#endif
+	X			strcpy(sender, buf);
+	X		}
+	X		return;
+	X	}
+	X	/*
+	X	 * Leave fancy Froms alone - this parsing is done by mail
+	X	 * Just quote the double quotes to prevent interpetation 
+	X	 * by the shell.
+	X	 * rad@tek
+	X	 */
+	X	p = any(buf, " \t");
+	X	if (p==NULL)
+	X		p = buf + 4;
+	X	q = fbuf;
+	X	while (*++p) {
+	X		if (*p == '"')
+	X			*q++ = '\\';
+	X		*q++ = *p;
+	X	}
+	X	q[-1] = '\0';
+	X	if ((p=index(fbuf,'\n')) != NULL)
+	X		*p = '\0';
+	X	if (buf[4] == ':')
+	X		fromset++;
+	X}
+	X
+	X/*
+	X * Return the ptr in sp at which a character in sq appears;
+	X * NULL if not found
+	X *
+	X */
+	Xchar *
+	Xany(sp, sq)
+	Xchar *sp, *sq;
+	X{
+	X	register c1, c2;
+	X	register char *q;
+	X
+	X	while (c1 = *sp++) {
+	X		q = sq;
+	X		while (c2 = *q++)
+	X			if (c1 == c2)
+	X				return(--sp);
+	X	}
+	X	return(NULL);
+	X}
+	X
+	X/*
+	X *	This is similar to open, but made more secure.  Rather than
+	X *	forking off a shell, you get a bare process.
+	X *	You can use "" to get white space into an argument, but 
+	X *	nothing else is recognized
+	X */
+	X
+	X#define	RDR	0
+	X#define	WTR	1
+	X#define MAXARGS	20
+	Xstatic	int	mopen_pid[20];
+	X
+	XFILE *
+	Xpipeopen(cmd)
+	Xregister char *cmd;
+	X{
+	X	int p[2];
+	X	register myside, hisside, pid;
+	X
+	X	if(pipe(p) < 0)
+	X		return NULL;
+	X	myside = p[WTR];
+	X	hisside = p[RDR];
+	X	if ((pid = vfork()) == 0) {
+	X		char *args[MAXARGS];
+	X		register char **ap = args;
+	X
+	X		/* myside and hisside reverse roles in child */
+	X		(void) close(myside);
+	X		(void) close(0);
+	X		(void) dup(hisside);
+	X		(void) close(hisside);
+	X		(void) setgid(getgid());
+	X		(void) setuid(getuid());
+	X
+	X		while (isspace(*cmd))
+	X			cmd++;
+	X
+	X		while (*cmd != '\0') {
+	X			*ap++ = cmd;
+	X			if (ap >= &args[MAXARGS]) {
+	X				fprintf(stderr, "Too many args to %s", args[0]);
+	X				_exit(2);
+	X			}
+	X			while (*cmd && !isspace(*cmd)) {
+	X				if (*cmd++ == '"') {
+	X					register char *bcp = cmd-1;
+	X					while (*cmd && *cmd != '"')
+	X						*bcp++ = *cmd++;
+	X					*bcp = '\0';
+	X					cmd++;
+	X				}
+	X			}
+	X			if (*cmd)
+	X				*cmd++ = '\0';
+	X			while (isspace(*cmd))
+	X				cmd++;
+	X		}
+	X		*ap = (char *)NULL;
+	X
+	X		execv(args[0], args);
+	X		perror("pipeopen exec:");
+	X		_exit(1);
+	X	}
+	X
+	X	if(pid == -1)
+	X		return NULL;
+	X
+	X	mopen_pid[myside] = pid;
+	X	(void) close(hisside);
+	X	return fdopen(myside, "w");
+	X}
+	X
+	Xpipeclose(ptr)
+	XFILE *ptr;
+	X{
+	X	register f, r, (*hstat)(), (*istat)(), (*qstat)();
+	X	int status;
+	X
+	X	f = fileno(ptr);
+	X	(void) fclose(ptr);
+	X	istat = signal(SIGINT, SIG_IGN);
+	X	qstat = signal(SIGQUIT, SIG_IGN);
+	X	hstat = signal(SIGHUP, SIG_IGN);
+	X	while((r = wait(&status)) != mopen_pid[f] && r != -1)
+	X		;
+	X	if(r == -1)
+	X		status = -1;
+	X	signal(SIGINT, istat);
+	X	signal(SIGQUIT, qstat);
+	X	signal(SIGHUP, hstat);
+	X	return status;
+	X}
+SHAR_EOF
+if test 10693 -ne "`wc -c < 'recnews.c'`"
+then
+	echo shar: error transmitting "'recnews.c'" '(should have been 10693 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'rextern.c'" '(1358 characters)'
+if test -f 'rextern.c'
+then
+	echo shar: will not over-write existing file "'rextern.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'rextern.c'
+	X/*
+	X * rextern - external definitions for readnews
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)rextern.c	2.17	11/21/86";
+	X#endif /* SCCSID */
+	X
+	X/*LINTLIBRARY*/
+	X
+	X#include "rparams.h"
+	X
+	Xint	uid, gid;			/* real user/group I.D.		*/
+	Xint	duid, dgid;			/* effective user/group I.D.	*/
+	Xint	SigTrap;			/* set if signal trapped	*/
+	Xint	savmask;			/* old umask			*/
+	Xint	mode;				/* mode of news program		*/
+	Xstruct hbuf header;			/* general-use header structure	*/
+	Xchar	bfr[LBUFLEN];			/* general-use scratch area	*/
+	X
+	X#ifndef ROOTID
+	Xint	ROOTID;				/* special users id #		*/
+	X#endif
+	X
+	Xchar	*outfile = "/tmp/M1XXXXXX";	/* output file for -M and -c	*/
+	Xchar	*infile = "/tmp/M2XXXXXX";	/* -T output from Mail		*/
+	Xint	ngrp, line = -1;
+	X
+	Xchar	filename[BUFLEN];
+	Xchar	afline[BUFLEN];
+	XFILE	*rcfp, *actfp;
+	Xtime_t	atime;
+	Xchar	newsrc[BUFLEN], groupdir[BUFLEN], *rcline[LINES], rcbuf[LBUFLEN];
+	Xchar	*bitmap, *argvrc[LINES];
+	Xlong	bit, obit, last;
+	Xint	readmode = NEXT;
+	Xint	news = 0;		/* Was there any news to read */
+	Xint	actdirect = FORWARD;	/* read direction in ACTIVE file */
+	Xint	rcreadok = FALSE;	/* NEWSRC has been read OK */
+	Xint	zapng = FALSE;		/* ! out this newsgroup on next updaterc */
+	Xlong	ngsize;			/* max article # in this newsgroup */
+	Xlong	minartno;		/* min article # in this newsgroup */
+	X
+	X#ifndef SHELL
+	Xchar	*SHELL;
+	X#endif
+	X
+	X#ifndef MAILER
+	Xchar	*MAILER;
+	X#endif
+	X
+	Xchar	*PAGER = "";
+SHAR_EOF
+if test 1358 -ne "`wc -c < 'rextern.c'`"
+then
+	echo shar: error transmitting "'rextern.c'" '(should have been 1358 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'rfuncs.c'" '(20441 characters)'
+if test -f 'rfuncs.c'
+then
+	echo shar: will not over-write existing file "'rfuncs.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'rfuncs.c'
+	X/*
+	X * This software is Copyright (c) 1986 by Rick Adams.
+	X *
+	X * Permission is hereby granted to copy, reproduce, redistribute or
+	X * otherwise use this software as long as: there is no monetary
+	X * profit gained specifically from the use or reproduction or this
+	X * software, it is not sold, rented, traded or otherwise marketed, and
+	X * this copyright notice is included prominently in any copy
+	X * made.
+	X *
+	X * The author make no claims as to the fitness or correctness of
+	X * this software for any use whatsoever, and it is provided as is. 
+	X * Any use of this software is at the user's own risk.
+	X *
+	X * rfuncs - functions for readnews.
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)rfuncs.c	2.44	11/30/87";
+	X#endif /* SCCSID */
+	X
+	X/*LINTLIBRARY*/
+	X
+	X#include "rparams.h"
+	X
+	Xchar lentab[LINES];	/* length of newsgroupname for each rcline */
+	Xlong nngsize;		/* The next upcoming value of ngsize. */
+	Xlong nminartno;		/* Smallest article number in this group */
+	Xint BITMAPSIZE = 0;
+	X
+	Xnextng()
+	X{
+	X	long	curpos;
+	X#ifdef DEBUG
+	X	fprintf(stderr, "nextng()\n");
+	X#endif	/* DEBUG */
+	X	curpos = ftell(actfp);
+	X
+	Xnext:
+	X#ifdef DEBUG
+	X	fprintf(stderr, "next:\n");
+	X#endif	/* DEBUG */
+	X	if (actdirect == BACKWARD) {
+	X		if (back()) {
+	X			(void) fseek(actfp, curpos, 0);
+	X			return 1;
+	X		}
+	X		if (back()) {
+	X			(void) fseek(actfp, curpos, 0);
+	X			return 1;
+	X		}
+	X	}
+	X	if (fgets(afline, BUFLEN, actfp) == NULL)
+	X		return 1;
+	X	if (sscanf(afline, "%s %ld %ld", bfr, &nngsize, &nminartno) < 3) {
+	X		bfr[0] = '\0';
+	X		nngsize = 0;
+	X		nminartno = 0;
+	X	}
+	X#ifdef DEBUG
+	X	fprintf(stderr, "bfr = '%s'\n", bfr);
+	X#endif	/* DEBUG */
+	X
+	X	if (!ngmatch(bfr, header.nbuf))
+	X		goto next;
+	X	if (xflag)
+	X		readmode = SPEC;
+	X	else
+	X		readmode = NEXT;
+	X	if (selectng(bfr, TRUE, FALSE))
+	X		goto next;
+	X	return 0;
+	X}
+	X
+	X
+	Xselectng(name, fastcheck, resubscribe)
+	Xchar	*name;
+	X{
+	X	register char	*ptr, punct = ',';
+	X	register int	i;
+	X	register char	*p;
+	X	register long	cur;
+	X	long	next = 0;
+	X	FILE *af;
+	X	long s, sm;
+	X	char buf[100], n[100];
+	X
+	X#ifdef DEBUG
+	X	fprintf(stderr,"selectng: groupdir = %s\n", groupdir);
+	X#endif /* DEBUG */
+	X	if (*groupdir)
+	X		updaterc();
+	X	last = 1;
+	X	if (STRCMP(name, bfr)) {
+	X		af = xfopen(ACTIVE, "r");
+	X		while (fgets(buf, sizeof buf, af) != NULL) {
+	X			if (sscanf(buf, "%s %ld %ld", n, &s, &sm) == 3 &&
+	X			     STRCMP(n, name) == 0) {
+	X				ngsize = s;
+	X				minartno = sm;
+	X				break;
+	X			}
+	X		}
+	X		(void) fclose(af);
+	X	} else {
+	X		ngsize = nngsize;
+	X		minartno = nminartno;
+	X	}
+	X#ifdef DEBUG
+	X	fprintf(stderr, "selectng(%s) sets ngsize to %ld, minartno to %ld\n",
+	X		name, ngsize, minartno);
+	X#endif	/* DEBUG */
+	X	(void) strcpy(groupdir, name);
+	X	if (!xflag) {
+	X		i = findrcline(name);
+	X		if (i >= 0) {
+	X			if (p = index(rcline[i], '!')) {
+	X				switch (resubscribe) {
+	X				case FALSE:
+	X					groupdir[0] = 0;
+	X					return 1;
+	X				case TRUE:
+	X					*p = ':';
+	X					break;
+	X				case PERHAPS:
+	X					zapng = TRUE;
+	X					break;
+	X				}
+	X			} else
+	X				p = index(rcline[i], ':');
+	X			if (!p) /* shouldn't happen */
+	X				p = rcline[i];
+	X			while (*++p == ' ')
+	X				;
+	X			(void) sprintf(rcbuf, "%s%s%ld", rcline[i],
+	X				*p == '\0' ? " " : ",", ngsize+1);
+	X		}
+	X		else
+	X			(void) sprintf(rcbuf, "ng: %ld", ngsize+1);
+	X	} else
+	X		(void) sprintf(rcbuf, "ng: %ld", ngsize+1);
+	X#ifdef DEBUG
+	X	fprintf(stderr, "rcbuf set to %s\n", rcbuf);
+	X#endif /* DEBUG */
+	X
+	X	/*
+	X	 * Fast check for common case: 1-###
+	X	 */
+	X	if (fastcheck) {
+	X		p = rcbuf;
+	X		while (*p != ' ')
+	X			p++;
+	X		while (*p == ' ')
+	X			p++;
+	X		if (*p++ == '1' && *p++ == '-') {
+	X			cur = 0;
+	X			while (isdigit(*p))
+	X				cur = 10 * cur + *p++ - '0';
+	X			if (*p == ',' && cur == ngsize) {
+	X#ifdef DEBUG
+	X				fprintf(stderr, "Group: %s, all read\n", groupdir);
+	X#endif	/* DEBUG */
+	X				groupdir[0] = 0;
+	X				return 1;
+	X			}
+	X			if (cur > ngsize) {
+	X				/*
+	X				 * Claim to have read articles
+	X				 * which "active" believes have
+	X				 * never existed - we believe "active"
+	X				 */
+	X				fprintf(stderr,
+	X					"%s %s...\r\n\t%s %ld to %ld\r\n",
+	X					"Warning: newsgroup", groupdir,
+	X					"last article claimed read reset from",
+	X					cur, ngsize);
+	X			}
+	X		}
+	X	}
+	X
+	X/*
+	X * The key to understanding this piece of code is that a bit is set iff
+	X * that article has NOT been read.  Thus, we fill in the holes when
+	X * commas are found (e.g. 1-20,30-35 will result in filling in the 21-29
+	X * holes), and so we assume the newsrc file is properly ordered, the way
+	X * we write it out.
+	X */
+	X	if ((ngsize-minartno) > BITMAPSIZE) {
+	X		/* resize the bitmap array */
+	X		(void) free (bitmap);
+	X		BITMAPSIZE = 8 * (((ngsize - minartno) + 7) / 8);
+	X		bitmap = malloc((unsigned)BITMAPSIZE/8);
+	X		if (bitmap == NULL)
+	X			xerror("Can't malloc bitmap");
+	X	}
+	X
+	X	cur = 0;
+	X	bzero(bitmap, (int) (ngsize-minartno)/8+1); /* 8 bits per character */
+	X
+	X	/* Decode the .newsrc line indicating what we have read. */
+	X	for (ptr = rcbuf; *ptr && *ptr != ':'; ptr++)
+	X		;
+	X	while (*ptr) {
+	X		while (!isdigit(*ptr) && *ptr)
+	X			ptr++;
+	X		if (!*ptr)
+	X			break;
+	X		(void) sscanf(ptr, "%ld", &next);
+	X		if (punct == ',') {
+	X			while (++cur < next) {
+	X				set(cur);
+	X			}
+	X		}
+	X		cur = next;
+	X		while (!ispunct(*ptr) && *ptr)
+	X			ptr++;
+	X		punct = *ptr;
+	X	}
+	X	if (rflag)
+	X		bit = ngsize+1;
+	X	else
+	X		bit = minartno -1;
+	X	nextbit();
+	X	ngrp = 1;
+	X	return 0;
+	X}
+	X
+	X#ifdef TMAIL
+	Xcatchterm()
+	X{
+	X	(void) unlink(infile);
+	X	(void) unlink(outfile);
+	X	xxit(0);
+	X}
+	X
+	X
+	X/*
+	X * The -M (Mail) interface.  This code is a reasonably simple model for
+	X * writing other interfaces.  We write out all relevant articles to
+	X * a temp file, then invoke Mail with an option to have it tell us which
+	X * articles it read.  Finally we count those articles as really read.
+	X */
+	XMail()
+	X{
+	X	register FILE *fp = NULL, *ofp;
+	X	struct hbuf h;
+	X	register char	*ptr, *fname;
+	X	int	isnews = FALSE;
+	X	register int i;
+	X
+	X	for(i=0;i<NUNREC;i++)
+	X		h.unrec[i] = NULL;
+	X
+	X	MKTEMP(outfile);
+	X	ofp = xfopen(outfile, "w");
+	X	if (aflag && *datebuf)
+	X		if ((atime = cgtdate(datebuf)) == -1)
+	X			xerror("Cannot parse date string");
+	X	while (!nextng())
+	X		while (bit <= ngsize) {
+	X#ifdef SERVER
+	X		if ((fp = getarticle(groupdir,bit,"ARTICLE")) != NULL) {
+	X			strcpy(filename, article_name());
+	X			(void) fclose(fp);
+	X			fp = NULL;
+	X		} else {
+	X#ifdef DEBUG
+	X			fprintf(stderr, "Bad article '%s/%d'\n", groupdir,
+	X					bit);
+	X#endif	/* DEBUG */
+	X			clear(bit);
+	X			nextbit();
+	X			continue;
+	X		}
+	X#else	/* !SERVER */
+	X		(void) sprintf(filename, "%s/%ld", dirname(groupdir), bit);
+	X#endif	/* !SERVER */
+	X			if (access(filename, 4)
+	X			|| ((fp = art_open (filename, "r")) == NULL)
+	X			|| (hread(&h, fp, TRUE) == NULL)
+	X			|| !aselect(&h, FALSE)) {
+	X#ifdef DEBUG
+	X				fprintf(stderr, "Bad article '%s'\n", filename);
+	X#endif	/* DEBUG */
+	X				if (fp != NULL) {
+	X					(void) fclose(fp);
+	X					fp = NULL;
+	X				}
+	X				clear(bit);
+	X				nextbit();
+	X				continue;
+	X			}
+	X			fname = ptr = index(h.from, '(');
+	X			if (fname) {
+	X				while (ptr && ptr[-1] == ' ')
+	X					ptr--;
+	X				if (ptr)
+	X					*ptr = 0;
+	X				fname++;
+	X				ptr = fname + strlen(fname) - 1;
+	X				if (*ptr == ')')
+	X					*ptr = 0;
+	X			}
+	X			h.subtime = cgtdate(h.subdate);
+	X			fprintf(ofp, "From %s %s",
+	X#ifdef INTERNET
+	X			    h.from[0] ? h.from :
+	X#endif	/* INTERNET */
+	X			    h.path, ctime(&h.subtime));
+	X			if (fname)
+	X				fprintf(ofp, "Full-Name: %s\n", fname);
+	X			fprintf(ofp, "Newsgroups: %s\n", h.nbuf);
+	X			fprintf(ofp, "Subject: %s\n", h.title);
+	X			fprintf(ofp, "Article-ID: %s/%ld\n\n", groupdir, bit);
+	X			tprint(fp, ofp, TRUE);
+	X			putc('\n', ofp);
+	X			isnews = TRUE;
+	X			(void) fclose(fp);
+	X#ifdef SERVER
+	X			(void) unlink(filename); /* get rid of temp file */
+	X#endif	/* SERVER */
+	X			fp = NULL;
+	X			nextbit();
+	X		}
+	X	updaterc();
+	X	(void) fclose(ofp);
+	X	if (!isnews) {
+	X		fprintf(stderr, "No news.\n");
+	X		(void) unlink(outfile);
+	X		return;
+	X	}
+	X	(void) signal(SIGHUP, catchterm);
+	X	(void) signal(SIGTERM, catchterm);
+	X	MKTEMP(infile);
+	X	(void) sprintf(bfr, "%s -f %s -T %s", TMAIL, outfile, infile);
+	X	fwait(fsubr(ushell, bfr, (char *)NULL));
+	X	ofp = xfopen(infile, "r");
+	X	(void) fseek(actfp, 0L, 0);
+	X	while (fgets(afline, BUFLEN, actfp) != NULL) {
+	X		last = 0;
+	X		if (sscanf(afline, "%s %ld", bfr, &nngsize) < 2) {
+	X			bfr[0] = '\0';
+	X			nngsize = 0;
+	X		}
+	X		if (!ngmatch(bfr, header.nbuf))
+	X			continue;
+	X		*groupdir = 0;
+	X		if (selectng(bfr, TRUE, FALSE))
+	X			continue;
+	X		(void) fseek(ofp, 0L, 0);
+	X		while (fgets(groupdir, BUFLEN, ofp) != NULL) {
+	X			(void) nstrip(groupdir);
+	X			ptr = index(groupdir, '/');
+	X			*ptr = 0;
+	X			if (STRCMP(bfr, groupdir))
+	X				continue;
+	X			(void) sscanf(++ptr, "%ld", &last);
+	X			clear(last);
+	X		}
+	X		if (last) {
+	X			(void) strcpy(groupdir, bfr);
+	X			updaterc();
+	X		}
+	X	}
+	X	(void) unlink(infile);
+	X	(void) unlink(outfile);
+	X}
+	X#endif	/* TMAIL */
+	X
+	Xupdaterc()
+	X{
+	X	register long	cur = 1, next = 1;
+	X	register int i;
+	X	register char	*ptr;
+	X	char	oldptr;
+	X
+	X	sprintf(rcbuf, "%s%c ", groupdir, zapng ? '!' : ':');
+	X
+	X	zapng = FALSE;
+	Xagain:
+	X	ptr = &rcbuf[strlen(rcbuf)];
+	X	while (get(next) && next <= ngsize)
+	X		next++;
+	X	cur = next;
+	X	while (!(get(next)) && next <= ngsize)
+	X		next++;
+	X	if (cur == next) {
+	X		next = ngsize + 1;
+	X		goto skip;
+	X	}
+	X	if (ptr[-1] != ' ')
+	X		*ptr++ = ',';
+	X	if (cur + 1 == next)
+	X		(void) sprintf(ptr, "%ld", cur);
+	X	else
+	X		(void) sprintf(ptr, "%ld-%ld", cur, next - 1);
+	Xskip:
+	X	if ((long) next > ngsize) {
+	X		if (strpbrk(rcbuf, ":!") == NULL)	/* bad line, huh?? */
+	X			return;
+	X		ptr = index(rcbuf, ' ');
+	X		if (ptr == NULL)			/* impossible */
+	X			return;
+	X		ptr--;
+	X		oldptr = *ptr;
+	X		ptr[0] = ':';
+	X		ptr[1] = '\0';
+	X		i = findrcline(groupdir);
+	X		if (i >= 0) {
+	X			ptr[0] = oldptr;
+	X			ptr[1] = ' ';
+	X			rcline[i] = realloc(rcline[i], (unsigned)(strlen(rcbuf) + 1));
+	X			if (rcline[i] == NULL)
+	X				xerror("Cannot realloc");
+	X			(void) strcpy(rcline[i], rcbuf);
+	X#ifdef DEBUG
+	X			fprintf(stderr," new rcline = %s\n", rcline[i]);
+	X#endif /* DEBUG */
+	X			return;
+	X		}
+	X		if (++line > LINES)
+	X			xerror("Too many newsgroups");
+	X		ptr[0] = oldptr;
+	X		ptr[1] = ' ';
+	X		if ((rcline[line] = malloc((unsigned)(strlen(rcbuf) + 1))) == NULL)
+	X			xerror("Not enough memory");
+	X		(void) strcpy(rcline[line], rcbuf);
+	X#ifdef DEBUG
+	X		fprintf(stderr," new rcline2 = %s\n", rcline[line]);
+	X#endif /* DEBUG */
+	X		return;
+	X	}
+	X	cur = next;
+	X	goto again;
+	X}
+	X
+	Xnewrc(rcname)
+	Xchar *rcname;
+	X{
+	X	register FILE *fp;
+	X
+	X	if (close(creat(rcname, 0666))) {
+	X		(void) sprintf(bfr, "Cannot create %s", newsrc);
+	X		xerror(bfr);
+	X	}
+	X
+	X	sprintf(bfr, "%s/users", LIB);
+	X	if ((fp = fopen(bfr, "a")) != NULL) {
+	X		fprintf(fp, "%s\n", username);
+	X		(void) fclose(fp);
+	X		(void) chmod(bfr, 0666);
+	X	}
+	X}
+	X
+	Xnextbit()
+	X{
+	X#ifdef DEBUG
+	X	fprintf(stderr,"nextbit() bit = %ld\n", bit);
+	X#endif /* DEBUG */
+	X	last = bit;
+	X	if (readmode == SPEC || xflag) {
+	X		if (rflag)
+	X			bit--;
+	X		else
+	X			bit++;
+	X		return;
+	X	}
+	X	if (rflag)
+	X		while (--bit, !get(bit) && bit > minartno)
+	X			;
+	X	else
+	X		while (++bit, !get(bit) && bit <= ngsize)
+	X			;
+	X#ifdef DEBUG
+	X	fprintf(stderr,"nextng leaves bit as %ld\n", bit);
+	X#endif /* DEBUG */
+	X}
+	X
+	X/*
+	X * Return TRUE if the user has not ruled out this article.
+	X */
+	Xaselect(hp, insist)
+	Xregister struct hbuf *hp;
+	Xint	insist;
+	X{
+	X	if (insist)
+	X		return TRUE;
+	X	if (tflag && !titmat(hp, header.title))
+	X		return FALSE;
+	X	if (aflag && cgtdate(hp->subdate) < atime)
+	X		return FALSE;
+	X	if (index(hp->nbuf, ',') && !rightgroup(hp))
+	X		return FALSE;
+	X	if (fflag && (hp->followid[0] || PREFIX(hp->title, "Re:")))
+	X		return FALSE;
+	X	return TRUE;
+	X}
+	X
+	X/*
+	X * Code to avoid showing multiple articles for news.
+	X * Works even if you exit news.
+	X * Returns nonzero if we should show this article.
+	X */
+	Xrightgroup(hp)
+	Xstruct hbuf *hp;
+	X{
+	X	char ng[BUFLEN];
+	X	register char *p, *g;
+	X	int i, flag;
+	X
+	X	strcpy(ng, hp->nbuf);
+	X	g = ng;
+	X	flag = 1;
+	X	while (g != NULL) {
+	X		p = index(g, ',');
+	X		if (p != NULL) {
+	X			*p++ = '\0';
+	X			while (*p == ' ')
+	X				p++;
+	X		}
+	X		if (STRCMP(g, groupdir) == 0)
+	X			return flag;
+	X		if (ngmatch(g, header.nbuf)
+	X		    && ((i = findrcline(g)) >= 0
+	X		    && index(rcline[i], '!') == NULL))
+	X			flag = 0;
+	X		g = p;
+	X	}
+	X	/* we must be in "junk" or "control" */
+	X	return TRUE;
+	X}
+	X
+	Xback()
+	X{
+	X	while (fseek(actfp, -2L, 1) != -1 && ftell(actfp) > 0L) {
+	X		if (getc(actfp) == '\n')
+	X			return 0;
+	X	}
+	X	if (ftell(actfp) == 0L)
+	X		return 0;
+	X	return 1;
+	X}
+	X
+	X/*
+	X * Trap interrupts.
+	X */
+	Xonsig(n)
+	Xint	n;
+	X{
+	X	(void) signal(n, onsig);
+	X	SigTrap = n;
+	X	if (rcreadok < 2) {
+	X		fprintf(stderr, "Aborted early\n");
+	X		xxit(0);
+	X	}
+	X}
+	X
+	X/*
+	X * finds the line in your .newsrc file (actually the in-core "rcline"
+	X * copy of it) and returns the index into the array where it was found.
+	X * -1 means it didn't find it.
+	X *
+	X * We play clever games here to make this faster.  It's inherently
+	X * quadratic - we spend lots of CPU time here because we search through
+	X * the whole .newsrc for each line.  The "prev" variable remembers where
+	X * the last match was found; we start the search there and loop around
+	X * to the beginning, in the hopes that the calls will be roughly in order.
+	X */
+	Xint
+	Xfindrcline(name)
+	Xregister char *name;
+	X{
+	X	register char *	p;
+	X	register int	i;
+	X	register int	top;
+	X	register int	len;
+	X	static int	prev;
+	X	static int	didthru;
+	X
+	X	for ( ; didthru <= line; ++didthru)
+	X		if ((p = index(rcline[didthru], '!')) != 0 ||
+	X			(p = index(rcline[didthru], ':')) != 0) {
+	X				lentab[didthru] = (int)(p - rcline[didthru]);
+	X		}
+	X	len = strlen(name);
+	X	top = line;
+	X	i = prev;
+	Xloop:
+	X	for ( ; i <= top; ++i)
+	X		if (lentab[i] == len && rcline[i] != NULL &&
+	X			STRNCMP(name, rcline[i], len) == 0)
+	X			return prev = i;
+	X	if (i > line && line > prev - 1) {
+	X		i = 0;
+	X		top = prev - 1;
+	X		goto loop;
+	X	}
+	X	return -1;
+	X}
+	X
+	X/*
+	X * sortactive - make a local copy of the active file, sorted according
+	X *   to the user's preferences, according to his .newsrc file.
+	X */
+	X
+	Xstruct table_elt {
+	X	int	rcindex;
+	X	long	maxart, minart;
+	X	char	yn;
+	X};
+	X
+	X#ifdef SORTACTIVE
+	Xstatic int
+	Xrcsort(a, b)
+	Xchar *a, *b;
+	X{
+	X	return(((struct table_elt *)a)->rcindex -
+	X	       ((struct table_elt *)b)->rcindex);
+	X}
+	X
+	Xstatic char *newactivename = "/tmp/newsaXXXXXX";
+	X#endif /* SORTACTIVE */
+	X
+	Xsortactive()
+	X{
+	X	register struct table_elt *tp;
+	X	register char *p;
+	X	register FILE *nfp, *afp;
+	X	char aline[BUFLEN], ngname[BUFLEN];
+	X	struct table_elt table[LINES];
+	X	int nlines = 0, i, delta, lastline;
+	X
+	X#ifdef SORTACTIVE
+	X	/* make a new sorted copy of ACTIVE */
+	X	MKTEMP(newactivename);
+	X	nfp = fopen(newactivename, "w");
+	X	(void) chmod(newactivename, 0600);
+	X	if (nfp == NULL) {
+	X		perror(newactivename);
+	X		return;
+	X	}
+	X
+	X	/* look up all the lines in ACTIVE, finding their positions in .newsrc */
+	X	p = ACTIVE;
+	X	ACTIVE = newactivename;
+	X	afp = xfopen(p, "r");
+	X
+	X#else /* !SORTACTIVE */
+	X	afp = xfopen(ACTIVE, "r");
+	X#endif /* !SORTACTIVE */
+	X	tp = table;
+	X	while (fgets(aline, sizeof aline, afp) != NULL) {
+	X		if (sscanf(aline,"%s %ld %ld %c", ngname, &tp->maxart,
+	X		    &tp->minart, &tp->yn) != 4) 
+	X			xerror("Active file corrupt");
+	X		delta = tp->maxart - tp->minart;
+	X		if (delta >= BITMAPSIZE)
+	X			BITMAPSIZE = delta + 1;
+	X		if (Kflag && tp->maxart > 0 && ngmatch(ngname, header.nbuf)) {
+	X			int j;
+	X
+	X			j = findrcline(ngname);
+	X			if (j >= 0 && index(rcline[j], '!') == NULL) {
+	X				char rbuf[BUFLEN];
+	X				if (tp->maxart == 1)
+	X					sprintf(rbuf, "%s: 1", ngname);
+	X				else
+	X					sprintf(rbuf, "%s: 1-%ld", ngname, tp->maxart);
+	X				rcline[j] = realloc(rcline[j],
+	X					(unsigned)(strlen(rbuf)+1));
+	X				if (rcline[j] == NULL)
+	X					xerror("Not enough memory");
+	X				strcpy(rcline[j], rbuf);
+	X			}
+	X		}
+	X#ifdef SORTACTIVE
+	X		tp->rcindex = findrcline(ngname);
+	X		if (tp->rcindex < 0) {
+	X			if (++line > LINES)
+	X				xerror("Too many newsgroups");
+	X			strcat(ngname, ":");
+	X			rcline[line] = malloc((unsigned)(strlen(ngname) + 1));
+	X			if (rcline[line] == NULL)
+	X				xerror("Not enough memory");
+	X			strcpy(rcline[line], ngname);
+	X			tp->rcindex = line;
+	X		}
+	X		tp++;
+	X#endif /* SORTACTIVE */
+	X	}
+	X	(void) fclose(afp);
+	X	BITMAPSIZE =  8 * ((BITMAPSIZE+7) / 8);
+	X	bitmap = malloc((unsigned)BITMAPSIZE/8);
+	X	if (bitmap == NULL)
+	X		xerror("Can't malloc bitmap");
+	X
+	X#ifdef SORTACTIVE
+	X	/* sort by position in user's .newsrc file (new groups come up last) */
+	X	nlines = tp - table;
+	X	qsort((char *)table, nlines, sizeof table[0], rcsort);
+	X
+	X	tp = table;
+	X	lastline = tp->rcindex - 1;
+	X	/* copy active to newactive, in the new order */
+	X	for (i = 0; i < nlines; i++) {
+	X		while (++lastline < tp->rcindex) {
+	X			if (STRNCMP(rcline[lastline], "options ", 8) == 0) {
+	X				fprintf(nfp, "%s\n", rcline[lastline]);
+	X			} else {
+	X				fprintf(stderr, "Duplicate .newsrc line or bad group %s\n",
+	X					rcline[lastline]);
+	X				lentab[lastline] = 0;
+	X				free(rcline[lastline]);
+	X				rcline[lastline] = NULL;
+	X			}
+	X		}
+	X		if (rcline[tp->rcindex] == NULL)
+	X			continue;
+	X		p = rcline[tp->rcindex];
+	X		while (*p != ':' && *p != '!')
+	X			fputc(*p++, nfp);
+	X		(void) fprintf(nfp, " %ld %ld %c\n", tp->maxart, tp->minart,
+	X			tp->yn);
+	X		tp++;
+	X	}
+	X	(void) fclose(nfp);
+	X#endif /* SORTACTIVE */
+	X}
+	X
+	X#include <errno.h>
+	X
+	X#ifdef SMALL_ADDRESS_SPACE
+	Xlist_group(lgroup, displines, flag, pngsize)
+	Xchar *lgroup;
+	Xint displines, flag;
+	Xlong pngsize;
+	X{
+	X	printf("Not enough memory on your machine to include this function.\n");}
+	X#else /* !SMALL_ADDRESS_SPACE */
+	X
+	X/*
+	X * Routine to display header lines for all articles in newsgroup. If the flag
+	X * argument is FALSE then only articles which are not marked as read in the
+	X * bitmap will be displayed. This routine makes no attempt to determine if
+	X * the article is in multiple groups and therefore should not be displayed at
+	X * this time. 
+	X */
+	X
+	Xstatic int *lg_array = NULL;
+	Xstatic int *lg_entry;
+	Xstatic int lg_max = 0;
+	Xstatic int int_sig;
+	Xextern int errno;
+	X
+	Xlg_cmp(p1, p2)
+	Xint *p1, *p2;
+	X{
+	X	return *p1 - *p2;
+	X}
+	X
+	Xlist_group(lgroup, displines, flag, pngsize)
+	Xchar *lgroup;
+	Xint displines, flag;
+	Xlong pngsize;
+	X{
+	X	char *briefdate();
+	X	struct hbuf hh;
+	X#ifndef SERVER
+	X	register DIR *dirp;
+	X	register struct direct *dir;
+	X#endif	/* !SERVER */
+	X	register FILE *fp_art;
+	X	int i;
+	X	int entries;
+	X	unsigned int alloc_size;
+	X	int (*old_sig) ();
+	X	extern lg_trap();
+	X	char *gets();
+	X#ifdef SERVER 
+	X	int lowgp,highgp;
+	X	char *workspace;
+	X	if (*lgroup == ' ' || *lgroup == '\0' ||
+	X		(workspace = set_group(lgroup)) == NULL) {
+	X		printf("Group %s is invalid.\n", lgroup);
+	X		return;
+	X	}
+	X	/* We assume that the server will return a line of this format */
+	X	(void) sscanf(workspace, "%s %ld %ld %ld", bfr, &i, &lowgp, &highgp);
+	X	if (i == 0) {
+	X		printf("There are no articles in %s\n", lgroup);
+	X		return;
+	X	}
+	X#else	/* !SERVER */
+	X	/* This should get the numbers from the active file XXX */
+	X	if ((dirp = opendir(dirname(lgroup))) == NULL) {
+	X		printf("Can't open %s\r\n", dirname(lgroup));
+	X		return;
+	X	}
+	X#endif	/* !SERVER */
+	X	entries = 0;
+	X	if (lg_array == NULL) {
+	X		lg_max = 50;
+	X		alloc_size = lg_max * sizeof(int);
+	X		lg_array = (int *) malloc(alloc_size);
+	X	}
+	X#ifdef SERVER
+	X	for(i = lowgp; i < highgp; i++){
+	X#else	/* !SERVER */
+	X	while ((dir = readdir(dirp)) != NULL) {
+	X		if (dir->d_ino == 0)
+	X			continue;
+	X		i = atoi(dir->d_name);
+	X#endif	/* !SERVER */
+	X		if ((i < 1) || (i > pngsize))
+	X			continue;
+	X		if (flag == FALSE) {
+	X			if (get((long)i) == 0)
+	X				continue;
+	X		}
+	X		if (++entries > lg_max) {
+	X			lg_max += 50;
+	X			alloc_size = lg_max * sizeof(int);
+	X			lg_array = (int *) realloc((char *) lg_array, alloc_size);
+	X		}
+	X		lg_array[entries - 1] = i;
+	X	}
+	X	if (entries == lg_max) {
+	X		lg_max++;
+	X		alloc_size = lg_max * sizeof(int);
+	X		lg_array = (int *) realloc((char *) lg_array, alloc_size);
+	X	}
+	X	qsort(lg_array, entries, sizeof *lg_array, lg_cmp);
+	X	lg_array[entries] = 0;
+	X	int_sig = 0;
+	X	old_sig = signal(SIGINT, lg_trap);
+	X	hh.unrec[0] = NULL;
+	X	for (lg_entry = lg_array; *lg_entry != 0 && int_sig == 0; lg_entry++) {
+	X#ifdef SERVER
+	X/* we'll see if just getting the header will work here */
+	X	if ((fp_art = getarticle(lgroup, *lg_entry, "HEAD")) != NULL) {
+	X			strcpy(filename, article_name());
+	X			(void) fclose(fp_art);
+	X			fp_art = NULL;
+	X		}
+	X	else
+	X		continue;
+	X#else	/* !SERVER */
+	X		(void) sprintf(filename, "%s/%d", dirname(lgroup), *lg_entry);
+	X#endif	/* !SERVER */
+	X		fp_art = fopen(filename, "r");
+	X		if (fp_art == NULL)
+	X			continue;
+	X		if (hread(&hh, fp_art, TRUE) == NULL) {
+	X			(void) fclose(fp_art);
+	X			continue;
+	X		}
+	X		printf("%5d %-20.20s %-13s  %s\r\n",
+	X		       *lg_entry, hh.from,
+	X		       briefdate(hh.subdate), hh.title);
+	X		for (i = 0; i < displines;) {
+	X			if (fgets(bfr, LBUFLEN, fp_art) == NULL) {
+	X				break;
+	X			}
+	X			if ((bfr[0] == '\n') || (bfr[0] == '>')) {
+	X				continue;
+	X			}
+	X			printf("%s", bfr);
+	X			i++;
+	X		}
+	X		(void) fclose(fp_art);
+	X#ifdef SERVER
+	X		(void) unlink(filename);
+	X#endif	/* SERVER */
+	X	}
+	X	(void) fflush(stdout);
+	X#ifndef SERVER
+	X	closedir(dirp);
+	X#endif	/* !SERVER */
+	X	(void) signal(SIGINT, old_sig);	/* restore to old value */
+	X	printf("[Press RETURN to continue]");
+	X	(void) fflush(stdout);
+	X
+	X	while (TRUE) {
+	X		errno = 0;
+	X		i = getchar();
+	X		if (errno == EINTR)
+	X			continue;
+	X		if (i == '\n' || i == '\r')
+	X			break;
+	X		if (i == EOF)
+	X			break;
+	X		if (i == '\4')
+	X			break;
+	X	}
+	X	(void) free(lg_array);
+	X	lg_array = NULL;
+	X
+	X}
+	X#endif /* !SMALL_ADDRESS_SPACE */
+	X
+	Xlg_trap(code)
+	Xint code;
+	X{
+	X
+	X	int_sig = 1;
+	X	(void) signal(code, lg_trap);	/* reset signal */
+	X
+	X}
+SHAR_EOF
+if test 20441 -ne "`wc -c < 'rfuncs.c'`"
+then
+	echo shar: error transmitting "'rfuncs.c'" '(should have been 20441 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'rfuncs2.c'" '(11144 characters)'
+if test -f 'rfuncs2.c'
+then
+	echo shar: will not over-write existing file "'rfuncs2.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'rfuncs2.c'
+	X/*
+	X * This software is Copyright 1986 by Rick Adams.
+	X *
+	X * Permission is hereby granted to copy, reproduce, redistribute or
+	X * otherwise use this software as long as: there is no monetary
+	X * profit gained specifically from the use or reproduction or this
+	X * software, it is not sold, rented, traded or otherwise marketed, and
+	X * this copyright notice is included prominently in any copy
+	X * made.
+	X *
+	X * The author make no claims as to the fitness or correctness of
+	X * this software for any use whatsoever, and it is provided as is. 
+	X * Any use of this software is at the user's own risk.
+	X *
+	X * rfuncs2 - more routines needed by readr.
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)rfuncs2.c	1.36	11/30/87";
+	X#endif /* SCCSID */
+	X
+	X/*LINTLIBRARY*/
+	X
+	X#include "rparams.h"
+	X
+	Xstatic char	lbuf[LBUFLEN];
+	Xextern char *replyname();
+	X
+	XFILE *popen();
+	X
+	X/*
+	X * Match title.
+	X */
+	Xtitmat(h, titlist)
+	Xregister struct hbuf *h;
+	Xregister char	*titlist;
+	X{
+	X	register char	*p;
+	X
+	X	while (*titlist != '\0') {
+	X
+	X		if (strcmp(titlist, h->ident) == 0)
+	X			return TRUE;
+	X		for (p = h->title; *p != '\0'; p++)
+	X			if (prefix(p, titlist)) {
+	X				return TRUE;
+	X			}
+	X		while (*titlist++ != '\0')
+	X			;
+	X	}
+	X	return FALSE;
+	X}
+	X
+	X
+	X/*
+	X * Save the news item in the user's file.
+	X *	Allow files with first character as '|' to write article
+	X *	to program across a pipe.
+	X */
+	X
+	X#define PIPECHAR '|'
+	X
+	Xsave(file, to)
+	Xregister char	*file, *to;
+	X{
+	X	register FILE *ufp, *hfp;
+	X#ifdef u370
+	X	static struct hbuf hh;
+	X#else /* !u370 */
+	X	struct hbuf hh;
+	X#endif /* !u370 */
+	X	int	isprogram = 0;
+	X	int	isnew = 1;
+	X	register int i;
+	X
+	X	for(i=0;i<NUNREC;i++)
+	X		hh.unrec[i] = NULL;
+	X
+	X	if ((hfp = art_open(file, "r")) == NULL) {
+	X		fprintf(stderr, "Can't get article.\n");
+	X		return;
+	X	}
+	X	if (hread(&hh, hfp, TRUE) == NULL) {
+	X		fprintf(stderr, "Article is garbled.\n");
+	X		return;
+	X	}
+	X	ufp = fopen(to, "r");
+	X	if (ufp != NULL) {
+	X		(void) fclose(ufp);
+	X		isnew = 0;
+	X	}
+	X	(void) setgid(gid);
+	X	(void) setuid(uid);
+	X	(void) umask(savmask);
+	X
+	X	if (*to == PIPECHAR) {
+	X		if ((ufp = popen (&to[1], "w")) == NULL) {
+	X			fprintf(stderr,"Cannot execute %s\n", &to[1]);
+	X			return;
+	X		}
+	X		isprogram++;
+	X	} else if ((ufp = fopen(to, "a")) == NULL) {
+	X		fprintf(stderr,"Cannot append to %s.\n", to);
+	X		return;
+	X	}
+	X	/*
+	X	 * V7MAIL code is here to conform to V7 mail format.
+	X	 * If you need a different format to be able to
+	X	 * use your local mail command (such as four ^A's
+	X	 * on the end of articles) substitute it here.
+	X	 */
+	X#ifdef MMDF
+	X	if (!isprogram)
+	X		fprintf(ufp, "\001\001\001\001\n");  /* MMDF message header */
+	X#endif /* MMDF */
+	X#ifdef V7MAIL
+	X	hh.subtime = cgtdate(hh.subdate);
+	X	fprintf(ufp, "From %s %s", replyname(&hh), ctime(&hh.subtime));
+	X#endif
+	X	hprint(&hh, ufp, 2);
+	X#ifdef V7MAIL
+	X	tprint(hfp, ufp, TRUE);
+	X	putc('\n', ufp);	/* force blank line at end (ugh) */
+	X#else
+	X	tprint(hfp, ufp, FALSE);
+	X#endif
+	X	(void) fclose(hfp);
+	X#ifdef MMDF
+	X	if (!isprogram)
+	X		fprintf(ufp, "\001\001\001\001\n");  /* MMDF message header */
+	X#endif /* MMDF */
+	X	if (isprogram)
+	X		(void) pclose (ufp);
+	X	else
+	X		(void) fclose(ufp);
+	X	if (!isprogram)
+	X		printf("%s: %s\n", to, isnew ? "New file" : "Appended");
+	X}
+	X
+	X
+	X/*
+	X * Print out the rest of the article.
+	X */
+	Xtprint(ifp, ofp, checkfrom)
+	Xregister FILE *ifp, *ofp;
+	Xint checkfrom;
+	X{
+	X	while ((fgets(bfr, sizeof bfr, ifp)) != NULL && !SigTrap) {
+	X		if (checkfrom && strncmp(bfr, "From ", 5) == 0)
+	X			putc('>', ofp);
+	X		(void) fputs(bfr, ofp);
+	X		if (ferror(ofp)) break;		/* E.g. disk full */
+	X	}
+	X	if (SigTrap)
+	X		qfflush(ofp);
+	X	(void) fflush(ofp);
+	X	fprintf(ofp, (SigTrap ? "\n\n" : "\n"));
+	X	SigTrap = FALSE;
+	X}
+	X
+	X
+	X/*
+	X * Print the file header.
+	X */
+	Xhprint(hp, ofp, verbose)
+	Xregister struct hbuf *hp;
+	Xint	verbose;
+	Xregister FILE *ofp;
+	X{
+	X	register char	*p1, *p2;
+	X	char	fname[BUFLEN];
+	X	char *tailpath();
+	X
+	X	fname[0] = '\0';		/* init name holder */
+	X
+	X	if (verbose == 2) {
+	X		lhwrite(hp, ofp);
+	X		return;
+	X	}
+	X
+	X	if (lflag || eflag) {
+	X		char buf1[80], buf2[200];
+	X		char *cp;
+	X
+	X		(void) strcpy(bfr, groupdir);
+	X		for (cp=bfr; *cp; cp++)
+	X			if (*cp == '/')
+	X				*cp = '.';
+	X		(void) sprintf(buf1, "%s/%ld", bfr, bit);
+	X		(void) sprintf(buf2, "%-20s %s", buf1, hp->title);
+	X		fprintf(ofp, "%.76s\n", buf2);
+	X		return;
+	X	}
+	X
+	X	p1 = index(hp->from, '(');	/* Find the sender's full name. */
+	X	if (p1 == NULL && hp->path[0])
+	X		p1 = index(hp->path, '(');
+	X	if (p1 != NULL) {
+	X		strcpy(fname, p1+1);
+	X		p2 = index(fname, ')');
+	X		if (p2 != NULL)
+	X			*p2 = '\0';
+	X	}
+	X
+	X	fprintf(ofp, "Subject: %s\n", hp->title);
+	X	if (!hflag && hp->summary[0])
+	X		fprintf(ofp, "Summary: %s\n", hp->summary);
+	X	if (!hflag && hp->keywords[0])
+	X		fprintf(ofp, "Keywords: %s\n", hp->keywords);
+	X	if (verbose) {
+	X		fprintf(ofp, "From: %s\n", hp->from);
+	X		fprintf(ofp, "Path: %s\n", hp->path);
+	X		if (hp->organization[0])
+	X			fprintf(ofp, "Organization: %s\n", hp->organization);
+	X	}
+	X	else {
+	X		if (p1 != NULL)
+	X			*--p1 = '\0';		/* bump over the '(' */
+	X#ifdef INTERNET
+	X		/*
+	X		 * Prefer Path line if it's in internet format, or if we don't
+	X		 * understand internet format here, or if there is no reply-to.
+	X		 */
+	X		fprintf(ofp, "From: %s", hp->from);
+	X#else
+	X		fprintf(ofp, "Path: %s", tailpath(hp));
+	X#endif
+	X		if (fname[0] || hp->organization[0]) {
+	X			if (fname[0] == '\0') {
+	X				(void) strcpy(fname,hp->from);
+	X				p2 = index(fname,'@');
+	X				if (p2)
+	X					*p2 = '\0';
+	X			}
+	X			fprintf(ofp, " (%s", fname);
+	X			if (hp->organization[0] && !hflag)
+	X				fprintf(ofp, " @ %s", hp->organization);
+	X			fprintf(ofp, ")");
+	X		}
+	X		fprintf(ofp, "\n");
+	X		if (p1 != NULL)
+	X			*p1 = ' ';
+	X	}
+	X
+	X	if (verbose) {
+	X		fprintf(ofp, "Newsgroups: %s\n", hp->nbuf);
+	X		fprintf(ofp, "Date: %s\n", hp->subdate);
+	X		if (hp->sender[0])
+	X			fprintf(ofp, "Sender: %s\n", hp->sender);
+	X		if (hp->replyto[0])
+	X			fprintf(ofp, "Reply-To: %s\n", hp->replyto);
+	X		if (hp->followto[0])
+	X			fprintf(ofp, "Followup-To: %s\n", hp->followto);
+	X	}
+	X	else if (index(hp->nbuf, ',') || strcmp(groupdir, "junk") == 0)
+	X		fprintf(ofp, "Newsgroups: %s\n", hp->nbuf);
+	X
+	X	if (pflag || ofp != stdout)
+	X		putc('\n', ofp);
+	X}
+	X
+	X
+	X/*
+	X * If ofp != stdout, close it and run the script in coptbuf.
+	X */
+	Xcout(ofp)
+	XFILE *ofp;
+	X{
+	X	register char	*p, *q, *r;
+	X
+	X	if (ofp == stdout || ofp == NULL)
+	X		return;
+	X	(void) fclose(ofp);
+	X	p = coptbuf;
+	X	q = lbuf;
+	X	while ((*q = *p++) != '\0')
+	X		if (*q++ == FMETA) {
+	X			q--;
+	X			r = outfile;
+	X			while ((*q++ = *r++) != '\0')
+	X				;
+	X			q--;
+	X		}
+	X	fwait(fsubr(ushell, lbuf, (char *)NULL));
+	X	(void) unlink(outfile);
+	X}
+	X
+	X
+	Xcdump(ofp)
+	Xregister FILE *ofp;
+	X{
+	X	if (ofp == stdout)
+	X		return;
+	X	fclose(ofp);
+	X	unlink(outfile);
+	X}
+	X
+	X
+	X/*
+	X * Quiet 'flush'.
+	X * Empty (without fflush()) the buffer for stream fp.
+	X */
+	X/* ARGSUSED */
+	Xqfflush(fp)
+	XFILE *fp;
+	X{
+	X#ifdef fileno
+	X	int	fno, err;
+	X
+	X	fno = fileno(fp);
+	X	err = ferror(fp);
+	X	fileno(fp) = -1;
+	X	(void) fflush(fp);
+	X	fileno(fp) = fno;
+	X	if (!err)
+	X		(void) clearerr(fp);
+	X#endif /* fileno */
+	X}
+	X
+	X/*
+	X * Count the number of remaining lines in file fp.
+	X * Do not move the file pointer.
+	X */
+	Xlinecnt(fp)
+	XFILE *fp;
+	X{
+	X	long	curpos;
+	X	register int	nlines = 0;
+	X	register int	c;
+	X
+	X	if (fp == NULL)
+	X		return 0;
+	X	curpos = ftell(fp);
+	X	while ((c = getc(fp)) != EOF)
+	X		if (c == '\n')
+	X			nlines++;
+	X	(void) fseek(fp, curpos, 0);
+	X	return nlines;
+	X}
+	X
+	X
+	X/*
+	X * Transmit file to system.
+	X */
+	Xtransmit(sp, file)
+	Xregister struct srec *sp;
+	Xchar	*file;
+	X{
+	X	register FILE *ifp, *ofp;
+	X	register int	c, i;
+	X#ifdef u370
+	X	static struct hbuf hh;
+	X#else /* !u370 */
+	X	struct hbuf hh;
+	X#endif /* !u370 */
+	X	char	TRANS[BUFLEN];
+	X
+	X#ifdef DEBUG
+	X	fprintf(stderr, "xmit %s to %s using %s\n", file, sp->s_name, sp->s_xmit);
+	X#endif
+	X	bzero((char *)&hh, sizeof hh);
+	X	ifp = xart_open(file, "r");
+	X	if (hread(&hh, ifp, TRUE) == NULL)
+	X		return;
+	X	strcpy(TRANS, "/tmp/trXXXXXX");
+	X	MKTEMP(TRANS);
+	X	ofp = xfopen(TRANS, "w");
+	X	if (index(sp->s_flags, 'A') == NULL)
+	X		hwrite(&hh, ofp);
+	X	else {
+	X#ifdef OLD
+	X			fprintf(ofp, "A%s\n%s\n%s!%s\n%s\n%s\n", oident(hh.ident), hh.nbuf, PATHSYSNAME,
+	X				hh.path, hh.subdate, hh.title);
+	X#else /* !OLD */
+	X			logerr("Must have OLD defined to use A flag for xmit");
+	X			unlink(TRANS);
+	X			return;
+	X#endif /* !OLD */
+	X	}
+	X	while ((c = getc(ifp)) != EOF)
+	X		putc(c, ofp);
+	X	(void) fclose(ifp);
+	X	(void) fclose(ofp);
+	X	for (i=0;i<NUNREC;i++)
+	X		if (hh.unrec[i] != NULL)
+	X			free(hh.unrec[i]);
+	X	if (*sp->s_xmit == '\0' || strpbrk(sp->s_flags, "FUMH"))
+	X		(void) sprintf(bfr, DFTXMIT, sp->s_name, TRANS);
+	X	else
+	X		(void) sprintf(bfr, "(%s) < %s", sp->s_xmit, TRANS);
+	X#ifdef DEBUG
+	X	fprintf(stderr, "%s\n", bfr);
+	X#endif
+	X	(void) system(bfr);
+	X	(void) unlink(TRANS);
+	X}
+	X
+	X
+	X/*
+	X * Cancel the article whose header is in hp, by posting a control message
+	X * to cancel it.  The scope of the control message depends on who would
+	X * really be willing to cancel it.  It is sent as far as it will do any good.
+	X * notauthor is true iff the person posting this article is not the
+	X * real author of the article being cancelled.
+	X */
+	Xcancel(ofp, hp, notauthor)
+	XFILE *ofp;
+	Xstruct hbuf *hp;
+	Xint	notauthor;
+	X{
+	X	int	pid;
+	X
+	X	fflush(ofp);
+	X	pid = vfork();
+	X	if (pid < 0) {
+	X		perror("readnews: cancel");
+	X		return 0;
+	X	}
+	X	if (pid > 0)
+	X		return 0;
+	X	if (notauthor)
+	X		(void) sprintf(bfr, "%s/%s -c 'cancel %s' -n %s -d %s < /dev/null",
+	X		    LIB, "inews", hp->ident, hp->nbuf,
+	X#ifdef ORGDISTRIB
+	X			ORGDISTRIB);
+	X#else /* !ORGDISTRIB */
+	X			"local");
+	X#endif /* !ORGDISTRIB */
+	X	else {
+	X		if (hp->distribution[0] == '\0')
+	X			(void) sprintf(bfr, "%s/%s -c 'cancel %s' -n %s < /dev/null",
+	X			    LIB, "inews", hp->ident, hp->nbuf);
+	X		else
+	X			(void) sprintf(bfr, "%s/%s -c 'cancel %s' -n %s -d %s < /dev/null",
+	X			    LIB, "inews", hp->ident, hp->nbuf, hp->distribution);
+	X	}
+	X	execl("/bin/sh", "sh", "-c", bfr, (char *) 0);
+	X	perror(bfr);
+	X	for ( ; ; )
+	X		exit(1);
+	X}
+	X
+	X
+	Xdash(num, ofp)
+	Xregister int	num;
+	Xregister FILE *ofp;
+	X{
+	X	register int	i;
+	X
+	X	for (i = 0; i < num; i++)
+	X		putc('-', ofp);
+	X	putc('\n', ofp);
+	X}
+	X
+	X
+	Xhelp(ofp)
+	Xregister FILE *ofp;
+	X{
+	X	register FILE *fp;
+	X	register int	c;
+	X	char temp[BUFLEN];
+	X
+	X	if (cflag) {
+	Xoneline:
+	X		fprintf(ofp, "(n)ext re(p)rint (w)rite (q)uit (r)eply\
+	X (c)ancel -[n] +[n] (f)ollowup (N)ext (U)nsubscribe (v)ersion\n");
+	X		return;
+	X	}
+	X	(void) sprintf(temp, "%s/%s", LIB, "help");
+	X	if ((fp = fopen(temp, "r")) == NULL) {
+	X		fprintf(ofp, "No help file.\n");
+	X		goto oneline;
+	X	}
+	X	while ((c = getc(fp)) != EOF && !SigTrap)
+	X		putc(c, ofp);
+	X	(void) fclose(fp);
+	X}
+	X
+	X
+	Xpout(ofp)
+	XFILE *ofp;
+	X{
+	X	register char	*p, *q, *r;
+	X
+	X	p = PAGER;
+	X	q = lbuf;
+	X	while ((*q = *p++) != '\0')
+	X		if (*q++ == FMETA) {
+	X			q--;
+	X			r = filename;
+	X			while ((*q++ = *r++) != '\0')
+	X				;
+	X			q--;
+	X		}
+	X	fwait(fsubr(ushell, lbuf, (char *)NULL));
+	X	fprintf(ofp, "\n");
+	X}
+	X
+	X/*
+	X * Print a very brief version of the date in question.
+	X */
+	Xchar *
+	Xbriefdate(datestr)
+	Xchar *datestr;
+	X{
+	X	time_t dt, now;
+	X	char *tmstr;
+	X	char *wkday, *monthdate, *timeofday;
+	X	static char rbuf[20];
+	X
+	X	dt = cgtdate(datestr);
+	X	tmstr = ctime(&dt);
+	X
+	X	wkday = tmstr; tmstr[3] = '\0';
+	X	monthdate = tmstr+4; tmstr[10] = '\0';
+	X	timeofday = tmstr+11; tmstr[16] = '\0';
+	X
+	X	(void) time(&now);
+	X	if (now - dt < WEEKS)
+	X		(void) strcpy(rbuf, wkday);
+	X	else
+	X		(void) strcpy(rbuf, monthdate);
+	X	(void) strcat(rbuf, " ");
+	X	(void) strcat(rbuf, timeofday);
+	X	return rbuf;
+	X}
+	X
+	X/*
+	X * Return TRUE iff stdout is /dev/null.
+	X */
+	Xignoring()
+	X{
+	X	struct stat ss, ns;
+	X
+	X	if (fstat(1, &ss) < 0)
+	X		return FALSE;
+	X	if (stat("/dev/null", &ns) < 0)
+	X		return FALSE;
+	X	if (ss.st_dev == ns.st_dev && ss.st_rdev == ns.st_rdev)
+	X		return TRUE;
+	X	return FALSE;
+	X}
+SHAR_EOF
+if test 11144 -ne "`wc -c < 'rfuncs2.c'`"
+then
+	echo shar: error transmitting "'rfuncs2.c'" '(should have been 11144 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'sendnews.c'" '(1769 characters)'
+if test -f 'sendnews.c'
+then
+	echo shar: will not over-write existing file "'sendnews.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'sendnews.c'
+	X/*
+	X * sendnews - send news article by mail.
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)sendnews.c	2.13	9/24/87";
+	X#endif /* SCCSID */
+	X
+	X#include <stdio.h>
+	X#include <ctype.h>
+	X#include "defs.h"
+	X
+	Xchar buffer[BUFSIZ];
+	X
+	Xint linecount, oflag = 0, aflag = 0, bflag = 0, toflag = 0;
+	X
+	Xextern FILE *popen();
+	X
+	X/* ARGSUSED */
+	Xmain(argc, argv)
+	Xchar **argv;
+	X{
+	X	register FILE *out;
+	X	char newsgroup[BUFSIZ];
+	X
+	X	while (**(++argv) == '-') {
+	X		if (*++*argv == 'o')
+	X			oflag++;
+	X		else if (**argv == 'a')
+	X			aflag++;
+	X		else if (**argv == 'b')
+	X			bflag++;
+	X		else if (**argv == 'n')
+	X			strcpy(newsgroup, *(++argv));
+	X	}
+	X	if (aflag && bflag) {
+	X		fprintf(stderr, "'-a' and '-b' options mutually exclusive.\n");
+	X		exit(1);
+	X	}
+	X
+	X#ifdef DEBUG
+	X	printf("/bin/mail %s\n", *argv);
+	X	sprintf(buffer, "cat");
+	X#else
+	X#ifdef SENDMAIL
+	X	(void) sprintf(buffer, "%s -i -odq %s", SENDMAIL, *argv);
+	X#else /* !SENDMAIL */
+	X#ifdef M_XENIX
+	X	(void) sprintf(buffer, "/usr/bin/mail %s", *argv);
+	X#else /* XENIX is not quite Unix.... */
+	X	(void) sprintf(buffer, "/bin/mail %s", *argv);
+	X#endif /* !M_XENIX */
+	X#endif /* !SENDMAIL */
+	X#endif
+	X	if ((out = popen(buffer, "w")) == NULL) {
+	X		perror(buffer);
+	X		exit(1);
+	X	}
+	X
+	X	/* Standard mail prelude to make the formatters happy */
+	X	fprintf(out, "Subject: network news article\n");
+	X	fprintf(out, "To: %s\n\n", *argv);
+	X
+	X	while (fgets(buffer, sizeof buffer, stdin)) {
+	X		if (*newsgroup && ngline()) {
+	X			if (oflag)
+	X				sprintf(buffer, "%s\n", newsgroup);
+	X			else
+	X				sprintf(buffer, "Newsgroups: %s\n", newsgroup);
+	X		}
+	X		putc('N', out);
+	X		fputs(buffer, out);
+	X		if (ferror(out))
+	X			exit(1);
+	X	}
+	X	pclose(out);
+	X	exit(0);
+	X}
+	X
+	Xngline()
+	X{
+	X	if (oflag)
+	X		return linecount == 2;
+	X	if (!toflag && (!strncmp("Newsgroups: ", buffer, 12) ||
+	X		!strncmp("To: ",buffer, 4)))
+	X		return ++toflag;
+	X	return 0;
+	X}
+SHAR_EOF
+if test 1769 -ne "`wc -c < 'sendnews.c'`"
+then
+	echo shar: error transmitting "'sendnews.c'" '(should have been 1769 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'uname.c'" '(2481 characters)'
+if test -f 'uname.c'
+then
+	echo shar: will not over-write existing file "'uname.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'uname.c'
+	X/*
+	X * This software is Copyright (c) 1986 by Rick Adams.
+	X *
+	X * Permission is hereby granted to copy, reproduce, redistribute or
+	X * otherwise use this software as long as: there is no monetary
+	X * profit gained specifically from the use or reproduction or this
+	X * software, it is not sold, rented, traded or otherwise marketed, and
+	X * this copyright notice is included prominently in any copy
+	X * made.
+	X *
+	X * The author make no claims as to the fitness or correctness of
+	X * this software for any use whatsoever, and it is provided as is. 
+	X * Any use of this software is at the user's own risk.
+	X *
+	X * This routine is compatible with the Unix T/S system call uname,
+	X * which figures out the name of the local system.
+	X * However, we do it by reading the file /usr/include/whoami.h.
+	X * This avoids having to recompile uucp for each site and hence
+	X * avoids having to distribute the source to uucp to people who
+	X * have only binary licenses.
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)uname.c	2.17	11/19/87";
+	X#endif /* SCCSID */
+	X
+	X#ifdef BSD2_10
+	X#include <shortnames.h>
+	X#endif /* BSD2_10 */
+	X
+	X#include "params.h"
+	X
+	X#ifdef UNAME
+	X# define DONE
+	X#endif /* UNAME */
+	X
+	X#ifdef GHNAME
+	Xuname(uptr)
+	Xstruct utsname *uptr;
+	X{
+	X	char *cp;
+	X	extern char *mydomain();
+	X	gethostname(uptr->nodename, sizeof (uptr->nodename));
+	X	for (cp = uptr->nodename; *cp == '\0'; cp++)
+	X		if (isupper(*cp)) *cp = tolower(*cp);
+	X	cp = mydomain();
+	X	if (*cp == '\0') /* get domain name from hostname */
+	X		return;
+	X	cp = index(uptr->nodename, '.');
+	X	if (cp)
+	X		*cp = '\0';
+	X}
+	X# define DONE
+	X#endif
+	X
+	X#ifdef	UUNAME
+	Xuname(uptr)
+	Xstruct utsname *uptr;
+	X{
+	X	FILE *uucpf;
+	X	register char *p;
+	X	/* uucp name is stored UUNAME */
+	X
+	X	if (((uucpf = fopen(UUNAME, "r")) == NULL) ||
+	X		fgets(uptr->nodename, sizeof (uptr->nodename), uucpf) == NULL) {
+	X			fprintf(stderr, "no sysname in %s\n", UUNAME);
+	X			return;
+	X	}
+	X	p = index(uptr->nodename, '\n');
+	X	if (p)
+	X		*p = '\0';
+	X	if (uucpf != NULL)
+	X		fclose(uucpf);
+	X}
+	X#define DONE
+	X#endif /* UUNAME */
+	X
+	X#ifndef DONE
+	X#define	HDRFILE "/usr/include/whoami.h"
+	X
+	Xuname(uptr)
+	Xstruct utsname *uptr;
+	X{
+	X	char buf[BUFSIZ];
+	X	FILE *fd;
+	X	
+	X	fd = fopen(HDRFILE, "r");
+	X	if (fd == NULL) {
+	X		fprintf(stderr, "Cannot open %s\n", HDRFILE);
+	X		exit(1);
+	X	}
+	X	
+	X	for (;;) {	/* each line in the file */
+	X		if (fgets(buf, sizeof buf, fd) == NULL) {
+	X			fprintf(stderr, "no sysname in %s\n", HDRFILE);
+	X			fclose(fd);
+	X			exit(2);
+	X		}
+	X		if (sscanf(buf, "#define sysname \"%[^\"]\"", uptr->nodename) == 1) {
+	X			fclose(fd);
+	X			return;
+	X		}
+	X	}
+	X}
+	X#endif
+SHAR_EOF
+if test 2481 -ne "`wc -c < 'uname.c'`"
+then
+	echo shar: error transmitting "'uname.c'" '(should have been 2481 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'unbatch.c'" '(4718 characters)'
+if test -f 'unbatch.c'
+then
+	echo shar: will not over-write existing file "'unbatch.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'unbatch.c'
+	X/*
+	X * unbatchnews: extract news in batched format and process it one article
+	X * at a time.  The format looks like
+	X *	#! rnews 1234
+	X *	article containing 1234 characters
+	X *	#! rnews 4321
+	X *	article containing 4321 characters
+	X *
+	X *	or
+	X *
+	X *	#! command [args]
+	X *	calls LIBDIR/command [args] to process the news
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)unbatch.c	1.26	3/21/87";
+	X#endif /* SCCSID */
+	X
+	X#define	MAXARGS		32
+	X
+	X#include "defs.h"
+	X#include <stdio.h>
+	X#include <ctype.h>
+	X#if defined(USG) || defined(BSD4_2) || defined(BSD4_1C)
+	X#include <fcntl.h>
+	X#endif /* USG */
+	X
+	Xchar buf[BUFSIZ];
+	Xchar sibuf[BUFSIZ];
+	X
+	Xmain()
+	X{
+	X	register int c;
+	X	register FILE *pfn;
+	X	register long size;
+	X	char *filename;
+	X	int pid, wpid, exstat;
+	X	char *mktemp(), *gets();
+	X	long atol();
+	X
+	X	filename = mktemp("/tmp/unbnewsXXXXXX");
+	X	setbuf(stdin, (char *)NULL);	/* only for the first line */
+	X	if (gets(buf) == NULL) {
+	X		(void) unlink(filename);
+	X		exit(0);
+	X	}
+	X	if (strncmp(buf, "#! rnews ", 9) != 0) {
+	X		docmd(buf);
+	X		/* should not return */
+	X		logerr("unbatch: docmd returned!");
+	X		exit(1);
+	X	}
+	X
+	X	setbuf(stdin, sibuf);	/* buffer the rest of the file */
+	X
+	X	do {
+	X		while (strncmp(buf, "#! rnews ", 9) 
+	X		    && strncmp(buf, "! rnews ", 8)) { /* kludge for bug */
+	X			register char *cp;
+	X			for (cp = buf; *cp != '\0'; ++cp)
+	X				if (!isascii(*cp) ||
+	X					(!isprint(*cp) && !isspace(*cp)))
+	X						*cp = '?';
+	X			logerr("out of sync, skipping %s", buf);
+	X			if (gets(buf) == NULL)
+	X				exit(0);
+	X		}
+	X		size = atol(buf + (buf[0] == '#' ? 9 : 8));
+	X		if(size <= 0) {
+	X			logerr("nonsense size %ld", size);
+	X			continue;
+	X		}
+	X#ifdef VMS
+	X/* The loop is to delete all versions. */
+	X		while (unlink(filename) == 0)
+	X			;
+	X#endif /* VMS */
+	X		pfn = fopen(filename, "w");
+	X		while(--size >= 0 && (c = getc(stdin)) != EOF)
+	X			putc(c, pfn);
+	X		if (ferror(pfn) || fclose(pfn)) {	/* disk full? */
+	X			logerr("error writing temporary file");
+	X			break;
+	X		}
+	X
+	X		/*
+	X		 * If we got a truncated batch, don't process the
+	X		 * last article; it will probably be received again.
+	X		 */
+	X		if (size > 0) {
+	X			logerr("truncated batch");
+	X			break;
+	X		}
+	X
+	X		/*
+	X		 * rnews < filename
+	X		 */
+	X		while ((pid = vfork()) == -1) {
+	X			logerr("fork failed, waiting...\n");
+	X			sleep(60);
+	X		}
+	X		if (pid == 0) {
+	X			(void) close(0);
+	X			(void) open(filename, 0);
+	X#ifdef IHCC
+	X			(void) sprintf(buf, "%s/%s", logdir(HOME), RNEWS);
+	X#else
+	X			strcpy(buf, RNEWS);
+	X#endif
+	X#ifdef SPOOLNEWS
+	X			execlp(buf, "rnews", "-S", (char *)0);
+	X#else /* !SPOOLNEWS */
+	X			execlp(buf, "rnews", (char *)0);
+	X#endif /* !SPOOLNEWS */
+	X			perror("rnews");
+	X			exit(1);
+	X		}
+	X		while ((wpid = wait(&exstat)) >= 0 && wpid != pid)
+	X			;
+	X	} while (gets(buf) != NULL);
+	X	(void) unlink(filename);
+	X	exit(0);
+	X}
+	X
+	Xdocmd(p)
+	Xregister char *p;
+	X{
+	X	char *args[MAXARGS];
+	X	register char **ap = args;
+	X	char path[BUFSIZ];
+	X	char *rindex(), *cp;
+	X
+	X	while (*p && !isspace(*p))		/* skip leading #! crud */
+	X		p++;
+	X
+	X	while (isspace(*p))
+	X		p++;
+	X
+	X	while (*p != '\0') {
+	X		*ap++ = p;
+	X		if (ap >= &args[MAXARGS]) {
+	X			logerr("unbatch: Too many args to %s", args[0]);
+	X			exit(2);
+	X		}
+	X		while (*p && !isspace(*p))
+	X			p++;
+	X		if (*p)
+	X			*p++ = '\0';
+	X		while (isspace(*p))
+	X			p++;
+	X	}
+	X	*ap = (char *)0;
+	X
+	X	if (ap == args) {
+	X		logerr("unbatch: no command to execute");
+	X		exit(2);
+	X	}
+	X
+	X	/* strip off any leading pathname in case someone gets tricky */
+	X	cp = rindex(args[0], '/');
+	X	if (cp++ == NULL)
+	X		cp = args[0];
+	X
+	X# ifdef HOME
+	X	sprintf(path, "%s/%s/%s", logdir(HOME), LIBDIR, cp);
+	X# else /* !HOME */
+	X	sprintf(path, "%s/%s", LIBDIR, cp);
+	X# endif /* HOME */
+	X
+	X	/*
+	X	 * "path" is absolute, no searching is needed,  we use
+	X	 * 'execvp' solely so that sh scripts will be handled
+	X	 */
+	X	(void) execvp(path, args);
+	X	perror(path);
+	X	exit(2);
+	X}
+	X
+	X/*
+	X * Log the given message, with printf strings and parameters allowed,
+	X * on the log file, if it can be written.
+	X */
+	X/* VARARGS1 */
+	Xlogerr(fmt, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+	Xchar *fmt;
+	Xlong a1, a2, a3, a4, a5, a6, a7, a8, a9;
+	X{
+	X	FILE *logfile;
+	X	char lfname[BUFSIZ];		/* the log file */
+	X	char bfr[BUFSIZ];
+	X	char *logtime, *ctime(); 
+	X	long t;
+	X
+	X	(void) time(&t);
+	X	logtime = ctime(&t);
+	X	logtime[16] = 0;
+	X	logtime += 4;
+	X
+	X#ifdef IHCC
+	X	(void) sprintf(lfname, "%s/%s/errlog", logdir(HOME), LIBDIR);
+	X#else
+	X	(void) sprintf(lfname, "%s/errlog", LIBDIR);
+	X#endif
+	X
+	X	(void) sprintf(bfr, fmt, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+	X	(void) fprintf(stderr, "%s\n", bfr);
+	X	if (access(lfname, 0) == 0 && (logfile = fopen(lfname, "a")) != NULL) {
+	X#if defined(USG) || defined(BSD4_2) || defined(BSD4_1C)
+	X		int flags;
+	X		flags = fcntl(fileno(logfile), F_GETFL, 0);
+	X		(void) fcntl(fileno(logfile), F_SETFL, flags|O_APPEND);
+	X#else /* v7 */
+	X		(void) lseek(fileno(logfile), 0L, 2);
+	X#endif /* v7 */
+	X		fprintf(logfile, "%s\tbatch\t%s\n", logtime, bfr);
+	X		(void) fclose(logfile);
+	X	}
+	X}
+SHAR_EOF
+if test 4718 -ne "`wc -c < 'unbatch.c'`"
+then
+	echo shar: error transmitting "'unbatch.c'" '(should have been 4718 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'uurec.c'" '(3247 characters)'
+if test -f 'uurec.c'
+then
+	echo shar: will not over-write existing file "'uurec.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'uurec.c'
+	X/*
+	X * uurec - receive articles via /bin/mail.
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)uurec.c	2.11	3/21/87";
+	X#endif /* SCCSID */
+	X
+	X#include "defs.h"
+	X
+	X#include <stdio.h>
+	X#include <ctype.h>
+	X
+	X/*
+	X * Process a news article which has been shipped via /bin/mail.
+	X */
+	X
+	X#define FROM	01
+	X#define NLIN	02
+	X#define BLANK	03
+	X#define OTHER	04
+	X
+	X#define SKIPPING	010
+	X#define READING		020
+	X
+	X#define BFSZ 250
+	X
+	X#define EOT	'\004'
+	X
+	X#define A	01
+	X#define B	02
+	X
+	X#ifdef debug
+	X# define RNEWS "cat"
+	X#endif
+	Xextern	char	*strcat(), *strcpy();
+	Xextern	char	*frombreak();
+	Xextern	FILE	*popen();
+	X
+	X/* ARGSUSED */
+	Xmain(argc, argv)
+	Xint argc;
+	Xchar **argv;
+	X{
+	X	char buf[BFSZ], fbuf[BFSZ];
+	X	char bfr[BFSZ], *pbfr = bfr;
+	X	register char *p = NULL;
+	X	register FILE *pipe = stdout;
+	X	register int mode, frmflg, pathcnt, format;
+	X	char *index();
+	X
+	X	mode = SKIPPING;
+	X	frmflg = FALSE;
+	X	while (fgets(buf, BFSZ, stdin) != NULL) {
+	X#ifdef debug
+	X		printf("%o\t%s", mode|type(buf), buf);
+	X#endif
+	X		switch (mode | type(buf)) {
+	X
+	X		case FROM | SKIPPING:
+	X			if (frmflg)
+	X				p = frombreak(p, buf);
+	X			else
+	X				p = fbuf;
+	X			frmflg = TRUE;
+	X			break;
+	X
+	X		case FROM | READING:
+	X			if (!frmflg) {
+	X				frmflg = TRUE;
+	X				p = fbuf;
+	X				pclose(pipe);
+	X			}
+	X			p = frombreak(p, buf);
+	X			break;
+	X
+	X		case NLIN | SKIPPING:
+	X			if ((isupper(buf[1]) && index(buf, ':')) || !strncmp(buf, "From ", 5))
+	X				format = B;
+	X			else
+	X				format = A;
+	X#ifdef debug
+	X			printf("format = %d\n", format);
+	X#endif
+	X			mode = READING;
+	X
+	X		case NLIN | READING:
+	X			if (frmflg) {
+	X				frmflg = FALSE;
+	X				--p;
+	X				while (p >= fbuf && *--p != '!')
+	X					;
+	X				*++p = '\0';
+	X				pathcnt = 0;
+	X#ifdef IHCC
+	X				sprintf(pbfr, "%s/%s", logdir(HOME), RNEWS);
+	X#else
+	X				pbfr = RNEWS;
+	X#endif
+	X				if ((pipe = popen(pbfr, "w")) == NULL) {
+	X					perror("uurec: popen failed");
+	X					exit(1);
+	X				}
+	X			}
+	X			if (format == A) {
+	X				if (++pathcnt == 3)
+	X					fputs(fbuf, pipe);
+	X				fputs(buf+1, pipe);
+	X			} else {
+	X				if (!pathcnt && (!strncmp(buf+1, "From: ", 6) || !strncmp(buf+1, "From ", 5))) {
+	X					pathcnt++;
+	X					fprintf(pipe, "From: %s", fbuf);
+	X					sscanf(buf, "%s %[^\n]", fbuf, fbuf);
+	X					fprintf(pipe, "%s\n", fbuf);
+	X				} else
+	X					fputs(buf+1, pipe);
+	X			}
+	X			break;
+	X
+	X		case OTHER | SKIPPING:
+	X			break;
+	X
+	X		case OTHER | READING:
+	X			pclose(pipe);
+	X			mode = SKIPPING;
+	X		}
+	X	}
+	X	if (pipe && pipe != stdout)
+	X		pclose(pipe);
+	X	exit(0);
+	X}
+	X
+	Xtype(p)
+	Xregister char *p;
+	X{
+	X	while (*p == ' ' || *p == '?')
+	X		++p;
+	X
+	X	if (*p == 'N')
+	X		return (NLIN);
+	X
+	X	if (strncmp(p, ">From ", 6) == 0)
+	X		return (FROM);
+	X
+	X	if (strncmp(p, "From ", 5) == 0)
+	X		return (FROM);
+	X
+	X	return(OTHER);
+	X}
+	X
+	X/*
+	X * Get the system name out of a from line.
+	X */
+	Xchar *
+	Xfrombreak(buf, fbuf)
+	Xregister char *buf, *fbuf;
+	X{
+	X	register char *p;
+	X
+	X	/* break the line into tokens. */
+	X	p = fbuf;
+	X	while (*++p != '\0')
+	X		switch (*p) {
+	X		case '\n':
+	X		case '\t':
+	X		case ' ':
+	X			*p = '\0';
+	X			break;
+	X		case EOT:
+	X			goto garbled;
+	X		default:;
+	X		}
+	X	*++p = EOT;
+	X	*++p = '\0';
+	X
+	X	for (p=fbuf; *p != EOT  || p[1] != '\0'; p += strlen(p)+1) {
+	X		if (strcmp(p, "forwarded") == 0)
+	X			return(buf);
+	X		if (strcmp(p, "remote") == 0) {
+	X			p += strlen(p)+1;
+	X			if (strcmp(p, "from") == 0) {
+	X				p += strlen(p)+1;
+	X				strcpy(buf, p);
+	X				strcat(buf, "!");
+	X				return(buf+strlen(buf));
+	X			}
+	X		}
+	X	}
+	X    garbled:
+	X	strcat(buf, "???!");
+	X	return(buf+4);
+	X}
+SHAR_EOF
+if test 3247 -ne "`wc -c < 'uurec.c'`"
+then
+	echo shar: error transmitting "'uurec.c'" '(should have been 3247 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'virtterm.c'" '(20338 characters)'
+if test -f 'virtterm.c'
+then
+	echo shar: will not over-write existing file "'virtterm.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'virtterm.c'
+	X/*
+	X *  Virtual terminal handler
+	X *  Written by Kenneth Almquist, AGS Computers  (HO 4C601, X7105).
+	X *  Modified by Stephen Hemminger, to use TERMCAP (without curses)
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)virtterm.c	1.14	9/24/87";
+	X#endif /* SCCSID */
+	X
+	X/*LINTLIBRARY*/
+	X
+	X#include <stdio.h>
+	X#include <ctype.h>
+	X#include <sys/types.h>
+	X#include <sys/ioctl.h>
+	X#include <signal.h>
+	X#ifdef USG
+	X#include <termio.h>
+	X#else /* !USG */
+	X#include <sgtty.h>
+	X#endif /* !USG */
+	X
+	X/*
+	X * These values for MAXPLEN and MAXLLEN are used to dimension arrays
+	X * that hold strings of relative cursor motions.  The actual arrays that
+	X * are used to hold screen images are malloc'd.
+	X */
+	X#define MAXPLEN 90
+	X#define MAXLLEN 160
+	X
+	X#define BOTLINE (ROWS - 1)
+	X#define DIRTY 01
+	X
+	X/* terminal escape sequences from termcap */
+	X#define HO _tstr[0]		/* home */
+	X#define CL _tstr[1]		/* clear screen */
+	X#define CD _tstr[2]		/* clear to end of screen */
+	X#define CE _tstr[3]		/* clear to end of line */
+	X#define xUP _tstr[4]		/* up one line */
+	X#define DO _tstr[5]		/* down one line */
+	X#define US _tstr[6]		/* underline */
+	X#define UE _tstr[7]		/* underline end */
+	X#define BT _tstr[8]		/* backtab */
+	X#define xBC _tstr[9]		/* backspace */
+	X#define AL _tstr[10]		/* insert line */
+	X#define DL _tstr[11]		/* delete line */
+	X#define CM _tstr[12]		/* cursor move */
+	X#define CH _tstr[13]		/* cursor horizontal move */
+	X#define CV _tstr[14]		/* cursor vertical move */
+	X#define CS _tstr[15]		/* scrolling region */
+	X#define SF _tstr[16]		/* scroll forwards */
+	X#define SR _tstr[17]		/* scroll backwards */
+	X#define TI _tstr[18]		/* start cursor mode */
+	X#define TE _tstr[19]		/* end cursor mode */
+	X#define TA _tstr[20]		/* tab char (if not \t) */
+	X#define CR _tstr[21]		/* carriage return (if not \r) */
+	X#define xPC _tstr[22]		/* for reading pad character */
+	Xchar PC;			/* pad character */
+	Xchar *BC, *UP;			/* external variables for tgoto */
+	X
+	Xstatic char sname[] = "hoclcdceupdousuebtbcaldlcmchcvcssfsrtitetacrpc";
+	Xchar *_tstr[23];
+	Xint     HOlen;			/* length of HO string */
+	X
+	X
+	X/* terminal flags */
+	X#define BS _tflg[0]		/* can backspace */
+	X#define AM _tflg[1]		/* has auto margins */
+	X#define XN _tflg[2]		/* no newline after wrap */
+	X#define RET !_tflg[3]		/* has carriage return */
+	X#define NS _tflg[4]		/* has SF (scroll forward) */
+	X#define PT _tflg[5]		/* has tabs */
+	X#define XT _tflg[6]		/* tabs are destructive */
+	Xint	GT = 1;			/* tab stops on terminal are set */
+	X
+	Xstatic char bname[] = "bsamxnncnsptxt";
+	Xchar _tflg[7];
+	X
+	X
+	Xextern char *tgoto(), *tgetstr();
+	Xextern char *getenv(), *strcpy();
+	X
+	X#define ULINE 0200
+	X
+	X/* Constants accessable by user */
+	Xint     hasscroll;		/* scrolling type, 0 == no scrolling */
+	Xint     ROWS;			/* number of lines on screen */
+	Xint     COLS;			/* width of screen */
+	X
+	Xstruct line {
+	X	short    len;		/* should really be u_char */
+	X	char    flags;
+	X	char    *l;		/* pointer to actual line text, NO NULL @ end */
+	X};
+	X
+	Xint     _row, _col;
+	Xint     _srow, _scol;
+	Xstruct line *_virt;		/* what we want the screen to look like */
+	Xstruct line *_actual;		/* What it actually looks like */
+	Xint     _uline = 0;
+	Xint     _junked = 1;
+	Xint     _curjunked;
+	Xint     _dir = 1;
+	Xint	_shifttop, _shiftbot;
+	Xint	_shift;
+	Xint	_scratched;
+	Xint     vputc();
+	X
+	X/*
+	X * Tell refresh to shift lines in region upwards count lines.  Count
+	X * may be negative.  The virtual image is not shifted; this may change
+	X * later.  The variable _scratched is set to supress all attempts to
+	X * shift.
+	X */
+	X
+	Xushift(top, bot, count)
+	X{
+	X	if (_scratched)
+	X		return;
+	X	if (_shift != 0 && (_shifttop != top || _shiftbot != bot)) {
+	X		_scratched++;
+	X		return;
+	X	}
+	X	_shifttop = top;
+	X	_shiftbot = bot;
+	X	_shift += count;
+	X}
+	X
+	X/*
+	X * generate a beep on the terminal
+	X */
+	Xbeep()
+	X{
+	X	vputc('\7');
+	X}
+	X
+	X/*
+	X * Move to one line below the bottom of the screen.
+	X */
+	Xbotscreen()
+	X{
+	X	_amove(BOTLINE, 0);
+	X	vputc('\n');
+	X	vflush();
+	X}
+	X
+	Xmove(row, col)
+	X{
+	X	if (row < 0 || row >= ROWS || col < 0 || col >= COLS)
+	X		return;
+	X	_row = row;
+	X	_col = col;
+	X}
+	X
+	X
+	X
+	X/*
+	X * Output string at specified location.
+	X */
+	Xmvaddstr(row, col, str)
+	Xchar *str;
+	X{
+	X	move(row, col);
+	X	addstr(str);
+	X}
+	X
+	Xaddstr(s)
+	Xchar   *s;
+	X{
+	X	register char  *p;
+	X	register struct line   *lp;
+	X	register int    col = _col;
+	X
+	X	lp = &_virt[_row];
+	X	if (lp->len < col) {
+	X		p = &lp->l[lp->len];
+	X		while (lp->len < col) {
+	X			*p++ = ' ';
+	X			lp->len++;
+	X		}
+	X	}
+	X	for (p = s; *p != '\0'; p++) {
+	X		if (*p == '\n') {
+	X			lp->len = col;
+	X			lp->flags |= DIRTY;
+	X			col = 0;
+	X			if (++_row >= ROWS)
+	X				_row = 0;
+	X			lp = &_virt[_row];
+	X		}
+	X		else {
+	X			lp->l[col] = *p;
+	X			lp->flags |= DIRTY;
+	X			if (++col >= COLS) {
+	X				lp->len = COLS;
+	X				col = 0;
+	X				if (++_row >= ROWS)
+	X					_row = 0;
+	X				lp = &_virt[_row];
+	X			}
+	X		}
+	X	}
+	X	if (lp->len <= col)
+	X		lp->len = col;
+	X	_col = col;
+	X}
+	X
+	Xaddch(c)
+	X{
+	X	register struct line   *lp;
+	X	register char  *p;
+	X
+	X	lp = &_virt[_row];
+	X	if (lp->len < _col) {
+	X		p = &lp->l[lp->len];
+	X		while (lp->len < _col) {
+	X			*p++ = ' ';
+	X			lp->len++;
+	X		}
+	X	}
+	X	lp->l[_col] = c;
+	X	if (lp->len == _col)
+	X		lp->len++;
+	X	if (++_col >= COLS) {
+	X		_col = 0;
+	X		if (++_row >= ROWS)
+	X			_row = 0;
+	X	}
+	X	lp->flags |= DIRTY;
+	X}
+	X
+	X/*
+	X * Clear an entire line.
+	X */
+	Xclrline(row)
+	X{
+	X	register struct line   *lp;
+	X
+	X	lp = &_virt[row];
+	X	if (lp->len > 0) {
+	X		lp->len = 0;
+	X		lp->flags |= DIRTY;
+	X	}
+	X}
+	X
+	Xerase()
+	X{
+	X	register    i;
+	X
+	X	for (i = 0; i < ROWS; i++) {
+	X		_virt[i].len = 0;
+	X		_virt[i].flags |= DIRTY;
+	X	}
+	X}
+	X
+	Xrefresh()
+	X{
+	X	register i;
+	X	register char *p, *q;
+	X	register int j, len;
+	X
+	X	if (checkin())
+	X		return;
+	X	i = 1;
+	X	if (_junked) {
+	X		_sclear();
+	X		_junked = 0;
+	X	} else if (! _scratched) {
+	X		if (_shift > 0) {
+	X			_ushift(_shifttop, _shiftbot, _shift);
+	X		} else if (_shift < 0) {
+	X			i = _dshift(_shifttop, _shiftbot, -_shift);
+	X		} else {
+	X			i = _dir;
+	X		}
+	X	}
+	X	_dir = i;
+	X	_shift = 0;
+	X	if (checkin())
+	X		return;
+	X	_fixlines();
+	X	for (i = _dir > 0 ? 0 : BOTLINE; i >= 0 && i < ROWS; i += _dir) {
+	X		if ((_virt[i].flags & DIRTY) == 0)
+	X			continue;
+	X		_ckclrlin(i);		/* decide whether to do a clear line */
+	X					/* probably should consider cd too  */
+	X		len = _virt[i].len;
+	X		if (_actual[i].len < len)
+	X			len = _actual[i].len;
+	X		p = _virt[i].l;
+	X		q = _actual[i].l;
+	X		for (j = 0; j < len; j++) {
+	X			if (*p != *q) {
+	X				/* Inline test for speed */
+	X				if (i != _srow || j != _scol || _curjunked)
+	X					_amove(i, j);
+	X				_aputc(*p);
+	X				*q = *p;
+	X			}
+	X			p++;
+	X			q++;
+	X		}
+	X		len = _virt[i].len;
+	X		if (_actual[i].len > len) {
+	X			_clrtoeol(i, len);
+	X		} else {
+	X			for (; j < len; j++) {
+	X				if (*p != ' ') {
+	X					/* Inline test for speed */
+	X					if (i != _srow || j != _scol || _curjunked)
+	X						_amove(i, j);
+	X					_aputc(*p);
+	X				}
+	X				*q++ = *p++;
+	X			}
+	X			_actual[i].len = len;
+	X		}
+	X		if (checkin())
+	X			return;
+	X	}
+	X	_dir = 1;
+	X	_amove(_row, _col);
+	X	vflush();			/* flush output buffer */
+	X	_scratched = 0;
+	X}
+	X
+	X_dshift(top, bot, count)
+	X{
+	X	register    i;
+	X
+	X	if (count >= bot - top || hasscroll < 4) {  /* must have CS or AL/DL */
+	X		_scratched++;
+	X		return 1;
+	X	}
+	X	for (i = bot - count; _actual[i].len == 0; i--)
+	X		if (i == top)
+	X			return 1;
+	X	for (i = top; i <= bot; i++)
+	X		_virt[i].flags |= DIRTY;
+	X	for (i = bot; i >= top + count; i--) {
+	X		/* FIXME, this should be done by recirculating the pointers */
+	X		register j;
+	X		j =     _actual[i].len   = _actual[i - count].len;
+	X		        _actual[i].flags = _actual[i - count].flags;
+	X		strncpy(_actual[i].l,      _actual[i - count].l, j);
+	X	}
+	X	for (; i >= top; i--)
+	X		_actual[i].len = 0;
+	X
+	X	if (hasscroll != 5) {		/* can we define scrolling region, and scroll back */
+	X		tputs(tgoto(CS, bot, top), 1, vputc);/* define scroll region */
+	X		_curjunked = 1;
+	X		_amove(top, 0);
+	X		for (i = count; --i >= 0;)
+	X			tputs(SR, 1, vputc);/* scroll back */
+	X		tputs(tgoto(CS, BOTLINE, 0), 1, vputc);
+	X		_curjunked = 1;
+	X	} else {
+	X		_amove(bot - count + 1, 0);
+	X		if (CD && bot == BOTLINE)
+	X			tputs(CD, 1, vputc);
+	X		else {
+	X			for (i = count; --i >= 0;)
+	X				tputs(DL, ROWS - _srow, vputc);
+	X		}
+	X		_amove(top, 0);
+	X		for (i = count; --i >= 0;)
+	X			tputs(AL, ROWS - _srow, vputc);
+	X	}
+	X	return -1;
+	X}
+	X
+	X
+	X_ushift(top, bot, count)
+	X{
+	X	register    i;
+	X
+	X	if (count >= bot - top || hasscroll == 0) {
+	X		_scratched++;
+	X		return;
+	X	}
+	X	for (i = top + count; _actual[i].len == 0; i++)
+	X		if (i == bot)
+	X			return;
+	X	if (hasscroll == 1 || hasscroll == 3) {
+	X		/* we cheat and shift the entire screen */
+	X		/* be sure we are shifting more lines into than out of position */
+	X		if ((bot - top + 1) - count <= ROWS - (bot - top + 1))
+	X			return;
+	X		top = 0, bot = BOTLINE;
+	X	}
+	X	for (i = top; i <= bot; i++)
+	X		_virt[i].flags |= DIRTY;
+	X	for (i = top; i <= bot - count; i++) {
+	X		/* FIXME, this should be done by recirculating the pointers */
+	X		register int j;
+	X		j =     _actual[i].len   = _actual[i + count].len;
+	X		        _actual[i].flags = _actual[i + count].flags;
+	X		strncpy(_actual[i].l,      _actual[i + count].l, j);
+	X	}
+	X  	for (; i <= bot; i++)
+	X	for (; i <= bot; i++)
+	X		_actual[i].len = 0;
+	X
+	X	if (hasscroll != 5) {
+	X		if (top != 0 || bot != BOTLINE) {
+	X			tputs(tgoto(CS, bot, top), 0, vputc);
+	X			_curjunked = 1;
+	X		}
+	X		_amove(bot, 0);	/* move to bottom */
+	X		for (i = 0; i < count; i++) {
+	X			if (SF)		/* scroll forward */
+	X				tputs(SF, 1, vputc);
+	X			else
+	X				vputc('\n');
+	X		}
+	X		if (top != 0 || bot != BOTLINE) {
+	X			tputs(tgoto(CS, BOTLINE, 0), 0, vputc);
+	X			_curjunked = 1;
+	X		}
+	X	} else {
+	X		_amove(top, 0);
+	X		for (i = count; --i >= 0;)
+	X			tputs(DL, ROWS - _srow, vputc);
+	X		if (bot < BOTLINE) {
+	X			_amove(bot - count + 1, 0);
+	X			for (i = count; --i >= 0;)
+	X				tputs(AL, ROWS - _srow, vputc);
+	X		}
+	X	}
+	X}
+	X
+	X_sclear()
+	X{
+	X	register struct line   *lp;
+	X
+	X	tputs(CL, 0, vputc);
+	X	_srow = _scol = 0;
+	X	for (lp = _actual; lp < &_actual[ROWS]; lp++) {
+	X		lp->len = 0;
+	X	}
+	X	for (lp = _virt; lp < &_virt[ROWS]; lp++) {
+	X		if (lp->len != 0)
+	X			lp->flags |= DIRTY;
+	X	}
+	X}
+	X
+	X_clrtoeol(row, col)
+	X{
+	X	register struct line *lp = &_actual[row];
+	X	register i;
+	X
+	X	if (CE && lp->len > col + 1) {
+	X		_amove(row, col);
+	X		tputs(CE, 1, vputc);
+	X	} else {
+	X		for (i = col ; i < lp->len ; i++) {
+	X			if (lp->l[i] != ' ') {
+	X				_amove(row, i);
+	X				_aputc(' ');
+	X			}
+	X		}
+	X	}
+	X	lp->len = col;
+	X}
+	X
+	X_fixlines()
+	X{
+	X	register struct line   *lp;
+	X	register char  *p;
+	X	register int    i;
+	X
+	X	for (i = 0; i < ROWS; i++) {
+	X		lp = &_virt[i];
+	X		if (lp->flags & DIRTY) {
+	X			for (p = &lp->l[lp->len]; --p >= lp->l && *p == ' ';)
+	X				;
+	X			lp->len = (int) (p - lp->l) + 1;
+	X			if (lp->len == _actual[i].len && strncmp(lp->l, _actual[i].l, lp->len) == 0)
+	X				lp->flags &= ~DIRTY;
+	X		}
+	X	}
+	X}
+	X
+	X
+	X/*
+	X * Consider clearing the line before overwriting it.
+	X * We always clear a line if it has underlined characters in it
+	X * because these can cause problems.  Otherwise decide whether
+	X * that will decrease the number of characters to change.  This
+	X * routine could probably be simplified with no great loss.
+	X */
+	X
+	X_ckclrlin(i)
+	X{
+	X	int     eval;
+	X	int     len;
+	X	int     first;
+	X	register struct line   *vp, *ap;
+	X	register int    j;
+	X
+	X	if (!CE)
+	X		return;
+	X	ap = &_actual[i];
+	X	vp = &_virt[i];
+	X	len = ap->len;
+	X	eval = -strlen(CE);
+	X	if (len > vp->len) {
+	X		len = vp->len;
+	X		eval = 0;
+	X	}
+	X	for (j = 0; j < len && vp->l[j] == ap->l[j]; j++)
+	X		;
+	X	if (j == len)
+	X		return;
+	X	first = j;
+	X	while (j < len) {
+	X		if (vp->l[j] == ' ') {
+	X			if (ap->l[j] != ' ') {
+	X				while (++j < len && vp->l[j] == ' ' && ap->l[j] != ' ') {
+	X					eval++;
+	X				}
+	X				if (j == len)
+	X					eval++;
+	X				continue;
+	X			}
+	X		}
+	X		else {
+	X			if (vp->l[j] == ap->l[j]) {
+	X				while (++j < len && vp->l[j] == ap->l[j]) {
+	X					eval--;
+	X				}
+	X				continue;
+	X			}
+	X		}
+	X		j++;
+	X	}
+	X	if (US) {
+	X		for (j = 0 ; j < ap->len ; j++) {
+	X			if (ap->l[j] & ULINE) {
+	X				eval = 999;
+	X				if (first > j)
+	X					first = j;
+	X				break;
+	X			}
+	X		}
+	X	}
+	X	for (j = first; --j >= 0;)
+	X		if (vp->l[j] != ' ')
+	X			break;
+	X	if (j < 0)
+	X		first = 0;
+	X	if (eval > 0) {
+	X		_amove(i, first);
+	X		tputs(CE, 0, vputc);
+	X		_actual[i].len = first;
+	X	}
+	X}
+	X
+	X
+	X
+	X/*
+	X * Move routine
+	X * 	first compute direct cursor address string and cost
+	X *	then relative motion string and cost,
+	X *	then home then relative and cost
+	X *	choose smallest and do it.
+	X *
+	X *	The plod stuff is to build the strings (with padding) then decide
+	X */
+	Xstatic char *plodstr;		/* current location in relmove string */
+	X
+	Xplodput(c)
+	X{
+	X	*plodstr++ = c;
+	X}
+	X
+	X/* FIXME: speedup 1-char horiz moves:  print the char that's there. */
+	X/* FIXME: avoid funniness if cm works. */
+	X/* FIXME: Avoid setul(0) if cursor motion OK in standout (XM?) */
+	X_amove(row, col)
+	X{
+	X	char direct[20];
+	X	char rel[MAXPLEN*10 + MAXLLEN*10];    /* longest move is full screen */
+	X	char ho[MAXPLEN*10 + MAXLLEN*10];
+	X	int cost, newcost;
+	X	register char *movstr;
+	X
+	X	if (row == _srow && col == _scol && _curjunked == 0)
+	X		return;
+	X	if (_uline)
+	X		_setul(0);	/* Inline test for speed */
+	X
+	X	cost = 999;
+	X	if (CM) {
+	X		plodstr = direct;
+	X		tputs(tgoto(CM, col, row), 0, plodput);
+	X		cost = plodstr - direct;
+	X		movstr = direct;
+	X	}
+	X	if (_curjunked == 0) {
+	X		plodstr = rel;
+	X		if (_vmove(_srow, row) >= 0
+	X		 && (plodstr - rel) < cost		/* after vmove */
+	X		 && _hmove(_scol, col, row) >= 0
+	X		 && (newcost = plodstr - rel) < cost) { /* after both */
+	X			cost = newcost;
+	X			movstr = rel;
+	X		}
+	X	}
+	X	if (cost > HOlen) {	/* is it worth calculating */
+	X		plodstr = ho;
+	X		tputs(HO, 0, plodput);
+	X		if (_vmove(0, row) >= 0
+	X		 && (plodstr - ho) < cost		/* after ho, vmove */
+	X		 && _hmove(0, col, row) >= 0
+	X		 && (newcost = plodstr - ho) < cost) {	/* after all three */
+	X			cost = newcost;
+	X			movstr = ho;
+	X		}
+	X	}
+	X
+	X	if (cost < 999)
+	X		while (--cost >= 0)
+	X			vputc(*movstr++);
+	X
+	X	_srow = row;
+	X	_scol = col;
+	X	_curjunked = 0;
+	X}
+	X
+	X_vmove(orow, nrow)
+	X{
+	X	char direct[128];
+	X	char *saveplod = plodstr;
+	X
+	X	if (CV) {
+	X		plodstr = direct;
+	X		tputs(tgoto(CV, nrow, nrow), 0, plodput);
+	X		*plodstr = '\0';
+	X		plodstr = saveplod;
+	X	}
+	X	if (orow > nrow) {		/* cursor up */
+	X		if (! UP)
+	X			return -1;
+	X		while (orow > nrow) {
+	X			tputs(UP, 1, plodput);
+	X			orow--;
+	X		}
+	X	}
+	X	while (orow < nrow) {		/* cursor down */
+	X		if (DO)
+	X			tputs(DO, 1, plodput);
+	X		else
+	X			*plodstr++ = '\n';
+	X		orow++;
+	X	}
+	X	if (CV && plodstr - saveplod >= strlen(direct)) {
+	X		register char *p;
+	X		plodstr = saveplod;
+	X		for (p = direct ; *plodstr = *p++ ; plodstr++)
+	X			;
+	X	}
+	X	return 0;
+	X}
+	X
+	X_hmove(ocol, ncol, row)
+	X{
+	X	char direct[128];
+	X	char ret[MAXLLEN*10];
+	X	char *saveplod = plodstr;
+	X	char *movstr;
+	X	int cost, newcost;
+	X
+	X	cost = 999;
+	X	if (CH) {
+	X		plodstr = direct;
+	X		tputs(tgoto(CH, ncol, ncol), 0, plodput);
+	X		cost = plodstr - direct;
+	X		movstr = direct;
+	X		plodstr = saveplod;
+	X	}
+	X	if (RET && ocol > ncol) {	/* consider doing carriage return */
+	X		plodstr = ret;
+	X		if (CR)
+	X			tputs(CR, 1, plodput);
+	X		else
+	X			*plodstr++ = '\r';
+	X		if (_relhmove(0, ncol, row) >= 0
+	X		 && (newcost = plodstr - ret) < cost) {
+	X			cost = newcost;
+	X			movstr = ret;
+	X		}
+	X		plodstr = saveplod;
+	X	}
+	X	if (_relhmove(ocol, ncol, row) < 0) {
+	X		if (cost == 999)
+	X			return -1;
+	X		goto copy;
+	X	}
+	X	if (plodstr - saveplod > cost) {
+	Xcopy:		plodstr = saveplod;
+	X		while (--cost >= 0)
+	X			*plodstr++ = *movstr++;
+	X	}
+	X	return 0;
+	X}
+	X
+	X_relhmove(ocol, ncol, row)
+	X{
+	X	int tab;
+	X
+	X	if (ocol < ncol && PT && GT) {	/* tab (nondestructive) */
+	X		while ((tab = (ocol + 8) & ~07) <= ncol) {
+	X			if (TA)
+	X				tputs(TA, 1, plodput);
+	X			else
+	X				*plodstr++ = '\t';
+	X			ocol = tab;
+	X		}
+	X		if (tab < COLS && tab - ncol < ncol - ocol) {
+	X			if (TA)
+	X				tputs(TA, 1, plodput);
+	X			else
+	X				*plodstr++ = '\t';
+	X			ocol = tab;
+	X		}
+	X	} else if (BT && GT && ocol > ncol) {	/* backwards tab */
+	X		while ((tab = (ocol - 1) &~ 07) >= ncol) {
+	X			if (BS && tab == ocol - 1) {
+	X				if (BC)
+	X					tputs(BC, 1, plodput);
+	X				else
+	X					*plodstr++ = '\b';
+	X			} else
+	X				tputs(BT, 1, plodput);
+	X			ocol = tab;
+	X		}
+	X		if (ncol - tab + 1 < ocol - ncol) {
+	X			tputs(BT, 1, plodput);
+	X			ocol = tab;
+	X		}
+	X	}
+	X	if (ocol > ncol) {			/* cursor left */
+	X		if (! BS)
+	X			return -1;
+	X		while (ocol > ncol) {
+	X			if (BC != NULL)
+	X				tputs(BC, 1, plodput);
+	X			else
+	X				*plodstr++ = '\b';
+	X			ocol--;
+	X		}
+	X	}
+	X	if (ocol < ncol) {			/* cursor right */
+	X		register struct line *lp = &_actual[row];
+	X		/*
+	X		 * This code doesn't move over underlined characters properly,
+	X		 * but in practice this doesn't seem to matter.
+	X		 */
+	X		while (ocol < ncol) {
+	X			if (ocol < lp->len)
+	X				*plodstr++ = lp->l[ocol];
+	X			else
+	X				*plodstr++ = ' ';
+	X			ocol++;
+	X		}
+	X	}
+	X	return 0;
+	X}
+	X
+	X_aputc(c)
+	X{
+	X	if (_uline != (c & ULINE))	/* Inline for speed */
+	X		_setul(c & ULINE);
+	X	if (++_scol >= COLS) {
+	X		if (_srow == ROWS - 1) {
+	X			/* Don't ever paint last char of last line */
+	X			_scol--;
+	X			return;
+	X		}
+	X		_curjunked++;		/* Don't assume AM is right */
+	X	}
+	X	vputc(c & ~ULINE);
+	X}
+	X
+	X
+	X_setul(on)
+	X{
+	X	if (on) {
+	X		if (_uline == 0 && US != NULL) {
+	X			tputs(US, 1, vputc);
+	X			_uline = ULINE;
+	X		}
+	X	}
+	X	else {
+	X		if (_uline != 0 && UE != NULL) {
+	X			tputs(UE, 1, vputc);
+	X			_uline = 0;
+	X		}
+	X	}
+	X}
+	X
+	X/*
+	X * Initialize termcap strings for later use.
+	X */
+	X
+	X/*
+	X * Hacks to help with some Tek terminals
+	X * rad@tek
+	X */
+	Xint tputs_len;
+	X/*ARGSUSED*/
+	Xcountit(c) { tputs_len++; }
+	X
+	Xinitterm()
+	X{
+	X	static char tcbuf[1024];	/* termcap buffer */
+	X	register char  *cp;
+	X#ifdef USG
+	X	struct termio tio;
+	X#else /* !USG */
+	X	struct sgttyb ttyb;
+	X#endif /* !USG */
+	X
+	X	if ((cp = getenv("TERM")) == NULL)
+	X		xerror("TERM not set in environment");
+	X
+	X	switch (tgetent(tcbuf, cp)) {
+	X		case 0:
+	X			xerror("Terminal not found in TERMCAP");
+	X		case -1:
+	X			xerror("Can't open /etc/termcap");
+	X		case 1:
+	X			break;
+	X	}
+	X#ifdef TIOCGWINSZ
+	X	{
+	X		struct winsize ws;
+	X		int winch();
+	X
+	X		COLS = ROWS = -1;
+	X		if(ioctl(1, TIOCGWINSZ, &ws) == 0) {
+	X			ROWS = ws.ws_row;
+	X			COLS = ws.ws_col;
+	X		}
+	X		if(ROWS <= 0)
+	X			ROWS = tgetnum("li");
+	X		if(COLS <= 0)
+	X			COLS = tgetnum("co");
+	X		if ((ROWS <= 0) || (COLS <= 0))
+	X			xerror("Can't get screen size");
+	X
+	X		signal(SIGWINCH, winch); /* allow for changing window size */
+	X	}
+	X#else /* !TIOCGWINSZ */
+	X	if ((ROWS = tgetnum("li")) == -1
+	X		|| (COLS = tgetnum("co")) == -1)
+	X		xerror("Can't get screen size");
+	X#endif /* !TIOCGWINSZ */
+	X	_zap();
+	X
+	X	if (CL == NULL)
+	X		xerror ("No clear screen defined");
+	X
+	X	if (HO == NULL && CM == NULL)
+	X		xerror("No home or cursor addressing");
+	X	if (HO)
+	X		HOlen = strlen(HO);
+	X	else
+	X		HOlen = 999;
+	X
+	X	PC = xPC ? xPC[0] : 0;
+	X	BC = xBC;
+	X	UP = xUP;
+	X	/*
+	X	 *  _vmove() may be called with a full-screen traverse,
+	X	 * meaning it will put the UP (along with any padding) into
+	X	 * the buffer as many as MAXPLEN times.  This means that
+	X	 * if the UP string would be more than 10 chars long (defined
+	X	 * in _amove() ), the buffer might be overflowed (assuming
+	X	 * CH is also large).
+	X	 * This actually occurs with the Tek4023 termcap, where :up=1000UP:
+	X	 * is used to fake vi into using :cm instead, due to the fact
+	X	 * that a 4023 can't do upline relative motion at all.
+	X	 * -rdoty@tek
+	X	 */
+	X	if (UP) {
+	X		tputs_len = 0;
+	X		tputs(UP, 1, countit);
+	X		if (tputs_len > 10 )
+	X			UP = 0;
+	X	}
+	X
+	X	if (tgetnum("ug") > 0)
+	X		US = UE = NULL;
+	X
+	X	if (XT)				/* Destructive tab code not included */
+	X		PT = 0;			/* to keep things simple */
+	X
+	X#ifdef USG
+	X	if (ioctl(0, TCGETA, &tio) == 0)
+	X		GT = tio.c_oflag&TAB3;
+	X#else /* !USG */
+	X	if (ioctl(0, TIOCGETP, &ttyb) == 0)
+	X		GT = ttyb.sg_flags&XTABS;
+	X#endif /* !USG */
+	X
+	X	{
+	X		char *thelines;
+	X		int i;
+	X		char *malloc();
+	X
+	X		thelines = malloc(2 * ROWS * COLS);
+	X		_virt = (struct line *)malloc(2 * ROWS * sizeof (struct line));
+	X		_actual = _virt + ROWS;
+	X		for (i = 0; i < ROWS; i++) {
+	X			_virt[i].len = 0;
+	X			_virt[i].flags = 0;
+	X			_actual[i].len = 0;
+	X			_actual[i].flags = 0;
+	X			_virt[i].l = thelines;
+	X			thelines += COLS;
+	X			_actual[i].l = thelines;
+	X			thelines += COLS;
+	X		}
+	X	}
+	X
+	X	/* Select article scrolling algorithm.  We prefer scrolling region
+	X	   over insert/delete line because it's faster on the HP */
+	X	hasscroll = 0;
+	X	if (!NS) {
+	X		hasscroll = 1;
+	X		if (SR)
+	X			hasscroll = 3;
+	X		if (CS)
+	X			hasscroll++;
+	X	}
+	X	if (AL && DL && hasscroll != 4)
+	X		hasscroll = 5;
+	X}
+	X
+	Xrawterm()
+	X{
+	X	if (TI != NULL)
+	X		tputs(TI, 0, vputc);
+	X}
+	X
+	Xcookedterm()
+	X{
+	X	if (TE != NULL) {
+	X		tputs(TE, 0, vputc);
+	X		vflush();
+	X	}
+	X}
+	X
+	X/* get strings from termcap */
+	X_zap()
+	X{
+	X	static char tstrbuf[1024];
+	X	static char *tp;
+	X	register char  *namp, **sp, *bp;
+	X
+	X	tp = tstrbuf;
+	X	sp = _tstr;
+	X	for (namp = sname; *namp; namp += 2) {
+	X		*sp++ = tgetstr(namp, &tp);
+	X	}
+	X	bp = _tflg;
+	X	for (namp = bname; *namp; namp += 2) {
+	X		*bp++ = tgetflag(namp, &tp);
+	X	}
+	X}
+	X#ifdef TIOCGWINSZ
+	X/*
+	X * window changed size -- update ROWS and COLS
+	X * and then redraw screen
+	X */
+	Xwinch()
+	X{
+	X	struct winsize ws;
+	X	int cols, rows;
+	X
+	X	cols = rows = -1;
+	X	if(ioctl(1, TIOCGWINSZ, &ws) == 0) {
+	X		rows = ws.ws_row;
+	X		cols = ws.ws_col;
+	X	}
+	X	if (rows == ROWS && cols == COLS) { /* just redraw it if no change */
+	X		_junked = 1;	/* redraw */
+	X		updscr();
+	X		return;
+	X	}
+	X
+	X	if(rows > 0)
+	X		ROWS = rows;
+	X	if(cols > 0)
+	X		COLS = cols;
+	X
+	X	if (ROWS > MAXPLEN)
+	X		ROWS = MAXPLEN;
+	X	if (COLS > MAXLLEN) {
+	X		COLS = MAXLLEN;
+	X		AM = XN = 1;
+	X	}
+	X
+	X	winch_upd();
+	X}
+	X#endif /* TIOCGWINSZ */
+SHAR_EOF
+if test 20338 -ne "`wc -c < 'virtterm.c'`"
+then
+	echo shar: error transmitting "'virtterm.c'" '(should have been 20338 characters)'
+fi
+fi # end of overwriting check
+echo shar: extracting "'visual.c'" '(57059 characters)'
+if test -f 'visual.c'
+then
+	echo shar: will not over-write existing file "'visual.c'"
+else
+sed 's/^	X//' << \SHAR_EOF > 'visual.c'
+	X/*
+	X * visual - visual news interface.
+	X * Kenneth Almquist
+	X */
+	X
+	X#ifdef SCCSID
+	Xstatic char	*SccsId = "@(#)visual.c	1.40	11/30/87";
+	X#endif /* SCCSID */
+	X
+	X#include "rparams.h"
+	X#ifdef USG
+	X#include <sys/ioctl.h>
+	X#include <termio.h>
+	X#include <fcntl.h>
+	X#else /* !USG */
+	X#include <sgtty.h>
+	X#endif /* !USG */
+	X
+	X#include <errno.h>
+	X#ifdef BSD4_2
+	X#ifndef sigmask
+	X#define sigmask(m) (1<<((m)-1))
+	X#endif /* !sigmask */
+	X#endif /* BSD4_2 */
+	X
+	X#ifdef MYDB
+	X#include "db.h"
+	X#endif /* MYDB */
+	X
+	Xextern int errno;
+	X
+	X#ifdef SIGTSTP
+	X#include <setjmp.h>
+	X#endif /* SIGTSTP */
+	X
+	X#define ARTWLEN	(ROWS-2)/* number of lines used to display article */
+	X#define even(cols) ((cols&1) ? cols + 1 : cols)
+	X#ifdef STATTOP
+	X#define PRLINE	0	/* prompter line */
+	X#define SPLINE	1	/* secondary prompt line */
+	X#define ARTWIN	2	/* first line of article window */
+	X#define SECPRLEN 81	/* length of secondary prompter */
+	X#else	/* !STATTOP */
+	X#define PRLINE	(ROWS-1)/* prompter line */
+	X#define SPLINE	(ROWS-2)/* secondary prompt line */
+	X#define ARTWIN	0	/* first line of article window */
+	X#define SECPRLEN 100	/* length of secondary prompter */
+	X#endif	/* !STATTOP */
+	X
+	X#define PIPECHAR '|'	/* indicate save command should pipe to program */
+	X#define	CAGAIN	('e'&0x1F)	/* Save-to-same-place indicator */
+	X#define META	0200	/* meta character bit (as in emacs) */
+	X/* print (display) flags */
+	X#define HDRONLY	0001	/* print header only */
+	X#define NOPRT	0002	/* don't print at all */
+	X#define NEWART	0004	/* force article display to be regenerated */
+	X#define HELPMSG	0010	/* display currently contains help message */
+	X/* prun flags */
+	X#define CWAIT	0001	/* type "continue?" and wait for return */
+	X#define BKGRND	0002	/* run process in the background */
+	X/* values of curflag */
+	X#define CURP1	1	/* cursor after prompt */
+	X#define CURP2	2	/* cursor after secondary prompt */
+	X#define CURHOME	3	/* cursor at home position */
+	X/* flags for vsave routine */
+	X#define SVHEAD	01	/* write out article header */
+	X#define OVWRITE	02	/* overwrite the file if it already exists */
+	X/* other files */
+	X
+	X#define	saveart	oobit = bit;strcpy(ofilename1, filename);strcpy(ogroupdir, groupdir);hptr = h;h = hold;hold = hptr;ongsize = pngsize
+	X#define NLINES(h, fp) (h->numlines[0] ? h->intnumlines : (h->intnumlines=linecnt(fp),sprintf(h->numlines, "%d", h->intnumlines), h->intnumlines))
+	X
+	X/* terminal handler stuff */
+	Xextern int _junked;
+	X#define okclear() (_junked = 1)
+	Xextern int COLS;
+	Xextern int ROWS;
+	Xextern int hasscroll;
+	X
+	XFILE *tmpfile();
+	Xchar *getmailname();
+	X#ifdef MYDB
+	Xchar *findparent();
+	X#endif /* MYDB */
+	Xint onint();
+	Xint onstop();
+	Xint xxit();
+	X
+	Xchar *Progname = "vnews";		/* for xerror */
+	X
+	X/* variables shared between vnews routines */
+	Xstatic char linebuf[LBUFLEN];		/* temporary workspace */
+	Xstatic FILE *tfp;			/* temporary file */
+	Xstatic char tfname[] = "/tmp/vnXXXXXX";	/* name of temp file */
+	Xstatic long artbody;			/* offset of body into article */
+	Xstatic int quitflg;			/* if set, then quit */
+	Xstatic int erased;			/* current article has been erased */
+	Xstatic int artlines;			/* # lines in article body */
+	Xstatic int artread;			/* entire article has been read */
+	Xstatic int hdrstart;			/* beginning of header */
+	Xstatic int hdrend;			/* end of header */
+	Xstatic int lastlin;			/* number of lines in tempfile */
+	Xstatic int tflinno = 0;			/* next line in tempfile */
+	Xstatic int maxlinno;			/* number of lines in file + folded */
+	Xstatic char secpr[SECPRLEN];		/* secondary prompt */
+	Xstatic char prompt[30];			/* prompter */
+	Xstatic short prflags;			/* print flags (controls updscr) */
+	Xstatic short curflag;			/* where to locate cursor */
+	Xstatic int dlinno;			/* top line on screen */
+	Xstatic char timestr[20];		/* current time */
+	Xstatic int ismail;			/* true if user has mail */
+	Xstatic char *mailf;			/* user's mail file */
+	Xstatic int alflag;			/* set if unprocessed alarm signal */
+	Xstatic int atend;			/* set if at end of article */
+	Xstatic char cerase;			/* erase character */
+	Xstatic char ckill;			/* kill character */
+	Xstatic char cintr;			/* interrupt character */
+	X#ifdef TIOCGLTC
+	Xstatic char cwerase;			/* word erase character */
+	X#endif /* TIOCGLTC */
+	Xshort ospeed;				/* terminal speed NOT STATIC */
+	Xstatic int intflag;			/* set if interrupt received */
+	X
+	X#ifdef SIGTSTP
+	Xstatic int reading;			/* to keep stupid BSD from restarting reads */
+	Xjmp_buf intjmp, alrmjmp;
+	X#endif /* SIGTSTP */
+	X
+	X#ifdef MYDB
+	Xstatic int hasdb;			/* true if article data base exists */
+	X#endif /* MYDB */
+	X
+	X#ifdef DIGPAGE
+	Xstatic int endsuba;			/* end of sub-article in digest */
+	X#endif /* DIGPAGE */
+	X
+	X#ifdef MYDEBUG
+	XFILE *debugf;				/* file to write debugging info on */
+	X#endif	/* MYDEBUG */
+	X
+	Xchar *tft = "/tmp/folXXXXXX";
+	X
+	X/*
+	X * These were made static for u370 with its buggy cc.
+	X * I judged it better to have one copy with no ifdefs than
+	X * to conditionally compile them as automatic variables
+	X * in readr (which they originally were).  Performance
+	X * considerations might warrant moving some of the simple
+	X * things into register variables, but I don't know what
+	X * breaks the u370 cc.
+	X */
+	X#ifndef SERVER
+	Xstatic char goodone[BUFLEN];		/* last decent article		*/
+	X#endif	/* !SERVER */
+	X
+	Xstatic char ogroupdir[BUFLEN];		/* last groupdir		*/
+	Xstatic char edcmdbuf[128];
+	Xstatic int rfq = 0;			/* for last article		*/
+	Xstatic long ongsize;			/* Previous ngsize		*/
+	Xstatic long pngsize;			/* Printing ngsize		*/
+	Xstatic char *bptr;			/* temp pointer.		*/
+	Xstatic char *tfilename;			/* temporary file name 		*/
+	Xstatic char ofilename1[BUFLEN];		/* previous file name		*/
+	Xstatic struct hbuf hbuf1, hbuf2; 	/* for minusing			*/
+	Xstatic struct hbuf *h = &hbuf1,		/* current header		*/
+	X		*hold = &hbuf2,		/* previous header		*/
+	X		*hptr;			/* temporary			*/
+	Xstatic char *ptr1, *ptr2, *ptr3;	/* for reply manipulation	*/
+	Xstatic int  aabs = FALSE;		/* TRUE if we asked absolutely	*/
+	Xstatic char *ed, tf[100];
+	Xstatic long oobit;			/* last bit, really		*/
+	Xstatic int dgest = 0;
+	Xstatic FILE *fp;			/* current article to be printed*/
+	X
+	Xreadr()
+	X{
+	X
+	X#ifdef MYDEBUG
+	X	debugf = fopen("DEBUG", "w");
+	X	setbuf(debugf, (char *)NULL);
+	X#endif	/* MYDEBUG */
+	X	if (aflag) {
+	X		if (*datebuf) {
+	X			if ((atime = cgtdate(datebuf)) == -1)
+	X				xerror("Cannot parse date string");
+	X		} else
+	X			atime = 0;
+	X	}
+	X
+	X	if (SigTrap)
+	X		xxit(1);
+	X	MKTEMP(tfname);
+	X	(void) close(creat(tfname,0666));
+	X	if ((tfp = fopen(tfname, "w+")) == NULL)
+	X		xerror("Can't create temp file");
+	X	(void) unlink(tfname);
+	X	mailf = getmailname();
+	X#ifdef MYDB
+	X	if (opendb() >= 0) {
+	X		hasdb = 1;
+	X		fputs("Using article data base\n", stderr);	/*DEBUG*/
+	X		getng();
+	X	}
+	X#endif	/* MYDB */
+	X	ttysave();
+	X	(void) signal(SIGINT, onint);
+	X	(void) signal(SIGQUIT, xxit);
+	X	if (SigTrap)
+	X		xxit(1);
+	X	ttyraw();
+	X	timer();
+	X
+	X	/* loop reading articles. */
+	X	fp = NULL;
+	X	obit = -1;
+	X	nextng();
+	X	quitflg = 0;
+	X	while (quitflg == 0) {
+	X		if (getnextart(FALSE))
+	X			break;
+	X#ifndef SERVER
+	X		(void) strcpy(goodone, filename);
+	X#endif	/* !SERVER */
+	X		if (SigTrap)
+	X			return;
+	X		vcmd();
+	X	}
+	X
+	X	if (!news) {
+	X		ttycooked();
+	X		ospeed = 0;	/* to convince xxit() not to clear screen */
+	X		fprintf(stderr, "No news.\n");
+	X	}
+	X}
+	X
+	X/*
+	X * Read and execute a command.
+	X */
+	Xvcmd() {
+	X	register c;
+	X	char *p;
+	X	long count;
+	X	int countset;
+	X
+	X	if (prflags & HDRONLY)
+	X		appfile(fp, lastlin + 1);
+	X	else
+	X		appfile(fp, dlinno + ARTWLEN + 1);
+	X
+	X#ifdef DIGPAGE
+	X	endsuba = findend(dlinno);
+	X	if (artlines > dlinno + ARTWLEN
+	X	 || endsuba > 0 && endsuba < artlines
+	X#else	/* !DIGPAGE */
+	X	if (artlines > dlinno + ARTWLEN
+	X#endif	/* !DIGPAGE */
+	X	 || (prflags & HDRONLY) && artlines > hdrend) {
+	X		atend = 0;
+	X		if (prflags&HDRONLY || maxlinno == 0)
+	X			(void) strcpy(prompt, "more? ");
+	X		else
+	X#ifdef DIGPAGE
+	X			(void) sprintf(prompt, "more(%d%%)? ",
+	X				((((endsuba > 0) ?
+	X				endsuba : (dlinno + ARTWLEN)) -
+	X				hdrend) * 100) / maxlinno);
+	X#else /* !DIGPAGE */
+	X			(void) sprintf(prompt, "more(%d%%)? ",
+	X				((dlinno + ARTWLEN - hdrend) * 100) / maxlinno);
+	X#endif /* !DIGPAGE */
+	X	} else {
+	X		atend = 1;
+	X		(void) strcpy(prompt, "next? ");
+	X		if (!erased)
+	X			clear(bit);		/* article read */
+	X	}
+	X	curflag = CURP1;
+	X	p = prompt + strlen(prompt);
+	X	countset = 0;
+	X	count = 0;
+	X	/*
+	X	 * Loop while accumulating a count, until an action character
+	X	 * is entered. Also handle "meta" here.
+	X	 *
+	X	 * Count is the current count. Countset=0 means no count
+	X	 * currently exists. Countset=1, count=0 is valid and means 
+	X	 * a count of 0 has been entered 
+	X	 */
+	X	for (;;) {
+	X		c = vgetc();
+	X		if (c == cerase || c == '\b' || c == '\177') {
+	X			if (countset == 0)
+	X				break;		/* Use as action char */
+	X			if (count < 10)
+	X				countset = 0;	/* Erase only char of count */
+	X			else
+	X				count /= 10L;	/* Erase 1 char of count */
+	X		} else {
+	X#ifdef TIOCGLTC
+	X			if (c == ckill || c == cwerase) {
+	X#else	/* !TIOCGLTC */
+	X			if (c == ckill) {
+	X#endif	/* !TIOCGLTC */
+	X				if (countset == 0)
+	X					break;
+	X				countset = 0;
+	X			} else if (c < '0' || c > '9')
+	X					break;
+	X				else {
+	X					countset = 1;
+	X					count = (count * 10) + (c - '0');
+	X				}
+	X		}
+	X		if (countset) {
+	X			(void) sprintf(p, "%ld", count);
+	X		} else {
+	X			*p = '\0';
+	X			count = 0;
+	X		}
+	X	}
+	X
+	X	if (c == '\033') {			/* escape */
+	X		(void) strcat(prompt, "M-");
+	X		c = vgetc();
+	X		if (c != cintr)
+	X			c |= META;
+	X	}
+	X	secpr[0] = '\0';
+	X	if (countset == 0)
+	X		count = 1;
+	X	docmd(c, count, countset);
+	X	if (c != '?' && c != 'H')		/* UGGH */
+	X		prflags &=~ HELPMSG;
+	X	if (dlinno > hdrstart)
+	X		prflags &=~ HDRONLY;
+	X}
+	X
+	X
+	X/*
+	X * Process one command, which has already been typed in.
+	X */
+	Xdocmd(c, count, countset)
+	Xint c;
+	Xlong count;
+	Xint countset;
+	X{
+	X	int i;
+	X	long nart, Hoffset;
+	X	char *findhist();
+	X
+	X	switch (c) {
+	X
+	X	/* display list of articles in current group */
+	X	case 'l':
+	X	case 'L':
+	X		botscreen();
+	X		ttycooked();
+	X		list_group(groupdir, countset ? (int) count : 0,
+	X			(c == 'l') ? FALSE : TRUE, pngsize);
+	X		ttyraw();
+	X		okclear();
+	X		updscr();
+	X		break;
+	X
+	X	/* Show more of current article, or advance to next article */
+	X	case '\n':
+	X	case ' ':
+	X#ifdef DIGPAGE
+	X	case 'm':
+	X#endif /* DIGPAGE */
+	X	case '\06':	/* Control-F for vi compat */
+	X		prflags &=~ NOPRT;
+	X		if (atend)
+	X			goto next;
+	X		else if (prflags & HDRONLY) {
+	X			prflags &=~ HDRONLY;
+	X			if (hasscroll)
+	X				dlinno = hdrstart;}
+	X#ifdef DIGPAGE
+	X		else if (endsuba > 0)
+	X			dlinno = endsuba;
+	X		else if (c == 'm') {
+	X			do {
+	X				if (lastlin >= maxlinno)
+	X					goto next;
+	X				else
+	X					appfile(fp, lastlin + 1);
+	X			} while(STRNCMP(linebuf, "------------------------", 24)
+	X				!= 0);
+	X			dlinno = endsuba = lastlin;
+	X		}
+	X#endif	/* DIGPAGE */
+	X		else if ((appfile(fp, dlinno + 2 * ARTWLEN), artread)
+	X		 && hasscroll && artlines - dlinno <= ARTWLEN + 2)
+	X			dlinno = artlines - ARTWLEN;
+	X		else
+	X			dlinno += ARTWLEN * count;
+	X		break;
+	X
+	X	/* No.  Go on to next article. */
+	X	case '.':	/* useful if you have a keypad */
+	Xnext:	case 'n':
+	X		readmode = NEXT;
+	X		FCLOSE(fp);
+	X		clear(bit);
+	X		saveart;
+	X		nextbit();
+	X		break;
+	X
+	X
+	X	/* Back up count pages */
+	X	case '\b':	
+	X	case '\177':	
+	X		if (dlinno == 0)
+	X			goto backupone;
+	X		/* NO BREAK */
+	X	case META|'v':
+	X	case '\002':	/* Control-B */
+	X		dlinno -= ARTWLEN * count;
+	X		if (dlinno < 0)
+	X			dlinno = 0;
+	X		break;
+	X
+	X	/* forward half a page */
+	X	case '\004':	/* Control-D, as in vi */
+	X		if (!atend)
+	X			dlinno += ARTWLEN/2 * count;
+	X		break;
+	X
+	X	/* backward half a page */
+	X	case '\025':	/* Control-U */
+	X		dlinno -= ARTWLEN/2 * count;
+	X		if (dlinno < 0)
+	X			dlinno = 0;
+	X		break;
+	X
+	X	/* forward count lines */
+	X	case '\016':	/* Control-N */
+	X	case '\005':	/* Control-E */
+	X		dlinno += count;
+	X		break;
+	X
+	X	/* backwards count lines */
+	X	case '\020':	/* Control-P */
+	X	case '\031':	/* Control-Y */
+	X		dlinno -= count;
+	X		if (dlinno < 0)
+	X			dlinno = 0;
+	X		break;
+	X
+	X	/* Turn displaying of article back on */
+	X	case 'd':
+	X		prflags &=~ NOPRT;
+	X		break;
+	X
+	X	/* display header */
+	X	case 'h':
+	X		dlinno = hdrstart;
+	X		prflags |= HDRONLY;
+	X		prflags &=~ NOPRT;
+	X		break;
+	X
+	X	/*
+	X	 * Unsubscribe to the newsgroup and go on to next group
+	X	 */
+	X
+	X	case 'U':
+	X	case 'u':
+	X		strcat(prompt, "u");
+	X		c = vgetc();
+	X		if (c == 'g') {
+	X			obit = -1;
+	X			FCLOSE(fp);
+	X			zapng = TRUE;
+	X			saveart;
+	X			if (nextng()) {
+	X				if (actdirect == BACKWARD)
+	X					msg("Can't back up.");
+	X				else
+	X					quitflg = 1;	/* probably unnecessary */
+	X			}
+	X		} else {
+	X			if (c != cintr && c != ckill)
+	X				beep();
+	X				msg("Illegal command");
+	X		}
+	X		break;
+	X
+	X		/* Print the current version of news */
+	X	case 'v':
+	X		msg("News version: %s", news_version);
+	X		break;
+	X
+	X
+	X	/* Decrypt joke.  Always does rot 13 */
+	X	case 'D':
+	X		appfile(fp, 32767);
+	X		for (i = hdrend ; i < artlines ; i++) {
+	X			register char ch, *p;
+	X			tfget(linebuf, i);
+	X			for (p = linebuf ; (ch = *p) != '\0' ; p++) {
+	X				if (ch >= 'a' && ch <= 'z')
+	X					*p = (ch - 'a' + 13) % 26 + 'a';
+	X				else if (ch >= 'A' && ch <= 'Z')
+	X					*p = (ch - 'A' + 13) % 26 + 'A';
+	X			}
+	X			tfput(linebuf, i);
+	X		}
+	X		prflags |= NEWART;
+	X		prflags &=~ (HDRONLY|NOPRT);
+	X		break;
+	X
+	X		/* write out the article someplace */
+	X		/* w writes out without the header */
+	X		/* | defaults to pipeing */
+	X	{
+	X		static char savebuf[BUFLEN];
+	X		int wflags;
+	X
+	X	case PIPECHAR:
+	X	case 's':
+	X	case 'w':
+	X		/* We loop back to here each time user types ^U to prompt */
+	X		do {
+	X			/* Prompt based on command char */
+	X			msg( (c==PIPECHAR)? "|": "file: ");
+	X			curflag = CURP2;
+	X			while ((wflags = vgetc()) == ' ');
+	X			if (wflags == cintr) {
+	X				secpr[0] = '\0';
+	X				break;
+	X			}
+	X			if (wflags != CAGAIN) {
+	X				if ((wflags & 0x1F) == wflags) {	/* control char */
+	X					pushback(wflags);
+	X					savebuf[0] = 0;
+	X				} else {
+	X					if (c == PIPECHAR) {
+	X						savebuf[0] = PIPECHAR;
+	X						savebuf[1] = wflags;
+	X						savebuf[2] = 0;
+	X					} else {
+	X						savebuf[0] = wflags;
+	X						savebuf[1] = 0;
+	X					}
+	X				}
+	X			} else {
+	X				/* don't let them pipe to a saved filename */
+	X				if (c == PIPECHAR && savebuf[0] != PIPECHAR) {
+	X					savebuf[0] = PIPECHAR;
+	X					savebuf[1] = 0;
+	X				}
+	X			}
+	X					
+	X			wflags = prget( (savebuf[0] == PIPECHAR) ? "" : "file: ",
+	X					savebuf);
+	X		} while (wflags == 2);
+	X		if (wflags) break;	/* Interrupted out */
+	X		wflags = 0;
+	X		if (c == PIPECHAR) c = 's';
+	X		if (c == 's')
+	X			wflags |= SVHEAD;
+	X		if (count != 1)
+	X			wflags |= OVWRITE;
+	X		bptr = savebuf;
+	X		while( *bptr == ' ')
+	X			bptr++;	/* strip leading spaces */
+	X
+	X		if (*bptr != PIPECHAR && *bptr != '/') {
+	X			char	hetyped[BUFLEN];
+	X			char	*boxptr;
+	X			(void) strcpy(hetyped, bptr);
+	X			if (hetyped[0] == '~' && hetyped[1] == '/') {
+	X  				strcpy(hetyped, bptr+2);
+	X  				strcpy(bptr, userhome);
+	X			} else if (boxptr = getenv("NEWSBOX")) {
+	X 				if (index(boxptr, '%')) {
+	X					struct stat stbf;
+	X 					sprintf(bptr, boxptr, groupdir);
+	X 					if (stat(bptr,&stbf) < 0) {
+	X 						if (mkdir(bptr, 0777) < 0) {
+	X							msg("Cannot create directory %s", bptr);
+	X							break;
+	X						}
+	X					} else if ((stbf.st_mode&S_IFMT) !=  S_IFDIR) {
+	X						msg("%s not a directory", bptr);
+	X						break;
+	X					}
+	X				} else
+	X					strcpy(bptr, boxptr);
+	X  			 } else
+	X  				bptr[0] = '\0';
+	X
+	X			if (bptr[0])
+	X				(void) strcat(bptr, "/");
+	X			if (hetyped[0] != '\0')
+	X				(void) strcat(bptr, hetyped);
+	X			else
+	X				(void) strcat(bptr, "Articles");
+	X		}
+	X
+	X		/* handle ~/ for pipes */
+	X		if (*bptr == PIPECHAR) {
+	X			char	fullname[BUFLEN];
+	X			bptr++;		/* skip PIPECHAR */
+	X			while( *bptr == ' ')
+	X				bptr++;	/* strip leading spaces */
+	X			if (bptr[0] == '~' && bptr[1] == '/') {
+	X				strcpy(fullname,userhome);
+	X				strcat(fullname,bptr+2);
+	X			} else
+	X				strcpy(fullname,bptr);
+	X			/* we know PIPECHAR is in *savebuf */
+	X			strcpy(savebuf+1,fullname);
+	X			bptr = savebuf;
+	X		}
+	X				
+	X		vsave(bptr, wflags);
+	X		break;
+	X	}
+	X
+	X		/* back up  */
+	X	case '-':
+	Xcaseminus:
+	X		aabs = TRUE;
+	X		if (!*ofilename1) {
+	X			msg("Can't back up.");
+	X			break;
+	X		}
+	X		FCLOSE(fp);
+	X		hptr = h;
+	X		h = hold;
+	X		hold = hptr;
+	X		(void) strcpy(bfr, filename);
+	X		(void) strcpy(filename, ofilename1);
+	X		(void) strcpy(ofilename1, bfr);
+	X		obit = bit;
+	X		if (STRCMP(groupdir, ogroupdir)) {
+	X			(void) strcpy(bfr, groupdir);
+	X			selectng(ogroupdir, FALSE, FALSE);
+	X			(void) strcpy(groupdir, ogroupdir);
+	X			(void) strcpy(ogroupdir, bfr);
+	X			ngrp = 1;
+	X			back();
+	X		}
+	X		bit = oobit;
+	X		oobit = obit;
+	X		obit = -1;
+	X		getnextart(TRUE);
+	X		break;
+	X
+	X		/* skip forwards */
+	X	case '+':
+	X	case '=':
+	Xcaseplus:	if (count == 0)
+	X			break;
+	X		saveart;
+	X		last = bit;
+	X		for (i = 0; i < count; i++) {
+	X			nextbit();
+	X			if ((bit > pngsize) || (rflag && bit < 1))
+	X				break;
+	X		}
+	X		FCLOSE(fp);
+	X		obit = -1;
+	X		break;
+	X
+	X	/* exit - time updated to that of most recently read article */
+	X	case 'q':
+	X		quitflg = 1;
+	X		break;
+	X
+	X	case 'x':
+	X		xxit(0);
+	X		break;
+	X
+	X	/* cancel the article. */
+	X	case 'c':
+	X		strcpy(prompt, "cancel [n]? ");
+	X		if (vgetc() != 'y') {
+	X			msg("Article not cancelled");
+	X			break;
+	X		}
+	X		cancel_command();
+	X		break;
+	X
+	X	/* escape to shell */
+	X	case '!': {
+	X		register char *p;
+	X		int flags;
+	X
+	X		p = linebuf;
+	X		*p = 0;
+	X		if (prget("!", p))
+	X			break;
+	X		flags = CWAIT;
+	X		if (*p == '\0') {
+	X			(void) strcpy(linebuf, SHELL);
+	X			flags = 0;
+	X		}
+	X		while (*p) p++;
+	X		while (p > linebuf && p[-1] == ' ')
+	X			p--;
+	X		if (*--p == '&') {
+	X			*p = '\0';
+	X			flags = BKGRND;
+	X		} else if (*p == PIPECHAR) {
+	X			*p = '\0';
+	X			(void) sprintf(bfr, "(%s)%cmail '%s'", linebuf, PIPECHAR, username);
+	X			(void) strcpy(linebuf, bfr);
+	X			flags |= BKGRND;
+	X		} else {
+	X			prflags |= NOPRT;
+	X		}
+	X		shcmd(linebuf, flags);
+	X		break;
+	X	}
+	X
+	X	/* mail reply */
+	X	case 'r':
+	X		reply(FALSE);
+	X		break;
+	X
+	X	case 'R':
+	X		reply(TRUE);
+	X		break;
+	X
+	X	case META|'r':
+	X		direct_reply();
+	X		break;
+	X
+	X	/* next newsgroup */
+	X	case 'N':
+	X		FCLOSE(fp);
+	X		if (next_ng_command())
+	X			quitflg = 1;
+	X		break;
+	X
+	X	/*  mark the rest of the articles in this group as read */
+	X	case 'K':
+	X		saveart;
+	X		while (bit <= ngsize && bit >= minartno) {
+	X			clear(bit);
+	X			nextbit();
+	X		}
+	X		FCLOSE(fp);
+	X		break;
+	X
+	X	/* Print the full header */
+	X	case 'H':
+	X		if (fp == NULL) {
+	X			msg("No current article");
+	X			break;
+	X		}
+	X		move(ARTWIN, 0);
+	X		Hoffset = ftell(fp);
+	X		(void) fseek(fp, 0L, 0);
+	X		for (i = 0; i < ARTWLEN; i++) {
+	X			if (fgets(linebuf, COLS, fp) == NULL)
+	X				break;
+	X			if (linebuf[0] == '\n')
+	X				break;
+	X			linebuf[COLS] = '\0';
+	X			addstr(linebuf);
+	X		}
+	X		(void) fseek(fp, Hoffset, 0);
+	X		for(; i < ARTWLEN; i++)
+	X			addstr(linebuf);
+	X		prflags |= HELPMSG|NEWART;
+	X		break;
+	X	case 'b':	/* backup 1 article */
+	Xbackupone:
+	X		count = bit - 1;
+	X		/* NO BREAK */
+	X
+	X	case 'A':	/* specific number */
+	X		if (count > pngsize) {
+	X			msg("not that many articles");
+	X			break;
+	X		}
+	X		readmode = SPEC;
+	X		aabs = TRUE;
+	X		bit = count;
+	X		obit = -1;
+	X		FCLOSE(fp);
+	X		break;
+	X
+	X	/* display parent article */
+	X	case 'p':
+	X#ifdef MYDB
+	X		if (hasdb && (ptr3 = findparent(h->ident, &nart)) != NULL) {
+	X			msg("parent: %s/%ld", ptr3, nart);	/*DEBUG*/
+	X			updscr();				/*DEBUG*/
+	X			goto selectart;
+	X		}
+	X#endif	/* MYDB */
+	X		if (h->followid[0] == '\0') {
+	X			msg("no references line");
+	X			break;
+	X		}
+	X		ptr1 = h->followid + strlen(h->followid);
+	X		do {
+	X			ptr2 = ptr1;
+	X			if (*ptr2 == '\0')
+	X				ptr1 = rindex(h->followid, ' ');
+	X			else {
+	X				*ptr2 = '\0';
+	X				ptr1 = rindex(h->followid, ' ');
+	X				*ptr2 = ' ';
+	X			}
+	X		} while (ptr1 != NULL && --count > 0);
+	X		if (ptr1 == NULL)
+	X			ptr1 = h->followid;
+	X		else	++ptr1;
+	X		(void) strncpy(linebuf, ptr1, ptr2 - ptr1);
+	X		linebuf[ptr2 - ptr1] = '\0';
+	X		msg("%s", linebuf);
+	X		curflag = CURP2;
+	X		updscr();		/* may take this out later */
+	X		goto searchid;
+	X	/* specific message ID. */
+	X	case '<':
+	X		/* could improve this */
+	X		linebuf[0] = '<'; linebuf[1] = 0;
+	X		if (prget("", linebuf)) {
+	X			secpr[0] = 0;
+	X			break;
+	X		}
+	Xsearchid:	secpr[0] = '\0';
+	X		if (index(linebuf, '@') == NULL && index(linebuf, '>') == NULL) {
+	X			ptr1 = linebuf;
+	X			if (*ptr1 == '<')
+	X				ptr1++;
+	X			ptr2 = index(ptr1, '.');
+	X			if (ptr2 != NULL) {
+	X				*ptr2++ = '\0';
+	X				(void) sprintf(bfr, "<%s@%s.UUCP>", ptr2, ptr1);
+	X				(void) strcpy(linebuf, bfr);
+	X			}
+	X		}
+	X		if (index(linebuf, '>') == NULL)
+	X			(void) strcat(linebuf, ">");
+	X
+	X		ptr1 = findhist(linebuf);
+	X		if (ptr1 == NULL) {
+	X			msg("%s not found", linebuf);
+	X			break;
+	X		}
+	X		ptr2 = index(ptr1, '\t');
+	X		ptr3 = index(++ptr2, '\t');
+	X		ptr2 = index(++ptr3, ' ');
+	X		if (ptr2)
+	X			*ptr2 = '\0';
+	X		ptr2 = index(ptr3, '/');
+	X		if (!ptr2) {
+	X			if (STRCMP(ptr3, "cancelled") == 0)
+	X				msg("%s has been cancelled", linebuf);
+	X			else
+	X				msg("%s has expired", linebuf);
+	X			break;
+	X		}
+	X		*ptr2++ = '\0';
+	X		(void) sscanf(ptr2, "%ld", &nart);
+	X
+	X		/*
+	X		 * Go to a given article.  Ptr3 specifies the newsgroup
+	X		 * and nart specifies the article number.
+	X		 */
+	X#ifdef MYDB
+	Xselectart:
+	X#endif /* MYDB */
+	X		aabs = TRUE;
+	X		FCLOSE(fp);
+	X		saveart;
+	X		(void) strcpy(ogroupdir, ptr3);
+	X		if (STRCMP(groupdir, ogroupdir)) {
+	X			(void) strcpy(bfr, groupdir);
+	X			selectng(ogroupdir, TRUE, PERHAPS);
+	X			(void) strcpy(groupdir, ogroupdir);
+	X			(void) strcpy(ogroupdir, bfr);
+	X			ngrp = 1;
+	X			back();
+	X		}
+	X		bit = nart;
+	X		oobit = obit;
+	X		obit = -1;
+	X		getnextart(TRUE);
+	X		if (bit != nart || STRCMP(groupdir, ptr3) != 0) {
+	X			msg("can't read %s/%ld", ptr3, nart);
+	X			goto caseminus;
+	X		}
+	X		rfq = 0;
+	X		break;
+	X
+	X	/* follow-up article */
+	X	case 'f':
+	X		if (STRCMP(h->followto, "poster") == 0) {
+	X			reply(FALSE);
+	X			break;
+	X		}
+	X#ifdef SERVER
+	X		(void) sprintf(bfr, "%s/%s %s/%s/%ld", BIN, "postnews",
+	X				SPOOL,groupdir,bit);
+	X#else	/* !SERVER */
+	X		(void) sprintf(bfr, "%s/%s %s", BIN, "postnews", goodone);
+	X#endif	/* !SERVER */
+	X		shcmd(bfr, CWAIT);
+	X		break;
+	X
+	X	/* erase - pretend we haven't seen this article. */
+	X	case 'e':
+	X		erased = 1;
+	X		set(bit);
+	X		goto caseplus;	/* skip this article for now */
+	X
+	X	case '#':
+	X		msg("Article %ld of %ld", rfq ? oobit : bit, pngsize);
+	X		break;
+	X
+	X		/* error */
+	X	case '?':
+	X		{
+	X			FILE *helpf;
+	X			(void) sprintf(linebuf, "%s/vnews.help", LIB);
+	X			if ((helpf = fopen(linebuf, "r")) == NULL) {
+	X				msg("Can't open help file");
+	X				break;
+	X			}
+	X			move(ARTWIN, 0);
+	X			while (fgets(linebuf, LBUFLEN, helpf) != NULL)
+	X				addstr(linebuf);
+	X			(void) fclose(helpf);
+	X			prflags |= HELPMSG|NEWART;
+	X		}
+	X		break;
+	X
+	X	default:
+	X		if (c != ckill && c != cintr && c != cerase) 
+	X#ifdef TIOCGLTC
+	X			if (c != cwerase)
+	X#endif	/* TIOCGLTC */
+	X			{
+	X				beep();
+	X				msg("Illegal command");
+	X			}
+	X		break;
+	X	}
+	X}
+	X
+	Xcancel_command()
+	X{
+	X	register char *poster, *r;
+	X	int notauthor;
+	X	char *senderof();
+	X
+	X	poster = senderof(h);
+	X	/* only compare up to '.' or ' ' */
+	X	r = index(poster,'.');
+	X	if (r == NULL)
+	X		r = index(poster,' ');
+	X	if (r != NULL)
+	X		*r = '\0';
+	X	tfilename = filename;
+	X	notauthor = STRCMP(username, poster);
+	X	if (uid != ROOTID && uid && notauthor) {
+	X		msg("Can't cancel what you didn't write.");
+	X		return;
+	X	}
+	X	if (!cancel(stderr, h, notauthor)) {
+	X		clear(bit);
+	X		saveart;
+	X		nextbit();
+	X		obit = -1;
+	X		fp = NULL;
+	X	}
+	X	FCLOSE(fp);
+	X}
+	X/*
+	X * Generate replies
+	X */
+	X
+	Xreply(include)
+	X	int include;
+	X{
+	X	char *arg[4];
+	X	register FILE *rfp;
+	X	char subj[132];
+	X	register char *p;
+	X	char *replyname();
+	X	struct stat statb;
+	X	time_t creatm;
+	X
+	X	/* Put the user in the editor to create the body of the reply. */
+	X	ed = getenv("EDITOR");
+	X	if (ed == NULL || *ed == '\0')
+	X		ed = DFTEDITOR;
+	X	if (ed == NULL) {
+	X		msg("You don't have an editor");
+	X		return;
+	X	}
+	X
+	X	arg[0] = "/bin/sh";
+	X	arg[1] = "-c";
+	X
+	X	(void) strcpy(tf, tft);
+	X	MKTEMP(tf);
+	X	(void) close(creat(tf,0600));
+	X	if ((rfp = fopen(tf, "w")) == NULL) {
+	X		msg("Can't create %s", tf) ;
+	X		return;
+	X	}
+	X	(void) strcpy(subj, h->title);
+	X	if (!PREFIX(subj, "Re:")){
+	X		(void) strcpy(bfr, subj);
+	X		(void) sprintf(subj, "Re: %s", bfr);
+	X	}
+	X
+	X	p = replyname(h);
+	X	fprintf(rfp, "To: %s\n", p);
+	X	fprintf(rfp, "Subject: %s\n", subj);
+	X	fprintf(rfp, "In-reply-to: your article %s\n", h->ident);
+	X#ifdef INTERNET
+	X	fprintf(rfp, "News-Path: %s\n", h->path);
+	X#endif /* INTERNET */
+	X	(void) sprintf(rcbuf, "%s -t < %s; rm -f %s", MAILPARSER, tf, tf);
+	X	putc('\n', rfp);
+	X	if (include) {
+	X		FILE *of;
+	X		char buf[BUFSIZ];
+	X
+	X#ifndef SERVER
+	X		of = xart_open(goodone, "r");
+	X		while (fgets(buf, sizeof buf, of) != NULL)
+	X			if (buf[0] == '\n')
+	X				break;
+	X		while (fgets(buf, sizeof buf, of) != NULL)
+	X			fprintf(rfp, "> %s", buf);
+	X		fclose(of);
+	X		putc('\n', rfp);
+	X#endif	/* !SERVER */
+	X	}
+	X
+	X	fflush(rfp);
+	X	(void) fstat(fileno(rfp), &statb);
+	X	creatm = statb.st_mtime;
+	X	(void) fclose(rfp);
+	X
+	X	(void) sprintf(edcmdbuf, "exec %s %s", ed, tf);
+	X	arg[2] = edcmdbuf;
+	X	arg[3] = NULL;
+	X	if (prun(arg, 0) != 0) {
+	X		msg("Couldn't run editor");
+	X		(void) unlink(tf);
+	X		return;
+	X	}
+	X
+	X	if (access(tf, 4) || stat(tf, &statb)) {
+	X		msg("No input file - mail not sent");
+	X		(void) unlink(tf);
+	X		return;
+	X	}
+	X	if (statb.st_mtime == creatm || statb.st_size < 5) {
+	X		msg("File unchanged - no message posted");
+	X		(void) unlink(tf);
+	X		return;
+	X	}
+	X
+	X	arg[2] = rcbuf;
+	X	arg[3] = NULL;
+	X	prun(arg, BKGRND);
+	X	prflags |= NOPRT;
+	X}
+	X
+	Xdirect_reply()
+	X{
+	X	register char *p;
+	X	register char *q;
+	X	char *arg[4];
+	X	char address[PATHLEN];
+	X	extern char *replyname();
+	X	extern char *getenv();
+	X
+	X	arg[0] = "/bin/sh";
+	X	arg[1] = "-c";
+	X	p = replyname(h);
+	X	q = address;
+	X	while (*p != '\0') {
+	X		if (index("\"\\$", *p) != 0)
+	X			*q++ = '\\';
+	X		*q++ = *p++;
+	X	}
+	X	*q++ = '\0';
+	X	if ((MAILER = getenv("MAILER")) == NULL)
+	X		MAILER = "mail";
+	X	sprintf(rcbuf, MAILER, hptr->title);
+	X	sprintf(bfr, "%s %s", rcbuf, address);
+	X	arg[2] = bfr;
+	X	arg[3] = NULL;
+	X	if (prun(arg, 0) != 0) {
+	X		msg("Couldn't run mailer");
+	X		return;
+	X	}
+	X	prflags |= NOPRT;
+	X}
+	X
+	Xnext_ng_command()
+	X{
+	X	set(bit);
+	X	obit = -1;
+	X	linebuf[0] = 0;
+	X	if (prget("group? ", linebuf))
+	X		return FALSE;
+	X	bptr = linebuf;
+	X	if (!*bptr || *bptr == '-') {
+	X		if (*bptr)
+	X			actdirect = BACKWARD;
+	X		saveart;
+	X		if (nextng()) {
+	X			if (actdirect == BACKWARD)
+	X				msg("Can't back up.");
+	X			else
+	X				return TRUE;
+	X		}
+	X		return FALSE;
+	X	}
+	X	while (isspace(*bptr))
+	X		bptr++;
+	X	if (!validng(bptr)) {
+	X		msg("No such group.");
+	X		return FALSE;
+	X	}
+	X	saveart;
+	X	back();
+	X	selectng(bptr, TRUE, TRUE);
+	X	return FALSE;
+	X}
+	X
+	X/*
+	X * Find the next article we want to consider, if we're done with
+	X * the last one, and show the header.
+	X */
+	Xgetnextart(minus)
+	Xint minus;
+	X{
+	X	int noaccess;
+	X#ifdef SERVER
+	X	char workspace[256];
+	X#else	/* !SERVER */
+	X	register DIR *dirp;
+	X	register struct direct *dir;
+	X#endif	/* !SERVER */
+	X	long nextnum, tnum;
+	X	long atol();
+	X	noaccess = 0;
+	X	if (minus)
+	X		goto nextart2;	/* Kludge for "-" command. */
+	X
+	X	if (bit == obit)	/* Return if still on same article as last time */
+	X		return 0;
+	X
+	Xnextart:
+	X	if (news) {
+	X		curflag = CURHOME;
+	X		_amove(0, 0);
+	X		vflush();
+	X	}
+	X	dgest = 0;
+	X
+	X	/* If done with this newsgroup, find the next one. */
+	X	while (ngsize <= 0 || (!rflag && ((long) bit > ngsize)) || (rflag && bit < minartno)) {
+	X		if (nextng()) {
+	X			if (actdirect == BACKWARD) {
+	X				msg("Can't back up.");
+	X				actdirect = FORWARD;
+	X				continue;
+	X			}
+	X			else /* if (rfq++ || pflag || cflag) */
+	X				return 1;
+	X		}
+	X		if (rflag)
+	X			bit = ngsize + 1;
+	X		else
+	X			bit = -1;
+	X		noaccess = 2;
+	X	}
+	X
+	X	/* speed things up by not searching for article -1 */
+	X	if (bit < 0) {
+	X		bit = minartno - 1;
+	X		nextbit();
+	X		aabs = FALSE;
+	X		goto nextart;
+	X	}
+	X
+	Xnextart2:
+	X	if (rcreadok)
+	X		rcreadok = 2;	/* have seen >= 1 article */
+	X#ifdef SERVER
+	X	if (bit == 0  || (fp = getarticle(groupdir, bit, "ARTICLE")) == NULL)
+	X		goto badart;
+	X	strcpy(filename, article_name());
+	X	(void) fclose(fp);
+	X	fp = NULL;
+	X#else	/* !SERVER */
+	X	(void) sprintf(filename, "%s/%ld", dirname(groupdir), bit);
+	X	if (rfq && goodone[0])	/* ??? */
+	X		strcpy(filename, goodone);
+	X#endif	/* !SERVER */
+	X	if (SigTrap == SIGHUP)
+	X		return 1;
+	X	/* Decide if we want to show this article. */
+	X	if ((fp = art_open(filename, "r")) == NULL) {
+	X		/* since there can be holes in legal article numbers, */
+	X		/* we wait till we hit 5 consecutive bad articles */
+	X		/* before we haul off and scan the directory */
+	X		if (++noaccess < 5)
+	X			goto badart;
+	X		noaccess = 0;
+	X#ifdef SERVER
+	X		if (*groupdir == ' ' || *groupdir == '\0' || 
+	X			set_group(groupdir) == NULL)
+	X			goto nextart;
+	X#else	/* !SERVER */
+	X		dirp = opendir(dirname(groupdir));
+	X		if (dirp == NULL) {
+	X			if (errno != EACCES)
+	X				msg("Can't open %s", dirname(groupdir));
+	X			goto nextart;
+	X		}
+	X#endif	/* !SERVER */
+	X		nextnum = rflag ? minartno - 1 : ngsize + 1;
+	X#ifdef SERVER 
+	X		tnum = nextnum;
+	X		for(;;){
+	X			(void) sprintf(bfr,"STAT %ld",tnum);
+	X			put_server(bfr);
+	X			(void) get_server(workspace,sizeof(workspace));
+	X			if (*workspace != CHAR_OK) {
+	X				if (rflag)
+	X					tnum++;
+	X				else
+	X					tnum--;
+	X				continue;
+	X			}
+	X#else	/* !SERVER */
+	X		while ((dir = readdir(dirp)) != NULL) {
+	X			if (!dir->d_ino)
+	X				continue;
+	X			tnum = atol(dir->d_name);
+	X			if (tnum <= 0)
+	X				continue;
+	X#endif	/* !SERVER */
+	X			if (rflag ? (tnum > nextnum && tnum < bit)
+	X				  : (tnum < nextnum && tnum > bit))
+	X				nextnum = tnum;
+	X#ifdef SERVER
+	X			break;		/* not exactly right */
+	X#endif	/* SERVER */
+	X		}
+	X#ifndef SERVER
+	X		closedir(dirp);
+	X#endif	/* !SERVER */
+	X		if (rflag ? (nextnum >= bit) : (nextnum <= bit))
+	X			goto badart;
+	X		do {
+	X			clear(bit);
+	X			nextbit();
+	X		} while (rflag ? (nextnum < bit) : (nextnum > bit));
+	X		obit = -1;
+	X		aabs = FALSE;
+	X		goto nextart;
+	X	} else
+	X		noaccess = 0;
+	X
+	X	if (hread(h, fp, TRUE) == NULL || (!rfq && !aselect(h, aabs))) {
+	Xbadart:
+	X		FCLOSE(fp);
+	X		clear(bit);
+	X		obit = -1;
+	X		nextbit();
+	X		aabs = FALSE;
+	X		goto nextart;
+	X	}
+	X	aabs = FALSE;
+	X	actdirect = FORWARD;
+	X	news = TRUE;
+	X	artbody = ftell(fp);
+	X	fmthdr();
+	X	artlines = lastlin;
+	X	artread = 0;
+	X	prflags |= NEWART;
+	X	prflags &=~ NOPRT;
+	X	if (! cflag && hdrend < ARTWLEN && !cflag)
+	X		prflags |= HDRONLY;
+	X	dlinno = 0;
+	X	maxlinno = NLINES(h, fp);
+	X	erased = 0;
+	X
+	X	obit = bit;
+	X#ifdef SERVER
+	X	(void) unlink(filename);
+	X#endif	/* SERVER */
+	X	return 0;
+	X}
+	X
+	X/*
+	X * Print out whatever the appropriate header is
+	X */
+	Xfmthdr() {
+	X	char *briefdate();
+	X	static FILE *ngfd = NULL;
+	X	static int triedopen = 0;
+	X	char pbuf[BUFLEN], *printbuffer = groupdir;
+	X
+	X	lastlin = 0;
+	X	if (ngrp) {
+	X		pngsize = ngsize;
+	X		ngrp--;
+	X		if (!hflag) {
+	X			if (!triedopen) {
+	X				(void) sprintf(pbuf,"%s/newsgroups", LIB);
+	X				ngfd = fopen(pbuf, "r");
+	X				triedopen++;
+	X			}
+	X			if (ngfd != NULL) {
+	X				register char *p;
+	X				char ibuf[BUFLEN];
+	X				rewind(ngfd);
+	X				while (fgets(ibuf, BUFLEN, ngfd) != NULL) {
+	X					p = index(ibuf, '\t');
+	X					if (p)
+	X						*p++ = '\0';
+	X					if (STRCMP(ibuf, groupdir) == 0) {
+	X						register char *q;
+	X						q = rindex(p, '\t');
+	X						if (q) {
+	X							p = q;
+	X							*p++ = '\0';
+	X						}
+	X						if (p) {
+	X							q = index(p, '\n');
+	X							if (q)
+	X								*q = '\0';
+	X							if (*--q == '.')
+	X								*q = '\0';
+	X						(void) sprintf(pbuf,"%s (%s)",
+	X							groupdir, p);
+	X							printbuffer = pbuf;
+	X						}
+	X						break;
+	X					}
+	X				}
+	X			}
+	X			(void) sprintf(linebuf, "Newsgroup %s", printbuffer);
+	X			tfappend(linebuf);
+	X		}
+	X	}
+	X	hdrstart = lastlin;
+	X	if (!hflag) {
+	X		(void) sprintf(linebuf, "Article %s %s",
+	X			h->ident, briefdate(h->subdate));
+	X		tfappend(linebuf);
+	X	}
+	X	xtabs(h);
+	X	vhprint(h, pflag ? 1 : 0);
+	X	(void) sprintf(linebuf, "(%d lines)", NLINES(h, fp)); tfappend(linebuf);
+	X	tfappend("");
+	X	hdrend = lastlin;
+	X}
+	X
+	X/*
+	X * Grow tabs into spaces in header fields, 'cause the rest of this
+	X * lax program drops turds all over tabs (so it does with \b's, but ..)
+	X */
+	Xxtabs(p)
+	Xregister struct hbuf *p;
+	X{
+	X	xtabf(p->from, sizeof p->from);
+	X	xtabf(p->path, sizeof p->path);
+	X	xtabf(p->nbuf, sizeof p->nbuf);
+	X	xtabf(p->title, sizeof p->title);
+	X	xtabf(p->ident, sizeof p->ident);
+	X	xtabf(p->replyto, sizeof p->replyto);
+	X	xtabf(p->followid, sizeof p->followid);
+	X	xtabf(p->subdate, sizeof p->subdate);
+	X	xtabf(p->expdate, sizeof p->expdate);
+	X	xtabf(p->ctlmsg, sizeof p->ctlmsg);
+	X	xtabf(p->sender, sizeof p->sender);
+	X	xtabf(p->followto, sizeof p->followto);
+	X	xtabf(p->distribution, sizeof p->distribution);
+	X	xtabf(p->organization, sizeof p->organization);
+	X	xtabf(p->numlines, sizeof p->numlines);
+	X	xtabf(p->keywords, sizeof p->keywords);
+	X	xtabf(p->summary, sizeof p->summary);
+	X	xtabf(p->approved, sizeof p->approved);
+	X	xtabf(p->nf_id, sizeof p->nf_id);
+	X	xtabf(p->nf_from, sizeof p->nf_from);
+	X#ifdef DOXREFS
+	X	xtabf(p->xref, sizeof p->xref);
+	X#endif /* DOXREFS */
+	X}
+	X
+	Xxtabf(s, size)
+	Xchar *s;
+	Xint size;
+	X{
+	X	register char *p, *str;
+	X	register c, i;
+	X	char buf[LBUFLEN];
+	X
+	X	str = s;
+	X	if (index(str, '\t') == NULL)
+	X		return;
+	X	i = 0;
+	X	for (p = buf; c = *str++; i++) {
+	X		if (c == '\t') {
+	X			*p++ = ' ';
+	X			if ((i & 7) != 7)
+	X				str--;
+	X		} else if (c == '\n') {
+	X			i = -1;
+	X			*p++ = c;
+	X		} else
+	X			*p++ = c;
+	X	}
+	X	*p = '\0';
+	X	strncpy(s, buf, size - 1);
+	X}
+	X
+	X/*
+	X * Print the file header to the temp file.
+	X */
+	Xvhprint(hp, verbose)
+	Xregister struct hbuf *hp;
+	Xint	verbose;
+	X{
+	X	register char	*p1, *p2;
+	X	char	fname[BUFLEN];
+	X	char *tailpath();
+	X
+	X	fname[0] = '\0';		/* init name holder */
+	X
+	X	p1 = index(hp->from, '(');	/* Find the sender's full name. */
+	X	if (p1 == NULL && hp->path[0])
+	X		p1 = index(hp->path, '(');
+	X	if (p1 != NULL) {
+	X		(void) strcpy(fname, p1+1);
+	X		p2 = index(fname, ')');
+	X		if (p2 != NULL)
+	X			*p2 = '\0';
+	X	}
+	X
+	X	(void) sprintf(linebuf, "Subject: %s", hp->title);
+	X	tfappend(linebuf);
+	X	if (!hflag && hp->summary[0])
+	X		(void) sprintf(linebuf, "Summary: %s", hp->summary), tfappend(linebuf);
+	X	if (!hflag && hp->keywords[0])
+	X		(void) sprintf(linebuf, "Keywords: %s", hp->keywords), tfappend(linebuf);
+	X	if (verbose) {
+	X		(void) sprintf(linebuf, "From: %s", hp->from); tfappend(linebuf);
+	X		(void) sprintf(linebuf, "Path: %s", hp->path); tfappend(linebuf);
+	X		if (hp->organization[0]) {
+	X			(void) sprintf(linebuf, "Organization: %s", hp->organization);
+	X			tfappend(linebuf);
+	X		}
+	X	}
+	X	else {
+	X		if (p1 != NULL)
+	X			*--p1 = '\0';		/* bump over the '(' */
+	X#ifdef INTERNET
+	X		/*
+	X		 * Prefer Path line if it's in internet format, or if we don't
+	X		 * understand internet format here, or if there is no reply-to.
+	X		 */
+	X		(void) sprintf(linebuf, "From: %s", hp->from);
+	X#else	/* !INTERNET */
+	X		(void) sprintf(linebuf, "Path: %s", tailpath(hp));
+	X#endif	/* !INTERNET */
+	X		if (fname[0] || (hp->organization[0] && !hflag)) {
+	X			(void) strcat(linebuf, " (");
+	X			if (fname[0] == '\0') {
+	X				(void) strcpy(fname, hp->from);
+	X				p2 = index(fname,'@');
+	X				if (p2)
+	X					*p2 = '\0';
+	X			}
+	X			(void) strcat(linebuf, fname);
+	X			if (hp->organization[0] && !hflag) {
+	X				(void) strcat(linebuf, " @ ");
+	X				(void) strcat(linebuf, hp->organization);
+	X			}
+	X			(void) strcat(linebuf, ")");
+	X		}
+	X		tfappend(linebuf);
+	X		if (p1 != NULL)
+	X			*p1 = ' ';
+	X		if (hp->ctlmsg[0]) {
+	X			(void) sprintf(linebuf, "Control: %s", hp->ctlmsg);
+	X			tfappend(linebuf);
+	X		}
+	X	}
+	X
+	X	if (verbose) {
+	X		(void) sprintf(linebuf, "Newsgroups: %s", hp->nbuf); tfappend(linebuf);
+	X		(void) sprintf(linebuf, "Date: %s", hp->subdate); tfappend(linebuf);
+	X		if (hp->sender[0]) {
+	X			(void) sprintf(linebuf, "Sender: %s", hp->sender);
+	X			tfappend(linebuf);
+	X		}
+	X		if (hp->replyto[0]) {
+	X			(void) sprintf(linebuf, "Reply-To: %s", hp->replyto);
+	X			tfappend(linebuf);
+	X		}
+	X		if (hp->followto[0]) {
+	X			(void) sprintf(linebuf, "Followup-To: %s", hp->followto);
+	X			tfappend(linebuf);
+	X		}
+	X	}
+	X	else if (STRCMP(hp->nbuf, groupdir) != 0) {
+	X		(void) sprintf(linebuf, "Newsgroups: %s", hp->nbuf);
+	X		tfappend(linebuf);
+	X		timer();
+	X	}
+	X}
+	X
+	X#ifdef MYDB
+	X
+	Xchar *
+	Xfindparent(id, num)
+	Xchar *id;
+	Xlong *num;
+	X{
+	X	struct artrec a;
+	X	char idbuf[BUFSIZE];
+	X	char *ngname();
+	X
+	X	strcpy(idbuf, id);
+	X	lcase(idbuf);
+	X
+	X	if (lookart(id, &a) == DNULL)
+	X		return NULL;
+	X	if (a.parent == DNULL)
+	X		return NULL;
+	X	readrec(a.parent, &a);
+	X	*num = a.groups[0].artno;
+	X	return ngname(a.groups[0].newsgroup);
+	X}
+	X
+	X#endif	/* MYDB */
+	X
+	X
+	X/*
+	X * Append file to temp file, handling control characters, folding lines, etc.
+	X * We don't grow the temp file to more than nlines so that a user won't have
+	X * to wait for 20 seconds to read in a monster file from net.sources.
+	X * What we really want is coroutines--any year now.
+	X */
+	X
+	X#define ULINE 0200
+	Xstatic char *maxcol;
+	X
+	Xappfile(iop, nlines)
+	Xregister FILE *iop;
+	X{
+	X	register int c;
+	X	register char *icol;	/* &linebuf[0] <= icol <= maxcol */
+	X
+	X	if (artread || artlines >= nlines || iop == NULL)
+	X		return;
+	X	maxcol = linebuf;
+	X	icol = linebuf;
+	X	while ((c = getc(iop)) != EOF) {
+	X		switch (c) {
+	X		case ' ':
+	X			if (icol == maxcol && icol < linebuf + LBUFLEN - 1) {
+	X				*icol++ = ' ';
+	X				maxcol = icol;
+	X			} else {
+	X				if (*icol == '_')
+	X					*icol++ = ULINE | ' ';
+	X				else
+	X					icol++;
+	X			}
+	X			break;
+	X		case '\t':
+	X			icol = (icol - linebuf &~ 07) + 8 + linebuf;
+	X			growline(icol);
+	X			break;
+	X		case '\b':
+	X			if (icol > linebuf) --icol;
+	X			break;
+	X		case '\n':
+	X			outline();
+	X			if (artlines >= nlines)
+	X				return;
+	X			icol = linebuf;
+	X			break;
+	X		case '\r':
+	X			icol = linebuf;
+	X			break;
+	X		case '\f':
+	X			outline(); outline(); outline();
+	X			if (artlines >= nlines)
+	X				return;
+	X			icol = linebuf;
+	X			break;
+	X		default:
+	X			if (c < ' ' || c > '~')
+	X				break;
+	X			else if (icol >= linebuf + LBUFLEN - 1)
+	X				icol++;
+	X			else if (icol == maxcol) {
+	X				*icol++ = c;
+	X				maxcol = icol; }
+	X			else if (c == '_')
+	X				*icol++ |= ULINE;
+	X			else if (*icol == '_')
+	X				*icol++ = (c | ULINE);
+	X			else	*icol++ = c;
+	X			break;
+	X		}
+	X	}
+	X	if (maxcol != linebuf)		/* file not terminated with newline */
+	X		outline();
+	X	artread++;
+	X}
+	X
+	Xgrowline(col)
+	Xchar *col;
+	X{
+	X	while (maxcol < col && maxcol < linebuf + LBUFLEN - 1)
+	X		*maxcol++ = ' ';
+	X}
+	X
+	Xoutline()
+	X{
+	X	*maxcol = '\0';
+	X	if (STRNCMP(linebuf, ">From ", 6) == 0) {
+	X		register char *p;
+	X		for (p = linebuf ; (*p = p[1]) != '\0' ; p++);
+	X	}
+	X	tfappend(linebuf);
+	X	if (maxcol > linebuf)
+	X		artlines = lastlin;
+	X	maxcol = linebuf;
+	X}
+	X
+	X
+	X/*
+	X * Prompt the user and get a line.
+	X * "prompter" is the prompt.  "buf" contains a string which
+	X * will be used as the initial user response (which may be edited
+	X * by the user with backspace, ^U, etc).  The resulting line is
+	X * returned in "buf".  The result of prget() is:
+	X *	 0 if the line was terminated by NL or CR
+	X *	 1 if it was terminated by the interrupt character.
+	X *	 2 if it was terminated by erasing all the characters, including
+	X *	   one or more that were prompted initially in "buf".  (If "buf"
+	X * 	   was empty, this will never occur.)
+	X */
+	Xint
+	Xprget(prompter, buf)
+	Xchar *prompter, *buf;
+	X{
+	X	register char *p, *q, *r;
+	X	register char c;
+	X	char lastc;
+	X	char hadprompt = buf[0];
+	X
+	X	curflag = CURP2;
+	X	r = buf + strlen(buf);
+	X	lastc = '\0';
+	X	for (;;) {
+	X		p = secpr;
+	X		for (q = prompter ; *q ; q++)
+	X			*p++ = *q;
+	X		for (q = buf ; *q ; q++) {
+	X			if (p < &secpr[SECPRLEN-1] && *q >= ' ' && *q <= '~')
+	X				*p++ = *q;
+	X		}
+	X		*p = '\0';
+	X		c = vgetc();
+	X		if (c == '\n' || c == '\r' || c == cintr) {
+	X			break;
+	X		}
+	X		if (c == cerase || c == '\b' || c == '\177') {
+	X			if (lastc == '\\')
+	X				r[-1] = c;
+	X			else if (r > buf)
+	X				r--;
+	X		} else if (c == ckill) {
+	X			if (lastc == '\\')
+	X				r[-1] = c;
+	X			else
+	X				r = buf;
+	X#ifdef TIOCGLTC
+	X		} else if (c == cwerase) {
+	X			if (lastc == '\\')
+	X				r[-1] = c;
+	X			else {
+	X				while (r > buf && (r[-1] == ' ' || r[-1] == '\t'))
+	X					r--;
+	X				while (r > buf && r[-1] != ' ' && r[-1] != '\t')
+	X					r--;
+	X			}
+	X#endif	/* TIOCGLTC */
+	X		} else {
+	X			*r++ = c;
+	X		}
+	X		lastc = c;
+	X		*r = '\0';
+	X		if ((r == buf) && hadprompt)
+	X			return 2;
+	X	}
+	X	curflag = CURHOME;
+	X	secpr[0] = '\0';
+	X	return (c == cintr);
+	X}
+	X
+	X
+	X
+	X/*
+	X * Execute a shell command.
+	X */
+	X
+	Xshcmd(cmd, flags)
+	Xchar *cmd;
+	X{
+	X	char *arg[4];
+	X
+	X	arg[0] = SHELL, arg[1] = "-c", arg[2] = cmd, arg[3] = NULL;
+	X	return prun(arg, flags);
+	X}
+	X
+	X
+	Xprun(args, flags)
+	Xchar **args;
+	X{
+	X	int pid;
+	X	int i;
+	X	int (*savequit)();
+	X	char *env[100], **envp, **oenvp;
+	X	char a[BUFLEN + 2];
+	X	extern char **environ;
+	X	int pstatus, retval;
+	X
+	X	if (!(flags & BKGRND)) {
+	X		botscreen();
+	X		ttycooked();
+	X#ifdef SIGTSTP
+	X		(void) signal(SIGTSTP, SIG_DFL);
+	X		(void) signal(SIGTTIN, SIG_DFL);
+	X		(void) signal(SIGTTOU, SIG_DFL);
+	X#endif	/* SIGTSTP */
+	X	}
+	X#if defined(BSD4_2) && !defined(sun)
+	X	while ((pid = vfork()) == -1)
+	X#else /* !BSD4_2 */
+	X	/* 4.1 BSD (at least) can't handle this vfork with -ljobs */
+	X	while ((pid = fork()) == -1)
+	X#endif /* !BSD4_2 */
+	X		sleep(1);		/* must not clear alarm */
+	X	if (pid == 0) {
+	X		for (i = 3 ; i < 20 ; i++)
+	X			close(i);
+	X		if (flags & BKGRND) {
+	X			(void) signal(SIGINT, SIG_IGN);
+	X			(void) signal(SIGQUIT, SIG_IGN);
+	X#ifdef SIGTSTP
+	X			(void) signal(SIGTSTP, SIG_IGN);
+	X			(void) signal(SIGTTIN, SIG_IGN);
+	X			(void) signal(SIGTTOU, SIG_IGN);
+	X#endif	/* SIGTSTP */
+	X			(void) close(0);
+	X			(void) close(1);
+	X			(void) open("/dev/null", 2);
+	X			(void) dup(0);
+	X		}
+	X		/* set $A */
+	X		(void) sprintf(a, "A=%s", filename);
+	X		oenvp = environ;
+	X		env[0] = a;
+	X		for (envp = env + 1 ; *oenvp != NULL && envp < env + 98 ; oenvp++)
+	X			if ((*oenvp)[0] != 'A' || (*oenvp)[1] != '=')
+	X				*envp++ = *oenvp;
+	X		*envp = NULL;
+	X
+	X		(void) umask(savmask);
+	X		execve(args[0], args, env);
+	X		perror(args[0]);
+	X		exit(20);
+	X	}
+	X	if (!(flags & BKGRND)) {
+	X		savequit = signal(SIGQUIT, SIG_IGN);
+	X		while ((i = wait(&pstatus)) != pid && (i != -1 || errno == EINTR))
+	X			;
+	X		if (i == -1)
+	X			retval = 1;
+	X		else
+	X			retval = pstatus;
+	X		if (flags & CWAIT) {
+	X			fprintf(stderr, "[Hit return to continue]");
+	X			while ((errno = 0, i = getchar()) != '\n'
+	X				&& (i != EOF || errno == EINTR));
+	X		}
+	X		(void) signal(SIGQUIT, savequit);
+	X		ttyraw();
+	X		okclear();
+	X#ifdef SIGTSTP
+	X		(void) signal(SIGTSTP, onstop);
+	X		(void) signal(SIGTTIN, onstop);
+	X		(void) signal(SIGTTOU, onstop);
+	X#endif	/* SIGTSTP */
+	X		return retval;
+	X	} else
+	X		return 0;
+	X}
+	X
+	X#ifdef DIGPAGE
+	X
+	X
+	X/*
+	X * Find end of current subarticle in digest.
+	X */
+	X
+	Xfindend(l)
+	X{
+	X	register int i, n;
+	X	register char *p;
+	X
+	X	for (i = l ; i < l + ARTWLEN && i < lastlin ; i++) {
+	X		tfget(linebuf, i);
+	X		for (p = linebuf ; *p == '-' ; p++)
+	X			;
+	X		n = (int) (p - linebuf);
+	X		if ( (n > 23 && n < 33) || (n > 65 && n < 79)) {
+	X			tfget(linebuf, ++i);
+	X			if (linebuf[0] == '\0')
+	X				return i + 1;
+	X		}
+	X	}
+	X	return 0;
+	X}
+	X
+	X#endif	/* DIGPAGE */
+	X
+	X
+	X/*** Routines for handling temporary file ***/
+	X
+	X/*
+	X * Append to temp file.
+	X * Long lines are folded.
+	X */
+	X
+	Xtfappend(tline)
+	Xregister char *tline;
+	X{
+	X	register char *nxtlin;
+	X
+	X	do {
+	X		nxtlin = index(tline, '\n');
+	X		if (nxtlin)
+	X			*nxtlin++ = '\0';
+	X
+	X		while (strlen(tline) > COLS) {
+	X			tfput(tline, lastlin++);
+	X			tline += COLS;
+	X			maxlinno++;
+	X		}
+	X		tfput(tline, lastlin++);
+	X	} while ((tline = nxtlin) != NULL);
+	X}
+	X
+	X
+	Xtfput(tline, linno)
+	Xchar *tline;
+	X{
+	X	register char *p;
+	X	register FILE *rtfp;		/* try to make it a little faster */
+	X	register int i;
+	X
+	X	p = tline, i = even(COLS);
+	X	tfseek(linno, 1);
+	X	rtfp = tfp;
+	X	while (--i >= 0) {
+	X		if (*p)
+	X			putc(*p++, rtfp);
+	X		else
+	X			putc('\0', rtfp);
+	X	}
+	X	tflinno++;
+	X}
+	X
+	X
+	Xtfget(tline, linno)
+	Xchar *tline;
+	X{
+	X	tfseek(linno, 0);
+	X	fread(tline, even(COLS), 1, tfp);
+	X	tline[COLS] = '\0';
+	X	tflinno++;
+	X}
+	X
+	X
+	Xtfseek(linno, wrflag)
+	X{
+	X	static int lastwrflag = 1;
+	X
+	X	if (linno != tflinno || wrflag != lastwrflag) {
+	X		(void) fseek(tfp, (long)linno * even(COLS), 0);
+	X		tflinno = linno;
+	X		lastwrflag = wrflag;
+	X	}
+	X}
+	X
+	X/* VARARGS1 */
+	Xmsg(s, a1, a2, a3, a4)
+	Xchar *s;
+	Xlong a1, a2, a3, a4;
+	X{
+	X	(void) sprintf(secpr, s, a1, a2, a3, a4);
+	X}
+	X
+	X
+	X/*
+	X * Update the display.
+	X * The display is entirely controlled by this routine,
+	X * which means that this routine may get pretty snarled.
+	X */
+	X
+	Xstatic int savelinno = -1;		/* dlinno on last call to updscr */
+	Xstatic int savepr;			/* prflags on last call */
+	X#ifdef TIOCGWINSZ
+	Xstatic int UPDATING = 0, WINCH = 0;
+	X
+	X/*
+	X * called by winch() from virtterm.c -- resets state information back
+	X * to start-up state and forces a full redraw of the screen.  The
+	X * current article is rewound to the beginning because it's would
+	X * be very difficult to get the screen to return to the exact point
+	X * in the file that the user left off (I know, I tried).
+	X */
+	Xwinch_upd()
+	X{
+	X	if(UPDATING)	/* concurrency.  wow! */
+	X		WINCH++;
+	X	else if((WINCH == 0) && (savelinno >= 0)) {
+	X		int  saveflag = curflag;
+	X
+	X		/* reread the article */
+	X		FCLOSE(fp);
+	X		obit = -1;
+	X		getnextart(FALSE);
+	X		appfile(fp, dlinno + ARTWLEN + 1);
+	X
+	X		/* fix up the screen */
+	X		curflag = saveflag;
+	X		strcpy(prompt,"more? ");
+	X		okclear();
+	X		updscr();
+	X	}
+	X}
+	X#endif /* TIOCGWINSZ */
+	X
+	X
+	Xupdscr()
+	X{
+	X	int count;
+	X	int i;
+	X
+	X#ifdef TIOCGWINSZ
+	X	UPDATING++;
+	X#endif /* TIOCGWINSZ */
+	X	if (checkin())
+	X		return;
+	X	if ((prflags & HELPMSG) == 0
+	X	 && (dlinno != savelinno || savepr != prflags)
+	X	 && quitflg == 0) {
+	X		if (dlinno != savelinno)
+	X			prflags &=~ NOPRT;
+	X		count = ARTWLEN;
+	X		if (prflags & NOPRT)
+	X			count = 0;
+	X		if ((prflags & HDRONLY) && count > hdrend)
+	X			count = hdrend - dlinno;
+	X#ifdef DIGPAGE
+	X		if (endsuba > 0 && count > endsuba - dlinno)
+	X			count = endsuba - dlinno;
+	X#endif	/* DIGPAGE */
+	X		if ((prflags & NEWART) == 0)
+	X			ushift(ARTWIN, ARTWIN+ARTWLEN-1, dlinno - savelinno);
+	X		if (count > lastlin - dlinno)
+	X			count = lastlin - dlinno;
+	X		for (i = ARTWIN ; i < ARTWIN + ARTWLEN ; i++)
+	X			clrline(i);
+	X		for (i = 0 ; i < count ; i++) {
+	X			tfget(linebuf, dlinno + i);
+	X			mvaddstr(ARTWIN + i, 0, linebuf);
+	X		}
+	X		prflags &=~ NEWART;
+	X		savepr = prflags;
+	X		savelinno = dlinno;
+	X	}
+	X	clrline(SPLINE), clrline(PRLINE);
+	X#ifdef STATTOP
+	X	mvaddstr(PRLINE, 0, prompt);
+	X#else	/* !STATOP */
+	X	if (strlen(secpr) <= COLS)
+	X		mvaddstr(PRLINE, 0, prompt);
+	X#endif	/* !STATOP */
+	X	mvaddstr(PRLINE, 59, timestr);
+	X	mvaddstr(PRLINE, 17, groupdir);
+	X	addch(' '); addnum(bit); addch('/'); addnum(pngsize); addch(' ');
+	X	if (ismail)
+	X		mvaddstr(PRLINE, 75, ismail > 1? "MAIL" : "mail");
+	X	mvaddstr(SPLINE, 0, secpr);
+	X	if (curflag == CURP1)
+	X		move(PRLINE, strlen(prompt));
+	X	else if (curflag == CURHOME)
+	X		move(0, 0);
+	X	refresh();
+	X#ifdef TIOCGWINSZ
+	X	UPDATING=0;
+	X	if (WINCH) { /* window changed while updating screen */
+	X		WINCH = 0;
+	X		winch_upd();
+	X	}
+	X#endif /* TIOCGWINSZ */
+	X}
+	X
+	Xaddnum(n)
+	Xregister long n;
+	X{
+	X	if (n >= 10)
+	X		addnum(n / 10);
+	X	addch((char)(n % 10 + '0'));
+	X}
+	X
+	X/*
+	X * Called on alarm signal.
+	X * Simply sets flag, signal processed later.
+	X */
+	X
+	Xonalarm()
+	X{
+	X#ifdef SIGTSTP
+	X	int dojump = reading;
+	X
+	X	reading = FALSE;
+	X	alflag++;
+	X	if (dojump)
+	X		longjmp(alrmjmp, 1);
+	X#else /* !SIGTSTP */
+	X	alflag++;
+	X#endif	/* !SIGTSTP */
+	X}
+	X
+	X/*
+	X * Process alarm signal (or start clock)
+	X */
+	Xtimer()
+	X{
+	X	time_t tod;
+	X	int hour;
+	X	int i;
+	X	struct tm *t;
+	X	struct stat statb;
+	X	struct tm *localtime();
+	X	static char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+	X	static long oldmsize = 1000000L;
+	X	static int rccount = 10;
+	X	static time_t lastismail = 0;
+	X
+	X	alflag = 0;
+	X	(void) signal(SIGALRM, onalarm);
+	X	(void) time(&tod);
+	X	t = localtime(&tod);
+	X	i = 60 - t->tm_sec;
+	X	(void) alarm(i > 30? 30 : i);			/* reset alarm */
+	X	hour = t->tm_hour % 12;
+	X	if (hour == 0)  hour = 12;
+	X	(void) sprintf(timestr, "%.3s %d %d:%02d",
+	X		months + 3 * t->tm_mon, t->tm_mday, hour, t->tm_min);
+	X	if (mailf == NULL || stat(mailf, &statb) < 0) {
+	X		statb.st_size = 0;
+	X	}
+	X	if (statb.st_size > oldmsize) {
+	X		ismail = 2;
+	X		beep();
+	X	} else {
+	X		if (statb.st_size == 0)
+	X			ismail = 0;
+	X					/* force MAIL for at least 30 seconds */
+	X		else if (ismail > 1 && (lastismail+30) < tod)
+	X			ismail = 1;
+	X	}
+	X	oldmsize = statb.st_size;
+	X	lastismail = tod;
+	X	if (uflag && !xflag && --rccount < 0) {
+	X		writeoutrc();
+	X		if (secpr[0] == '\0')
+	X			(void) strcpy(secpr, ".newsrc updated");
+	X		rccount = 10;
+	X	}
+	X}
+	X
+	Xchar *
+	Xgetmailname()
+	X{
+	X	static char mailname[32];
+	X	register char *p;
+	X
+	X	if( (p = getenv("MAIL")) != NULL)
+	X		return p;
+	X#ifndef MMDF
+	X	if (username[0] == '\0' || strlen(username) > 15)
+	X		return NULL;
+	X#ifdef USG
+	X	(void) sprintf(mailname, "/usr/mail/%s", username);
+	X#else /* !USG */
+	X	(void) sprintf(mailname, "/usr/spool/mail/%s", username);
+	X#endif /* !USG */
+	X#else /* MMDF */
+	X	(void) sprintf(mailname, "%s/mailbox", userhome);
+	X#endif /* MMDF */
+	X	return mailname;
+	X}
+	X
+	X
+	X
+	X/*** Terminal I/O ***/
+	X
+	X#define INBUFSIZ 8
+	X
+	Xchar inbuf[INBUFSIZ];			/* input buffer */
+	Xchar outbuf[BUFSIZ];			/* output buffer */
+	Xint innleft = 0;			/* # of chars in input buffer */
+	Xint outnleft = BUFSIZ;			/* room left in output buffer */
+	Xchar *innext;				/* next input character */
+	Xchar *outnext = outbuf;			/* next space in output buffer */
+	X#ifdef USG
+	Xint oflags;				/* fcntl flags (for nodelay read) */
+	X#endif	/* USG */
+	X
+	X/*
+	X * Input a character
+	X */
+	X
+	Xvgetc()
+	X{
+	X	register c;
+	X#ifdef BSD4_2
+	X	int readfds, exceptfds;
+	X#endif	/* BSD4_2 */
+	X
+	Xrecurse:
+	X	if (--innleft >= 0) {
+	X		c = *innext++;
+	X	} else {
+	X		if (alflag)
+	X			timer();
+	X		updscr();	/* update the display */
+	X		for (;;) {
+	X			if (innleft > 0 || alflag)
+	X				goto recurse;
+	X			intflag = 0;
+	X#ifdef USG
+	X			if (oflags & O_NDELAY) {
+	X				oflags &=~ O_NDELAY;
+	X				fcntl(0, F_SETFL, oflags);
+	X			}
+	X#endif	/* USG */
+	X#ifdef SIGTSTP
+	X			if (setjmp(alrmjmp))
+	X				continue;
+	X			if (setjmp(intjmp))
+	X				return cintr;
+	X			reading = TRUE;
+	X#endif /* SIGTSTP */
+	X#ifdef BSD4_2
+	X			/* Use a select because it can be interrupted. */
+	X			readfds = 1; exceptfds = 1;
+	X			select(1, &readfds, (int *)0, &exceptfds, (int *)0);
+	X			if (!(readfds & 1))
+	X				break;
+	X#endif	/* BSD4_2 */
+	X			innleft = read(0, inbuf, INBUFSIZ);
+	X#ifdef SIGTSTP
+	X			reading = FALSE;
+	X#endif /* SIGTSTP */
+	X			if (innleft > 0)
+	X				break;
+	X			if (innleft == 0) {
+	X				quitflg++;
+	X				return cintr;
+	X			}
+	X			if (errno != EINTR)
+	X				abort();	/* "Can't happen" */
+	X			if (intflag) {
+	X				intflag--;
+	X				return cintr;
+	X			}
+	X		}
+	X		innext = inbuf + 1;
+	X		innleft--;
+	X		c = inbuf[0];
+	X	}
+	X#ifndef USG
+	X#ifndef CBREAK
+	X	c &= 0177;
+	X	if (c == '\034')	/* FS character */
+	X		xxit(0);
+	X#endif	/* !CBREAK */
+	X#endif	/* !USG */
+	X	if (c == '\f') {
+	X		okclear();
+	X		prflags &=~ NOPRT;
+	X		goto recurse;
+	X	}
+	X	if (c == '\r')
+	X		c = '\n';
+	X	return c;
+	X}
+	X
+	X
+	X/*
+	X * Push a character back onto the input stream.
+	X */
+	X
+	Xpushback(c)
+	X{
+	X	if (innext <= inbuf)
+	X		abort();
+	X	*--innext = c;
+	X	innleft++;
+	X}
+	X
+	X/*
+	X * Check for terminal input
+	X */
+	X
+	Xcheckin()
+	X{
+	X#ifdef FIONREAD
+	X	int count;
+	X#endif	/* FIONREAD */
+	X#ifdef STATTOP
+	X	if (innleft > 0)
+	X#else	/* !STATOP */
+	X	if (innleft > 0 || alflag)
+	X#endif	/* !STATOP */
+	X		return 1;
+	X#if defined(USG) || defined(FIONREAD)
+	X	if (ospeed >= B9600)
+	X		return 0;
+	X	vflush();
+	X	if (ospeed <= B300)
+	X		ttyowait();
+	X#ifdef USG
+	X	if ((oflags & O_NDELAY) == 0) {
+	X		oflags |= O_NDELAY;
+	X		(void) fcntl(0, F_SETFL, oflags);
+	X	}
+	X	if ((innleft = read(0, inbuf, INBUFSIZ)) > 0) {
+	X		innext = inbuf;
+	X		return 1;
+	X	}
+	X#endif	/* USG */
+	X#ifdef FIONREAD
+	X	count = 0;			/* in case FIONREAD fails */
+	X	(void) ioctl(0, FIONREAD, (char *)&count);
+	X	if (count)
+	X		return 1;
+	X#endif	/* FIONREAD */
+	X#endif	/* USG || FIONREAD */
+	X	return 0;
+	X}
+	X
+	X
+	X
+	X/*
+	X * flush terminal input queue.
+	X */
+	X
+	Xclearin()
+	X{
+	X#ifdef USG
+	X	(void) ioctl(0, TCFLSH, (char *)0);
+	X#else	/* !USG */
+	X#ifdef TIOCFLUSH
+	X	(void) ioctl(0, TIOCFLUSH, (char *)0);
+	X#else	/* !TIOCFLUSH */
+	X	struct sgttyb tty;
+	X	(void) ioctl(0, TIOCGETP, &tty);
+	X	(void) ioctl(0, TIOCSETP, &tty);
+	X#endif	/* !TIOCFLUSH */
+	X#endif	/* !USG */
+	X	innleft = 0;
+	X}
+	X
+	Xvputc(c)
+	X{
+	X	if (--outnleft < 0) {
+	X		vflush();
+	X		outnleft--;
+	X	}
+	X	*outnext++ = c;
+	X}
+	X
+	X/*
+	X * Flush the output buffer
+	X */
+	X
+	Xvflush()
+	X{
+	X	register char *p;
+	X	register int i;
+	X#ifdef BSD4_2
+	X	int mask;
+	X#else	/* !BSD4_2 */
+	X	unsigned oalarm;
+	X#endif	/* !BSD4_2 */
+	X
+	X#ifdef BSD4_2
+	X	mask = sigblock(1 << (SIGALRM-1));
+	X#else	/* !BSD4_2 */
+	X	oalarm = alarm(0);
+	X#endif	/* !BSD4_2 */
+	X	for (p = outbuf ; p < outnext ; p += i) {
+	X		if ((i = write(1, p, outnext - p)) < 0) {
+	X			if (errno != EINTR)
+	X				abort();	/* "Can't happen" */
+	X			i = 0;
+	X		}
+	X	}
+	X	outnleft = BUFSIZ;
+	X	outnext = outbuf;
+	X#ifdef BSD4_2
+	X	sigsetmask(mask);
+	X#else	/* !BSD4_2 */
+	X	(void) alarm(oalarm);
+	X#endif	/* !BSD4_2 */
+	X}
+	X
+	X/*** terminal modes ***/
+	X
+	X#ifdef USG
+	Xstatic struct termio oldtty, newtty;
+	X
+	X/*
+	X * Save tty modes
+	X */
+	X
+	Xttysave()
+	X{
+	X	if (ioctl(1, TCGETA, &oldtty) < 0)
+	X		xerror("Can't get tty modes");
+	X	newtty = oldtty;
+	X	newtty.c_iflag &=~ (INLCR|IGNCR|ICRNL);
+	X	newtty.c_oflag &=~ (OPOST);
+	X	newtty.c_lflag &=~ (ICANON|ECHO|ECHOE|ECHOK|ECHONL);
+	X	newtty.c_lflag |=  (NOFLSH);
+	X	newtty.c_cc[VMIN] = 1;
+	X	newtty.c_cc[VTIME] = 0;
+	X	cerase = oldtty.c_cc[VERASE];
+	X	ckill = oldtty.c_cc[VKILL];
+	X	cintr = oldtty.c_cc[VINTR];
+	X	ospeed = oldtty.c_cflag & CBAUD;
+	X	initterm();
+	X}
+	X
+	X
+	X/*
+	X * Set tty modes for visual processing
+	X */
+	X
+	Xttyraw()
+	X{
+	X	while (ioctl(1, TCSETAF, &newtty) < 0 && errno == EINTR)
+	X		;
+	X	rawterm();
+	X}
+	X
+	Xttyowait()
+	X{	/* wait for output queue to drain */
+	X	while (ioctl(1, TCSETAW, &newtty) < 0 && errno == EINTR)
+	X		;
+	X}
+	X
+	X/*
+	X * Restore tty modes
+	X */
+	X
+	Xttycooked()
+	X{
+	X	cookedterm();
+	X	vflush();
+	X	while (ioctl(1, TCSETAF, &oldtty) < 0 && errno == EINTR)
+	X		;
+	X	oflags &=~ O_NDELAY;
+	X	(void) fcntl(0, F_SETFL, oflags) ;
+	X}
+	X
+	X#else
+	X
+	Xstatic struct sgttyb oldtty, newtty;
+	X#ifdef TIOCGLTC
+	Xstatic struct ltchars oldltchars, newltchars;
+	X#endif	/* TIOCGLTC */
+	X
+	X/*
+	X * Save tty modes
+	X */
+	X
+	Xttysave()
+	X{
+	X#ifdef CBREAK
+	X	struct tchars tchars;	/* special characters, including interrupt */
+	X#endif	/* CBREAK */
+	X#ifdef SIGTSTP
+	X	int getpgrp();
+	X#if defined(BSD4_2) || defined(BSD4_1C)
+	X	int tpgrp;
+	X#else /* BSD4_1 */
+	X	short tpgrp;
+	X#endif /* BSD4_1 */
+	X
+	Xretry:
+	X#ifdef BSD4_2
+	X	(void) sigblock(sigmask(SIGTSTP)|sigmask(SIGTTIN)|sigmask(SIGTTOU));
+	X#else /* !BSD4_2 */
+	X	(void) signal(SIGTSTP, SIG_HOLD);
+	X	(void) signal(SIGTTIN, SIG_HOLD);
+	X	(void) signal(SIGTTOU, SIG_HOLD);
+	X#endif /* !BSD4_2 */
+	X	if (ioctl(2, TIOCGPGRP, (char *)&tpgrp) < 0)
+	X		goto nottty;
+	X	if (tpgrp != getpgrp(0)) { /* not in foreground */
+	X		(void) signal(SIGTTOU, SIG_DFL);
+	X#ifdef BSD4_2
+	X		(void) sigsetmask(sigblock(0) & ~sigmask(SIGTTOU));
+	X#endif /* BSD4_2 */
+	X		(void) kill(0, SIGTTOU);
+	X		/* job stops here waiting for SIGCONT */
+	X		goto retry;
+	X	}
+	X	(void) signal(SIGTTIN, SIG_DFL);
+	X	(void) signal(SIGTTOU, SIG_DFL);
+	X	(void) signal(SIGTSTP, SIG_DFL);
+	X#ifdef BSD4_2
+	X	(void) sigsetmask(sigblock(0) & ~(sigmask(SIGTSTP)|sigmask(SIGTTIN)|sigmask(SIGTTOU)));
+	X#endif /* BSD4_2 */
+	X#endif /* SIGTSTP */
+	X	if (ioctl(1, TIOCGETP, (char *)&oldtty) < 0)
+	Xnottty:		xerror("Can't get tty modes");
+	X	newtty = oldtty;
+	X	newtty.sg_flags &=~ (CRMOD|ECHO|XTABS);
+	X#ifdef CBREAK
+	X	newtty.sg_flags |= CBREAK;
+	X	ioctl(1, TIOCGETC, (char *)&tchars);
+	X	cintr = tchars.t_intrc;
+	X#else /* !CBREAK */
+	X	newtty.sg_flags |= RAW;
+	X	cintr = '\0177';	/* forcibly this on V6 systems */
+	X#endif /* !CBREAK */
+	X	cerase = oldtty.sg_erase;
+	X	ckill = oldtty.sg_kill;
+	X	ospeed = oldtty.sg_ospeed;
+	X#ifdef	TIOCGLTC
+	X	if (ioctl(1, TIOCGLTC, (char *)&oldltchars) >= 0) {
+	X		newltchars = oldltchars;
+	X		newltchars.t_dsuspc = -1;
+	X		cwerase = oldltchars.t_werasc;
+	X	}
+	X#endif
+	X	initterm();
+	X#ifdef SIGTSTP
+	X	(void) signal(SIGTTIN, onstop);
+	X	(void) signal(SIGTTOU, onstop);
+	X	(void) signal(SIGTSTP, onstop);
+	X#endif /* SIGTSTP */
+	X}
+	X
+	X
+	X/*
+	X * Set tty modes for visual processing
+	X */
+	X
+	Xttyraw()
+	X{
+	X	while (ioctl(1, TIOCSETN, (char *)&newtty) < 0 && errno == EINTR)
+	X		;
+	X#ifdef TIOCGLTC
+	X	if (newltchars.t_dsuspc == '\377')
+	X	  while (ioctl(1, TIOCSLTC, (char *)&newltchars) < 0 && errno == EINTR)
+	X		;
+	X#endif
+	X	rawterm();
+	X}
+	X
+	Xttyowait()
+	X{	/* wait for output queue to drain */
+	X#ifdef TIOCDRAIN	/* This ioctl is a local mod on linus */
+	X	(void) ioctl(1, TIOCDRAIN, (char *)0);
+	X#endif
+	X}
+	X
+	X
+	X/*
+	X * Restore tty modes
+	X */
+	X
+	Xttycooked()
+	X{
+	X	cookedterm();
+	X	vflush();
+	X	while (ioctl(1, TIOCSETN, (char *)&oldtty) < 0 && errno == EINTR)
+	X		;
+	X#ifdef TIOCGLTC
+	X	if (newltchars.t_dsuspc == '\377')
+	X	  while (ioctl(1, TIOCSLTC, (char *)&oldltchars) < 0 && errno == EINTR)
+	X		;
+	X#endif
+	X}
+	X
+	X#endif
+	X
+	X
+	X
+	X/*** signal handlers ***/
+	X
+	Xonint() {
+	X#ifdef SIGTSTP
+	X	int dojump = reading;
+	X
+	X	reading = FALSE;
+	X#endif /* SIGTSTP */
+	X	if (!news) {
+	X		ttycooked();
+	X		xxit(1);
+	X	}
+	X	(void) signal(SIGINT, onint);
+	X	clearin();			/* flush input queue */
+	X#ifdef SIGTSTP
+	X	if (dojump)
+	X		longjmp(intjmp, 1);
+	X#endif /* SIGTSTP */
+	X	intflag++;
+	X}
+	X
+	X#ifdef SIGTSTP
+	Xonstop(signo)
+	Xint signo;
+	X{
+	X	/* restore old terminal state */
+	X	botscreen();
+	X	vflush();
+	X	ttycooked();
+	X	(void) signal(signo, SIG_DFL);
+	X#ifdef BSD4_2
+	X	(void) sigblock(sigmask(SIGALRM)|sigmask(SIGINT));
+	X	(void) sigsetmask(sigblock(0) & ~sigmask(signo));
+	X#else /* BSD4_1 */
+	X	(void) alarm(0);
+	X#endif /* BSD4_1 */
+	X	(void) kill(0, signo);	/* stop here until continued */
+	X
+	X	(void) signal(signo, onstop);
+	X	/* restore our special terminal state */
+	X	ttyraw();
+	X#ifdef TIOCGWINSZ
+	X	winch();	/* get current window size and redraw screen */
+	X#else 	/* !TIOCGWINSZ */
+	X	okclear();
+	X	updscr();
+	X#endif 	/* !TIOCGWINSZ */
+	X#ifdef BSD4_2
+	X	(void) sigsetmask(sigblock(0) & ~(sigmask(SIGALRM)|sigmask(SIGINT)));
+	X#else /* BSD4_1 */
+	X	timer();
+	X#endif /* BSD4_1 */
+	X}
+	X#endif
+	X
+	X/*** stolen from rfuncs2.c and modified ***/
+	X
+	Xvsave(to, flags)
+	Xregister char *to;
+	X{
+	X	register FILE *ufp;
+	X	int	isprogram = 0;
+	X	int	isnew = 1;
+	X	long	saveoff;
+	X	char	temp[20];
+	X	char	*fname;
+	X	char	prog[BUFLEN + 24];
+	X	int	err;
+	X
+	X	saveoff = ftell(fp);
+	X	(void) fseek(fp, artbody, 0);
+	X	fname = to;
+	X	if (*to == PIPECHAR) {
+	X		if (strlen(to) > BUFLEN) {
+	X			msg("Command name too long");
+	X			goto out;
+	X		}
+	X		flags |= OVWRITE;
+	X		(void) strcpy(temp, "/tmp/vnXXXXXX");
+	X		MKTEMP(temp);
+	X		fname = temp;
+	X		_amove(ROWS - 1, 0);
+	X		vflush();
+	X	}
+	X	if ((flags & OVWRITE) == 0) {
+	X		ufp = fopen(fname, "r");
+	X		if (ufp != NULL) {
+	X			(void) fclose(ufp);
+	X			isnew = 0;
+	X		}
+	X	}
+	X	(void) umask(savmask);
+	X
+	X	if (*to == PIPECHAR)
+	X		isprogram++;
+	X	if ((ufp = fopen(fname, (flags & OVWRITE) == 0? "a" : "w")) == NULL) {
+	X		msg("Cannot open %s", fname);
+	X		goto out;
+	X	}
+	X	/*
+	X	 * V7MAIL code is here to conform to V7 mail format.
+	X	 * If you need a different format to be able to
+	X	 * use your local mail command (such as four ^A's
+	X	 * on the end of articles) substitute it here.
+	X	 */
+	X	if (flags & SVHEAD) {
+	X#ifdef MMDF
+	X		if (!isprogram)
+	X			fprintf(ufp, "\001\001\001\001\n");
+	X#endif /* MMDF */
+	X#ifdef V7MAIL
+	X		h->subtime = cgtdate(h->subdate);
+	X		fprintf(ufp, "From %s %s", replyname(h), ctime(&h->subtime));
+	X#endif
+	X		hprint(h, ufp, 2);
+	X#ifdef V7MAIL
+	X		tprint(fp, ufp, TRUE);
+	X		putc('\n', ufp);	/* force blank line at end (ugh) */
+	X#else
+	X		tprint(fp, ufp, FALSE);
+	X#endif
+	X	} else {
+	X		tprint(fp, ufp, FALSE);
+	X	}
+	X
+	X	err = ferror(ufp);
+	X
+	X	fclose(ufp);
+	X	if (isprogram) {
+	X		if (err)
+	X			msg("error in writing temp file, maybe disk full?");
+	X		else {
+	X			(void) sprintf(prog, "(%s)<%s", to + 1, fname);
+	X			shcmd(prog, CWAIT);
+	X			prflags |= NOPRT;
+	X		}
+	X	} else {
+	X		msg("%sfile: %s %s",
+	X			err? "ERROR WHILE WRITING ": "",
+	X			to,
+	X			(flags&OVWRITE)? "written":
+	X				isnew ? "created" : "appended");
+	X	}
+	X
+	X	/* If we got an error, screen may be messed.  E.g. 4.2BSD
+	X	 * writes "disk full" messages to the user's tty.
+	X	 */
+	X	if (err) {
+	X		okclear();
+	X		updscr();
+	X	}
+	X
+	Xout:
+	X	if (isprogram) {
+	X		(void) unlink(fname);
+	X	}
+	X	(void) umask(N_UMASK);
+	X	(void) fseek(fp, saveoff, 0);
+	X}
+	X
+	Xxxit(status)
+	Xint	status;
+	X{
+	X	(void) unlink(infile);
+	X	(void) unlink(outfile);
+	X#ifdef SORTACTIVE
+	X	if (STRNCMP(ACTIVE,"/tmp/", 5) == 0)
+	X		(void) unlink(ACTIVE);
+	X#endif /* SORTACTIVE */
+	X#ifdef SERVER
+	X	(void) unlink(active_name());
+	X	close_server();	
+	X#endif	/* SERVER */
+	X	if (ospeed) {	/* is == 0, we haven't been in raw mode yet */
+	X		botscreen();
+	X		vflush();
+	X		ttycooked();
+	X	}
+	X	exit(status);
+	X}
+SHAR_EOF
+if test 57059 -ne "`wc -c < 'visual.c'`"
+then
+	echo shar: error transmitting "'visual.c'" '(should have been 57059 characters)'
+fi
+fi # end of overwriting check
+#	End of shell archive
+exit 0
+

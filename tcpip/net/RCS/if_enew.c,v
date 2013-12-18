@@ -1,0 +1,518 @@
+head	1.1;
+access;
+symbols
+	Helios_1_3_1:1.1
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1
+	C40_Field_Test_2:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	91.02.12.16.26.37;	author nick;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@
+#include <device.h>
+#include <codes.h>
+#include <syslib.h>
+
+#include "param.h"
+#include "mbuf.h"
+#include "socket.h"
+#include "errno.h"
+#include "ioctl.h"
+#include "if.h"
+#include "netisr.h"
+#include "route.h"
+
+#ifdef	INET
+#include "../netinet/in.h"
+#include "../netinet/in_systm.h"
+#include "../netinet/in_var.h"
+#include "../netinet/ip.h"
+#endif
+
+#include "../netinet/if_ether.h"
+
+#define ep_dst		2
+#define ep_src		8
+#define ep_type		14
+#define	ep_data		16
+
+#define ETHERPKTSIZE	2000
+
+struct arpcom ec_softc;
+
+int etoutput(), etioctl();
+
+void ether_init(), ether_tx(), ether_rxdone();
+
+etattach()
+{
+	struct ifnet *ifp = &ec_softc.ac_if;
+	
+	ifp->if_name = "ec";
+	ifp->if_mtu = ETHERMTU;
+	ifp->if_flags = 0;
+	ifp->if_ioctl = etioctl;
+	ifp->if_output = etoutput;
+	
+	ether_init(ec_softc.ac_enaddr);
+	
+	if_attach(ifp);
+}
+
+etoutput(ifp, m0, dst)
+	struct ifnet *ifp;
+	register struct mbuf *m0;
+	struct sockaddr *dst;
+{
+	struct sockaddr_in *dstin = (struct sockaddr_in *)dst;
+	int s, type, error;
+	register struct ifqueue *ifq;
+	struct mbuf *m = m0;
+	int off;
+	int usetrailers;
+	u_char dstaddr[6];
+	char *eh;
+		
+	switch( dst->sa_family )
+	{
+#ifdef AF_INET
+	case AF_INET:
+		if(!arpresolve(&ec_softc,m,&dstin->sin_addr,dstaddr,&usetrailers))
+			return 0;
+			
+		off = ntohs((u_short)mtod(m,struct ip*)->ip_len) - m->m_len;
+		
+		if( usetrailers && (off > 0) && ((off & 0x1ff) == 0) &&
+			(m->m_off >= MMINOFF + 2 * sizeof(u_short)))
+		{
+			type = ETHERTYPE_TRAIL + (off>>9);
+			m->m_off -= 2*sizeof(u_short);
+			m->m_len += 2*sizeof(u_short);
+			*mtod(m, u_short *) = htons(ETHERTYPE_IP);
+			*mtod(m, u_short *) = htons(m->m_len);
+IOdebug("tx trailer type %x off %d",type,off);
+			goto gottrailertype;
+		}
+		type = ETHERTYPE_IP;
+		off = 0;
+		goto gottype;
+#endif
+
+	case AF_UNSPEC:
+		eh = ((char *)dst->sa_data)-2;
+		
+		memcpy(dstaddr,eh+ep_dst,6);
+		memcpy(&type,eh+ep_type,2);
+		
+		goto gottype;
+		
+	default:
+		error = EAFNOSUPPORT;
+		goto bad;
+	}
+	
+gottrailertype:
+	/* Packet to be sent as trailer: move first mbuf	*/
+	/* (control information) to end of chain		*/
+	while( m->m_next ) m = m->m_next;
+	m->m_next = m0;
+	m = m0->m_next;
+	m0->m_next = 0;
+	m0 = m;
+	
+gottype:
+	{
+		byte *pkt = Malloc(ETHERPKTSIZE);
+		char *pp;
+		int size = 0;
+		
+		if( pkt == NULL ) 
+		{
+			error = ENOBUFS;
+			goto bad;
+		}
+		
+		pp = pkt+ep_data;
+		
+		while(m)
+		{
+			struct mbuf *m2;
+			char *cp = mtod(m, char *);
+			int len = m->m_len;
+			memcpy(pp,cp,len);
+			pp += len;
+			size += len;
+			MFREE(m,m2);
+			m = m2;
+		}
+		
+		memcpy(pkt+ep_dst,dstaddr,6);
+		memcpy(pkt+ep_src,ec_softc.ac_enaddr,6);
+		*(u_short *)(pkt+ep_type) = htons(type);
+		
+		ether_tx(pkt,size+14);
+	}
+	
+	return 0;
+	
+bad:
+	m_freem(m0);
+	return error;
+}
+
+#if 0
+/*
+ * Copy data buffer to mbuf chain; add ifnet pointer ifp.
+ */
+struct mbuf *et_btom(buf, totlen, off0, ifp)
+void *buf;
+register int totlen, off0;
+struct ifnet *ifp;
+{
+	register caddr_t cp;
+	register struct mbuf *m, **mp;
+	register unsigned count;
+	struct mbuf *top = NULL;
+	int len, off;
+	
+	cp = buf;
+	mp = &top;
+	while (len > 0) {
+		MGET(m, M_DONTWAIT, MT_DATA);
+		if ((*mp = m) == NULL) {
+			m_freem(top);
+			return (NULL);
+		}
+		m->m_len = MLEN;
+		
+		if (ifp)
+			m->m_off += sizeof(ifp);
+		/*
+		 * If we have at least NBPG bytes,
+		 * allocate a new page.  
+		 */
+
+		if (len >= NBPG) 
+		{
+			MCLGET(m);
+			if (ifp) m->m_off += sizeof(ifp);
+		}
+		if (ifp)
+			count = MIN(len, m->m_len - sizeof(ifp));
+		else
+			count = MIN(len, m->m_len);
+
+		bcopy(cp, mtod(m, caddr_t), count);
+
+		m->m_len = count;
+		if (ifp) {
+			m->m_off -= sizeof(ifp);
+			m->m_len += sizeof(ifp);
+			*mtod(m, struct ifnet **) = ifp;
+			ifp = NULL;
+		}
+		cp += count;
+		len -= count;
+		mp = &m->m_next;
+	}
+	return (top);
+}
+#else
+/*
+ * Move packet from frame_buffer to mbufs. 
+ */
+struct mbuf *
+move_to_mbufs(frame_buffer, totlen, off0, ifp)
+caddr_t frame_buffer;
+int totlen, off0;
+struct ifnet *ifp;
+{
+
+
+        /* 'totlen' specifies the length of data to be obtained, not counting
+	 * the local network header. 
+	 * If 'off0' is non-zero, it indicates a byte offset to a trailing
+	 * local network header which should be copied into a separate
+	 * mbuf and prepended to the front of the resultant mbuf chain. 
+	 * A 0 return value indicates a failure to allocate resources.
+	 * Returns 'm' as a pointer to mbuf chain, if successful, else 0.
+	 */
+
+	struct mbuf *top, **mp, *m;
+	int off=off0, len;
+	caddr_t *cp = frame_buffer;
+
+	top = 0;
+	mp = &top;
+
+	while (totlen > 0) {
+		MGET(m, M_DONTWAIT, MT_DATA);
+		if (m == 0) {
+			m_freem(top);
+			return(0);
+		}
+		if (off) {
+			len = totlen - off;
+			cp = frame_buffer + off;
+		} else
+			len = totlen;
+
+		if (len >= CLBYTES/2) {
+			MCLGET(m);
+			if (m->m_len != CLBYTES)
+				goto nopage;
+
+/*
+			m->m_len = MIN(len, CLBYTES);
+*/
+			if (ifp) {
+				/*
+				 * Leave room for ifp.
+				 */
+				 m->m_len = MIN(CLBYTES - sizeof(ifp), len);
+				 m->m_off += sizeof(ifp);
+			}
+			else
+				 m->m_len = MIN(CLBYTES, len);
+			goto copy;
+		}
+
+nopage:
+		m->m_off = MMINOFF;
+		if (ifp) {
+			/*
+			 * Leave room for ifp.
+			 */
+			 m->m_len = MIN(MLEN - sizeof(ifp), len);
+			 m->m_off += sizeof(ifp);
+		}
+		else
+			 m->m_len = MIN(MLEN, len);
+			 
+copy:
+		bcopy(cp, mtod(m,caddr_t), m->m_len);
+		cp += m->m_len;
+
+		*mp = m;   
+		mp = &m->m_next;
+		if (off) {
+			off += m->m_len;
+			if (off == totlen) {
+				cp = frame_buffer;
+				off = 0;
+				totlen = off0;
+			}
+		} 
+		else
+			totlen -= m->m_len;
+
+		if (ifp) {
+			/*
+			 * Prepend interface pointer to first mbuf.
+			 */
+			m->m_len += sizeof(ifp);
+			m->m_off -= sizeof(ifp);
+			*(mtod(m, struct ifnet **)) = ifp;
+			ifp = (struct ifnet *)0; 
+		}
+	}
+	
+	return (top);
+}
+#endif
+
+etinput(byte *pkt, int size)
+{
+	struct mbuf *m;
+	u_short type;
+	int off, resid;
+
+	type = ntohs(*(u_short *)(pkt+ep_type));
+	*(u_short *)(pkt+ep_type) = type;
+		
+#define etdataaddr(eh,off,type) ((type)((char *)(eh)+(off)))	
+	if( (type >= ETHERTYPE_TRAIL) &&
+	    (type < ETHERTYPE_TRAIL+ETHERTYPE_NTRAILER))
+	{
+		off = (type - ETHERTYPE_TRAIL) * 512;
+		if( off > ETHERMTU ) return;
+		
+		type = ntohs(etdataaddr(pkt,off,u_short *));
+		resid = ntohs(etdataaddr(pkt,off+2,u_short *));
+		if( off + resid > size ) return;
+		size = off + resid;
+IOdebug("rx trailer type %x off %d resid %d",type,off,resid);
+	}
+	else off = 0;
+	
+	m = move_to_mbufs(pkt+ep_data, size, off, &ec_softc.ac_if);
+
+	if( m == 0 ) return;
+	
+	if( type == ETHERTYPE_ARP ) 
+	{
+		arpinput(&ec_softc,m);
+	}
+	else
+	{
+		if (IF_QFULL(&ipintrq)) {
+			IF_DROP(&ipintrq);
+			m_freem(m);
+		} else {
+			IF_ENQUEUE(&ipintrq, m);
+			schednetisr(NETISR_IP);
+		}
+	}
+}
+
+etioctl(ifp, cmd, data)
+	register struct ifnet *ifp;
+	int cmd;
+	caddr_t data;
+{
+	struct arpcom *ac = (struct arpcom *)ifp;
+	register struct ifaddr *ifa = (struct ifaddr *)data;
+	int s = splimp(), error = 0;
+
+	switch (cmd) {
+
+	case SIOCSIFADDR:
+		if (ifa->ifa_addr.sa_family == AF_INET)
+		{
+			struct sockaddr_in *ia = (struct sockaddr_in *)&ifa->ifa_addr;
+			ifp->if_flags |= IFF_UP;
+			ac->ac_ipaddr.s_addr = ia->sin_addr.s_addr;
+		}
+		else
+			error = EAFNOSUPPORT;
+		break;
+
+	default:
+		error = EINVAL;
+	}
+	splx(s);
+	return (error);
+}
+
+
+/* HELIOS specific ethernet device interface */
+
+DCB *etherdcb;
+
+void ether_init(u_char *addr)
+{
+	NetInfo ni;
+	int i;
+	
+	etherdcb = OpenDevice("ether.d",NULL);
+	
+	if( etherdcb == NULL ) panic("no ether.d");
+	
+	ether_getinfo(&ni);
+
+	/*if( ni.Mask & NetInfo_Mask_Addr ) */ memcpy(addr,ni.Addr,6);
+
+	for( i = 0; i < 5; i++ )
+	{
+		NetDevReq *req = Malloc(sizeof(NetDevReq));
+		byte *pkt;
+		
+		if( req == NULL ) break;
+		
+		pkt = Malloc(ETHERPKTSIZE);
+		
+		if( pkt == NULL ) break;
+		
+		memset(pkt,0xcc,ETHERPKTSIZE);
+		req->DevReq.Request = FG_Read;
+		req->DevReq.Action = ether_rxdone;
+		req->DevReq.SubDevice = 0;
+		req->Size = ETHERPKTSIZE;
+		req->Buf = pkt+ep_dst;
+		
+		Operate(etherdcb, req);
+	}
+}
+
+void ether_infodone(DCB *dcb, NetDevReq *req)
+{
+	dcb=dcb,req=req;
+}
+
+ether_getinfo(NetInfo *info)
+{
+	NetInfoReq req;
+	
+	req.DevReq.Request = FG_GetInfo;
+	req.DevReq.Action = ether_infodone;
+	req.DevReq.SubDevice = 0;
+	
+	Operate(etherdcb,&req);
+	
+	*info = req.NetInfo;
+}
+
+void ether_txdone(DCB *dcb, NetDevReq *req)
+{
+	dcb=dcb,req=req;
+}
+
+void ether_tx(byte *pkt, int size)
+{
+	NetDevReq req;
+
+	req.DevReq.Request = FG_Write;
+	req.DevReq.Action = ether_txdone;
+	req.DevReq.SubDevice = 0;
+	req.Size = size<64?64:size;
+	req.Buf = pkt+ep_dst;
+
+	/* must do a proper interface here */
+		
+	Operate(etherdcb, &req);
+	
+	Free(pkt);
+}
+
+void ether_rxdone(DCB *dcb, NetDevReq *req)
+{
+	extern Semaphore kernel;
+
+	Wait(&kernel);
+
+	etinput(req->Buf-2,req->Actual);
+
+	if( netisr )
+	{
+		netisr = 0;
+		ipintr();
+	}
+	Signal(&kernel);
+
+	memset(req->Buf-2,0xcc,ETHERPKTSIZE);	
+	Operate(dcb,req);
+}
+
+@

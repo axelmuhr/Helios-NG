@@ -1,0 +1,172 @@
+/************************************************************************/
+/*                                                                      */
+/* File: xplib.c                                                        */
+/*                                                                      */
+/* Changes:                                                             */
+/*      NHG  18-May-87  : Created                                       */
+/*                                                                      */
+/* Description:                                                         */
+/*      Library of procedures to interface to a Kuma Transputer Box     */
+/*                                                                      */
+/*                                                                      */
+/* Copyright (c) 1987, Perihelion Software Ltd. All Rights Reserved.    */
+/************************************************************************/
+
+#include <ttypes.h>
+
+#define SysServW        0xfb0001l
+#define SysServR        0xfb2001l
+#define InData          0xfb5001l
+#define OutData         0xfb4201l
+#define InStatus        0xfb5401l
+#define OutStatus       0xfb5601l
+
+#if 0
+#define putxpa(reg,data) (*(UBYTE *)(reg+data+data))
+#define getxpa(reg) (*(UBYTE *)reg & 0xff)
+#endif
+
+WORD xprdword();
+WORD xprdint();
+
+putxpa(reg,data)
+UBYTE *reg;
+UBYTE data;
+{
+        UBYTE x = *(reg+data+data);
+/*        printf("putxpa %x %x %x\n",reg,(reg+data+data),data); */
+}
+
+UBYTE getxpa(reg)
+UBYTE *reg;
+{
+        UBYTE data =  *reg & 0xff;
+/*        printf("getxpa %x %x\n",reg,data); */
+        return data;
+}
+
+WORD dbrdword(address)
+WORD address;
+{
+        xpwrbyte(1L);
+        xpwrint(address);        /* byteswap the address */
+        return xprdword();
+}
+
+WORD dbrdint(address)
+WORD address;
+{
+        xpwrbyte(1L);
+        xpwrint(address);        /* byteswap the address */
+        return xprdint();
+}
+
+void dbwrword(address,data)
+WORD address,data;
+{
+        xpwrbyte(0L);
+        xpwrint(address);        /* bytespap the address */
+        xpwrword(data);          /* but not the data */
+}
+
+void dbwrint(address,data)
+WORD address,data;
+{
+        xpwrbyte(0L);
+        xpwrint(address);        /* bytespap the address */
+        xpwrint(data);           /* and the data */
+}
+
+xpwrbyte(b)
+WORD b;
+{
+	WORD i = 10000;
+        while( (getxpa(OutStatus)&1) != 1 ) if( i-- == 0 ) return;
+        putxpa(OutData,(UBYTE)b);
+}
+
+WORD xpwrrdy()
+{
+        return getxpa(OutStatus)&1;
+}
+
+WORD xprdbyte()
+{
+	WORD i = 10000;
+        while( (getxpa(InStatus)&1) != 1 ) if( i-- == 0 ) return;
+        return (WORD)(getxpa(InData)&0xff);
+}
+
+WORD xprdrdy()
+{
+        return getxpa(InStatus)&1;
+}
+
+
+xpwrword(data)
+WORD data;
+{
+        xpwrbyte(data>>24);
+        xpwrbyte(data>>16);
+        xpwrbyte(data>>8);
+        xpwrbyte(data);
+}
+
+WORD xprdword()
+{
+        WORD data = 0;
+        data |= xprdbyte()<<24;
+        data |= xprdbyte()<<16;
+        data |= xprdbyte()<<8;
+        data |= xprdbyte();
+        return data;
+}
+
+xpwrint(data)
+WORD data;
+{
+        xpwrbyte(data);
+        xpwrbyte(data>>8);
+        xpwrbyte(data>>16);
+        xpwrbyte(data>>24);
+}
+
+WORD xprdint()
+{
+        WORD data = 0;
+        data |= xprdbyte();
+        data |= xprdbyte()<<8;
+        data |= xprdbyte()<<16;
+        data |= xprdbyte()<<24;
+        return data;
+}
+
+void xpwrdata(buf,size)
+UBYTE *buf;
+WORD size;
+{
+        WORD i;
+        for( i = 0 ; i < size ; i++ ) xpwrbyte((WORD)(*buf++));
+}
+
+void xpreset()
+{
+        WORD i;
+        putxpa(SysServW,1);
+        for( i = 0 ; i < 50000; i++ );
+        putxpa(SysServW,0);
+}
+
+void xpanalyse()
+{
+        WORD i;
+        putxpa(SysServW,2);
+        for( i = 0 ; i < 5000; i++ );
+        putxpa(SysServW,3);
+        for( i = 0 ; i < 50; i++ );
+        putxpa(SysServW,2);
+        putxpa(SysServW,0);
+
+}
+
+/*  -- End of xplib.c -- */

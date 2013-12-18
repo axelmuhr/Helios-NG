@@ -1,0 +1,357 @@
+head	1.4;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.4
+	Alenia_release:1.4
+	Helios1_3:1.4
+	C40_Field_Test_2:1.4
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.4
+date	92.10.06.10.23.48;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.08.19.09.20.16;	author nickc;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.07.30.15.04.23;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.05.15.25.45;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Previous versions checked into RCS were incorrect and did not match
+my own copy. In particular the controller was not overloaded.
+@
+text
+@#include <helios.h>
+#include <stdio.h>
+#include <posix.h>
+#include <nonansi.h>
+#include <memory.h>
+#include <task.h>
+
+extern void eval(int position, int number_workers,
+                   int intervals, double *result);
+
+int main(void)
+{ int		number_workers, intervals;
+  double	total;
+  int		comm_start, comm_end, comp_start, comp_end;
+  Carrier	*fast_stack = Null(Carrier);
+
+  AccelerateCode(&eval);
+  fast_stack = AllocFast(500, &MyTask->MemPool);
+
+  number_workers = 1;
+  write(5, (BYTE *) &number_workers, sizeof(int));
+  read( 4, (BYTE *) &number_workers, sizeof(int));
+ 
+  printf("Pi controller : the number of workers is %d.\n", number_workers); 
+ 
+  write(5, (BYTE *) &number_workers, sizeof(int));
+  read( 4, (BYTE *) &number_workers, sizeof(int));
+  
+  printf("Please enter the number of intervals per worker : ");
+  fflush(stdout);
+  scanf("%d", &intervals);
+  printf("Evaluating a total of %d intervals.\n", number_workers * intervals);
+  
+  comm_start = _cputime();
+  write(5, (BYTE *) &intervals, sizeof(int));
+  read( 4, (BYTE *) &intervals, sizeof(int));
+  comm_end   = _cputime();
+    
+  total = 0.0;
+
+  comp_start = _cputime();
+  if (fast_stack == Null(Carrier))
+   eval(0, number_workers, intervals, &total);
+  else
+   Accelerate(fast_stack, &eval, 3 * sizeof(int) + sizeof(double *),
+   	      0, number_workers, intervals, &total);
+  
+
+  write(5, (BYTE *) &total, sizeof(double));
+  read( 4, (BYTE *) &total, sizeof(double));
+  comp_end = _cputime();
+  
+  printf("\nCalculated value of pi is %.14f.\n", total);
+  printf("Computation time is %.3f seconds.\n",
+         ((double)(comp_end - comp_start)) / 100.0);
+  printf("Communication time around ring is %.3f seconds.\n",
+         ((double) comm_end - comm_start) / 100.0);
+  printf("Rating is approximately %d flops.\n", (int)
+         ( 100.0 * 8.0 * (double)(number_workers * intervals) /
+           (double)(comp_end - comp_start) ) );
+         
+  return(0);
+}
+  
+@
+
+
+1.3
+log
+@fixed compile time warnings and improved read() andw write()
+@
+text
+@d1 64
+a64 146
+#include <helios.h>
+#include <stdio.h>
+#include <posix.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <nonansi.h>	/* for _cputime() */
+
+#define	 TO_RING	5	/* file handle for sending messages into pi ring */
+#define	 FROM_RING	4	/* file handle for receiving messages from pi ring */
+
+
+void
+safe_read(
+	  char *	buffer,		/* buffer into which to place read data */
+	  unsigned int	size )		/* the size of 'buffer' in bytes */
+{
+  int	got	= 0;
+
+
+  do
+    {
+      int	res;
+      
+      
+      res = read( FROM_RING, buffer + got, size - got );
+
+      if (res < 0)
+	{
+	  fprintf( stderr, "Pi controller: read(), failed, errno = %d\n", errno );
+
+	  exit( EXIT_FAILURE );
+	}
+
+      if (res == 0)
+	{
+	  fprintf( stderr, "Pi controller: warning read() returned 0\n" );
+	}
+
+      got += res;
+    }
+  while (got < size);
+
+  return;
+  
+} /* safe_read */
+
+
+void
+safe_write(
+	   char *	buffer,		/* buffer from which data should be taken */
+	   unsigned int	size )		/* the size of 'buffer' in bytes */
+{
+  int	sent = 0;
+
+
+  do
+    {
+      int	res;
+      
+      
+      res = write( TO_RING, buffer + sent, size - sent );
+
+      if (res < 0)
+	{
+	  fprintf( stderr, "Pi controller: write(), failed, errno = %d\n", errno );
+
+	  exit( EXIT_FAILURE );
+	}
+
+      if (res == 0)
+	{
+	  fprintf( stderr, "Pi controller: warning write() returned 0\n" );
+	}
+
+      sent += res;
+    }
+  while (sent < size);
+
+  return;
+  
+} /* safe_write */
+
+
+int
+main( void )
+{
+  int		number_workers;
+  int		intervals;
+  double	total;
+  word		comm_start;
+  word		comm_end;
+  word		comp_start;
+  word		comp_end;
+
+  
+  number_workers = 0;
+  
+  safe_write( (char *) &number_workers, sizeof (number_workers) );
+  safe_read(  (char *) &number_workers, sizeof (number_workers) );
+ 
+  printf( "Pi controller : the number of workers is %d.\n", number_workers ); 
+ 
+  safe_write( (char *) &number_workers, sizeof (number_workers) );
+  safe_read(  (char *) &number_workers, sizeof (number_workers) );
+  
+  printf( "Please enter the number of intervals per worker : " );
+  fflush( stdout );
+  
+  scanf( "%d", &intervals );
+  
+  printf( "Evaluating a total of %d intervals.\n", number_workers * intervals );
+  
+  comm_start = _cputime();
+  
+  safe_write( (char *) &intervals, sizeof (intervals) );
+  safe_read(  (char *) &intervals, sizeof (intervals) );
+  
+  comm_end   = _cputime() - comm_start;
+    
+  total = 0.0;
+
+  comp_start = _cputime();
+  
+  safe_write( (char *) &total, sizeof (total) );
+  safe_read(  (char *) &total, sizeof (total) );
+  
+  comp_end = _cputime() - comp_start;
+  
+  printf( "\nCalculated value of pi is %.17f.\n", total );
+  
+  printf( "Computation time is %.3f seconds.\n",
+         ((double)comp_end) / 100.0 );
+  
+  printf( "Communication time around ring is %.3f seconds.\n",
+         ((double)comm_end) / 100.0);
+
+  number_workers *= intervals;
+  
+  printf( "Rating is approximately %d flops.\n", (int)
+         ( 100.0 * 8.0 * (double)number_workers /
+           ((double)comp_end) ) );
+         
+  return EXIT_SUCCESS;
+
+} /* main */
+  
+@
+
+
+1.2
+log
+@fixed a compile time warnings
+@
+text
+@d4 3
+a6 3
+#include <nonansi.h>
+#include <memory.h>
+#include <task.h>
+d8 2
+a9 2
+extern void eval(int position, int number_workers,
+                   int intervals, double *result);
+d11 78
+a88 2
+int main(void)
+{ int		number_workers, intervals;
+d90 6
+a95 2
+  word		comm_start, comm_end, comp_start, comp_end;
+    
+d97 3
+a99 2
+  write(5, (BYTE *) &number_workers, sizeof(int));
+  read( 4, (BYTE *) &number_workers, sizeof(int));
+d101 1
+a101 1
+  printf("Pi controller : the number of workers is %d.\n", number_workers); 
+d103 7
+a109 2
+  write(5, (BYTE *) &number_workers, sizeof(int));
+  read( 4, (BYTE *) &number_workers, sizeof(int));
+d111 1
+a111 4
+  printf("Please enter the number of intervals per worker : ");
+  fflush(stdout);
+  scanf("%d", &intervals);
+  printf("Evaluating a total of %d intervals.\n", number_workers * intervals);
+d114 4
+a117 2
+  write(5, (BYTE *) &intervals, sizeof(int));
+  read( 4, (BYTE *) &intervals, sizeof(int));
+d123 4
+a126 2
+  write(5, (BYTE *) &total, sizeof(double));
+  read( 4, (BYTE *) &total, sizeof(double));
+d129 6
+a134 4
+  printf("\nCalculated value of pi is %.17f.\n", total);
+  printf("Computation time is %.3f seconds.\n",
+         ((double)comp_end) / 100.0);
+  printf("Communication time around ring is %.3f seconds.\n",
+d136 5
+a140 2
+  printf("Rating is approximately %d flops.\n", (int)
+         ( 100.0 * 8.0 * (double)(number_workers * intervals) /
+d143 3
+a145 2
+  return(0);
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d14 1
+a14 1
+  int		comm_start, comm_end, comp_start, comp_end;
+d33 1
+a33 1
+  comm_end   = _cputime();
+d40 1
+a40 1
+  comp_end = _cputime();
+d44 1
+a44 1
+         ((double)(comp_end - comp_start)) / 100.0);
+d46 1
+a46 1
+         ((double) comm_end - comm_start) / 100.0);
+d49 1
+a49 1
+           (double)(comp_end - comp_start) ) );
+@

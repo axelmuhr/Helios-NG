@@ -1,0 +1,1075 @@
+Info file gcc.info, produced by Makeinfo, -*- Text -*- from input
+file gcc.texinfo.
+
+This file documents the use and the internals of the GNU compiler.
+
+Copyright (C) 1988, 1989 Free Software Foundation, Inc.
+
+Permission is granted to make and distribute verbatim copies of this
+manual provided the copyright notice and this permission notice are
+preserved on all copies.
+
+Permission is granted to copy and distribute modified versions of
+this manual under the conditions for verbatim copying, provided also
+that the section entitled ``GNU General Public License'' is included
+exactly as in the original, and provided that the entire resulting
+derived work is distributed under the terms of a permission notice
+identical to this one.
+
+Permission is granted to copy and distribute translations of this
+manual into another language, under the above conditions for modified
+versions, except that the section entitled ``GNU General Public
+License'' and this permission notice may be included in translations
+approved by the Free Software Foundation instead of in the original
+English.
+
+
+
+File: gcc.info,  Node: Extended Asm,  Next: Asm Labels,  Prev: Inline,  Up: Extensions
+
+Assembler Instructions with C Expression Operands
+=================================================
+
+In an assembler instruction using `asm', you can now specify the
+operands of the instruction using C expressions.  This means no more
+guessing which registers or memory locations will contain the data
+you want to use.
+
+You must specify an assembler instruction template much like what
+appears in a machine description, plus an operand constraint string
+for each operand.
+
+For example, here is how to use the 68881's `fsinx' instruction:
+
+     asm ("fsinx %1,%0" : "=f" (result) : "f" (angle));
+
+Here `angle' is the C expression for the input operand while `result'
+is that of the output operand.  Each has `"f"' as its operand
+constraint, saying that a floating-point register is required.  The
+`=' in `=f' indicates that the operand is an output; all output
+operands' constraints must use `='.  The constraints use the same
+language used in the machine description (*note Constraints::.).
+
+Each operand is described by an operand-constraint string followed by
+the C expression in parentheses.  A colon separates the assembler
+template from the first output operand, and another separates the
+last output operand from the first input, if any.  Commas separate
+output operands and separate inputs.  The total number of operands is
+limited to the maximum number of operands in any instruction pattern
+in the machine description.
+
+If there are no output operands, and there are input operands, then
+there must be two consecutive colons surrounding the place where the
+output operands would go.
+
+Output operand expressions must be lvalues; the compiler can check
+this.  The input operands need not be lvalues.  The compiler cannot
+check whether the operands have data types that are reasonable for
+the instruction being executed.  It does not parse the assembler
+instruction template and does not know what it means, or whether it
+is valid assembler input.  The extended `asm' feature is most often
+used for machine instructions that the compiler itself does not know
+exist.
+
+The output operands must be write-only; GNU CC will assume that the
+values in these operands before the instruction are dead and need not
+be generated.  For an operand that is read-write, or in which not all
+bits are written and the other bits contain useful information, you
+must logically split its function into two separate operands, one
+input operand and one write-only output operand.  The connection
+between them is expressed by constraints which say they need to be in
+the same location when the instruction executes.  You can use the
+same C expression for both operands, or different expressions.  For
+example, here we write the (fictitious) `combine' instruction with
+`bar' as its read-only source operand and `foo' as its read-write
+destination:
+
+     asm ("combine %2,%0" : "=r" (foo) : "0" (foo), "g" (bar));
+
+The constraint `"0"' for operand 1 says that it must occupy the same
+location as operand 0.  A digit in constraint is allowed only in an
+input operand, and it must refer to an output operand.
+
+Only a digit in the constraint can guarantee that one operand will be
+in the same place as another.  The mere fact that `foo' is the value
+of both operands is not enough to guarantee that they will be in the
+same place in the generated assembler code.  The following would not
+work:
+
+     asm ("combine %2,%0" : "=r" (foo) : "r" (foo), "g" (bar));
+
+Various optimizations or reloading could cause operands 0 and 1 to be
+in different registers; GNU CC knows no reason not to do so.  For
+example, the compiler might find a copy of the value of `foo' in one
+register and use it for operand 1, but generate the output operand 0
+in a different register (copying it afterward to `foo''s own
+address).  Of course, since the register for operand 1 is not even
+mentioned in the assembler code, the result will not work, but GNU CC
+can't tell that.
+
+Unless an output operand has the `&' constraint modifier, GNU CC may
+allocate it in the same register as an unrelated input operand, on
+the assumption that the inputs are consumed before the outputs are
+produced.  This assumption may be false if the assembler code
+actually consists of more than one instruction.  In such a case, use
+`&' for each output operand that may not overlap an input.  *Note
+Modifiers::.
+
+Some instructions clobber specific hard registers.  To describe this,
+write a third colon after the input operands, followed by the names
+of the clobbered hard registers (given as strings).  Here is a
+realistic example for the vax:
+
+     asm volatile ("movc3 %0,%1,%2"
+                   : /* no outputs */
+                   : "g" (from), "g" (to), "g" (count)
+                   : "r0", "r1", "r2", "r3", "r4", "r5");
+
+You can put multiple assembler instructions together in a single
+`asm' template, separated either with newlines (written as `\n') or
+with semicolons if the assembler allows such semicolons.  The GNU
+assembler allows semicolons and all Unix assemblers seem to do so. 
+The input operands are guaranteed not to use any of the clobbered
+registers, and neither will the output operands' addresses, so you
+can read and write the clobbered registers as many times as you like.
+Here is an example of multiple instructions in a template; it assumes
+that the subroutine `_foo' accepts arguments in registers 9 and 10:
+
+     asm ("movl %0,r9;movl %1,r10;call _foo"
+          : /* no outputs */
+          : "g" (from), "g" (to)
+          : "r9", "r10");
+
+If you want to test the condition code produced by an assembler
+instruction, you must include a branch and a label in the `asm'
+construct, as follows:
+
+     asm ("clr %0;frob %1;beq 0f;mov #1,%0;0:"
+          : "g" (result)
+          : "g" (input));
+
+This assumes your assembler supports local labels, as the GNU
+assembler and most Unix assemblers do.
+
+Usually the most convenient way to use these `asm' instructions is to
+encapsulate them in macros that look like functions.  For example,
+
+     #define sin(x)       \
+     ({ double __value, __arg = (x);   \
+        asm ("fsinx %1,%0": "=f" (__value): "f" (__arg));  \
+        __value; })
+
+Here the variable `__arg' is used to make sure that the instruction
+operates on a proper `double' value, and to accept only those
+arguments `x' which can convert automatically to a `double'.
+
+Another way to make sure the instruction operates on the correct data
+type is to use a cast in the `asm'.  This is different from using a
+variable `__arg' in that it converts more different types.  For
+example, if the desired type were `int', casting the argument to
+`int' would accept a pointer with no complaint, while assigning the
+argument to an `int' variable named `__arg' would warn about using a
+pointer unless the caller explicitly casts it.
+
+If an `asm' has output operands, GNU CC assumes for optimization
+purposes that the instruction has no side effects except to change
+the output operands.  This does not mean that instructions with a
+side effect cannot be used, but you must be careful, because the
+compiler may eliminate them if the output operands aren't used, or
+move them out of loops, or replace two with one if they constitute a
+common subexpression.  Also, if your instruction does have a side
+effect on a variable that otherwise appears not to change, the old
+value of the variable may be reused later if it happens to be found
+in a register.
+
+You can prevent an `asm' instruction from being deleted, moved or
+combined by writing the keyword `volatile' after the `asm'.  For
+example:
+
+     #define set_priority(x)  \
+     asm volatile ("set_priority %0": /* no outputs */ : "g" (x))
+
+(However, an instruction without output operands will not be deleted
+or moved, regardless, unless it is unreachable.)
+
+It is a natural idea to look for a way to give access to the
+condition code left by the assembler instruction.  However, when we
+attempted to implement this, we found no way to make it work
+reliably.  The problem is that output operands might need reloading,
+which would result in additional following ``store'' instructions. 
+On most machines, these instructions would alter the condition code
+before there was time to test it.  This problem doesn't arise for
+ordinary ``test'' and ``compare'' instructions because they don't
+have any output operands.
+
+If you are writing a header file that should be includable in ANSI C
+programs, write `__asm' instead of `asm'.  *Note Alternate Keywords::.
+
+
+
+File: gcc.info,  Node: Asm Labels,  Next: Global Reg Vars,  Prev: Extended Asm,  Up: Extensions
+
+Controlling Names Used in Assembler Code
+========================================
+
+You can specify the name to be used in the assembler code for a C
+function or variable by writing the `asm' (or `__asm') keyword after
+the declarator as follows:
+
+     int foo asm ("myfoo") = 2;
+
+This specifies that the name to be used for the variable `foo' in the
+assembler code should be `myfoo' rather than the usual `_foo'.
+
+On systems where an underscore is normally prepended to the name of a
+C function or variable, this feature allows you to define names for
+the linker that do not start with an underscore.
+
+You cannot use `asm' in this way in a function *definition*; but you
+can get the same effect by writing a declaration for the function
+before its definition and putting `asm' there, like this:
+
+     extern func () asm ("FUNC");
+     
+     func (x, y)
+          int x, y;
+     ...
+
+ It is up to you to make sure that the assembler names you choose do
+not conflict with any other assembler symbols.  Also, you must not
+use a register name; that would produce completely invalid assembler
+code.  GNU CC does not as yet have the ability to store static
+variables in registers.  Perhaps that will be added.
+
+
+
+File: gcc.info,  Node: Global Reg Vars,  Next: Alternate Keywords,  Prev: Asm Labels,  Up: Extensions
+
+Global Variables in Registers
+=============================
+
+A few programs, such as programming language interpreters, may have a
+couple of global variables that are accessed so often that it is
+worth while to reserve registers throughout the program just for them.
+
+You can define a global register variable in GNU C like this:
+
+     register int *foo asm ("a5");
+
+Here `a5' is the name of the register which should be used.  Choose a
+register which is normally saved and restored by function calls on
+your machine, so that library routines will not clobber it.
+
+Naturally the register name is cpu-dependent, so you would need to
+conditionalize your program according to cpu type.  The register `a5'
+would be a good choice on a 68000 for a variable of pointer type.  On
+machines with register windows, be sure to choose a ``global''
+register that is not affected by the function call mechanism.
+
+In addition, operating systems on one type of cpu may differ in how
+they name the registers; then you would need additional conditionals.
+For example, some 68000 operating systems call this register `%a5'.
+
+Eventually there may be a way of asking the compiler to choose a
+register automatically, but first we need to figure out how it should
+choose and how to enable you to guide the choice.  No solution is
+evident.
+
+Defining a global register variable in a certain register reserves
+that register entirely for this use, at least within the current
+compilation.  The register will not be allocated for any other
+purpose in the functions in the current compilation.  The register
+will not be saved and restored by these functions.  Stores into this
+register are never deleted even if they would appear to be dead, but
+references may be deleted or moved or simplified.
+
+It is not safe to access the global register variables from signal
+handlers, or from more than one thread of control, because the system
+library routines may temporarily use the register for other things
+(unless you recompile them specially for the task at hand).
+
+It is not safe for one function that uses a global register variable
+to call another such function `foo' by way of a third function `lose'
+that was compiled without knowledge of this variable (i.e. in a
+different source file in which the variable wasn't declared).  This
+is because `lose' might save the register and put some other value
+there.  For example, you can't expect a global register variable to
+be available in the comparison-function that you pass to `qsort',
+since `qsort' might have put something else in that register.  (If
+you are prepared to recompile `qsort' with the same global register
+variable, you can solve this problem.)
+
+If you want to recompile `qsort' or other source files which do not
+actually use your global register variable, so that they will not use
+that register for any other purpose, then it suffices to specify the
+compiler option `-ffixed-REG'.  You need not actually add a global
+register declaration to their source code.
+
+A function which can alter the value of a global register variable
+cannot safely be called from a function compiled without this
+variable, because it could clobber the value the caller expects to
+find there on return.  Therefore, the function which is the entry
+point into the part of the program that uses the global register
+variable must explicitly save and restore the value which belongs to
+its caller.
+
+On most machines, `longjmp' will restore to each global register
+variable the value it had at the time of the `setjmp'.  On some
+machines, however, `longjmp' will not change the value of global
+register variables.  To be portable, the function that called
+`setjmp' should make other arrangements to save the values of the
+global register variables, and to restore them if a `longjmp'.  This
+way, the the same thing will happen regardless of what `longjmp' does.
+
+All global register variable declarations must precede all function
+definitions.  If such a declaration could appear after function
+definitions, the declaration would be too late to prevent the
+register from being used for other purposes in the preceding functions.
+
+Global register variables may not have initial values, because an
+executable file has no means to supply initial contents for a register.
+
+
+
+File: gcc.info,  Node: Alternate Keywords,  Prev: Global Reg Vars,  Up: Extensions
+
+Alternate Keywords
+==================
+
+The option `-traditional' disables certain keywords; `-ansi' disables
+certain others.  This causes trouble when you want to use GNU C
+extensions, or ANSI C features, in a general-purpose header file that
+should be usable by all programs, including ANSI C programs and
+traditional ones.  The keywords `asm', `typeof' and `inline' cannot
+be used since they won't work in a program compiled with `-ansi',
+while the keywords `const', `volatile', `signed', `typeof' and
+`inline' won't work in a program compiled with `-traditional'.
+
+The way to solve these problems is to put `__' in front of each
+problematical keyword.  For example, use `__asm' instead of `asm',
+`__const' instead of `const', and `__inline' instead of `inline'.
+
+Other C compilers won't accept these alternative keywords; if you
+want to compile with another compiler, you can define the alternate
+keywords as macros to replace them with the customary keywords.  It
+looks like this:
+
+     #ifndef __GNUC__
+     #define __asm asm
+     #endif
+
+
+
+File: gcc.info,  Node: Bugs,  Next: Portability,  Prev: Extensions,  Up: Top
+
+Reporting Bugs
+**************
+
+Your bug reports play an essential role in making GNU CC reliable.
+
+Reporting a bug may help you by bringing a solution to your problem,
+or it may not.  But in any case the important function of a bug
+report is to help the entire community by making the next version of
+GNU CC work better.  Bug reports are your contribution to the
+maintenance of GNU CC.
+
+In order for a bug report to serve its purpose, you must include the
+information that makes for fixing the bug.
+
+* Menu:
+
+* Criteria:  Bug Criteria.   Have you really found a bug?
+* Reporting: Bug Reporting.  How to report a bug effectively.
+
+ 
+
+File: gcc.info,  Node: Bug Criteria,  Next: Bug Reporting,  Prev: Bugs,  Up: Bugs
+
+Have You Found a Bug?
+=====================
+
+If you are not sure whether you have found a bug, here are some
+guidelines:
+
+   * If the compiler gets a fatal signal, for any input whatever,
+     that is a compiler bug.  Reliable compilers never crash.
+
+   * If the compiler produces invalid assembly code, for any input
+     whatever (except an `asm' statement), that is a compiler bug,
+     unless the compiler reports errors (not just warnings) which
+     would ordinarily prevent the assembler from being run.
+
+   * If the compiler produces valid assembly code that does not
+     correctly execute the input source code, that is a compiler bug.
+
+     However, you must double-check to make sure, because you may
+     have run into an incompatibility between GNU C and traditional C
+     (*note Incompatibilities::.).  These incompatibilities might be
+     considered bugs, but they are inescapable consequences of
+     valuable features.
+
+     Or you may have a program whose behavior is undefined, which
+     happened by chance to give the desired results with another C
+     compiler.
+
+     For example, in many nonoptimizing compilers, you can write `x;'
+     at the end of a function instead of `return x;', with the same
+     results.  But the value of the function is undefined if `return'
+     is omitted; it is not a bug when GNU CC produces different
+     results.
+
+     Problems often result from expressions with two increment
+     operators, as in `f (*p++, *p++)'.  Your previous compiler might
+     have interpreted that expression the way you intended; GNU CC
+     might interpret it another way; neither compiler is wrong.
+
+     After you have localized the error to a single source line, it
+     should be easy to check for these things.  If your program is
+     correct and well defined, you have found a compiler bug.
+
+   * If the compiler produces an error message for valid input, that
+     is a compiler bug.
+
+     Note that the following is not valid input, and the error
+     message for it is not a bug:
+
+          int foo (char);
+          
+          int
+          foo (x)
+               char x;
+          { ... }
+
+     The prototype says to pass a `char', while the definition says
+     to pass an `int' and treat the value as a `char'.  This is what
+     the ANSI standard says, and it makes sense.
+
+   * If the compiler does not produce an error message for invalid
+     input, that is a compiler bug.  However, you should note that
+     your idea of ``invalid input'' might be my idea of ``an
+     extension'' or ``support for traditional practice''.
+
+   * If you are an experienced user of C compilers, your suggestions
+     for improvement of GNU CC are welcome in any case.
+
+
+
+File: gcc.info,  Node: Bug Reporting,  Prev: Bug Criteria,  Up: Bugs
+
+How to Report Bugs
+==================
+
+Send bug reports for GNU C to one of these addresses:
+
+     bug-gcc@prep.ai.mit.edu
+     {ucbvax|mit-eddie|uunet}!prep.ai.mit.edu!bug-gcc
+
+As a last resort, snail them to:
+
+     GNU Compiler Bugs
+     545 Tech Sq
+     Cambridge, MA 02139
+
+The fundamental principle of reporting bugs usefully is this: *report
+all the facts*.  If you are not sure whether to mention a fact or
+leave it out, mention it!
+
+Often people omit facts because they think they know what causes the
+problem and they conclude that some details don't matter.  Thus, you
+might assume that the name of the variable you use in an example does
+not matter.  Well, probably it doesn't, but one cannot be sure. 
+Perhaps the bug is a stray memory reference which happens to fetch
+from the location where that name is stored in memory; perhaps, if
+the name were different, the contents of that location would fool the
+compiler into doing the right thing despite the bug.  Play it safe
+and give an exact example.
+
+If you want to enable me to fix the bug, you should include all these
+things:
+
+   * The version of GNU CC.  You can get this by running it with the
+     `-v' option.
+
+     Without this, I won't know whether there is any point in looking
+     for the bug in the current version of GNU CC.
+
+   * A complete input file that will reproduce the bug.  If the bug
+     is in the C preprocessor, send me a source file and any header
+     files that it requires.  If the bug is in the compiler proper
+     (`cc1'), run your source file through the C preprocessor by
+     doing `gcc -E SOURCEFILE > OUTFILE', then include the contents
+     of OUTFILE in the bug report.  (Any `-I', `-D' or `-U' options
+     that you used in actual compilation should also be used when
+     doing this.)
+
+     A single statement is not enough of an example.  In order to
+     compile it, it must be embedded in a function definition; and
+     the bug might depend on the details of how this is done.
+
+     Without a real example I can compile, all I can do about your
+     bug report is wish you luck.  It would be futile to try to guess
+     how to provoke the bug.  For example, bugs in register
+     allocation and reloading frequently depend on every little
+     detail of the function they happen in.
+
+   * The command arguments you gave GNU CC to compile that example
+     and observe the bug.  For example, did you use `-O'?  To
+     guarantee you won't omit something important, list them all.
+
+     If I were to try to guess the arguments, I would probably guess
+     wrong and then I would not encounter the bug.
+
+   * The names of the files that you used for `tm.h' and `md' when
+     you installed the compiler.
+
+   * The type of machine you are using, and the operating system name
+     and version number.
+
+   * A description of what behavior you observe that you believe is
+     incorrect.  For example, ``It gets a fatal signal,'' or, ``There
+     is an incorrect assembler instruction in the output.''
+
+     Of course, if the bug is that the compiler gets a fatal signal,
+     then I will certainly notice it.  But if the bug is incorrect
+     output, I might not notice unless it is glaringly wrong.  I
+     won't study all the assembler code from a 50-line C program just
+     on the off chance that it might be wrong.
+
+     Even if the problem you experience is a fatal signal, you should
+     still say so explicitly.  Suppose something strange is going on,
+     such as, your copy of the compiler is out of synch, or you have
+     encountered a bug in the C library on your system.  (This has
+     happened!)  Your copy might crash and mine would not.  If you
+     told me to expect a crash, then when mine fails to crash, I
+     would know that the bug was not happening for me.  If you had
+     not told me to expect a crash, then I would not be able to draw
+     any conclusion from my observations.
+
+     In cases where GNU CC generates incorrect code, if you send me a
+     small complete sample program I will find the error myself by
+     running the program under a debugger.  If you send me a large
+     example or a part of a larger program, I cannot do this; you
+     must debug the compiled program and narrow the problem down to
+     one source line.  Tell me which source line it is, and what you
+     believe is incorrect about the code generated for that line.
+
+   * If you send me examples of output from GNU CC, please use `-g'
+     when you make them.  The debugging information includes source
+     line numbers which are essential for correlating the output with
+     the input.
+
+   * If you wish to suggest changes to the GNU CC source, send me
+     context diffs.  If you even discuss something in the GNU CC
+     source, refer to it by context, not by line number.
+
+     The line numbers in my development sources don't match those in
+     your sources.  Your line numbers would convey no useful
+     information to me.
+
+   * Additional information from a debugger might enable me to find a
+     problem on a machine which I do not have available myself. 
+     However, you need to think when you collect this information if
+     you want it to have any chance of being useful.
+
+     For example, many people send just a backtrace, but that is
+     never useful by itself.  A simple backtrace with arguments
+     conveys little about GNU CC because the compiler is largely
+     data-driven; the same functions are called over and over for
+     different RTL insns, doing different things depending on the
+     details of the insn.
+
+     Most of the arguments listed in the backtrace are useless
+     because they are pointers to RTL list structure.  The numeric
+     values of the pointers, which the debugger prints in the
+     backtrace, have no significance whatever; all that matters is
+     the contents of the objects they point to (and most of the
+     contents are other such pointers).
+
+     In addition, most compiler passes consist of one or more loops
+     that scan the RTL insn sequence.  The most vital piece of
+     information about such a loop--which insn it has reached--is
+     usually in a local variable, not in an argument.
+
+     What you need to provide in addition to a backtrace are the
+     values of the local variables for several stack frames up.  When
+     a local variable or an argument is an RTX, first print its value
+     and then use the GDB command `pr' to print the RTL expression
+     that it points to.  (If GDB doesn't run on your machine, use
+     your debugger to call the function `debug_rtx' with the RTX as
+     an argument.)  In general, whenever a variable is a pointer, its
+     value is no use without the data it points to.
+
+     In addition, include a debugging dump from just before the pass
+     in which the crash happens.  Most bugs involve a series of
+     insns, not just one.
+
+Here are some things that are not necessary:
+
+   * A description of the envelope of the bug.
+
+     Often people who encounter a bug spend a lot of time
+     investigating which changes to the input file will make the bug
+     go away and which changes will not affect it.
+
+     This is often time consuming and not very useful, because the
+     way I will find the bug is by running a single example under the
+     debugger with breakpoints, not by pure deduction from a series
+     of examples.
+
+     Of course, if you can find a simpler example to report *instead*
+     of the original one, that is a convenience for me.  Errors in
+     the output will be easier to spot, running under the debugger
+     will take less time, etc.  Most GNU CC bugs involve just one
+     function, so the most straightforward way to simplify an example
+     is to delete all the function definitions except the one where
+     the bug occurs.  Those earlier in the file may be replaced by
+     external declarations if the crucial function depends on them.
+
+     However, simplification is not vital; if you don't want to do
+     this, report the bug anyway.
+
+   * A patch for the bug.
+
+     A patch for the bug does help me if it is a good one.  But don't
+     omit the necessary information, such as the test case, because I
+     might see problems with your patch and decide to fix the problem
+     another way.
+
+     Sometimes with a program as complicated as GNU CC it is very
+     hard to construct an example that will make the program follow a
+     certain path through the code.  If you don't send me the
+     example, I won't be able to construct one, so I won't be able to
+     verify that the bug is fixed.
+
+   * A guess about what the bug is or what it depends on.
+
+     Such guesses are usually wrong.  Even I can't guess right about
+     such things without using the debugger to find the facts.
+
+
+
+File: gcc.info,  Node: Portability,  Next: Interface,  Prev: Bugs,  Up: Top
+
+GNU CC and Portability
+**********************
+
+The main goal of GNU CC was to make a good, fast compiler for
+machines in the class that the GNU system aims to run on: 32-bit
+machines that address 8-bit bytes and have several general registers.
+Elegance, theoretical power and simplicity are only secondary.
+
+GNU CC gets most of the information about the target machine from a
+machine description which gives an algebraic formula for each of the
+machine's instructions.  This is a very clean way to describe the
+target.  But when the compiler needs information that is difficult to
+express in this fashion, I have not hesitated to define an ad-hoc
+parameter to the machine description.  The purpose of portability is
+to reduce the total work needed on the compiler; it was not of
+interest for its own sake.
+
+GNU CC does not contain machine dependent code, but it does contain
+code that depends on machine parameters such as endianness (whether
+the most significant byte has the highest or lowest address of the
+bytes in a word) and the availability of autoincrement addressing. 
+In the RTL-generation pass, it is often necessary to have multiple
+strategies for generating code for a particular kind of syntax tree,
+strategies that are usable for different combinations of parameters. 
+Often I have not tried to address all possible cases, but only the
+common ones or only the ones that I have encountered.  As a result, a
+new target may require additional strategies.  You will know if this
+happens because the compiler will call `abort'.  Fortunately, the new
+strategies can be added in a machine-independent fashion, and will
+affect only the target machines that need them.
+
+
+
+File: gcc.info,  Node: Interface,  Next: Passes,  Prev: Portability,  Up: Top
+
+Interfacing to GNU CC Output
+****************************
+
+GNU CC is normally configured to use the same function calling
+convention normally in use on the target system.  This is done with
+the machine-description macros described (*note Machine Macros::.).
+
+However, returning of structure and union values is done differently
+on some target machines.  As a result, functions compiled with PCC
+returning such types cannot be called from code compiled with GNU CC,
+and vice versa.  This does not cause trouble often because few Unix
+library routines return structures or unions.
+
+GNU CC code returns structures and unions that are 1, 2, 4 or 8 bytes
+long in the same registers used for `int' or `double' return values. 
+(GNU CC typically allocates variables of such types in registers
+also.)  Structures and unions of other sizes are returned by storing
+them into an address passed by the caller (usually in a register). 
+The machine-description macros `STRUCT_VALUE' and
+`STRUCT_INCOMING_VALUE' tell GNU CC where to pass this address.
+
+By contrast, PCC on most target machines returns structures and
+unions of any size by copying the data into an area of static
+storage, and then returning the address of that storage as if it were
+a pointer value.  The caller must copy the data from that memory area
+to the place where the value is wanted.  This is slower than the
+method used by GNU CC, and fails to be reentrant.
+
+On some target machines, such as RISC machines and the 80386, the
+standard system convention is to pass to the subroutine the address
+of where to return the value.  On these machines, GNU CC has been
+configured to be compatible with the standard compiler, when this
+method is used.  It may not be compatible for structures of 1, 2, 4
+or 8 bytes.
+
+GNU CC uses the system's standard convention for passing arguments. 
+On some machines, the first few arguments are passed in registers; in
+others, all are passed on the stack.  It would be possible to use
+registers for argument passing on any machine, and this would
+probably result in a significant speedup.  But the result would be
+complete incompatibility with code that follows the standard
+convention.  So this change is practical only if you are switching to
+GNU CC as the sole C compiler for the system.  We may implement
+register argument passing on certain machines once we have a complete
+GNU system so that we can compile the libraries with GNU CC.
+
+If you use `longjmp', beware of automatic variables.  ANSI C says
+that automatic variables that are not declared `volatile' have
+undefined values after a `longjmp'.  And this is all GNU CC promises
+to do, because it is very difficult to restore register variables
+correctly, and one of GNU CC's features is that it can put variables
+in registers without your asking it to.
+
+If you want a variable to be unaltered by `longjmp', and you don't
+want to write `volatile' because old C compilers don't accept it,
+just take the address of the variable.  If a variable's address is
+ever taken, even if just to compute it and ignore it, then the
+variable cannot go in a register:
+
+     {
+       int careful;
+       &careful;
+       ...
+     }
+
+Code compiled with GNU CC may call certain library routines.  Most of
+them handle arithmetic for which there are no instructions.  This
+includes multiply and divide on some machines, and floating point
+operations on any machine for which floating point support is
+disabled with `-msoft-float'.  Some standard parts of the C library,
+such as `bcopy' or `memcpy', are also called automatically.  The
+usual function call interface is used for calling the library routines.
+
+These library routines should be defined in the library `gnulib',
+which GNU CC automatically searches whenever it links a program.  On
+machines that have multiply and divide instructions, if hardware
+floating point is in use, normally `gnulib' is not needed, but it is
+searched just in case.
+
+Each arithmetic function is defined in `gnulib.c' to use the
+corresponding C arithmetic operator.  As long as the file is compiled
+with another C compiler, which supports all the C arithmetic
+operators, this file will work portably.  However, `gnulib.c' does
+not work if compiled with GNU CC, because each arithmetic function
+would compile into a call to itself!
+
+
+
+File: gcc.info,  Node: Passes,  Next: RTL,  Prev: Interface,  Up: Top
+
+Passes and Files of the Compiler
+********************************
+
+The overall control structure of the compiler is in `toplev.c'.  This
+file is responsible for initialization, decoding arguments, opening
+and closing files, and sequencing the passes.
+
+The parsing pass is invoked only once, to parse the entire input. 
+The RTL intermediate code for a function is generated as the function
+is parsed, a statement at a time.  Each statement is read in as a
+syntax tree and then converted to RTL; then the storage for the tree
+for the statement is reclaimed.  Storage for types (and the
+expressions for their sizes), declarations, and a representation of
+the binding contours and how they nest, remains until the function is
+finished being compiled; these are all needed to output the debugging
+information.
+
+Each time the parsing pass reads a complete function definition or
+top-level declaration, it calls the function `rest_of_compilation' or
+`rest_of_decl_compilation' in `toplev.c', which are responsible for
+all further processing necessary, ending with output of the assembler
+language.  All other compiler passes run, in sequence, within
+`rest_of_compilation'.  When that function returns from compiling a
+function definition, the storage used for that function definition's
+compilation is entirely freed, unless it is an inline function (*note
+Inline::.).
+
+Here is a list of all the passes of the compiler and their source
+files.  Also included is a description of where debugging dumps can
+be requested with `-d' options.
+
+   * Parsing.  This pass reads the entire text of a function
+     definition, constructing partial syntax trees.  This and RTL
+     generation are no longer truly separate passes (formerly they
+     were), but it is easier to think of them as separate.
+
+     The tree representation does not entirely follow C syntax,
+     because it is intended to support other languages as well.
+
+     C data type analysis is also done in this pass, and every tree
+     node that represents an expression has a data type attached. 
+     Variables are represented as declaration nodes.
+
+     Constant folding and associative-law simplifications are also
+     done during this pass.
+
+     The source files for parsing are `c-parse.y', `c-decl.c',
+     `c-typeck.c', `c-convert.c', `stor-layout.c', `fold-const.c',
+     and `tree.c'.  The last three files are intended to be
+     language-independent.  There are also header files `c-parse.h',
+     `c-tree.h', `tree.h' and `tree.def'.  The last two define the
+     format of the tree representation.
+
+   * RTL generation.  This is the conversion of syntax tree into RTL
+     code.  It is actually done statement-by-statement during
+     parsing, but for most purposes it can be thought of as a
+     separate pass.
+
+     This is where the bulk of target-parameter-dependent code is
+     found, since often it is necessary for strategies to apply only
+     when certain standard kinds of instructions are available.  The
+     purpose of named instruction patterns is to provide this
+     information to the RTL generation pass.
+
+     Optimization is done in this pass for `if'-conditions that are
+     comparisons, boolean operations or conditional expressions. 
+     Tail recursion is detected at this time also.  Decisions are
+     made about how best to arrange loops and how to output `switch'
+     statements.
+
+     The source files for RTL generation are `stmt.c', `expr.c',
+     `explow.c', `expmed.c', `optabs.c' and `emit-rtl.c'.  Also, the
+     file `insn-emit.c', generated from the machine description by
+     the program `genemit', is used in this pass.  The header files
+     `expr.h' is used for communication within this pass.
+
+     The header files `insn-flags.h' and `insn-codes.h', generated
+     from the machine description by the programs `genflags' and
+     `gencodes', tell this pass which standard names are available
+     for use and which patterns correspond to them.
+
+     Aside from debugging information output, none of the following
+     passes refers to the tree structure representation of the
+     function (only part of which is saved).
+
+     The decision of whether the function can and should be expanded
+     inline in its subsequent callers is made at the end of rtl
+     generation.  The function must meet certain criteria, currently
+     related to the size of the function and the types and number of
+     parameters it has.  Note that this function may contain loops,
+     recursive calls to itself (tail-recursive functions can be
+     inlined!), gotos, in short, all constructs supported by GNU CC.
+
+     The option `-dr' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending `.rtl' to
+     the input file name.
+
+   * Jump optimization.  This pass simplifies jumps to the following
+     instruction, jumps across jumps, and jumps to jumps.  It deletes
+     unreferenced labels and unreachable code, except that
+     unreachable code that contains a loop is not recognized as
+     unreachable in this pass.  (Such loops are deleted later in the
+     basic block analysis.)
+
+     Jump optimization is performed two or three times.  The first
+     time is immediately following RTL generation.  The second time
+     is after CSE, but only if CSE says repeated jump optimization is
+     needed.  The last time is right before the final pass.  That
+     time, cross-jumping and deletion of no-op move instructions are
+     done together with the optimizations described above.
+
+     The source file of this pass is `jump.c'.
+
+     The option `-dj' causes a debugging dump of the RTL code after
+     this pass is run for the first time.  This dump file's name is
+     made by appending `.jump' to the input file name.
+
+   * Register scan.  This pass finds the first and last use of each
+     register, as a guide for common subexpression elimination.  Its
+     source is in `regclass.c'.
+
+   * Common subexpression elimination.  This pass also does constant
+     propagation.  Its source file is `cse.c'.  If constant
+     propagation causes conditional jumps to become unconditional or
+     to become no-ops, jump optimization is run again when CSE is
+     finished.
+
+     The option `-ds' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending `.cse' to
+     the input file name.
+
+   * Loop optimization.  This pass moves constant expressions out of
+     loops.  Its source file is `loop.c'.
+
+     The option `-dL' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending `.loop'
+     to the input file name.
+
+   * Stupid register allocation is performed at this point in a
+     nonoptimizing compilation.  It does a little data flow analysis
+     as well.  When stupid register allocation is in use, the next
+     pass executed is the reloading pass; the others in between are
+     skipped.  The source file is `stupid.c'.
+
+   * Data flow analysis (`flow.c').  This pass divides the program
+     into basic blocks (and in the process deletes unreachable
+     loops); then it computes which pseudo-registers are live at each
+     point in the program, and makes the first instruction that uses
+     a value point at the instruction that computed the value.
+
+     This pass also deletes computations whose results are never
+     used, and combines memory references with add or subtract
+     instructions to make autoincrement or autodecrement addressing.
+
+     The option `-df' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending `.flow'
+     to the input file name.  If stupid register allocation is in
+     use, this dump file reflects the full results of such allocation.
+
+   * Instruction combination (`combine.c').  This pass attempts to
+     combine groups of two or three instructions that are related by
+     data flow into single instructions.  It combines the RTL
+     expressions for the instructions by substitution, simplifies the
+     result using algebra, and then attempts to match the result
+     against the machine description.
+
+     The option `-dc' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending
+     `.combine' to the input file name.
+
+   * Register class preferencing.  The RTL code is scanned to find
+     out which register class is best for each pseudo register.  The
+     source file is `regclass.c'.
+
+   * Local register allocation (`local-alloc.c').  This pass
+     allocates hard registers to pseudo registers that are used only
+     within one basic block.  Because the basic block is linear, it
+     can use fast and powerful techniques to do a very good job.
+
+     The option `-dl' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending `.lreg'
+     to the input file name.
+
+   * Global register allocation (`global-alloc.c').  This pass
+     allocates hard registers for the remaining pseudo registers
+     (those whose life spans are not contained in one basic block).
+
+   * Reloading.  This pass renumbers pseudo registers with the
+     hardware registers numbers they were allocated.  Pseudo
+     registers that did not get hard registers are replaced with
+     stack slots.  Then it finds instructions that are invalid
+     because a value has failed to end up in a register, or has ended
+     up in a register of the wrong kind.  It fixes up these
+     instructions by reloading the problematical values temporarily
+     into registers.  Additional instructions are generated to do the
+     copying.
+
+     Source files are `reload.c' and `reload1.c', plus the header
+     `reload.h' used for communication between them.
+
+     The option `-dg' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending `.greg'
+     to the input file name.
+
+   * Jump optimization is repeated, this time including cross-jumping
+     and deletion of no-op move instructions.
+
+     The option `-dJ' causes a debugging dump of the RTL code after
+     this pass.  This dump file's name is made by appending `.jump2'
+     to the input file name.
+
+   * Final.  This pass outputs the assembler code for the function. 
+     It is also responsible for identifying spurious test and compare
+     instructions.  Machine-specific peephole optimizations are
+     performed at the same time.  The function entry and exit
+     sequences are generated directly as assembler code in this pass;
+     they never exist as RTL.
+
+     The source files are `final.c' plus `insn-output.c'; the latter
+     is generated automatically from the machine description by the
+     tool `genoutput'.  The header file `conditions.h' is used for
+     communication between these files.
+
+   * Debugging information output.  This is run after final because
+     it must output the stack slot offsets for pseudo registers that
+     did not get hard registers.  Source files are `dbxout.c' for DBX
+     symbol table format and `symout.c' for GDB's own symbol table
+     format.
+
+Some additional files are used by all or many passes:
+
+   * Every pass uses `machmode.def', which defines the machine modes.
+
+   * All the passes that work with RTL use the header files `rtl.h'
+     and `rtl.def', and subroutines in file `rtl.c'.  The tools
+     `gen*' also use these files to read and work with the machine
+     description RTL.
+
+   * Several passes refer to the header file `insn-config.h' which
+     contains a few parameters (C macro definitions) generated
+     automatically from the machine description RTL by the tool
+     `genconfig'.
+
+   * Several passes use the instruction recognizer, which consists of
+     `recog.c' and `recog.h', plus the files `insn-recog.c' and
+     `insn-extract.c' that are generated automatically from the
+     machine description by the tools `genrecog' and `genextract'.
+
+   * Several passes use the header files `regs.h' which defines the
+     information recorded about pseudo register usage, and
+     `basic-block.h' which defines the information recorded about
+     basic blocks.
+
+   * `hard-reg-set.h' defines the type `HARD_REG_SET', a bit-vector
+     with a bit for each hard register, and some macros to manipulate
+     it.  This type is just `int' if the machine has few enough hard
+     registers; otherwise it is an array of `int' and some of the
+     macros expand into loops.
+
+
+
+File: gcc.info,  Node: RTL,  Next: Machine Desc,  Prev: Passes,  Up: Top
+
+RTL Representation
+******************
+
+Most of the work of the compiler is done on an intermediate
+representation called register transfer language.  In this language,
+the instructions to be output are described, pretty much one by one,
+in an algebraic form that describes what the instruction does.
+
+RTL is inspired by Lisp lists.  It has both an internal form, made up
+of structures that point at other structures, and a textual form that
+is used in the machine description and in printed debugging dumps. 
+The textual form uses nested parentheses to indicate the pointers in
+the internal form.
+
+* Menu:
+
+* RTL Objects::       Expressions vs vectors vs strings vs integers.
+* Accessors::         Macros to access expression operands or vector elts.
+* Flags::             Other flags in an RTL expression.
+* Machine Modes::     Describing the size and format of a datum.
+* Constants::         Expressions with constant values.
+* Regs and Memory::   Expressions representing register contents or memory.
+* Arithmetic::        Expressions representing arithmetic on other expressions.
+* Comparisons::       Expressions representing comparison of expressions.
+* Bit Fields::        Expressions representing bit-fields in memory or reg.
+* Conversions::       Extending, truncating, floating or fixing.
+* RTL Declarations::  Declaring volatility, constancy, etc.
+* Side Effects::      Expressions for storing in registers, etc.
+* Incdec::            Embedded side-effects for autoincrement addressing.
+* Assembler::	      Representing `asm' with operands.
+* Insns::             Expression types for entire insns.
+* Calls::	      RTL representation of function call insns.
+* Sharing::           Some expressions are unique; others *must* be copied.
+
+ 

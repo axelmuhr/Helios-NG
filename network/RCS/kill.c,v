@@ -1,0 +1,1896 @@
+head	1.11;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.8
+	Alenia_release:1.8
+	Helios1_3:1.8
+	C40_Field_Test_2:1.8
+	C40_Field_Test_R1:1.7
+	Helios13_beta:1.7
+	Helios1_2_2_Fault:1.4
+	Helios1_2_2_Native:1.4
+	Helios1_2_2_native_beta:1.4
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.11
+date	94.03.10.17.13.06;	author nickc;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	94.03.01.12.39.45;	author nickc;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	93.08.11.10.30.43;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.07.21.11.06.18;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	92.06.24.10.09.45;	author paul;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	92.06.08.15.27.20;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.03.25.17.22.10;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.04.07.13.20.21;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.02.27.16.28.09;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.01.11.15.49.48;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@A Helios version of the Unix kill command, which can cope with lots of
+different cases.
+1) single user systems without a TFM
+2) multi-user unprotected systems
+3) multi-user protected systems
+4) whole taskforces in one go
+5) etc. etc. etc.
+@
+
+
+1.11
+log
+@added initialisation of Nodes in SYSDEB world
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--     			H E L I O S   C O M M A N D S			--
+--			-----------------------------			--
+--                                                                      --
+--             Copyright (C) 1991, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- kill.c								--
+--                                                                      --
+--	A kill command that works correctly in a Helios multi-user	--
+--	protected environment, as well as in a single-user system	--
+--                                                                      --
+--	Author:  BLV 9/1/91						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/kill.c,v 1.10 1994/03/01 12:39:45 nickc Exp nickc $*/
+
+/*{{{  header files etc. */
+#include <stdio.h>
+#include <queue.h>
+#include <syslib.h>
+#include <stdlib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <string.h>
+#include <servlib.h>
+#include <signal.h>
+#include <fault.h>
+#include <ctype.h>
+#include <stdarg.h>
+#include "rmlib.h"
+#include "session.h"
+#include "netutils.h"
+
+#define eq ==
+#define ne !=
+/*}}}*/
+/*{{{  statics and forward declarations */
+typedef struct {
+	Node		 Node;
+	Object		*Parent;	/* Directory,  or object if name is null */
+	char		 Name[NameMax];
+} CandidateNode;
+static	List		CandidatesList;
+
+static	WORD 		WalkDir(Object *dir, WordFnPtr fn, char *name);
+static	WORD 		match_name(Object *dir, char *direntry_name, char *name);
+static	Object		*get_proper_access(Object *program);
+static	void		usage(void);
+static	void		show_signals(void);
+static	int		find_program(char *name);
+static	void		clean_up(void);
+static	int		determine_signal(char *);
+static	bool		send_signal(int);
+
+#ifndef SingleProcessor
+static	int		check_processor(RmProcessor, ...);
+#endif
+/*}}}*/
+/*{{{  main() */
+
+int main(int argc, char **argv)
+{ int	signo = SIGTERM;
+  int	i	= 1;
+  int	rc	= EXIT_SUCCESS;
+  bool	all	= FALSE;
+  int	count;
+
+  if (argc eq 1) usage();
+
+  if (argc eq 2)
+   if ((!strcmp(argv[1], "-l")) || (!strcmp(argv[1], "-L")))
+    show_signals();
+
+  for ( ; i < argc; i++)
+   { 
+     if (argv[i][0] eq '-')
+      { if (!strcmp(argv[i], "-a"))
+	 all = TRUE;
+	else
+ 	 signo = determine_signal(&(argv[i][1]));
+        continue;
+      }
+
+     if ((argv[i][0] ne '/') && (strchr(argv[i], '/') ne NULL))
+      { fprintf(stderr, "kill: illegal task name %s\n", stderr);
+	rc = EXIT_FAILURE;
+ 	continue;
+      }
+         
+     count = find_program(argv[i]);
+     if (count eq 0)
+      { fprintf(stderr, "kill: cannot find program %s\n", argv[i]);
+        rc = EXIT_FAILURE;
+      }
+     elif ((count > 1) && !all)
+      { CandidateNode	*node1	= Head_(CandidateNode, CandidatesList);
+	CandidateNode	*node2	= Next_(CandidateNode, node1);
+	fprintf(stderr, "kill: ambigious name %s\n", argv[i]);
+	fprintf(stderr, "    : it matches %s/%s and %s/%s\n",
+		node1->Parent->Name, node1->Name, node2->Parent->Name, node2->Name);
+	rc = EXIT_FAILURE;
+      }
+     else
+      unless(send_signal(signo)) 
+       rc = EXIT_FAILURE;
+     clean_up();
+   }
+  return(rc);
+}
+
+static	void usage(void)
+{ fputs("kill: usage, kill [-SIG] [-a] program\n", stderr);
+  fputs("    :        kill -l\n", stderr);
+  exit(EXIT_FAILURE);
+}
+/*}}}*/
+/*{{{  determining the signal to be sent */
+
+/**
+*** A table of the known signals. This is used when examining the argument
+*** specifying the signal number, and for the -l option.
+**/
+typedef struct signal_definition {
+	char	*name;
+	int	number;
+} signal_definition;
+
+static	signal_definition known_signals[] =
+{	{ "ZERO",	 0	},
+	{ "ABRT",	 1	},
+	{ "FPE",	 2	},
+	{ "ILL",	 3  	},
+	{ "INT",	 4	},
+	{ "SEGV",	 5	},
+	{ "TERM",	 6	},
+	{ "STAK",	 7	},
+	{ "ALRM",	 8	},
+	{ "HUP",	 9	},
+	{ "PIPE",	10	},
+	{ "QUIT",	11	},
+	{ "TRAP",	12	},
+	{ "USR1",	13	},
+	{ "USR2",	14	},
+	{ "CHLD",	15	},
+	{ "URG",	16	},
+	{ "CONT",	17	},
+	{ "STOP",	18	},
+	{ "TSTP",	19	},
+	{ "TTIN",	20	},
+	{ "TTOU",	21	},
+	{ "WINCH",	22	},
+	{ "SIB",	23	},
+	{ "KILL",	31	},
+	{ Null(char),	-1	}
+};
+
+/**
+*** This routine shows the signals known to the kill command. To produce
+*** a reasonable format it assumes 80 columns and four characters per
+*** signal.
+**/
+static	void	show_signals(void)
+{ int	i, j;
+
+  for (i = 0, j = 0; known_signals[i].name ne Null(char); i++)
+   { fputs(known_signals[i].name, stderr);
+     fputc(' ', stderr);
+     if (++j eq 16)
+      { fputc('\n', stderr);
+        j = 0;
+      }
+   }
+  unless (j eq 0) fputc('\n', stderr);
+  exit(EXIT_SUCCESS);
+}
+
+/**
+*** Work out the signal from the given argument. This signal may be:
+***     1) a number between 0 and 31
+***	2) a string corresponding to one of the known signals
+**/
+static	int	determine_signal(char *str)
+{ int	result = 0;
+  int	i;
+  
+  if (isdigit(*str))
+   { char	*temp = str;
+     while (isdigit(*temp))
+      { result = (10 * result) + (*temp - '0');
+        temp++;
+      }
+     if (*temp eq '\0')
+      { if ((result < 0) || (result > 31))
+         { fprintf(stderr,
+         "kill: illegal signal value %d, signals should be between 0 and 31.\n",
+       		result);
+       	   exit(EXIT_FAILURE);
+       	 }
+      	return(result);
+      }
+   }
+
+	/* The string is not a simple number */
+  for (i = 0; known_signals[i].name ne Null(char); i++)
+   if (!mystrcmp(known_signals[i].name, str))
+    return(known_signals[i].number);
+
+  fprintf(stderr, "kill: unknown signal %s\n", str);
+  exit(EXIT_FAILURE);
+  return(SIGZERO);    
+}
+/*}}}*/
+/*{{{  cleaning up between arguments */
+static void clean_up(void)
+{ CandidateNode	*node, *next;
+
+  for (node = Head_(CandidateNode, CandidatesList);
+	!EndOfList_(node);
+	node = next)
+   { next = Next_(CandidateNode, node);
+     Remove(&(node->Node));
+     Close(node->Parent);
+     Free(node);
+   }
+}
+/*}}}*/
+/*{{{  find the programs */
+
+/**
+*** Finding a program involves checking lots of possibilities.
+***
+*** The steps used to determine which program to kill are as follows:
+***  1) if the program name is absolute, just locate it. However,
+***     in a protected multi-user environment that may not suffice...
+***  2) if there is no TFM, just check the current processor
+***  3) if there is a TFM and the CDL flag is set, check the tfm directory
+***  4) if CDL is not set, search the domain for a suitable program.
+***  5) give up
+***
+*** All candidates found are put into a list. At the end of the search the
+*** number of candidates is counted and suitable action is taken.
+**/
+
+static	int find_program(char *name)
+{ Object	*tfm;
+  CandidateNode	*node;
+
+  InitList(&CandidatesList);
+
+  if (name[0] eq '/')
+   { int	access;
+     Object	*current_candidate;
+
+     current_candidate = Locate(Null(Object), name);
+     if (current_candidate eq Null(Object))
+      { fprintf(stderr, "kill: failed to locate program %s\n", name);
+        return(0);
+      }
+     access = current_candidate->Access.Access;
+     if ((access & (AccMask_R + AccMask_W)) ne (AccMask_R + AccMask_W))
+      current_candidate = get_proper_access(current_candidate);
+
+     if (current_candidate eq Null(Object))
+      { fprintf(stderr, "kill: insufficient access to kill %s\n", name);
+        return(0);
+      }
+	/* Add just this program to the list of candidates */
+     node = New(CandidateNode);
+     if (node eq NULL)
+      { fputs("kill: out of memory\n", stderr);
+        exit(EXIT_FAILURE);
+      }
+     node->Parent	= current_candidate;
+     node->Name[0]	= '\0';
+#ifdef SYSDEB
+     node->Node.Next = node->Node.Prev = &node->Node;
+#endif
+     AddTail(&CandidatesList, &(node->Node));
+     return(1);
+   }
+
+#ifdef SingleProcessor
+  tfm = Null(Object);
+#else
+  tfm = RmGetTfm();
+  if (tfm eq Null(Object))
+#endif
+   { Object	*procman = Locate(Null(Object), "/tasks");
+     int	count;
+     
+     if (procman eq Null(Object))
+      { fputs("kill: failed to locate own processor manager.\n", stderr);
+        return(0);
+      }
+     count = (int) WalkDir(procman, (WordFnPtr) &match_name, name);
+     Close(procman);
+     return(count);
+   }
+
+#ifndef SingleProcessor
+  if (getenv("CDL") ne Null(char))
+   { int count = (int) WalkDir(tfm, (WordFnPtr) &match_name, name);
+     if (count > 0)
+      return(count);
+   }
+
+  { RmNetwork	domain = RmGetDomain();
+    RmNetwork	obtained;
+    int		count;
+
+    if (domain eq (RmNetwork) NULL)
+     { fputs("kill: failed to locate own domain of processors.\n", stderr);
+       exit(EXIT_FAILURE);
+     }
+    obtained = RmObtainNetwork(domain, FALSE, NULL);
+    RmFreeNetwork(domain);
+    if (obtained eq NULL)
+     { fputs("kill: failed to access own domain of processors.\n", stderr);
+       exit(EXIT_FAILURE);
+     }
+    count = RmApplyProcessors(obtained, &check_processor, name);
+    RmReleaseNetwork(obtained);
+    RmFreeNetwork(obtained);
+    return(count);
+  }  
+#endif
+}
+
+/*}}}*/
+/*{{{  match_name() */
+
+/**
+*** This routine is used to match the name passed as an argument and the
+*** name of a directory entry. The algorithm used is as follows:
+*** 1) if the name matches exactly, fine.
+*** 2) if the name matches up to the . in the directory entry and is then
+***    terminated, fine.
+*** 3) otherwise this is not the right program.
+***
+*** For example, it is possible to use
+***    kill -9 ls
+*** or
+***    kill -9 ls.27
+***
+*** If a match is found then it is added to the list of the existing matches.
+**/
+
+static WORD match_name(Object *dir, char *direntry_name, char *name)
+{ char			*temp1 = direntry_name;
+  char			*temp2 = name;
+  CandidateNode		*candidate_entry;
+
+  until ((*temp1 ne *temp2) || (*temp2 eq '\0'))
+   { temp1++; temp2++; }
+   
+  if (*temp2 ne '\0') return(0);	/* failed before end of name */
+  if ((*temp1 ne '\0') && (*temp1 ne '.')) return(0);
+
+  candidate_entry	= New(CandidateNode);
+  if (candidate_entry eq NULL)
+   { fputs("kill: out of memory.\n", stderr);  
+     exit(EXIT_FAILURE);
+   }
+  candidate_entry->Parent	= NewObject(dir->Name, &(dir->Access));
+  if (candidate_entry->Parent eq NULL)
+   { fputs("kill: out of memory.\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+  strcpy(candidate_entry->Name, direntry_name);
+#ifdef SYSDEB
+  candidate_entry->Node.Next = candidate_entry->Node.Prev = &candidate_entry->Node;
+#endif
+  AddTail(&CandidatesList, &(candidate_entry->Node));
+  return(1);
+}
+
+/*}}}*/
+/*{{{  search the domain */
+
+/**
+*** This is where the real fun starts. Somewhere inside the user's domain
+*** there may be a program matching the argument. It is necessary to search
+*** the domain processor by processor. These processors have been obtained so
+*** there is no problem gaining access.
+**/
+#ifndef SingleProcessor
+
+static int check_processor(RmProcessor processor, ...)
+{ va_list	args;
+  char		*name;
+  Object	*real_processor;
+  Object	*procman;
+  int		count;
+
+  va_start(args, processor);
+  name = va_arg(args, char *);
+  va_end(args);
+
+	/* Check that this processor is running Helios  */
+  if ((RmGetProcessorPurpose(processor) & RmP_Mask) ne RmP_Helios)
+   return(0);
+
+	/* Switch from RmLib world to Helios world	*/  
+  real_processor = RmMapProcessorToObject(processor);
+  if (real_processor eq Null(Object))
+   { fprintf(stderr, "kill: failed to map processor %s\n",
+   	RmGetProcessorId(processor));
+     return(0);
+   }
+
+  procman = Locate(real_processor, "tasks");
+  if (procman eq Null(Object))
+   { fprintf(stderr, "kill: failed to locate %s/tasks\n", real_processor->Name);
+     Close(real_processor);
+     return(0);
+   }
+  Close(real_processor);
+
+  count = (int) WalkDir(procman, &match_name, name);
+  Close(procman);
+  return(count);
+}
+#endif
+/*}}}*/
+/*{{{  get access to a processor */
+/**
+*** Given an absolute pathname as argument in a protected multi-user
+*** environment, simply locating the program is not sufficient to
+*** send a signal to it: the capability will be inadequate. Hence it
+*** is necessary to do some more work to get the capability.
+***
+*** 1) If this session does not involve a TFM, tough! There is no way of
+***    getting the right access.
+*** 2) If the argument matches with the tfm name, i.e. the user is
+***    trying to kill off a task or taskforce controlled by the TFM,
+***    then life is fairly easy.
+*** 3) Otherwise the argument should correspond to a program inside a
+***    processor, i.e. it should be of the form /xx/tasks/yy. The work
+***    involved is as follows:
+***     a) extract the string xx, get the current domain, and look up
+***        the processor.
+***     b) locate the processor manager and check the access.
+***     c) if insufficient, obtain the processor and try again.
+***     d) locate the program itself.
+**/
+
+#ifdef SingleProcessor
+
+static	Object *get_proper_access(Object *program)
+{ return(program);
+}
+
+#else
+
+static	Object *get_proper_access(Object *program)
+{ Object	*tfm = RmGetTfm();
+  int		len;
+  Object	*result;
+  char		buf[IOCDataMax];
+  char		*ptr;
+  RmNetwork	domain;
+  RmProcessor	processor;
+  RmProcessor	obtained_processor;
+  Object	*real_processor;
+          
+  if (tfm eq Null(Object))
+   { Close(program); return(Null(Object)); }
+
+  len = strlen(tfm->Name);
+  if (!strncmp(tfm->Name, program->Name, len))
+   if (program->Name[len] eq '/')
+    { result = Locate(tfm, &(program->Name[len + 1]));
+      if (result eq Null(Object))
+       fprintf(stderr, "kill: failed to re-locate taskforce %s/%s\n",
+        		tfm->Name, &(program->Name[len + 1]));
+      Close(program);
+      return(result);
+    }
+        
+  strcpy(buf, program->Name);
+  ptr = strstr(buf, "/tasks/");
+  if (ptr eq Null(char))
+   { fprintf(stderr, "kill: %s does not appear to be a program.\n",
+   		program->Name);
+     Close(program);
+     return(Null(Object));
+   }
+  *ptr++ = '\0';	/* terminate processor name, and point to tasks/xx.29 */
+
+  Close(program);
+  domain = RmGetDomain();
+  if (domain eq (RmNetwork) NULL)
+   { fputs("kill: failed to get current domain details.\n", stderr);
+     return(Null(Object));
+   }
+  processor = RmLookupProcessor(domain, buf);
+  if (processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "kill: processor %s is not in your own domain.\n",
+   		buf);
+     RmFreeNetwork(domain);
+     return(Null(Object));
+   }
+	/* It is a safe bet that the processor is protected and has to	*/
+	/* be obtained, or this routine would not have been called.	*/
+  obtained_processor = RmObtainProcessor(processor);
+  if (obtained_processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "kill: failed to obtain access to processor %s.\n",
+   		buf);
+     return(Null(Object));
+   }
+
+  RmFreeNetwork(domain);	/* No longer needed */
+
+  real_processor = RmMapProcessorToObject(obtained_processor);
+  if (real_processor eq Null(Object))
+   { fprintf(stderr, "kill: failed to re-map obtained processor %s.\n",
+   		buf);
+     return(Null(Object));
+   }
+  RmReleaseProcessor(obtained_processor);
+  RmFreeProcessor(obtained_processor);
+
+	/* ptr still points to "tasks/xx.29" */
+  result = Locate(real_processor, ptr);  
+  if (result eq Null(Object))
+   fprintf(stderr, "kill: failed to re-locate %s/%s\n",
+   	real_processor->Name, ptr);
+
+  Close(real_processor);
+  return(result);
+}  
+#endif
+/*}}}*/
+/*{{{  WalkDir() */
+
+/**
+*** Standard WalkDir() routine.
+**/
+static WORD WalkDir(Object *dir, WordFnPtr fn, char *name)
+{ WORD  	sum = 0;
+  Stream  	*s;
+  WORD		size, i;
+  DirEntry	*entry, *cur;
+   
+  s = Open(dir, Null(char), O_ReadOnly);
+  if (s eq Null(Stream))
+   { fprintf(stderr, "kill : error, unable to open directory %s\n", dir->Name);
+     return(0);
+   }
+
+  size = GetFileSize(s);
+
+  if (size eq 0) return(0);
+  entry = (DirEntry *) Malloc(size);
+  if (entry == Null(DirEntry))
+   { fputs("kill : out of memory\n", stderr);
+     Close(s); 
+     exit(EXIT_FAILURE); 
+   }
+     
+  if (Read(s, (BYTE *) entry, size, -1) ne size)
+   { fprintf(stderr, "kill : error reading directory %s\n", dir->Name);
+     Close(s); Free(entry);
+     return(0);
+   }
+  Close(s);
+      
+  cur = entry;
+  for (i = 0; i < size; cur++, i += sizeof(DirEntry) )
+   { if ( (!strcmp(cur->Name, ".")) || (!strcmp(cur->Name, "..")) )
+      continue;
+     sum += (*fn)(dir, cur->Name, name);
+   }
+
+  Free(entry);
+  return(sum);
+}
+/*}}}*/
+/*{{{  send a signal */
+
+/**
+*** Sending a signal to a program under Helios is relatively easy, albeit
+*** rather different from the Unix way.
+**/
+static	bool	send_signal(int sig)
+{ CandidateNode	*node;
+  bool		 result = TRUE;
+
+  for ( node = Head_(CandidateNode, CandidatesList);
+	!EndOfList_(node);
+	node = Next_(CandidateNode, node))
+   { Stream	*s;
+     WORD		rc;
+     if (node->Name[0] eq '\0')
+      s = Open(node->Parent, NULL, O_ReadWrite);
+     else
+      s = Open(node->Parent, node->Name, O_ReadWrite);
+     if (s eq Null(Stream))
+      { fprintf(stderr, "kill: failed to access program %s/%s, fault 0x%08lx\n",
+   		node->Parent->Name, node->Name, Result2(node->Parent));
+	result = FALSE;
+       	continue;
+      }
+     rc = SendSignal(s, sig);
+     Close(s);
+     if (rc < Err_Null)
+      { fprintf(stderr, "kill: failed to send signal to program %s/%s, fault 0x%08lx\n",
+   		node->Parent, node->Name, rc);
+	result = FALSE;
+        continue;
+      }
+   }
+  return(result);
+}
+
+/*}}}*/
+@
+
+
+1.10
+log
+@fixed compile time warnings for ARM world
+@
+text
+@d17 1
+a17 1
+/* RcsId: $Header: /hsrc/network/RCS/kill.c,v 1.9 1993/08/11 10:30:43 bart Exp nickc $*/
+d230 1
+d277 3
+d304 1
+a304 1
+   { int count = WalkDir(tfm, (WordFnPtr) &match_name, name);
+d330 1
+d333 1
+d372 3
+d378 1
+d421 1
+a421 1
+  count = WalkDir(procman, &match_name, name);
+@
+
+
+1.9
+log
+@memory reduction
+@
+text
+@d17 1
+a17 1
+/* RcsId: $Header: /hsrc/network/RCS/kill.c,v 1.8 1992/07/21 11:06:18 bart Exp $*/
+d293 1
+a293 1
+     count = WalkDir(procman, (WordFnPtr) &match_name, name);
+d591 1
+a591 1
+      { fprintf(stderr, "kill: failed to access program %s/%s, fault 0x%08x\n",
+d599 1
+a599 1
+      { fprintf(stderr, "kill: failed to send signal to program %s/%s, fault 0x%08x\n",
+@
+
+
+1.8
+log
+@Added a -a option, and changed the names displayed when reporting
+ambiguity.
+@
+text
+@d17 1
+a17 2
+
+static char *rcsid = "$Header: /m/giga/HeliosRoot/Helios/network/RCS/kill.c,v 1.7 1992/06/24 10:09:45 paul Exp $";
+@
+
+
+1.7
+log
+@If an ambiguity was discovered the first match was killed...
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /m/giga/HeliosRoot/Helios/network/RCS/kill.c,v 1.6 1992/06/08 15:27:20 bart Exp paul $";
+d20 1
+d22 1
+d39 8
+d48 9
+a56 5
+static	void	usage(void);
+static	void	show_signals(void);
+static	Object	*find_program(char *name);
+static	int	determine_signal(char *);
+static	bool	send_signal(Object *, int);
+d58 6
+d66 5
+a70 3
+  int	i = 1;
+  int	rc = EXIT_SUCCESS;
+  
+d78 1
+a78 2
+   { Object	*program;
+
+d80 4
+a83 1
+      { signo = determine_signal(&(argv[i][1]));
+d86 6
+d93 4
+a96 4
+     program = find_program(argv[i]);
+     if (program eq Null(Object))
+      { rc = EXIT_FAILURE;
+        continue;
+d98 12
+a109 2
+     unless(send_signal(program, signo)) rc = EXIT_FAILURE;
+     Close(program);
+d115 1
+a115 1
+{ fputs("kill: usage, kill [-SIG] program\n", stderr);
+d119 2
+d215 4
+d220 11
+a232 3
+*** Note that the program name must be unambiguous, for example if
+*** the kill command specifies program ls and there are two ls programs
+*** running in the user's domain then neither should be killed.
+d242 2
+a243 2
+*** To cope with the possibility that there may be multiple programs,
+*** a static variable is used to hold the current candidate if any.
+d246 1
+a246 11
+static	Object		*current_candidate;
+static	int		candidate_count;
+static	char		candidate_name[NameMax];
+static	WORD 		WalkDir(Object *dir, WordFnPtr fn, char *name);
+static	WORD 		match_name(char *direntry_name, char *name);
+static	Object		*get_proper_access(Object *program);
+#ifndef SingleProcessor
+static	int		check_processor(RmProcessor, ...);
+#endif
+
+static	Object	*find_program(char *name)
+d248 1
+d250 1
+a250 2
+  current_candidate	= Null(Object);
+  candidate_count	= 0;
+d254 2
+d259 1
+a259 1
+        return(Null(Object));
+d262 3
+a264 3
+     if ((access & (AccMask_R + AccMask_W)) eq (AccMask_R + AccMask_W))
+      return(current_candidate);
+     current_candidate = get_proper_access(current_candidate);
+d266 13
+a278 2
+      fprintf(stderr, "kill: insufficient access to kill %s\n", name);
+     return(Null(Object));
+d292 1
+a292 1
+        return(Null(Object));
+a294 14
+     if (count eq 0)
+      { fprintf(stderr, "kill: failed to find program %s.\n", name);
+	Close(procman);
+        return(Null(Object));
+      }
+     if (count eq 1)
+      { current_candidate = Locate(procman, candidate_name);
+	Close(procman);
+        if (current_candidate eq Null(Object))
+         fprintf(stderr, "kill: error, failed to locate %s/%s\n",
+         		procman->Name, candidate_name);
+        return(current_candidate);
+      }
+
+d296 1
+a296 1
+     return(Null(Object));
+d302 2
+a303 9
+     if (count eq 1)
+      { current_candidate = Locate(tfm, candidate_name);
+        if (current_candidate eq Null(Object))
+         fprintf(stderr, "kill: error, failed to locate %s/%s\n",
+         		tfm->Name, candidate_name);
+      	return(current_candidate);
+      }
+     if (count > 1)
+      return(Null(Object));
+d307 1
+d309 1
+d314 1
+a314 1
+    count = RmApplyProcessors(domain, &check_processor, name);
+d316 3
+a318 4
+    if (count eq 0)
+     { fprintf(stderr, "kill: failed to find program %s in the current domain.\n",
+     		name);
+       return(Null(Object));
+d320 4
+a323 3
+    if (count eq 1)
+     return(current_candidate);
+    return(Null(Object));
+d327 2
+a328 1
+
+d342 1
+a342 2
+*** The exact action to take if a match is found depends on whether or not
+*** this is the first match.
+d345 4
+a348 3
+static WORD match_name(char *direntry_name, char *name)
+{ char	*temp1 = direntry_name;
+  char	*temp2 = name;
+d355 5
+a359 5
+  
+  if (candidate_count eq 0)	/* this is the first match	*/
+   { strcpy(candidate_name, direntry_name);
+     candidate_count = 1;
+     return(1);
+d361 7
+a367 4
+  candidate_count++;
+  if (candidate_count eq 2)	/* give an error the first time only */
+   fprintf(stderr, "kill: argument %s is ambiguous, it matches programs %s and %s\n",
+   		name, candidate_name, direntry_name);
+d370 2
+d376 2
+a377 2
+*** the domain processor by processor. If a suitable processor is found
+*** then things get really complicated.
+a385 1
+  RmProcessor	obtained_processor;
+a387 3
+	/* If there are two matches already, forget it.	*/
+  if (candidate_count > 1) return(0);
+      
+d413 2
+a414 56
+  if ((count eq 0) ||		/* Then there was no match in this processor */
+      (candidate_count > 1))    /* || there is no point in doing anything */
+   { Close(procman);
+     return(0);
+   }
+
+  	/* He he, time to turn the thingy into an Object */
+  	/* First, does this program have Read-Write access to the procman ? */
+  { int	access = procman->Access.Access;
+    if ((access & (AccMask_R + AccMask_W)) eq (AccMask_R + AccMask_W))
+     { current_candidate = Locate(procman, candidate_name);
+       Close(procman);
+       if (current_candidate eq Null(Object))
+        { fprintf(stderr, "kill: failed to get access to %s/%s\n",
+        	 procman->Name, candidate_name);
+          return(0);
+        }
+       else
+        return(1);
+     }
+  }
+
+	/* No, the network is protected so it is necessary to obtain	*/
+	/* the processor in order to get Write access.			*/
+  Close(procman);	/* redundant */
+  obtained_processor = RmObtainProcessor(processor);
+  if (obtained_processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "kill: failed to obtain processor %s.\n",
+   		RmGetProcessorId(processor));
+     return(0);
+   }
+  real_processor = RmMapProcessorToObject(obtained_processor);  
+  if (real_processor eq Null(Object))
+   { fprintf(stderr, "kill: failed to remap processor %s\n",
+   		RmGetProcessorId(obtained_processor));
+     return(0);
+   }
+  procman = Locate(real_processor, "tasks");
+  RmReleaseProcessor(obtained_processor);
+  RmFreeProcessor(obtained_processor);
+  if (procman eq Null(Object))
+   { fprintf(stderr, "kill: failed to re-locate %s/tasks\n",
+   		real_processor->Name);
+     Close(real_processor);
+     return(0);
+   }
+  Close(real_processor);
+  current_candidate = Locate(procman, candidate_name);
+  if (current_candidate eq Null(Object))
+   { fprintf(stderr, "kill: failed to re-locate %s/%s\n",
+   		procman->Name, candidate_name);
+     Close(procman);
+     return(0);
+   }
+  else
+   return(1);
+d417 2
+a418 1
+
+d526 2
+d565 1
+a565 1
+     sum += (*fn)(cur->Name, name);
+d571 2
+d578 27
+a604 8
+static	bool	send_signal(Object *program, int sig)
+{ Stream	*s = Open(program, Null(char), O_ReadWrite);
+  WORD		rc;
+  
+  if (s eq Null(Stream))
+   { fprintf(stderr, "kill: failed to access program %s, fault 0x%08x\n",
+   		program->Name, Result2(program));
+     return(FALSE);
+d606 1
+a606 8
+  rc = SendSignal(s, sig);
+  Close(s);
+  if (rc < Err_Null)
+   { fprintf(stderr, "kill: failed to send signal to program %s, fault 0x%08x\n",
+   		program->Name, rc);
+     return(FALSE);
+   }
+  return(TRUE);
+d609 1
+@
+
+
+1.6
+log
+@Moved the netutils routine LookupProcessor into the Resource Management
+library, RmLookupProcessor()
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/kill.c,v 1.5 1992/03/25 17:22:10 bart Exp bart $";
+d326 1
+a326 1
+  return(0);
+@
+
+
+1.5
+log
+@kill did not ignore native processors when examining the current domain
+to look for the specified task.
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/kill.c,v 1.4 1992/01/14 14:20:34 bart Exp $";
+d502 1
+a502 1
+  processor = LookupProcessor(domain, &(buf[1]));
+@
+
+
+1.4
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/kill.c,v 1.1 1991/08/06 17:32:53 bart Exp $";
+d351 4
+@
+
+
+1.3
+log
+@Added support for Tiny Helios. Various bits of the networking software can
+now be compiled with options such as -DSingleProcessor, to produce reduced
+versions of Helios.
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/remote.c,v 1.1 90/11/21 15:45:43 bart Exp $";
+d33 1
+a42 1
+static	int	mystrcmp(char *ms1, char *ms2);
+a199 1
+static	RmProcessor	LookupProcessor(RmNetwork, char *);
+d270 1
+a270 1
+  { RmNetwork	domain = RmGetDomain(Null(int));
+d276 1
+a276 1
+    count = RmApplyNetwork(domain, &check_processor, name);
+a351 3
+  if (RmIsNetwork(processor))
+   return(RmApplyNetwork((RmNetwork) processor, &check_processor, name));
+   
+d356 1
+a356 1
+   	RmGetProcessorID(processor));
+d394 1
+a394 1
+  obtained_processor = RmObtainProcessor(processor, Null(int));
+d397 1
+a397 1
+   		RmGetProcessorID(processor));
+d403 1
+a403 1
+   		RmGetProcessorID(obtained_processor));
+d493 1
+a493 1
+  domain = RmGetDomain(Null(int));
+d507 1
+a507 1
+  obtained_processor = RmObtainProcessor(processor, Null(int));
+a576 77
+}
+
+/**
+*** Given a network, look up the processor. 
+*** Arguments : Network, the root structure or a subnet
+***             name, something like Cluster/00
+*** 
+*** The routine determines the last bit of the name, e.g. 00, and
+*** searches the network. When a processor is reached whose ID matches
+*** this last bit of the name, the search goes back up the tree trying
+*** to match all the parents.
+**/
+#ifndef SingleProcessor
+static int	LookupAux1(RmProcessor, ...);
+
+static RmProcessor	LookupProcessor(RmNetwork Network, char *name)
+{ char		*temp = name + strlen(name);
+  
+  for ( ; (temp >= name) && (*temp ne '/'); temp--);
+
+  return((RmProcessor) RmSearchNetwork(Network, &LookupAux1, name, ++temp));
+}
+
+static int LookupAux1(RmProcessor Processor, ...)
+{ va_list	args;
+  char		*name;
+  char		*last_name;
+  RmNetwork	current;
+  int		amount;
+      
+  va_start(args, Processor);
+  name		= va_arg(args, char *);
+  last_name	= va_arg(args, char *);
+  va_end(args);
+
+  if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &LookupAux1, name, last_name));
+     
+	/* Unless the last bit matches, do not bother to check */  
+  if (strcmp(RmGetProcessorID(Processor), last_name)) return(0);
+
+  current	= (RmNetwork) Processor;
+  
+  while (last_name > name)	/* If name is 00, match is immediate	*/
+   { last_name--; last_name--;  /* Skip the / and get to last char	*/
+     for ( amount = 0; (last_name >= name) && (*last_name ne '/'); 
+           last_name--, amount++);
+     last_name++;		/* should now be Cluster */
+     current = RmParentNetwork((RmProcessor) current);
+     if (current eq (RmNetwork) NULL) return(0);
+     if (strncmp(RmGetNetworkID(current), last_name, amount)) return(0); 
+   }
+  return((int) Processor);
+}
+#endif
+
+/**
+*** String comparison routine which is not case sensitive. It returns the
+*** same result as strcmp, i.e. 0 for identical strings
+**/
+static int mystrcmp(char *ms1, char *ms2)
+{ char *s1 = ms1;
+  char *s2 = ms2; 
+#define ToUpper(x) (islower(x) ? toupper(x) : x)
+  
+  for (;;)
+   { if (*s1 eq '\0')
+       return((*s2 eq '\0') ? 0L : -1L);
+     elif (*s2 eq '\0')
+       return(1L);
+     elif(ToUpper(*s1) < ToUpper(*s2))
+       return(-1L);
+     elif(ToUpper(*s1) > ToUpper(*s2))
+       return(1L);
+     else
+       { s1++; s2++; }
+   }
+@
+
+
+1.2
+log
+@can now take several signal numbers, with different signals for each command
+@
+text
+@d18 1
+a18 1
+static char *rcsid = "$Header: /giga/Helios/network/RCS/kill.c,v 1.1 91/01/11 15:49:48 bart Exp Locker: bart $";
+a194 1
+static	Object		*get_proper_access(Object *program);
+d197 2
+d201 1
+d222 1
+a222 1
+     return(get_proper_access(current_candidate));
+d224 4
+a227 1
+   
+d230 1
+d257 1
+d288 1
+d336 2
+d353 3
+d430 1
+d452 3
+d456 6
+d538 1
+d593 1
+d615 1
+a615 1
+  
+d618 1
+a618 1
+
+d635 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 656
+a656 655
+/*------------------------------------------------------------------------
+--                                                                      --
+--     			H E L I O S   C O M M A N D S			--
+--			-----------------------------			--
+--                                                                      --
+--             Copyright (C) 1991, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- kill.c								--
+--                                                                      --
+--	A kill command that works correctly in a Helios multi-user	--
+--	protected environment, as well as in a single-user system	--
+--                                                                      --
+--	Author:  BLV 9/1/91						--
+--                                                                      --
+------------------------------------------------------------------------*/
+
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/remote.c,v 1.1 90/11/21 15:45:43 bart Exp $";
+
+#include <stdio.h>
+#include <syslib.h>
+#include <stdlib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <string.h>
+#include <servlib.h>
+#include <signal.h>
+#include <fault.h>
+#include <ctype.h>
+#include <stdarg.h>
+#include "rmlib.h"
+#include "session.h"
+
+#define eq ==
+#define ne !=
+
+static	void	usage(void);
+static	void	show_signals(void);
+static	Object	*find_program(char *name);
+static	int	determine_signal(char *);
+static	bool	send_signal(Object *, int);
+static	int	mystrcmp(char *ms1, char *ms2);
+
+int main(int argc, char **argv)
+{ int	signo = SIGTERM;
+  int	i = 1;
+  int	rc = EXIT_SUCCESS;
+  
+  if (argc eq 1) usage();
+
+  if (argc eq 2)
+   if ((!strcmp(argv[1], "-l")) || (!strcmp(argv[1], "-L")))
+    show_signals();
+
+  if (argv[1][0] eq '-')
+   { if (argc eq 2) usage();
+     signo = determine_signal(&(argv[1][1]));
+     i = 2;
+   }
+   
+  for ( ; i < argc; i++)
+   { Object	*program = find_program(argv[i]);
+     if (program eq Null(Object))
+      { rc = EXIT_FAILURE;
+        continue;
+      }
+     unless(send_signal(program, signo)) rc = EXIT_FAILURE;
+     Close(program);
+   }
+  return(rc);
+}
+
+static	void usage(void)
+{ fputs("kill: usage, kill [-SIG] program\n", stderr);
+  fputs("    :        kill -l\n", stderr);
+  exit(EXIT_FAILURE);
+}
+
+/**
+*** A table of the known signals. This is used when examining the argument
+*** specifying the signal number, and for the -l option.
+**/
+typedef struct signal_definition {
+	char	*name;
+	int	number;
+} signal_definition;
+
+static	signal_definition known_signals[] =
+{	{ "ZERO",	 0	},
+	{ "ABRT",	 1	},
+	{ "FPE",	 2	},
+	{ "ILL",	 3  	},
+	{ "INT",	 4	},
+	{ "SEGV",	 5	},
+	{ "TERM",	 6	},
+	{ "STAK",	 7	},
+	{ "ALRM",	 8	},
+	{ "HUP",	 9	},
+	{ "PIPE",	10	},
+	{ "QUIT",	11	},
+	{ "TRAP",	12	},
+	{ "USR1",	13	},
+	{ "USR2",	14	},
+	{ "CHLD",	15	},
+	{ "URG",	16	},
+	{ "CONT",	17	},
+	{ "STOP",	18	},
+	{ "TSTP",	19	},
+	{ "TTIN",	20	},
+	{ "TTOU",	21	},
+	{ "WINCH",	22	},
+	{ "SIB",	23	},
+	{ "KILL",	31	},
+	{ Null(char),	-1	}
+};
+
+/**
+*** This routine shows the signals known to the kill command. To produce
+*** a reasonable format it assumes 80 columns and four characters per
+*** signal.
+**/
+static	void	show_signals(void)
+{ int	i, j;
+
+  for (i = 0, j = 0; known_signals[i].name ne Null(char); i++)
+   { fputs(known_signals[i].name, stderr);
+     fputc(' ', stderr);
+     if (++j eq 16)
+      { fputc('\n', stderr);
+        j = 0;
+      }
+   }
+  unless (j eq 0) fputc('\n', stderr);
+  exit(EXIT_SUCCESS);
+}
+
+/**
+*** Work out the signal from the given argument. This signal may be:
+***     1) a number between 0 and 31
+***	2) a string corresponding to one of the known signals
+**/
+static	int	determine_signal(char *str)
+{ int	result = 0;
+  int	i;
+  
+  if (isdigit(*str))
+   { char	*temp = str;
+     while (isdigit(*temp))
+      { result = (10 * result) + (*temp - '0');
+        temp++;
+      }
+     if (*temp eq '\0')
+      { if ((result < 0) || (result > 31))
+         { fprintf(stderr,
+         "kill: illegal signal value %d, signals should be between 0 and 31.\n",
+       		result);
+       	   exit(EXIT_FAILURE);
+       	 }
+      	return(result);
+      }
+   }
+
+	/* The string is not a simple number */
+  for (i = 0; known_signals[i].name ne Null(char); i++)
+   if (!mystrcmp(known_signals[i].name, str))
+    return(known_signals[i].number);
+
+  fprintf(stderr, "kill: unknown signal %s\n", str);
+  exit(EXIT_FAILURE);
+  return(SIGZERO);    
+}
+
+/**
+*** Finding a program involves checking lots of possibilities.
+*** Note that the program name must be unambiguous, for example if
+*** the kill command specifies program ls and there are two ls programs
+*** running in the user's domain then neither should be killed.
+***
+*** The steps used to determine which program to kill are as follows:
+***  1) if the program name is absolute, just locate it. However,
+***     in a protected multi-user environment that may not suffice...
+***  2) if there is no TFM, just check the current processor
+***  3) if there is a TFM and the CDL flag is set, check the tfm directory
+***  4) if CDL is not set, search the domain for a suitable program.
+***  5) give up
+***
+*** To cope with the possibility that there may be multiple programs,
+*** a static variable is used to hold the current candidate if any.
+**/
+
+static	Object		*current_candidate;
+static	int		candidate_count;
+static	char		candidate_name[NameMax];
+static	Object		*get_proper_access(Object *program);
+static	WORD 		WalkDir(Object *dir, WordFnPtr fn, char *name);
+static	WORD 		match_name(char *direntry_name, char *name);
+static	int		check_processor(RmProcessor, ...);
+static	RmProcessor	LookupProcessor(RmNetwork, char *);
+
+static	Object	*find_program(char *name)
+{ Object	*tfm;
+
+  current_candidate	= Null(Object);
+  candidate_count	= 0;
+
+  if (name[0] eq '/')
+   { int	access;
+     current_candidate = Locate(Null(Object), name);
+     if (current_candidate eq Null(Object))
+      { fprintf(stderr, "kill: failed to locate program %s\n", name);
+        return(Null(Object));
+      }
+     access = current_candidate->Access.Access;
+     if ((access & (AccMask_R + AccMask_W)) eq (AccMask_R + AccMask_W))
+      return(current_candidate);
+     current_candidate = get_proper_access(current_candidate);
+     if (current_candidate eq Null(Object))
+      fprintf(stderr, "kill: insufficient access to kill %s\n", name);
+     return(get_proper_access(current_candidate));
+   }
+   
+  tfm = RmGetTfm();
+  if (tfm eq Null(Object))
+   { Object	*procman = Locate(Null(Object), "/tasks");
+     int	count;
+     
+     if (procman eq Null(Object))
+      { fputs("kill: failed to locate own processor manager.\n", stderr);
+        return(Null(Object));
+      }
+     count = WalkDir(procman, (WordFnPtr) &match_name, name);
+     if (count eq 0)
+      { fprintf(stderr, "kill: failed to find program %s.\n", name);
+	Close(procman);
+        return(Null(Object));
+      }
+     if (count eq 1)
+      { current_candidate = Locate(procman, candidate_name);
+	Close(procman);
+        if (current_candidate eq Null(Object))
+         fprintf(stderr, "kill: error, failed to locate %s/%s\n",
+         		procman->Name, candidate_name);
+        return(current_candidate);
+      }
+
+     Close(procman);
+     return(Null(Object));
+   }
+
+  if (getenv("CDL") ne Null(char))
+   { int count = WalkDir(tfm, (WordFnPtr) &match_name, name);
+     if (count eq 1)
+      { current_candidate = Locate(tfm, candidate_name);
+        if (current_candidate eq Null(Object))
+         fprintf(stderr, "kill: error, failed to locate %s/%s\n",
+         		tfm->Name, candidate_name);
+      	return(current_candidate);
+      }
+     if (count > 1)
+      return(Null(Object));
+   }
+
+  { RmNetwork	domain = RmGetDomain(Null(int));
+    int		count;
+    if (domain eq (RmNetwork) NULL)
+     { fputs("kill: failed to locate own domain of processors.\n", stderr);
+       exit(EXIT_FAILURE);
+     }
+    count = RmApplyNetwork(domain, &check_processor, name);
+    RmFreeNetwork(domain);
+    if (count eq 0)
+     { fprintf(stderr, "kill: failed to find program %s in the current domain.\n",
+     		name);
+       return(Null(Object));
+     }
+    if (count eq 1)
+     return(current_candidate);
+    return(Null(Object));
+  }  
+}
+
+/**
+*** This routine is used to match the name passed as an argument and the
+*** name of a directory entry. The algorithm used is as follows:
+*** 1) if the name matches exactly, fine.
+*** 2) if the name matches up to the . in the directory entry and is then
+***    terminated, fine.
+*** 3) otherwise this is not the right program.
+***
+*** For example, it is possible to use
+***    kill -9 ls
+*** or
+***    kill -9 ls.27
+***
+*** The exact action to take if a match is found depends on whether or not
+*** this is the first match.
+**/
+
+static WORD match_name(char *direntry_name, char *name)
+{ char	*temp1 = direntry_name;
+  char	*temp2 = name;
+
+  until ((*temp1 ne *temp2) || (*temp2 eq '\0'))
+   { temp1++; temp2++; }
+   
+  if (*temp2 ne '\0') return(0);	/* failed before end of name */
+  if ((*temp1 ne '\0') && (*temp1 ne '.')) return(0);
+  
+  if (candidate_count eq 0)	/* this is the first match	*/
+   { strcpy(candidate_name, direntry_name);
+     candidate_count = 1;
+     return(1);
+   }
+  candidate_count++;
+  if (candidate_count eq 2)	/* give an error the first time only */
+   fprintf(stderr, "kill: argument %s is ambiguous, it matches programs %s and %s\n",
+   		name, candidate_name, direntry_name);
+  return(0);
+}
+
+/**
+*** This is where the real fun starts. Somewhere inside the user's domain
+*** there may be a program matching the argument. It is necessary to search
+*** the domain processor by processor. If a suitable processor is found
+*** then things get really complicated.
+**/
+static int check_processor(RmProcessor processor, ...)
+{ va_list	args;
+  char		*name;
+  Object	*real_processor;
+  Object	*procman;
+  RmProcessor	obtained_processor;
+  int		count;
+
+	/* If there are two matches already, forget it.	*/
+  if (candidate_count > 1) return(0);
+      
+  va_start(args, processor);
+  name = va_arg(args, char *);
+  va_end(args);
+
+	/* Switch from RmLib world to Helios world	*/  
+  real_processor = RmMapProcessorToObject(processor);
+  if (real_processor eq Null(Object))
+   { fprintf(stderr, "kill: failed to map processor %s\n",
+   	RmGetProcessorID(processor));
+     return(0);
+   }
+
+  procman = Locate(real_processor, "tasks");
+  if (procman eq Null(Object))
+   { fprintf(stderr, "kill: failed to locate %s/tasks\n", real_processor->Name);
+     Close(real_processor);
+     return(0);
+   }
+  Close(real_processor);
+
+  count = WalkDir(procman, &match_name, name);
+  if ((count eq 0) ||		/* Then there was no match in this processor */
+      (candidate_count > 1))    /* || there is no point in doing anything */
+   { Close(procman);
+     return(0);
+   }
+
+  	/* He he, time to turn the thingy into an Object */
+  	/* First, does this program have Read-Write access to the procman ? */
+  { int	access = procman->Access.Access;
+    if ((access & (AccMask_R + AccMask_W)) eq (AccMask_R + AccMask_W))
+     { current_candidate = Locate(procman, candidate_name);
+       Close(procman);
+       if (current_candidate eq Null(Object))
+        { fprintf(stderr, "kill: failed to get access to %s/%s\n",
+        	 procman->Name, candidate_name);
+          return(0);
+        }
+       else
+        return(1);
+     }
+  }
+
+	/* No, the network is protected so it is necessary to obtain	*/
+	/* the processor in order to get Write access.			*/
+  Close(procman);	/* redundant */
+  obtained_processor = RmObtainProcessor(processor, Null(int));
+  if (obtained_processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "kill: failed to obtain processor %s.\n",
+   		RmGetProcessorID(processor));
+     return(0);
+   }
+  real_processor = RmMapProcessorToObject(obtained_processor);  
+  if (real_processor eq Null(Object))
+   { fprintf(stderr, "kill: failed to remap processor %s\n",
+   		RmGetProcessorID(obtained_processor));
+     return(0);
+   }
+  procman = Locate(real_processor, "tasks");
+  RmReleaseProcessor(obtained_processor);
+  RmFreeProcessor(obtained_processor);
+  if (procman eq Null(Object))
+   { fprintf(stderr, "kill: failed to re-locate %s/tasks\n",
+   		real_processor->Name);
+     Close(real_processor);
+     return(0);
+   }
+  Close(real_processor);
+  current_candidate = Locate(procman, candidate_name);
+  if (current_candidate eq Null(Object))
+   { fprintf(stderr, "kill: failed to re-locate %s/%s\n",
+   		procman->Name, candidate_name);
+     Close(procman);
+     return(0);
+   }
+  else
+   return(1);
+}
+
+/**
+*** Given an absolute pathname as argument in a protected multi-user
+*** environment, simply locating the program is not sufficient to
+*** send a signal to it: the capability will be inadequate. Hence it
+*** is necessary to do some more work to get the capability.
+***
+*** 1) If this session does not involve a TFM, tough! There is no way of
+***    getting the right access.
+*** 2) If the argument matches with the tfm name, i.e. the user is
+***    trying to kill off a task or taskforce controlled by the TFM,
+***    then life is fairly easy.
+*** 3) Otherwise the argument should correspond to a program inside a
+***    processor, i.e. it should be of the form /xx/tasks/yy. The work
+***    involved is as follows:
+***     a) extract the string xx, get the current domain, and look up
+***        the processor.
+***     b) locate the processor manager and check the access.
+***     c) if insufficient, obtain the processor and try again.
+***     d) locate the program itself.
+**/
+static	Object *get_proper_access(Object *program)
+{ Object	*tfm = RmGetTfm();
+  int		len;
+  Object	*result;
+  char		buf[IOCDataMax];
+  char		*ptr;
+  RmNetwork	domain;
+  RmProcessor	processor;
+  RmProcessor	obtained_processor;
+  Object	*real_processor;
+          
+  if (tfm eq Null(Object))
+   { Close(program); return(Null(Object)); }
+
+  len = strlen(tfm->Name);
+  if (!strncmp(tfm->Name, program->Name, len))
+   if (program->Name[len] eq '/')
+    { result = Locate(tfm, &(program->Name[len + 1]));
+      if (result eq Null(Object))
+       fprintf(stderr, "kill: failed to re-locate taskforce %s/%s\n",
+        		tfm->Name, &(program->Name[len + 1]));
+      Close(program);
+      return(result);
+    }
+        
+  strcpy(buf, program->Name);
+  ptr = strstr(buf, "/tasks/");
+  if (ptr eq Null(char))
+   { fprintf(stderr, "kill: %s does not appear to be a program.\n",
+   		program->Name);
+     Close(program);
+     return(Null(Object));
+   }
+  *ptr++ = '\0';	/* terminate processor name, and point to tasks/xx.29 */
+
+  Close(program);
+  domain = RmGetDomain(Null(int));
+  if (domain eq (RmNetwork) NULL)
+   { fputs("kill: failed to get current domain details.\n", stderr);
+     return(Null(Object));
+   }
+  processor = LookupProcessor(domain, &(buf[1]));
+  if (processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "kill: processor %s is not in your own domain.\n",
+   		buf);
+     RmFreeNetwork(domain);
+     return(Null(Object));
+   }
+	/* It is a safe bet that the processor is protected and has to	*/
+	/* be obtained, or this routine would not have been called.	*/
+  obtained_processor = RmObtainProcessor(processor, Null(int));
+  if (obtained_processor eq (RmProcessor) NULL)
+   { fprintf(stderr, "kill: failed to obtain access to processor %s.\n",
+   		buf);
+     return(Null(Object));
+   }
+
+  RmFreeNetwork(domain);	/* No longer needed */
+
+  real_processor = RmMapProcessorToObject(obtained_processor);
+  if (real_processor eq Null(Object))
+   { fprintf(stderr, "kill: failed to re-map obtained processor %s.\n",
+   		buf);
+     return(Null(Object));
+   }
+  RmReleaseProcessor(obtained_processor);
+  RmFreeProcessor(obtained_processor);
+
+	/* ptr still points to "tasks/xx.29" */
+  result = Locate(real_processor, ptr);  
+  if (result eq Null(Object))
+   fprintf(stderr, "kill: failed to re-locate %s/%s\n",
+   	real_processor->Name, ptr);
+
+  Close(real_processor);
+  return(result);
+}  
+
+/**
+*** Standard WalkDir() routine.
+**/
+static WORD WalkDir(Object *dir, WordFnPtr fn, char *name)
+{ WORD  	sum = 0;
+  Stream  	*s;
+  WORD		size, i;
+  DirEntry	*entry, *cur;
+   
+  s = Open(dir, Null(char), O_ReadOnly);
+  if (s eq Null(Stream))
+   { fprintf(stderr, "kill : error, unable to open directory %s\n", dir->Name);
+     return(0);
+   }
+
+  size = GetFileSize(s);
+
+  if (size eq 0) return(0);
+  entry = (DirEntry *) Malloc(size);
+  if (entry == Null(DirEntry))
+   { fputs("kill : out of memory\n", stderr);
+     Close(s); 
+     exit(EXIT_FAILURE); 
+   }
+     
+  if (Read(s, (BYTE *) entry, size, -1) ne size)
+   { fprintf(stderr, "kill : error reading directory %s\n", dir->Name);
+     Close(s); Free(entry);
+     return(0);
+   }
+  Close(s);
+      
+  cur = entry;
+  for (i = 0; i < size; cur++, i += sizeof(DirEntry) )
+   { if ( (!strcmp(cur->Name, ".")) || (!strcmp(cur->Name, "..")) )
+      continue;
+     sum += (*fn)(cur->Name, name);
+   }
+
+  Free(entry);
+  return(sum);
+}
+
+/**
+*** Given a network, look up the processor. 
+*** Arguments : Network, the root structure or a subnet
+***             name, something like Cluster/00
+*** 
+*** The routine determines the last bit of the name, e.g. 00, and
+*** searches the network. When a processor is reached whose ID matches
+*** this last bit of the name, the search goes back up the tree trying
+*** to match all the parents.
+**/
+static int	LookupAux1(RmProcessor, ...);
+
+static RmProcessor	LookupProcessor(RmNetwork Network, char *name)
+{ char		*temp = name + strlen(name);
+  
+  for ( ; (temp >= name) && (*temp ne '/'); temp--);
+
+  return((RmProcessor) RmSearchNetwork(Network, &LookupAux1, name, ++temp));
+}
+
+static int LookupAux1(RmProcessor Processor, ...)
+{ va_list	args;
+  char		*name;
+  char		*last_name;
+  RmNetwork	current;
+  int		amount;
+      
+  va_start(args, Processor);
+  name		= va_arg(args, char *);
+  last_name	= va_arg(args, char *);
+  va_end(args);
+  
+  if (RmIsNetwork(Processor))
+   return(RmSearchNetwork((RmNetwork) Processor, &LookupAux1, name, last_name));
+
+	/* Unless the last bit matches, do not bother to check */  
+  if (strcmp(RmGetProcessorID(Processor), last_name)) return(0);
+
+  current	= (RmNetwork) Processor;
+  
+  while (last_name > name)	/* If name is 00, match is immediate	*/
+   { last_name--; last_name--;  /* Skip the / and get to last char	*/
+     for ( amount = 0; (last_name >= name) && (*last_name ne '/'); 
+           last_name--, amount++);
+     last_name++;		/* should now be Cluster */
+     current = RmParentNetwork((RmProcessor) current);
+     if (current eq (RmNetwork) NULL) return(0);
+     if (strncmp(RmGetNetworkID(current), last_name, amount)) return(0); 
+   }
+  return((int) Processor);
+}
+
+/**
+*** String comparison routine which is not case sensitive. It returns the
+*** same result as strcmp, i.e. 0 for identical strings
+**/
+static int mystrcmp(char *ms1, char *ms2)
+{ char *s1 = ms1;
+  char *s2 = ms2; 
+#define ToUpper(x) (islower(x) ? toupper(x) : x)
+  
+  for (;;)
+   { if (*s1 eq '\0')
+       return((*s2 eq '\0') ? 0L : -1L);
+     elif (*s2 eq '\0')
+       return(1L);
+     elif(ToUpper(*s1) < ToUpper(*s2))
+       return(-1L);
+     elif(ToUpper(*s1) > ToUpper(*s2))
+       return(1L);
+     else
+       { s1++; s2++; }
+   }
+}
+
+/**
+*** Sending a signal to a program under Helios is relatively easy, albeit
+*** rather different from the Unix way.
+**/
+static	bool	send_signal(Object *program, int sig)
+{ Stream	*s = Open(program, Null(char), O_ReadWrite);
+  WORD		rc;
+  
+  if (s eq Null(Stream))
+   { fprintf(stderr, "kill: failed to access program %s, fault 0x%08x\n",
+   		program->Name, Result2(program));
+     return(FALSE);
+   }
+  rc = SendSignal(s, sig);
+  Close(s);
+  if (rc < Err_Null)
+   { fprintf(stderr, "kill: failed to send signal to program %s, fault 0x%08x\n",
+   		program->Name, rc);
+     return(FALSE);
+   }
+  return(TRUE);
+}
+
+@

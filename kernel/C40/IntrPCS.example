@@ -1,0 +1,111 @@
+
+
+	include c40.m
+
+IntrHandler0:
+        -- interrupt vectored to this point 
+        push    R_ST                     -- MUST save ST here
+	push	R_BASE
+	push	R_ADDR1		-- save reg we're about to trash
+	ldi	INTR_NMI, R_ADDR1
+
+
+	-- Save registers that will get trashed in a standard PCS environment
+	-- The only registers we do not need to save are the variable (R_V?)
+	-- ones that are saved upon entry.
+	--
+	-- @@@ A major optimisation here would be to save the processor state
+	-- into the current threads SaveState structure. If we subsequently
+	-- decide to slice the thread, half the work has been done already,
+	-- we would simply have to add the thread to the run Q and call the
+	-- dispatcher.
+
+	push	R_ADDR2			-- ar1
+	push	R_ADDR3			-- ar2
+
+	push	R_ADDR4
+	push	R_A1
+	push	R_A2
+	push	R_A3
+	push	R_A4
+	push	R_FT1		
+	push	R_FT2
+	push	R_T1
+	push	R_LR
+	push	R_TMP1
+	push	R_TMP2
+	push	R_TMP3
+	push	R_MT
+	push	R_ATMP
+	push	R_USE
+	push	R_USP
+	push	R_FP
+
+	-- Create skeleton C environment.
+	-- R_USP = user stack pointer (predecrement pushes down)
+	-- R_BASE = base of C Addressable memory.
+
+	-- R_USE = 0 so any stack checking in users code is ignored
+	-- R_FP = 0 so backtraces wont get screwed up.
+	-- R_MT - Set to user tasks module table.
+	-- R_LR - our return addr.
+	-- R_ST - PCS defines condition codes are set for all registers.
+
+	or	ST_SET_COND, st		-- Set cond codes for all registers
+
+	-- Get hold of pointer to saved static data!!!!!!!
+	ldi	R_ATMP, SaveArea
+
+	-- Set C address base.
+	ldi	*+R_ATMP(SavedCAddressBase), R_BASE
+
+	-- Set tasks module table pointer
+	ldi	*+R_ATMP(SavedModtab), R_MT
+
+	-- Set user stack to end of stack area allocated (USP pushes down).
+	-- 5-10 words of stack should be sufficient for HardenedSignal
+	ldi	*+R_ATMP(SavedUSP), R_USP
+
+	-- Set Arguments to fn in R_A1, R_A2, ...
+
+	-- Get C Address of semaphore
+	ldi	*+R_ATMP(SavedSemAddress), R_A1
+
+	-- Jump to C Code HardenedSignal
+	patchinstr(PATCHC40MASK24ADD, shift(-2, coderef(.HardenedSignal)),
+		laj	0)
+		ldi	NULL, R_USE
+		ldi	NULL, R_FP
+		nop	-- @@@ Use this delay slot.
+
+	-- Client Thread waiting Via HardenedWait() will now awaken at
+	-- next system timer interrupt (max 1 millisecond).
+
+
+GenIntrReturn:
+	-- Restore original state from system stack
+	pop	R_FP
+	pop	R_USP
+	pop	R_USE
+	pop	R_ATMP
+	pop	R_MT
+	pop	R_TMP3
+	pop	R_TMP2
+	pop	R_TMP1
+	pop	R_LR
+	pop	R_T1
+	pop	R_FT2
+	pop	R_FT1		
+	pop	R_A4
+	pop	R_A3
+	pop	R_A2
+        pop     R_A1
+	pop	R_ADDR4
+	pop	R_ADDR3			-- ar2
+	pop	R_ADDR2			-- ar1
+	pop	R_ADDR1			-- ar0
+	pop	R_BASE			-- ir0
+        pop     R_ST
+
+        retiU                           -- return from interrupt
+

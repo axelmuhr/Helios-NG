@@ -1,0 +1,142 @@
+head	1.1;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	92.01.16.13.22.17;	author bart;	state Exp;
+branches;
+next	;
+
+
+desc
+@The controlling component of a hardware test suite taskforce.
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/**
+*** control.c
+***
+*** BLV, 6.9.91
+***
+***  The purpose of this program is to control the memory, link, and other
+***  test programs, and in particular to send a terminate packet when the
+***  run should expire.
+***
+*** Arguments:	argv[1] number of days for run
+***		argv[2] number of hours
+***		argv[3] number of minutes
+***		argv[4] number of workers
+***
+*** Streams:
+***		stdin, stdout, stderr	inherited
+***		4,5	<> first worker
+***		6,7	<> second worker
+***		...
+**/
+
+#include <stdio.h>
+#include <helios.h>
+#include <nonansi.h>
+#include <time.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <syslib.h>
+#include "packet.h"
+
+/**-----------------------------------------------------------------------------
+*** Macros
+**/
+		/* Stream allocation					*/
+#define	To_Worker(i)	(5 + (2 * i))
+#define From_Worker(i)	(4 + (2 * i))
+
+/**-----------------------------------------------------------------------------
+*** Static variables.
+**/
+	/* NumberWorkers is passed as an argument to this program.	*/
+static int	NumberWorkers	= -1;
+
+/**-----------------------------------------------------------------------------
+*** Forward declarations.
+**/
+	/* BroadcastPacket() sends a control packet to all workers.	*/
+static void	BroadcastPacket(ExControlPacket *);
+
+	/* usage() produces an error message if invalid arguments are	*/
+	/* supplied to this program.					*/
+static void	usage(void);
+
+/**-----------------------------------------------------------------------------
+*** Code.
+**/
+int main(int argc, char **argv)
+{ int			days, hours, minutes;
+  ExControlPacket	packet;
+
+  if (argc != 5) usage();
+  days		= atoi(argv[1]);
+  hours		= atoi(argv[2]);
+  minutes	= atoi(argv[3]);
+  NumberWorkers	= atoi(argv[4]);
+
+  if ((days == 0) && (hours == 0) && (minutes == 0))
+   { fputs("runtest: please specify time in days, hours, minutes\n", stderr);
+     fputs("       : e.g. runtest 0 0 5\n", stderr);
+     exit(EXIT_FAILURE);
+   }
+
+  packet.FnRc	= ExR_Init;
+  BroadcastPacket(&packet);
+
+  while (days-- > 0)
+   { int i, j;
+     for (i = 0; i < 24; i++)
+      for (j = 0; j < 60; j++)
+         Delay(60 * OneSec);
+   }
+
+  while (hours-- > 0)
+   { int i;
+     for (i = 0; i < 60; i++)
+      Delay(60 * OneSec);
+   }
+
+  while (minutes-- > 0)
+   Delay(60 * OneSec);
+
+  packet.FnRc	= ExR_Terminate;
+  BroadcastPacket(&packet);
+
+  return(EXIT_SUCCESS);
+}
+
+static void usage(void)
+{ fputs("control: usage, control <days> <hours> <minutes> <workers>\n",
+		stderr);
+  exit(EXIT_FAILURE);
+}
+
+static void BroadcastPacket(ExControlPacket *packet)
+{ int	i;
+
+  for (i = 0; i < NumberWorkers; i++)
+   if (write(To_Worker(i), (char *) packet, sizeof(ExControlPacket))
+       != sizeof(ExControlPacket))
+    { fprintf(stderr, "control: failed to write packet to worker %d.\n",
+		i);
+      exit(EXIT_FAILURE);
+    }
+}
+
+@

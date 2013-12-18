@@ -1,0 +1,163 @@
+Helios-ARM Notes
+----------------
+
+Paul Beskeen
+27/Oct/92
+
+Miscellaneous
+=============
+
+	Any user code that calls kernel trap functions with interrupts of
+	any kind disabled should realize that interrupts will be
+	re-enabled for the duration of the trap call, but will be disabled
+        again when the trap returns. The trap functions cal be called from
+	User or SVC mode.
+
+	The IntsOn/Off(), AvoidEvents(), Enable/Disable/IRQ/FIQ() functions
+	will give unpredictable results (their effects may be reversed) if
+	they are used when calling system functions that can result in the
+	current thread being de-scheduled. They should only be used where data
+	integrity has to be protected against an interrupt handler that
+	shares the same data, and then only temporarily. Over-zealous use of
+	these functions can increase the systems interrupt latency.
+
+	On Archimedies systems, the pseudo interrupt for IOC timer 0
+	(INTR_IRQA_5) will never occur as this is re-routed to a system timer
+	interrupt handler in order to provide support for time slicing, the
+	timer queue and the system clock.
+
+	Archimedies systems also provide decoded card pseudo interrupts.
+	If the INTR_XCB_x handlers are called, they can assume that their
+	card has asserted IRQ.
+
+	if (when nestable interrupts are done) {
+
+	User installed interrupt handlers are called in SVC mode, with the
+	relevant interrupt(s) masked. The handler may call any kernel trap that
+	will not cause them to be de-scheduled (such as a message primitive).
+	Once an interrupt source is recognised as being the responsibility of
+	this handler, the interrupt should be cleared and as soon as possible
+	after this point processor interrupts at this level should be
+	re-enabled, thus reducing the systems interrupt latency.
+
+	Interrupt handlers can elect call the pseudo trap handler, rather than
+	the standard SWI interface. This interface is a lot faster than the
+	normal trap interface and does not alter the interrupt mask. It is
+	therefore safe to call trap functions via this interface before
+	interrupts in the processors interrupt mask have been re-enabled.
+
+	To call the pseudo trap interface use:
+
+		include ARM/trap.m
+
+		mov	tmp, (TRAP_xxx & ~TRAP_STDHELIOS)
+		mov	lr, pc
+		ldr	pc, (r0, -r0)
+
+
+	Where TRAP_xxx is the number of the trap function you wish to call.
+
+	The AMPP 'PseudoTrap' macro and Util library PseudoTrap function
+	have been provided for this purpose.
+
+	macro:
+		include ARM/trap.m
+		PseudoTrap TRAP_xxx	-- code equivalent to above.
+
+	function:
+		#include <ARM/trap.h>
+		PseudoTrap(word arg1, word arg2, word arg3, word trapnum);
+
+	The pseudo trap interface must only be used by non User mode code.
+
+	} else {
+
+	User interrupt handlers are called in IRQ or FIQ mode, with the relevant
+	interrupt(s) masked. The mode and interrupt mask should not be altered
+	by the interrupt handlers. When handlers need to call kernel functions,
+	they MUST NOT use the standard SWI interface, they should instead call
+	the pseudo trap handler. To call the pseudo trap handler use:
+
+		include ARM/trap.m
+
+		mov	tmp, (TRAP_xxx & ~TRAP_STDHELIOS)
+		mov	lr, pc
+		ldr	pc, (r0, -r0)
+
+	Where TRAP_xxx is the number of the trap function you wish to call.
+
+	The AMPP 'PseudoTrap' macro and Util library PseudoTrap function
+	have been provided for this purpose.
+
+	macro:
+		include ARM/trap.m
+		PseudoTrap TRAP_xxx	-- code equivalent to above.
+
+	function:
+		#include <ARM/trap.h>
+		PseudoTrap(word arg1, word arg2, word arg3, word trapnum);
+
+	The pseudo trap handler does not corrupt SVC mode registers, change to
+	the user stack pointer, or alter the interrupt mask. It is also a lot
+	faster that the standard trap interface. The pseudo trap interface
+	must only be used by non User mode code.
+
+	}
+
+	Remember that stack checking should be disabled in C based
+	interrupt handlers (#pragma no_check_stack).
+
+	See also comments in IntrNotes.doc in the kernel/ARM directory.
+
+
+ARM Specific Functions
+======================
+
+EnterSVCMode
+
+	void EnterSVCMode(void);
+
+	Return in SVC mode to caller. The SVC stack is set to the same
+	as the user stack and PSR flags are maintained. Note that as with all
+	traps (SWI's) there is a small period in the trap handler when
+	interrupts are re-enabled.
+
+
+EnterUserMode
+
+	void EnterUserMode(void);
+
+	Return in User mode to caller. The stack pointer set to the same as
+	the SVC stack pointer and both FIQ and IRQ interrupts are enabled.
+
+
+Enable/DisableIRQ/FIQ
+
+	void EnableIRQ(void);
+
+	Enable IRQ in processors interrupt mask.
+
+
+	void DisableIRQ(void);
+
+	Disable IRQ in processors interrupt mask.
+
+
+	void EnableFIQ(void);
+
+	Enable FIQ in processors interrupt mask
+
+
+	void DisableFIQ(void);
+
+	Disable FIQ in processors interrupt mask.
+
+
+
+ARM PCS
+=======
+	Differences between APCS-3 and Helios APCS
+	sb
+	_trap()
+	reg names
+

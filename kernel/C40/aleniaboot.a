@@ -1,0 +1,258 @@
+ _def    'IRAM_IDROM             [0x002ffc00]
+_def    'IRAM_CONFIG            [(IRAM_IDROM + (IDROM.sizeof / 4))]
+
+_def    'H_MHE_WORK_HELIOS0       0x9200
+_def    'L_MHE_WORK_HELIOS0       0x003a
+
+_def    'WDOGTIMERADDR            0x9390
+_def    'WDOGRESET                0x4000
+ 
+_def 'IPB_SET_02	0x93900000      -- indirizzo bit di SET (write) 
+_def 'DOGCRST		0x4000		-- Reset watch dog counter 
+
+include basic.m
+include c40.m
+include tim40.m
+include c40mmap.m
+include c40intr.m
+include gexec.m
+include module.m
+include config.m
+include root.m
+include link.m
+
+BootstrapEntryPoint:
+
+        ldhi    IRAM_IDROM >> 16, ar5
+        or      IRAM_IDROM & 0xffff, ar5
+
+InitC40:
+
+        ldperimap ar0
+
+        ldi     *+ar5 (IDROM.TIMER1_PERIOD), r0
+        sti     r0, *+ar0(timer1_period)
+
+        ldi     *+ar5 (IDROM.TIMER1_CTRL.w_offset), r0
+        lsh     -IDROM.TIMER1_CTRL.shift, r0
+
+        ldhi    ((tcr_dbgcont1 | tcr_dbgcont2) >> 16) & 0xffff, r1
+        or      r1, r0
+        sti     r0, *+ar0(timer1_control)
+
+        ldi     *+ar5(IDROM.TIMER0_PERIOD), r0
+        sti     r0, *+ar0(timer0_period)
+
+        ldi     *+ar5(IDROM.LBASE1), ar1
+
+        ldi     ar1, R_BASE
+     
+        ldhi    H_MHE_WORK_HELIOS0, ar3
+        or      L_MHE_WORK_HELIOS0, ar3
+        ldi     *ar3 , ar3
+
+        ldi    *ar3, r0
+        ldi    ar1, ar4
+
+        sti     r0, *ar4++
+        lsh     -2, r0
+        subi    1, r0
+
+        ldhi    WDOGTIMERADDR, ar6
+        ldi     WDOGRESET,r1
+        sti     r1, *ar6
+
+        ldi     *ar3++, r1
+CopyNuc:    
+       	ldi     *ar3++, r1 
+        sti       r1, *ar4++
+        subi    1,r0
+        bnz     CopyNuc
+
+        addi    512-1, ar4
+        andn    512-1, ar4
+
+        ldpe    ar4, tvtp
+
+        sti     ar1, *+ar4(ExecRoot.Nucleus)
+        ldi     ar4, ar1
+
+        sti     R_BASE, *+ar1(ExecRoot.CAddressBase)
+
+        stik    0, *+ar1(ExecRoot.HWConfig)
+
+        ldi     ar1, R_SSP
+        addi    ExecRoot.sizeof / 4, R_SSP
+
+        ldi     R_SSP, ar3
+        addi    0x200-1, ar3
+        andn    0x200-1, ar3
+        ldpe    ar3, ivtp
+
+        addi    0x40, ar3
+
+        ldi     ar3, r0
+        C40CAddress r0
+        sti     r0, *+ar1(ExecRoot.KernelRoot)
+
+        addi    ExecRoot.ID_ROM, ar1, ar4
+
+        ldhi    IRAM_IDROM >> 16, ar5
+        or      IRAM_IDROM & 0xffff, ar5
+
+        ldi     IDROM.sizeof / 4, r0
+
+        ldhi    WDOGTIMERADDR, ar6
+        ldi     WDOGRESET,r1
+        sti     r1, *ar6
+IDROM_Copy:
+        ldi     *ar5++, r1
+        sti     r1, *ar4++
+        subi    1, r0
+        bnz     IDROM_Copy
+
+        ldhi    WDOGTIMERADDR, ar6
+        ldi     WDOGRESET,r1
+        sti     r1, *ar6
+
+        addi    Root.sizeof / 4, ar3
+
+        ldhi    IRAM_CONFIG >> 16, ar5
+       	or      IRAM_CONFIG & 0xffff, ar5
+
+        ldi     *+ar5(Config.ImageSize), r0
+	ldi	ar3, ar4
+       	lsh     -2, r0 	-- config size in words
+
+ConfigCopy:
+        ldi     *ar5++, r1
+        sti     r1, *ar3++
+        subi    1, r0
+        bnz     ConfigCopy
+
+	-- Append watchdog reset code to the end of the config vector.
+	-- Config size and Config.Spare are updated to include and point to
+	-- this code.
+	ldabs	UserConfigStart ar5
+	ldi	UserConfigEnd-UserConfigStart, r0
+	lsh	2, r0, r2	-- r2 = config size in bytes
+
+ConfigCodeCopy:
+        ldi     *ar5++, r1
+        sti     r1, *ar3++
+        subi    1, r0
+        bnz     ConfigCodeCopy
+
+	-- Increment config size by size of config user code.
+        ldi     *+ar4(Config.ImageSize), r0
+	addi	r0, r2
+        sti     r2, *+ar4(Config.ImageSize)
+	
+	-- Set Config.Spare to point to user code.
+	lsh	-2, r0	-- size in words of config.
+	subi	Config.Spare, r0	-- sub pos gives offset to code.
+	lsh	2, r0			-- convert back to bytes.
+        sti     r0, *+ar4(Config.Spare)
+
+	-- reset watchdog
+        ldhi    WDOGTIMERADDR, ar6
+        ldi     WDOGRESET,r1
+        sti     r1, *ar6
+
+        ldi     ExecRoot.DispatchStack + DISPATCHSTACKSIZE - 1, R_USP
+        addi    ar1, R_USP
+        or      ST_SET_COND, R_ST
+
+        ldi     -1, R_A1
+        ldi     *+ar1(ExecRoot.Nucleus), R_A2
+
+        addi    1, R_A2, ar2
+
+        ldi     *ar2, ar1
+        lsh     -2, ar1
+        addi    ar2, ar1
+
+        addi    Module.sizeof / 4, ar1
+
+        b       ar1
+
+
+	-----------------------------------------------------------------------
+	-----------------------------------------------------------------------
+	-- This code provides a watchdog reset facility for the GGP board.
+	-- ConfigUserCode is called from kernel during initialisation phase,
+	-- after the interrupt and link initialisation. Called from C so must
+	-- respect the C40 PCS.
+
+UserConfigStart:
+
+	-- Reset watchdog timer.
+        ldhi    WDOGTIMERADDR, ar0
+	ldi	WDOGRESET, r0
+	sti	r0, *ar0
+
+	-- Set timer 1 interrupt vector to point to our handler.
+	-- Get address of our timer 1 interrupt handler.
+	_test _false [
+		ldabs16 Timer1Handler ar1
+	][
+	ldi	R11, AR5			
+	laj	4
+		nop
+		nop
+		patchinstr(PATCHC40MASK16ADD,
+			shift(-2, labelref(Timer1Handler)),
+			addi	-1, R11)	
+	ldi	R11, ar1
+	ldi	AR5, R11			
+	]
+
+	-- Get interrupt vector table
+	ldep	ivtp, ar5
+
+	-- Set interrupt vector for clock 1 to our handlers address
+	sti	ar1, *+ar5(iv_tint1)	-- store in clk1 interrupt vect.
+
+	-- Get address of base of peripheral map.
+        ldperimap ar0
+
+	-- Setup timer 1's period and control.
+        ldi32	0x49000 r0
+        sti     r0, *+ar0(timer1_period)
+
+        ldi     0x3c0, r0
+        sti     r0, *+ar0(timer1_control)
+
+	-- Enable timer 1 interrupts.
+	ldi32	IIE_ETINT1 r0
+	or	r0, iie
+
+	-- Return to kernel init. phase.
+	bu	r11
+
+
+	-- Timer 1 interrupt handler.
+Timer1Handler:
+	push	R_ST
+	push	ar0
+	push	ar1
+	
+	-- Reset watchdog timer.
+        ldhi    WDOGTIMERADDR, ar0
+	ldi	WDOGRESET, ar1
+	sti	ar1, *ar0
+	
+	-- Return from interrupt, restoring any regs used.
+	pop	ar1
+	pop	ar0
+	pop	R_ST
+	
+	retiU
+
+	align
+
+UserConfigEnd:
+
+
+-- end of rombt.a
+

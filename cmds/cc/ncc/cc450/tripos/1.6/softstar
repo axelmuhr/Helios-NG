@@ -1,0 +1,781 @@
+    
+; s.startup: driver code to call _main for NorCroft C system.
+; Copyright (C) A. C. Norman and A. Mycroft, 1986.
+; version 0.01
+
+; Pure code is in the AREA C$$code.  This is READONLY.  I would like the
+; writable data to go in a separate segment of DATA only.  However, use
+; of things like pcdump (q.v.) in interrupt handling seems to preclude
+; this (but may just show my lack of knowledge of brazil).
+; So, have a second AREA C$$impure of IMPURE code/data.
+
+r0              RN      0
+r1              RN      1
+r2              RN      2
+r3              RN      3
+r4              RN      4
+r5              RN      5
+r6              RN      6
+r7              RN      7
+r8              RN      8
+r9              RN      9
+r10             RN      10
+r11             RN      11
+r12             RN      12
+r13             RN      13
+r14             RN      14
+
+a1              RN      0
+a2              RN      1
+a3              RN      2
+a4              RN      3
+v1              RN      4
+v2              RN      5
+v3              RN      6
+v4              RN      7
+v5              RN      8
+v6              RN      9
+fp              RN      10
+ip              RN      11
+sp              RN      12
+sl              RN      13
+lr              RN      14
+pc              RN      15
+
+f0              FN      0
+f1              FN      1
+f2              FN      2
+f3              FN      3
+f4              FN      4
+f5              FN      5
+f6              FN      6
+f7              FN      7
+FPPSW           FN      15
+
+; SWI calls
+KWrch           *       0
+KString         *       1
+KWrite0         *       2
+KNewline        *       3
+KRdch           *       4
+KCLI            *       5
+KByte           *       6
+KWord           *       7
+KFile           *       8
+KArgs           *       9
+KBget           *       &a
+KBput           *       &b
+Kgbpb           *       &c
+KFind           *       &d
+KControl        *       &f
+KReadEnv        *       &10
+KExit           *       &11
+KSetEnv         *       &12
+KIntOn          *       &13
+KIntOff         *       &14
+KCallBack       *       &15
+KEnterSVC       *       &16
+KBreakPt        *       &17
+KBreakCtrl      *       &18
+KUnusedSWI      *       &19
+KUpdateMEMC     *       &1A
+KSetCallBack    *       &1B
+
+
+PSRBits         *       &fc000000
+OverflowBit     *       &10000000
+
+
+        AREA    |C$$code|, CODE, READONLY
+        IMPORT  |_main|
+        IMPORT  |_backtrace|
+        IMPORT  raise
+        IMPORT  |Image$$CodeLimit|
+        IMPORT  |Image$$DataLimit|
+        IMPORT  |_errno|
+
+        EXPORT  |__main|
+        EXPORT  |x$stack_overflow|
+        EXPORT  |x$stack_overflow_1|
+        EXPORT  |_interrupts_off|
+        EXPORT  |_raise_stacked_interrupts|
+        EXPORT  |x$udivide|
+        EXPORT  |x$uremainder|
+        EXPORT  |x$divide|
+        EXPORT  |x$divtest|
+        EXPORT  |x$remainder|
+        EXPORT  |x$multiply|
+        EXPORT  |x$readcheck1|
+        EXPORT  |x$readcheck2|
+        EXPORT  |x$readcheck4|
+        EXPORT  |x$writecheck1|
+        EXPORT  |x$writecheck2|
+        EXPORT  |x$writecheck4|
+        EXPORT  |_postmortem|
+        EXPORT  |_setjmp|
+        EXPORT  |longjmp|
+        EXPORT  |_exit|
+        EXPORT  |_oswrch|
+        EXPORT  |_osbget|
+        EXPORT  |_osbput|
+        EXPORT  |_osgbpb|
+        EXPORT  |_osgbpb1|
+        EXPORT  |_osrdch|
+        EXPORT  |_osfind|
+        EXPORT  |_osword|
+        EXPORT  |_osfile|
+        EXPORT  |_osfile1|
+        EXPORT  |_osargs|
+        EXPORT  |_oscli|
+        EXPORT  |_osbyte|
+        EXPORT  |_count|
+
+;       EXPORT  sin
+;       EXPORT  cos
+;       EXPORT  exp
+;       EXPORT  log10
+;       EXPORT  log
+;       EXPORT  sqrt
+;       EXPORT  tan
+;       EXPORT  atan
+;       EXPORT  asin
+;       EXPORT  acos
+;       EXPORT  pow
+
+        ENTRY                   ; at first location (1000) for 'go'.
+|__main|
+        MOV     r0, #0          ; no change to exit routine
+        MOV     r1, #0          ; or memory limit
+        MOV     r2, #0          ; or real memory end
+        MOV     r3, #-1         ; or local buffering
+        ADR     r4, L0001
+        LDMIA   r4, {r4-r8}     ; KSetEnv block (r4-r7) + 1 adcon.
+        STR     r3, [r8, #0]    ; _interrupts_off
+        STR     r0, [r8, #4]    ; _saved_interrupt
+        SWI     KSetEnv
+
+        LDR     r0, =RegDump
+        LDR     r1, =CallBackHandler   ; ADR if this was pure code
+        SWI     KCallBack
+
+        LDR     r0, =ErrorHandler      ; ADR if this was pure code
+        LDR     r1, =ErrorBuffer
+        LDR     r2, =EscapeHandler     ; ADR if this was pure code
+        MOV     r3, #0          ; no event handlers used in this system.
+        SWI     KControl
+
+        SWI     KReadEnv
+; r0 has null terminated command line
+; r1 is top of memory (and stack is growing down from there)
+; r2 points to 5 bytes showing time when program was entered (ignored).
+        BIC     r1, r1, #4095-255
+        BIC     r3, r1, #255   ; top of stack at 0xfff page for repeatability.
+;;;;;   LDR     r4, =|Image$$CodeBase|
+; The linker that I have soes not seem to set up Image$$CodeBase....
+        LDR     r4, =&1000     ; where code starts at present
+
+        LDR     r5, =|Image$$CodeLimit|
+        MOV     r1, r5
+        LDR     r2, =|Image$$DataLimit|
+        CMPS    r1, r2
+        MOVLS   r1, r2         ; r1 is now hopefully first free location.
+        ADD     r1, r1, #4095-255
+        ADD     r1, r1, #255
+        BIC     r1, r1, #4095-255
+        BIC     r1, r1, #255   ; round up to 0xfff page for repeatability.
+        SUB     r2, r3, #16384 ; r2 is (hard) stack limit (initial stack size)
+        ADD     sl, r2, #512   ; set slop of 512 into sl.
+        MOV     sp, r3         ; set sp after sl, r3 arg is top of stack seg.
+        MOV     fp, #0         ; marks end of stack;
+        STMFD   sp!, {r4, r5}
+; args for _main(): command line, lowest free memory,
+;                   highest free memory = base of stack, top of stack.
+;                   start of code area
+;                   end of code area
+        BL      |_main|
+        SWI     KExit
+
+L0001   DCD     undefined_instruction  ; r4 - abort handlers
+        DCD     prefetch_abort         ; r5
+        DCD     data_abort             ; r6
+        DCD     address_exception      ; r7
+        DCD     |_interrupts_off|      ; r8 - convenient adcon.
+
+        LTORG
+
+; data segment could go here but for acorn's silly assembler.
+
+|_raise_stacked_interrupts|            ; called by CLIB.
+        MOV     a1, #0
+        LDR     a2, =|_interrupts_off|
+        STR     a1, [a2, #0]           ; _interrupts_off
+        LDR     a1, [a2, #4]           ; _saved_interrupt
+        CMPS    a1, #0
+; it strikes AM that we should clear _saved_interrupt here???
+        MOVEQS  pc, lr
+        B       raise
+
+|x$multiply|
+; a1 := a2 * a1.
+; sets a2 to 0 and a3 to a copy of the product.
+        MOV     a3, #0
+m0loop  MOVS    a2, a2, LSR #1
+        ADDCS   a3, a3, a1
+        ADD     a1, a1, a1
+        BNE     m0loop
+        MOV     a1, a3
+        MOVS    pc, lr
+
+|x$remainder|
+; divide a2 by a1, rem in a1
+; this is signed division: truncate q -> 0
+; clobbers a2, a3, a4 and ip.
+        CMPS    a1, #0
+        BEQ     dividebyzero
+        RSBMI   a1, a1, #0
+        MOVS    ip, a2
+        RSBMI   a2, a2, #0
+        EOR     ip, ip, a1
+        MOV     a3, #1
+rem1    CMPS    a1,#&80000000
+        CMPCCS  a1, a2
+        MOVCC   a1, a1, ASL #1
+        MOVCC   a3, a3, ASL #1
+        BCC     rem1
+        MOV     a4, #0
+rem2    CMPS    a2, a1
+        SUBCS   a2, a2, a1
+        ADDCS   a4, a4, a3
+        MOVS    a3, a3, LSR #1
+        MOVNE   a1, a1, LSR #1
+        BNE     rem2
+        MOV     a1, a2
+        CMPS    ip, #0
+        RSBMI   a1, a1, #0
+        MOVS    pc, lr
+
+|x$divtest|
+; test for division by zero (used when division is voided)
+        CMPS    a1, #0
+        MOVNES  pc, lr
+        B       dividebyzero
+
+|x$divide|
+; divide a2 by a1, quot in a1
+; this is signed division: truncate q -> 0
+; clobbers a1, a3, a4 and ip.
+        MOVS    ip, a1
+        BEQ     dividebyzero
+        RSBMI   a1, a1, #0
+        EOR     ip, ip, a2
+        CMPS    a2, #0
+        RSBMI   a2, a2, #0
+        MOV     a3, #1
+div1    CMPS    a1,#&80000000
+        CMPCCS  a1, a2
+        MOVCC   a1, a1, ASL #1
+        MOVCC   a3, a3, ASL #1
+        BCC     div1
+        MOV     a4, #0
+div2    CMPS    a2, a1
+        SUBCS   a2, a2, a1
+        ADDCS   a4, a4, a3
+        MOVS    a3, a3, LSR #1
+        MOVNE   a1, a1, LSR #1
+        BNE     div2
+        MOV     a1, a4
+        CMPS    ip, #0
+        RSBMI   a1, a1, #0
+        MOVS    pc, lr
+
+
+|x$udivide|
+; divide a2 by a1, quot in a1, rem in a2
+; this is UNsigned division: truncate q -> 0
+; clobbers a3, a4. Preserves ip.
+        CMPS    a1, #0
+        BEQ     dividebyzero
+        MOV     a3, #1
+urem1   CMPS    a1,#&80000000
+        CMPCCS  a1, a2
+        MOVCC   a1, a1, ASL #1
+        MOVCC   a3, a3, ASL #1
+        BCC     urem1
+        MOV     a4, #0
+urem2   CMPS    a2, a1
+        SUBCS   a2, a2, a1
+        ADDCS   a4, a4, a3
+        MOVS    a3, a3, LSR #1
+        MOVNE   a1, a1, LSR #1
+        BNE     urem2
+        MOV     a1, a4
+        MOVS    pc, lr
+
+|x$uremainder|
+; clobbers a3, a4 and ip.
+        MOV     ip, lr
+        BL      |x$udivide|
+        MOV     a1, a2
+        MOVS    pc, ip
+
+dividebyzero
+        MOV     a1, #2        ; = SIGFPE (arithmetic exception)
+        B       raise
+
+|x$readcheck1|
+        CMPS    a1, #&1000
+        BLT     readfail
+        CMPS    a1, #&00400000        ; 4 Mbytes - will have to change sometime
+        MOVCCS  pc, lr
+        B       readfail
+
+|x$readcheck2|
+        CMPS    a1, #&1000
+        BLT     readfail
+        TST     a1, #1
+        BNE     readfail
+        CMPS    a1, #&00400000        ; 4 Mbytes - will have to change sometime
+        MOVCCS  pc, lr
+        B       readfail
+
+|x$readcheck4|
+        CMPS    a1, #&1000
+        BLT     readfail
+        TST     a1, #3
+        BNE     readfail
+        CMPS    a1, #&00400000        ; 4 Mbytes - will have to change sometime
+        MOVCCS  pc, lr
+        B       readfail
+
+|x$writecheck1|
+        CMPS    a1, #&1000
+        BLT     writefail
+        CMPS    a1, #&00400000        ; 4 Mbytes - will have to change sometime
+        MOVCCS  pc, lr
+        B       writefail
+
+|x$writecheck2|
+        CMPS    a1, #&1000
+        BLT     writefail
+        TST     a1, #1
+        BNE     writefail
+        CMPS    a1, #&00400000        ; 4 Mbytes - will have to change sometime
+        MOVCCS  pc, lr
+        B       writefail
+
+|x$writecheck4|
+        CMPS    a1, #&1000
+        BLT     writefail
+        TST     a1, #3
+        BNE     writefail
+        CMPS    a1, #&00400000        ; 4 Mbytes - will have to change sometime
+        MOVCCS  pc, lr
+        B       writefail
+
+readfail
+        STMFD   sp!, {lr}
+        MOV     a4, sp
+        MOV     a3, fp
+        MOV     a2, a1
+        MOV     a1, #0
+        B       |_backtrace|
+
+writefail
+        STMFD   sp!, {lr}
+        MOV     a4, sp
+        MOV     a3, fp
+        MOV     a2, a1
+        MOV     a1, #1
+        B       |_backtrace|
+
+|_postmortem|
+        STMFD   sp!, {lr}
+        MOV     a4, sp
+        MOV     a3, fp
+        MOV     a2, #0
+        MOV     a1, #-1
+        B       |_backtrace|
+
+|x$stack_overflow_1|                ; same as x$stack_overflow for now
+|x$stack_overflow|
+        SUB     sl, sl, #4096       ; some more to work in
+        STMFD   sp!, {a1-a4, lr}
+        MOV     a1, #7              ; SIGSTAK (stack overflow exception)
+        BL      raise
+        LDMFD   sp!, {a1-a4, pc}^   ; if the signal routine returns
+
+|_setjmp|
+; save eveything that might count as a register variable value.
+        STMIA   a1, {v1-v6, fp, sp, lr}
+        MOV     a1, #0
+        MOVS    pc, lr
+
+|longjmp|
+        MOV     a3, a1
+        MOVS    a1, a2
+        MOVEQ   a1, #1   ; result of setjmp == 1 on longjmp(env, 0)
+        LDMIA   a3, {v1-v6, fp, sp, pc}^
+
+
+|_exit|
+        SWI     KExit
+
+|_oswrch|
+        SWI     KWrch
+        MOVS    pc, lr
+
+|_osbget|
+        MOV     r1, a1
+        SWI     KBget
+        MOVCS   a1, #-1
+        MOVVS   a1, #-1
+        MOVS    pc, lr
+
+|_osbput|
+        SWI     KBput
+        MOVVS   a1, #-1
+        MOVS    pc, lr
+
+|_osgbpb|
+        STMFD   sp!, {r4, lr}
+        LDR     r4, [sp, #8]
+        SWI     Kgbpb
+        MOV     a1, r3
+        ORRCS   a1, a1, #&80000000
+        MOVVS   a1, #&80000000
+        LDMFD   sp!, {r4, pc}^
+
+|_osgbpb1|
+        STMFD   sp!, {r4, r5, lr}
+        MOV     r5, a3
+        LDMIA   a3, {r2 - r4}
+        SWI     Kgbpb
+        STMIA   r5, {r2 - r4}
+        ORRCS   a1, a1, #&80000000
+        MOVVS   a1, #-1
+        LDMFD   sp!, {r4, r5, pc}^
+
+|_osrdch|
+        SWI     KRdch
+        MOVCS   a1, #-1     ; escape etc
+        MOVVS   a1, #-1     ; error
+        MOVS    pc, lr
+
+|_osword|
+        SWI     KWord
+        MOV     a1, r1
+        MOVVS   a1, #-1
+        MOVS    pc, lr
+
+|_osfind|
+        SWI     KFind
+        MOVVS   a1, #0      ; say it wasn't found if error detected
+        MOVS    pc, lr
+
+|_osfile|
+        STMFD   sp!, {r4, r5, lr}
+        LDR     r4, [sp, #12]
+        LDR     r5, [sp, #16]
+        SWI     KFile
+        MOVVS   a1, #-1;
+        LDMFD   sp!, {r4, r5, pc}^
+
+|_osfile1|
+        STMFD   sp!, {r4, r5, r6, lr}
+        MOV     r6, a3
+        LDMIA   a3, {r2 - r5}
+        SWI     KFile
+        STMIA   r6, {r2 - r5}
+        MOVVS   a1, #-1;
+        LDMFD   sp!, {r4, r5, r6, pc}^
+
+|_osargs|
+        SWI     KArgs
+        MOV     a1, r2
+        MOVVS   a1, #-1
+        MOVS    pc, lr
+
+|_oscli|
+        SWI     KCLI
+        MOV     a1, #1      ; return 1 if OK
+        MOVVS   a1, #0      ; return 0 if failure
+        MOVS    pc, lr
+
+|_osbyte|
+        SWI     KByte
+        MOV     a1, a2
+        BIC     a1, a1, #&ff00
+        ORR     a1, a1, a3, LSL #8
+        BIC     a1, a1, #&ff0000
+        ORR     a1, a1, a4, LSL #16
+        BIC     a1, a1, #&ff000000
+        MOVS    pc, lr
+
+        LTORG
+
+;===    sin     STMFD   sp!, {a1, a2}
+;===            LDFD    f0, [sp], #8
+;===            SIND    f0, f0
+;===            MOVS    pc, lr
+;===
+;===    cos     STMFD   sp!, {a1, a2}
+;===            LDFD    f0, [sp], #8
+;===            COSD    f0, f0
+;===            MOVS    pc, lr
+;===
+;===    exp     STMFD   sp!, {a1, a2}
+;===            MOV     r0, #0
+;===            MVF     FPPSW, r0           ; disable interrupts
+;===            LDFD    f0, [sp], #8
+;===            EXPD    f0, f0
+;===            MVF     r0, FPPSW
+;===            TST     r0, #&2E
+;===            BNE     |huge_error|
+;===            MOV     r0, #&002E0000
+;===            MVF     FPPSW, r0           ; default interrupt status again
+;===            MOVS    pc, lr
+;===
+;===    |huge_error|
+;===            MOV     r0, #&002E0000
+;===            MVF     FPPSW, r0           ; default interrupt status again
+;===            MOV     r0, #2              ; ERANGE
+;===            LDR     r1, aerrno
+;===            STR     r0, [r1, #0]
+;===            LDFD    f0, |huge_val|
+;===            MOVS    pc, lr
+;===
+;===    |negative_error|
+;===            MOV     r0, #1              ; EDOM
+;===            LDR     r1, aerrno
+;===            STR     r0, [r1, #0]
+;===            LDFD    f0, |negative_huge_val|
+;===            MOVS    pc, lr
+;===
+;===    |zero_error|
+;===            MOV     r0, #1              ; EDOM
+;===            LDR     r1, aerrno
+;===            STR     r0, [r1, #0]
+;===            MVFD    f0, #0
+;===            MOVS    pc, lr
+;===
+;===    aerrno  DCD     |_errno|
+;===    |huge_val|
+;===            DCD     &7FEFFFFF, &FFFFFFFF
+;===    |negative_huge_val|
+;===            DCD     &FFEFFFFF, &FFFFFFFF
+;===
+;===    log10   STMFD   sp!, {a1, a2}
+;===            LDFD    f0, [sp], #8
+;===            CMFD    f0, #0
+;===            BLE |negative_error|
+;===            LOGD    f0, f0
+;===            MOVS    pc, lr
+;===
+;===    log     STMFD   sp!, {a1, a2}
+;===            LDFD    f0, [sp], #8
+;===            CMFD    f0, #0
+;===            BLE     |negative_error|
+;===            LGND    f0, f0
+;===            MOVS    pc, lr
+;===
+;===    sqrt    STMFD   sp!, {a1, a2}
+;===            LDFD    f0, [sp], #8
+;===            CMFD    f0, #0
+;===            BLT     |negative_error|
+;===            SQTD    f0, f0
+;===            MOVS    pc, lr
+;===
+;===    tan     STMFD   sp!, {a1, a2}
+;===            MOV     r0, #0
+;===            MVF     FPPSW, r0           ; disable interrupts
+;===            LDFD    f0, [sp], #8
+;===            TAND    f0, f0
+;===            MVF     r0, FPPSW
+;===            TST     r0, #&2E
+;===            BNE     |huge_error|
+;===            MOV     r0, #&002E0000
+;===            MVF     FPPSW, r0           ; default interrupt status again
+;===            MOVS    pc, lr
+;===
+;===    atan    STMFD   sp!, {a1, a2}
+;===            LDFD    f0, [sp], #8
+;===            ATND    f0, f0
+;===            MOVS    pc, lr
+;===
+;===    asin    STMFD   sp!, {a1, a2}
+;===            MOV     r0, #0
+;===            MVF     FPPSW, r0           ; disable interrupts
+;===            LDFD    f0, [sp], #8
+;===            ASND    f0, f0
+;===            MVF     r0, FPPSW
+;===            TST     r0, #&2E
+;===            BNE     |huge_error|
+;===            MOV     r0, #&002E0000
+;===            MVF     FPPSW, r0           ; default interrupt status again
+;===            MOVS    pc, lr
+;===
+;===
+;===    acos    STMFD   sp!, {a1, a2}
+;===            MOV     r0, #0
+;===            MVF     FPPSW, r0           ; disable interrupts
+;===            LDFD    f0, [sp], #8
+;===            ACSD    f0, f0
+;===            MVF     r0, FPPSW
+;===            TST     r0, #&2E
+;===            BNE     |huge_error|
+;===            MOV     r0, #&002E0000
+;===            MVF     FPPSW, r0           ; default interrupt status again
+;===            MOVS    pc, lr
+;===
+;===
+;===    pow     STMFD   sp!, {a1, a2, a3, a4}
+;===            MOV     r0, #0
+;===            MVF     FPPSW, r0           ; disable interrupts
+;===            LDFD    f0, [sp], #8
+;===            LDFD    f1, [sp], #8
+;===            POWD    f0, f1, f0
+;===            MVF     r0, FPPSW
+;===            TST     r0, #&2E
+;===            BNE     |huge_error|
+;===            MOV     r0, #&002E0000
+;===            MVF     FPPSW, r0           ; default interrupt status again
+;===            MOVS    pc, lr
+;===    
+
+
+        LTORG
+
+|_count|                            ; used when profile option is enabled
+        BIC     lr, lr, #&FC000003  ; remove condition code bits
+        LDR     ip, [lr, #0]
+        ADD     ip, ip, #1
+        STR     ip, [lr, #0]
+        ADD     pc, lr, #4          ; condition codes are preserved because
+                                    ; nothing in this code changes them!
+
+; now the writeable stuff in a separate segment.
+; suggest ACN puts some of this back in READONLY segment.
+
+        AREA    |C$$impure|, CODE
+
+|_interrupts_off|           ; note: this file (only) knows that ...
+        DCD     0
+|_saved_interrupt|          ; ... this is _interrupts_off+4.
+        DCD     0
+
+RegDump
+        %       60
+pcdump
+        DCD     0
+
+SaveLink
+        DCD     0
+
+ErrorBuffer
+        DCD     0
+ErrorNumber                 ; these next 4 lines are not used unless ...
+        DCD     0           ; by contiguity with ErrorBuffer (see Brazil)
+ErrorString                 ; ...
+        %       80          ; ...
+
+ErrorHandler
+; This is for error detected within some SWI, e.g. file not found. It makes
+; the errors soft, returning from the SWI with the V flag set to indicate
+; trouble.
+        LDR     r0, ErrorBuffer     ; address to return to
+        ORRS    pc, r0, #&10000000  ; return, setting the V flag
+
+EscapeHandler
+        TSTS    r11, #&40           ; test if escape flag is now set
+        MOVEQ   pc, lr              ; clearing the escape flag is uninteresting
+        CMPS    r12, #0
+        MOVNE   r12, #1             ; request callback if the ESC is set ...
+        MOVNE   pc, lr              ; ... while I am in the kernel.
+        STMFD   r13!, {r0, r1, r2, lr}
+        MOV     r0, #&7e
+        SWI     KByte
+        LDR     lr, [r13, #24]      ; user pc (I hope!!!)
+        TSTS    lr, #3
+; I try to see if this SWI was invoked from something other than user mode.
+        BNE     EscNotUser
+        LDR     sp, [r13, #20]      ; user r12 (I hope!!!)
+        STMFD   sp!, {lr}
+        STR     sp, [r13, #20]      ; update user stack pointer
+        ADR     lr, EscapeExit      ; user mode, all flags clear
+        STR     lr, [r13, #24]      ; set user pc
+        LDMFD   r13!, {r0, r1, r2, lr}
+        MOV     pc, lr              ; back to kernel
+EscNotUser
+        LDMFD   r13!, {r0, r1, r2, lr}
+        MOV     r12, #1             ; callback request
+        MOV     pc, lr
+
+; After an escape event the old pc is pushed onto the stack (r12) and
+; control end up here.
+EscapeExit
+        STMFD   sp!, {r0-lr}
+        LDR     a1, |_interrupts_off|
+        CMPS    a1, #0
+        MOV     a1, #4   ; == SIGINT
+        BLEQ    raise
+        STRNE   a1, |_saved_interrupt|
+        LDMFD   sp!, {r0-pc}^
+
+CallBackHandler
+        ; This is certainly activated by ESCAPE events, and since at present
+        ; I do not recognize any others sorts of events that is all...
+
+        LDR     lr, pcdump   ; user's pc value
+               ; proceed with the callback only if the SVC we were in was called
+               ; from user mode
+        TSTS    lr, #3
+        BEQ     EscCallBack2
+
+        ; Otherwise, reinstate the callback flag and resume the SVC.
+        ; Eventually, we will get called back on a return to user mode.
+        SWI     KSetCallBack
+        LDMIA   r0, {r0 - r12}
+        MOVS    pc, lr
+
+EscCallBack2
+        TEQP    pc, #0   ; ensure user mode
+        MOV     r0, #&7e ; acknowledge the escape (assume that was cause!)
+        SWI     KByte
+        ADR     lr, RegDump+4
+        LDMIA   lr, {a2-lr} ; restore most of users registers.
+        LDR     a1, |_interrupts_off|
+        CMPS    a1, #0
+        MOV     a1, #4     ; == SIGINT
+        BLEQ    raise
+        STRNE   a1, |_saved_interrupt|
+        ADR     r0, RegDump
+        LDMIA   r0, {r0-pc}^
+
+undefined_instruction
+prefetch_abort
+        STR     lr, pcdump
+        ADR     lr, RegDump
+        STMEA   lr, {r0-lr}^  ; NB dump USER-MODE registers
+        MOV     a1, #3        ; == SIGILL
+        B       aborted
+
+data_abort
+address_exception
+        STR     lr, pcdump
+        ADR     lr, RegDump
+        STMEA   lr, {r0-lr}^  ; NB dump USER-MODE registers
+        MOV     a1, #5        ; == SIGSEGV
+        B       aborted
+
+
+aborted
+; entry here in SVC mode,  a2 set to the type of abort
+; user registers dumped into RegDump.
+        TSTP    pc, #0        ; back to user mode
+        BL      raise         ; hand error to the user (assumes sp is intact)
+        ADR     lr, RegDump
+        LDMFD   lr, {r0-pc}^  ; as clean a return as I can manage
+
+        LTORG
+
+        END

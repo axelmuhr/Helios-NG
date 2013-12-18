@@ -1,0 +1,4257 @@
+head	1.10;
+access;
+symbols
+	Helios_1_3_1:1.10
+	Helios_C40_1_3_Official_Release:1.8;
+locks; strict;
+comment	@ * @;
+
+
+1.10
+date	93.08.18.14.17.11;	author bart;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	93.08.16.09.05.33;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	93.05.05.13.00.18;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	93.04.27.17.04.13;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	93.03.29.16.05.58;	author nickc;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	92.12.07.17.33.10;	author craig;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	92.12.05.14.41.01;	author craig;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	92.11.19.12.34.26;	author craig;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	92.10.15.15.14.52;	author nickc;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	92.07.09.14.55.13;	author craig;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.10
+log
+@Fixed carriage return/linefeed problems.
+@
+text
+@/************************************************************************/
+/*                                                                      */
+/*           Windows I/O server Help and New Shell Support              */
+/*               (C) 1993 Perihelion Software Limited                   */
+/*                                                                      */
+/************************************************************************/
+
+#include <stdio.h>
+#include <syslib.h>
+#include <stdlib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <string.h>
+#include <servlib.h>
+#include <signal.h>
+#include "windows.h"
+#include "ddeml.h"
+
+#define eq ==
+#define ne !=
+#define IDM_NEWSH       107
+#define IDM_HELP        108
+
+/**
+*** find_file() is not currently located. It searches through the command
+*** search path for the specified string.
+**/
+extern void     find_file(char *, char *);
+extern void     end_server(void);
+/**
+*** forward declarations.
+**/
+static void     term_handler(void);
+static void     RunIt(char *command);
+static int      FindMenu(HMENU hMenu, char *str);
+static Object   *HCreateWindow(char *);
+static Object   *HGetConsoleWindow(void);
+static int      RunCommand(char **, Object *, bool);
+static void     mysignalhandler(int);
+static Object   *running_command;
+HDDEDATA CALLBACK DdeCallback(UINT, UINT, HCONV, HSZ, HSZ, HDDEDATA, DWORD, DWORD);
+
+/**
+*** static global variables
+**/
+
+static HMENU hFileMenu;
+static HMENU hHelpPopup;
+static HMENU hMenu;
+static HWND  hWnd;
+
+static DWORD idInst;
+static HSZ   hszHeliosServer;
+static HSZ   hszSystemTopic;
+static BOOL  bConnected = FALSE;
+static BOOL  bCreateWindow;
+
+char *newsh_command = "/helios/bin/shell";
+char *help_command = "/helios/bin/help";
+
+
+int WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR lpszCmdLine, int nCmdShow)
+{
+  /* this main routine is very simple, in that it modifies the I/O server */
+  /* menu, registers with the I/O server (so that callbacks are processed */
+  /* correctly) and then sits in the message loop until terminated.       */
+  int   i;
+  MSG   msg;
+  struct sigaction sig;
+  char *strData;
+
+  hWnd = FindWindow("Shells", NULL);
+  if (hWnd eq NULL)
+  { printf("Unable to find console\n");
+    return 255;
+  }
+  hMenu = GetMenu(hWnd);
+  if (hMenu eq NULL)
+  { printf("Unable to find menu\n");
+    return 255;
+  }
+
+  /* install an asynchronous SIGTERM handler */
+  if (sigaction(SIGTERM, Null(struct sigaction), &sig) != 0)
+  { printf("SIGTERM error\n");
+    return 255;
+  }
+  sig.sa_handler = (VoidFnPtr)&term_handler;
+  sig.sa_flags |= SA_ASYNC;
+  if (sigaction(SIGTERM, &sig, Null(struct sigaction)) != 0)
+  { printf("SIGTERM error\n");
+    return 255;
+  }
+
+  /* search for help - if there the program is already loaded */
+  i = FindMenu(hMenu, "&Help");
+  if (i ne -1)
+  { printf("startws already loaded\n");
+    return 255;
+  }
+
+  i = FindMenu(hMenu, "&File");
+  if (i eq -1)
+  { printf("File menu not found\n");
+    return 255;
+  }
+
+  hFileMenu = GetSubMenu(hMenu, i);
+  InsertMenu(hFileMenu, 0, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
+  InsertMenu(hFileMenu, 0, MF_BYPOSITION | MF_STRING, IDM_NEWSH, "&New shell");
+  hHelpPopup = CreatePopupMenu();
+  AppendMenu(hHelpPopup, MF_STRING, IDM_HELP, "&Help");
+  AppendMenu(hMenu, MF_POPUP, hHelpPopup, "&Help");
+  DrawMenuBar(hWnd);
+
+  /* now register the two commands with the I/O server */
+  RegisterIOMenu(IDM_NEWSH);
+  RegisterIOMenu(IDM_HELP);
+
+  /* Now register the DDE server */
+  idInst = 0;
+  DdeInitialize(&idInst, DdeCallback, APPCLASS_STANDARD, 0);
+  if (idInst ne 0)
+  {
+    hszHeliosServer = DdeCreateStringHandle(idInst, "Helios", CP_WINANSI);
+    hszSystemTopic = DdeCreateStringHandle(idInst, "System", CP_WINANSI);
+    DdeNameService(idInst, hszHeliosServer, NULL, DNS_REGISTER);
+  }
+
+  while (GetMessage(&msg, NULL, NULL, NULL))
+  { if (msg.message eq WM_COMMAND)
+    {
+      if (msg.wParam eq IDM_NEWSH)
+      {
+        bCreateWindow = TRUE;
+        strData = (char *)malloc(strlen(newsh_command)+1);
+        strcpy(strData, newsh_command);
+        Fork(2000, RunIt, sizeof(char *), strData);
+      }
+      else
+        if (msg.wParam eq IDM_HELP)
+        {
+          bCreateWindow = TRUE;
+          strData = (char *)malloc(strlen(help_command)+1);
+          strcpy(strData, help_command);
+          Fork(2000, RunIt, sizeof(char *), strData);
+        }
+    }
+  }
+
+  return 0;
+}
+
+
+HDDEDATA CALLBACK DdeCallback(UINT wType, UINT wFmt, HCONV hConv,
+        HSZ hsz1, HSZ hsz2, HDDEDATA hData, DWORD dwData1, DWORD dwData2)
+{
+    char str[500];
+
+    switch (wType)
+    {
+        case XTYP_CONNECT_CONFIRM:
+            if (bConnected)
+                DdeDisconnect(hConv);
+
+            if (DdeCmpStringHandles(hsz1, hszSystemTopic) ||
+                DdeCmpStringHandles(hsz2, hszHeliosServer))
+                DdeDisconnect(hConv);
+
+            bConnected = TRUE;
+            bCreateWindow = TRUE;
+            break;
+
+        case XTYP_DISCONNECT:
+            bConnected = FALSE;
+            break;
+
+        case XTYP_EXECUTE:
+            {
+                char *pos, *end;
+                char *cmd;
+                BOOL OK = TRUE;
+
+                DdeGetData(hData, str, 500, 0);
+
+                pos = strchr(str, '[');
+                if (pos == NULL)
+                    break;
+
+                do {
+                    pos++;
+                    end = strchr(pos, ']');
+                    if (end == NULL)
+                    {
+                        OK = FALSE;
+                        break;
+                    }
+                    *end = '\0';
+
+                    cmd = (char *)malloc(strlen(pos)+1);
+                    strcpy(cmd, pos);
+                    if (!strcmp(cmd, "nowindow"))
+                    {
+                        bCreateWindow = FALSE;
+                        free(cmd);
+                    }
+                    else if (!strcmp(cmd, "createwindow"))
+                    {
+                        bCreateWindow = TRUE;
+                        free(cmd);
+                    }
+                    else
+                    {
+                        Fork(2000, RunIt, sizeof(char *), cmd);
+                    }
+
+                    *end = ']';
+                } while (((pos = strchr(pos, '[')) != NULL) && OK);
+
+                if (OK)
+                    return DDE_FACK;
+            }
+            break;
+    }
+    return 0;
+}
+
+static void term_handler(void)
+{ int i;
+  i = FindMenu(hMenu, "&File");
+  if (i >= 0)
+  { hFileMenu = GetSubMenu(hMenu, i);
+    i = FindMenu(hFileMenu, "&New shell");
+    if (i >= 0)
+    { DeleteMenu(hFileMenu, i, MF_BYPOSITION);
+      if ((GetMenuState(hFileMenu, 0, MF_BYPOSITION) & MF_SEPARATOR) eq MF_SEPARATOR)
+        DeleteMenu(hFileMenu, 0, MF_BYPOSITION);
+    }
+  }
+
+  i = FindMenu(hMenu, "&Help");
+  if (i >= 0)
+  { hHelpPopup = GetSubMenu(hMenu, i);
+    DeleteMenu(hMenu, i, MF_BYPOSITION);
+    DestroyMenu(hHelpPopup);
+  }
+
+  DrawMenuBar(hWnd);
+  DdeNameService(idInst, hszHeliosServer, NULL, DNS_UNREGISTER);
+  DdeFreeStringHandle(idInst, hszHeliosServer);
+  DdeFreeStringHandle(idInst, hszSystemTopic);
+  DdeUninitialize(idInst);
+
+  end_server();
+  _exit(SIGTERM);
+}
+
+
+static int FindMenu(HMENU hMenu, char *strLook)
+{
+  int count, i;
+
+  count = GetMenuItemCount(hMenu);
+  for (i=0; i<count; i++)
+  { char str[20];
+    GetMenuString(hMenu, i, str, 20, MF_BYPOSITION);
+    if (!strcmp(str, strLook))
+      return i;
+  }
+
+  return -1;
+}
+
+static char **BuildArgs(char *command)
+{ int i, count;
+  char *pos;
+  char **args;
+
+  count = 1;
+  pos = strchr(command, ' ');
+  while (pos)
+  { count++;
+    pos++;
+    while ((pos[0] != '\0') && (pos[0] == ' '))
+      memmove(&pos[0], &pos[1], strlen(pos));
+    pos = strchr(pos, ' ');
+  }
+
+  args = (char **)malloc((count+1)*sizeof(char *));
+
+  for (i=0; i<count; i++)
+  { pos = strchr(command, ' ');
+    if (pos)
+      *pos = '\0';
+    args[i] = command;
+    command = pos+1;
+  }
+
+  args[count] = (char *)NULL;
+  return args;
+}
+
+static void FreeArgs(char ***p_command_args)
+{
+  free(*p_command_args);
+  *p_command_args = (char **)NULL;
+}
+
+static void RunIt(char *command)
+{ char          **command_args;
+  bool          wait_for_child = TRUE;
+  Object        *window;
+  int           rc;
+  bool          args_created;
+  static char   *default_args[] = {"shell", Null(char) };
+
+  args_created = FALSE;
+  if (command eq NULL)
+    command_args = default_args;
+  else
+  { command_args = BuildArgs(command);
+    args_created = TRUE;
+  }
+  if (bCreateWindow)
+  {
+    window = HCreateWindow(command_args[0]);
+    if (window eq Null(Object)) return;
+  }
+  else
+  {
+    window = HGetConsoleWindow();
+    if (window eq Null(Object)) return;
+  }
+  rc = RunCommand(command_args, window, wait_for_child);
+  (void) Delete(window, Null(char));
+  if (args_created)
+    FreeArgs(&command_args);
+  free(command);
+  return;
+}
+
+/**
+*** Creating a new window. This is done by getting an object for the
+*** current console server out of the environment.
+**/
+static Object *HCreateWindow(char *command_name)
+{ Object        *window_server;
+  Object        *new_window;
+  char          buffer[NameMax];
+  Environ       *env = getenviron();
+
+  if (env eq Null(Environ))
+   { fputs("run: corrupt environment.\n", stderr);
+     return(Null(Object));
+   }
+
+  { Object      **objv = env->Objv;
+    int         i;
+    for (i = 0; i <= OV_CServer; i++)
+     if (objv[i] eq Null(Object))
+      { fputs("run: incomplete environment.\n", stderr);
+        return(Null(Object));
+      }
+  }
+
+  window_server = env->Objv[OV_CServer];
+  if (window_server eq (Object *) MinInt)
+   { fputs("run: there is no window server in the current environment.\n",
+                 stderr);
+     return(Null(Object));
+   }
+
+  strncpy(buffer, objname(command_name), NameMax);
+  buffer[NameMax - 1] = '\0';
+  new_window = Create(window_server, buffer, Type_Stream, 0, Null(BYTE));
+  if (new_window eq Null(Object))
+   fprintf(stderr, "run : failed to Create window %s/%s", window_server->Name,
+                buffer);
+  return(new_window);
+}
+
+static Object *HGetConsoleWindow(void)
+{ Environ       *env = getenviron();
+
+  if (env eq Null(Environ))
+   { fputs("run: corrupt environment.\n", stderr);
+     return(Null(Object));
+   }
+
+  { Object      **objv = env->Objv;
+    int         i;
+    for (i = 0; i <= OV_CServer; i++)
+     if (objv[i] eq Null(Object))
+      { fputs("run: incomplete environment.\n", stderr);
+        return(Null(Object));
+      }
+  }
+
+  return env->Objv[OV_Console];
+}
+
+/**
+*** This runs a command using Helios calls only. An attempt is made to
+*** open the specified window. If successful the environment is built
+*** up, and an attempt is made to locate the program. If successful the
+*** program is loaded into memory on the same processor, executed
+*** locally, and is sent its environment. Unless the detach option has
+*** been given some signal handling is done, so that ctrl-C is forwarded
+*** to the child process. Also, run may or may not wait for the child to
+*** terminate.
+**/
+static int RunCommand(char **command_args, Object *window, bool wait_for_child)
+{ char          command_name[IOCDataMax];
+  Stream        *window_stream = Open(window, Null(char), O_ReadWrite);
+  Object        *objv[OV_End + 1];
+  Stream        *strv[5];
+  Environ       *my_environ = getenviron();
+  Environ       sending;
+  Stream        *program_stream = Null(Stream);
+  int           rc = (int)Err_Null;
+
+  objv[OV_Cdir]         = my_environ->Objv[OV_Cdir];
+  objv[OV_Task]         = (Object *) MinInt;
+  objv[OV_Code]         = (Object *) MinInt;
+  objv[OV_Source]       = (Object *) MinInt;
+  objv[OV_Parent]       = my_environ->Objv[OV_Task];
+  objv[OV_Home]         = my_environ->Objv[OV_Home];
+  objv[OV_Console]      = window;
+  objv[OV_CServer]      = my_environ->Objv[OV_CServer];
+  objv[OV_Session]      = my_environ->Objv[OV_Session];
+  objv[OV_TFM]          = my_environ->Objv[OV_TFM];
+  objv[OV_TForce]       = (Object *) MinInt;
+  objv[OV_End]          = Null(Object);
+
+  if (window_stream eq Null(Stream))
+   { fprintf(stderr, "run : failed to open window %s\n", window->Name);
+     goto fail;
+   }
+
+  window_stream->Flags |= Flags_OpenOnGet;
+  strv[0] = window_stream;
+  strv[1] = strv[2] = CopyStream(window_stream);
+  if (strv[1] eq NULL)
+   { fprintf(stderr, "run: out of memory\n");
+     goto fail;
+   }
+  strv[0]->Flags &= ~O_WriteOnly;
+  strv[1]->Flags &= ~O_ReadOnly;
+  strv[3] = my_environ->Strv[3];
+  strv[4] = (Stream *) MinInt;
+
+  sending.Strv = strv;
+  sending.Objv = objv;
+  sending.Envv = my_environ->Envv;
+  sending.Argv = command_args;
+
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+
+  objv[OV_Source] = Locate(CurrentDir, command_name);
+  if (objv[OV_Source] eq Null(Object))
+   { fprintf(stderr, "run : failed to locate command %s\n", command_args[0]);
+     goto fail;
+   }
+
+  objv[OV_Code] = (Object *) MinInt;
+
+  if (getenv("CDL") ne Null(char))
+   { Object     *tfm = my_environ->Objv[OV_TFM];
+     int        i;
+     for (i = 0; i < OV_TFM; i++)
+      if (my_environ->Objv[i] eq Null(Object))
+       { tfm = Null(Object); break; }
+     if (tfm eq (Object *) MinInt) tfm = Null(Object);
+     objv[OV_Task] = Execute(tfm, objv[OV_Source]);
+   }
+  else  /* run it locally */
+   objv[OV_Task] = Execute(Null(Object), objv[OV_Source]);
+
+  if (objv[OV_Task] eq Null(Object))
+   { fprintf(stderr, "run: failed to execute command %s\n",
+        objv[OV_Source]->Name);
+     goto fail;
+   }
+  program_stream = Open(objv[OV_Task], Null(char), O_ReadWrite);
+  if (program_stream eq Null(Stream))
+   { fprintf(stderr, "run: failed to open task %s\n", objv[OV_Task]->Name);
+     goto fail;
+   }
+
+  running_command = objv[OV_Task];
+
+  if (wait_for_child)
+   { struct sigaction   temp;
+     if (sigaction(SIGINT, Null(struct sigaction), &temp) ne 0)
+      { fprintf(stderr, "run: warning, failed to access signal handling facilities.\n");
+        goto skip_signal;
+      }
+     temp.sa_handler    = &mysignalhandler;
+     temp.sa_flags      |= SA_ASYNC;
+     if (sigaction(SIGINT, &temp, Null(struct sigaction)) ne 0)
+      fprintf(stderr, "run: warning, failed to modify signal handling facilities.\n");
+   }
+skip_signal:
+
+  (void) SendEnv(program_stream->Server, &sending);
+
+  if (wait_for_child)
+   { if (InitProgramInfo(program_stream, PS_Terminate) < Err_Null)
+      { fprintf(stderr, "run: failed to wait for task %s\n",
+                objv[OV_Task]->Name);
+        goto done;
+      }
+     rc = (int)GetProgramInfo(program_stream, (word*)NULL, -1);
+     if (rc ne 0)
+      { rc = rc >> 8;   /* ignore bottom byte */
+        Delay(OneSec / 2);
+      }
+   }
+  else
+   Delay(OneSec);
+
+done:
+  Close(window_stream);
+  Close(program_stream);
+  Close(objv[OV_Task]);
+  Close(objv[OV_Source]);
+  return(rc);
+
+fail:
+  if (window_stream ne Null(Stream)) Close(window_stream);
+  if (program_stream ne Null(Stream)) Close(program_stream);
+  if (objv[OV_Task] ne Null(Object))
+   { (void) Delete(objv[OV_Task], Null(char));
+     (void) Close(objv[OV_Task]);
+   }
+  if (objv[OV_Source] ne Null(Object)) Close(objv[OV_Source]);
+  return(EXIT_FAILURE);
+}
+
+static void mysignalhandler(int x)
+{ Stream        *program_stream = PseudoStream(running_command, O_ReadWrite);
+  if (program_stream ne Null(Stream))
+   { SendSignal(program_stream, SIGINT);
+     Close(program_stream);
+   }
+  x = x;
+}
+@
+
+
+1.9
+log
+@Complete rewrite by Mike Gunning. startws now has only very limited
+functionality, mainly for supporting menus, as all the client-server
+interaction now happens directly between the Windows library and
+the I/O Server
+@
+text
+@d1 550
+a550 550
+/************************************************************************/
+/*                                                                      */
+/*           Windows I/O server Help and New Shell Support              */
+/*               (C) 1993 Perihelion Software Limited                   */
+/*                                                                      */
+/************************************************************************/
+
+#include <stdio.h>
+#include <syslib.h>
+#include <stdlib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include <string.h>
+#include <servlib.h>
+#include <signal.h>
+#include "windows.h"
+#include "ddeml.h"
+
+#define eq ==
+#define ne !=
+#define IDM_NEWSH       107
+#define IDM_HELP        108
+
+/**
+*** find_file() is not currently located. It searches through the command
+*** search path for the specified string.
+**/
+extern void     find_file(char *, char *);
+extern void     end_server(void);
+/**
+*** forward declarations.
+**/
+static void     term_handler(void);
+static void     RunIt(char *command);
+static int      FindMenu(HMENU hMenu, char *str);
+static Object   *HCreateWindow(char *);
+static Object   *HGetConsoleWindow(void);
+static int      RunCommand(char **, Object *, bool);
+static void     mysignalhandler(int);
+static Object   *running_command;
+HDDEDATA CALLBACK DdeCallback(UINT, UINT, HCONV, HSZ, HSZ, HDDEDATA, DWORD, DWORD);
+
+/**
+*** static global variables
+**/
+
+static HMENU hFileMenu;
+static HMENU hHelpPopup;
+static HMENU hMenu;
+static HWND  hWnd;
+
+static DWORD idInst;
+static HSZ   hszHeliosServer;
+static HSZ   hszSystemTopic;
+static BOOL  bConnected = FALSE;
+static BOOL  bCreateWindow;
+
+char *newsh_command = "/helios/bin/shell";
+char *help_command = "/helios/bin/help";
+
+
+int WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR lpszCmdLine, int nCmdShow)
+{
+  /* this main routine is very simple, in that it modifies the I/O server */
+  /* menu, registers with the I/O server (so that callbacks are processed */
+  /* correctly) and then sits in the message loop until terminated.       */
+  int   i;
+  MSG   msg;
+  struct sigaction sig;
+  char *strData;
+
+  hWnd = FindWindow("Shells", NULL);
+  if (hWnd eq NULL)
+  { printf("Unable to find console\n");
+    return 255;
+  }
+  hMenu = GetMenu(hWnd);
+  if (hMenu eq NULL)
+  { printf("Unable to find menu\n");
+    return 255;
+  }
+
+  /* install an asynchronous SIGTERM handler */
+  if (sigaction(SIGTERM, Null(struct sigaction), &sig) != 0)
+  { printf("SIGTERM error\n");
+    return 255;
+  }
+  sig.sa_handler = (VoidFnPtr)&term_handler;
+  sig.sa_flags |= SA_ASYNC;
+  if (sigaction(SIGTERM, &sig, Null(struct sigaction)) != 0)
+  { printf("SIGTERM error\n");
+    return 255;
+  }
+
+  /* search for help - if there the program is already loaded */
+  i = FindMenu(hMenu, "&Help");
+  if (i ne -1)
+  { printf("startws already loaded\n");
+    return 255;
+  }
+
+  i = FindMenu(hMenu, "&File");
+  if (i eq -1)
+  { printf("File menu not found\n");
+    return 255;
+  }
+
+  hFileMenu = GetSubMenu(hMenu, i);
+  InsertMenu(hFileMenu, 0, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
+  InsertMenu(hFileMenu, 0, MF_BYPOSITION | MF_STRING, IDM_NEWSH, "&New shell");
+  hHelpPopup = CreatePopupMenu();
+  AppendMenu(hHelpPopup, MF_STRING, IDM_HELP, "&Help");
+  AppendMenu(hMenu, MF_POPUP, hHelpPopup, "&Help");
+  DrawMenuBar(hWnd);
+
+  /* now register the two commands with the I/O server */
+  RegisterIOMenu(IDM_NEWSH);
+  RegisterIOMenu(IDM_HELP);
+
+  /* Now register the DDE server */
+  idInst = 0;
+  DdeInitialize(&idInst, DdeCallback, APPCLASS_STANDARD, 0);
+  if (idInst ne 0)
+  {
+    hszHeliosServer = DdeCreateStringHandle(idInst, "Helios", CP_WINANSI);
+    hszSystemTopic = DdeCreateStringHandle(idInst, "System", CP_WINANSI);
+    DdeNameService(idInst, hszHeliosServer, NULL, DNS_REGISTER);
+  }
+
+  while (GetMessage(&msg, NULL, NULL, NULL))
+  { if (msg.message eq WM_COMMAND)
+    {
+      if (msg.wParam eq IDM_NEWSH)
+      {
+        bCreateWindow = TRUE;
+        strData = (char *)malloc(strlen(newsh_command)+1);
+        strcpy(strData, newsh_command);
+        Fork(2000, RunIt, sizeof(char *), strData);
+      }
+      else
+        if (msg.wParam eq IDM_HELP)
+        {
+          bCreateWindow = TRUE;
+          strData = (char *)malloc(strlen(help_command)+1);
+          strcpy(strData, help_command);
+          Fork(2000, RunIt, sizeof(char *), strData);
+        }
+    }
+  }
+
+  return 0;
+}
+
+
+HDDEDATA CALLBACK DdeCallback(UINT wType, UINT wFmt, HCONV hConv,
+        HSZ hsz1, HSZ hsz2, HDDEDATA hData, DWORD dwData1, DWORD dwData2)
+{
+    char str[500];
+
+    switch (wType)
+    {
+        case XTYP_CONNECT_CONFIRM:
+            if (bConnected)
+                DdeDisconnect(hConv);
+
+            if (DdeCmpStringHandles(hsz1, hszSystemTopic) ||
+                DdeCmpStringHandles(hsz2, hszHeliosServer))
+                DdeDisconnect(hConv);
+
+            bConnected = TRUE;
+            bCreateWindow = TRUE;
+            break;
+
+        case XTYP_DISCONNECT:
+            bConnected = FALSE;
+            break;
+
+        case XTYP_EXECUTE:
+            {
+                char *pos, *end;
+                char *cmd;
+                BOOL OK = TRUE;
+
+                DdeGetData(hData, str, 500, 0);
+
+                pos = strchr(str, '[');
+                if (pos == NULL)
+                    break;
+
+                do {
+                    pos++;
+                    end = strchr(pos, ']');
+                    if (end == NULL)
+                    {
+                        OK = FALSE;
+                        break;
+                    }
+                    *end = '\0';
+
+                    cmd = (char *)malloc(strlen(pos)+1);
+                    strcpy(cmd, pos);
+                    if (!strcmp(cmd, "nowindow"))
+                    {
+                        bCreateWindow = FALSE;
+                        free(cmd);
+                    }
+                    else if (!strcmp(cmd, "createwindow"))
+                    {
+                        bCreateWindow = TRUE;
+                        free(cmd);
+                    }
+                    else
+                    {
+                        Fork(2000, RunIt, sizeof(char *), cmd);
+                    }
+
+                    *end = ']';
+                } while (((pos = strchr(pos, '[')) != NULL) && OK);
+
+                if (OK)
+                    return DDE_FACK;
+            }
+            break;
+    }
+    return 0;
+}
+
+static void term_handler(void)
+{ int i;
+  i = FindMenu(hMenu, "&File");
+  if (i >= 0)
+  { hFileMenu = GetSubMenu(hMenu, i);
+    i = FindMenu(hFileMenu, "&New shell");
+    if (i >= 0)
+    { DeleteMenu(hFileMenu, i, MF_BYPOSITION);
+      if ((GetMenuState(hFileMenu, 0, MF_BYPOSITION) & MF_SEPARATOR) eq MF_SEPARATOR)
+        DeleteMenu(hFileMenu, 0, MF_BYPOSITION);
+    }
+  }
+
+  i = FindMenu(hMenu, "&Help");
+  if (i >= 0)
+  { hHelpPopup = GetSubMenu(hMenu, i);
+    DeleteMenu(hMenu, i, MF_BYPOSITION);
+    DestroyMenu(hHelpPopup);
+  }
+
+  DrawMenuBar(hWnd);
+  DdeNameService(idInst, hszHeliosServer, NULL, DNS_UNREGISTER);
+  DdeFreeStringHandle(idInst, hszHeliosServer);
+  DdeFreeStringHandle(idInst, hszSystemTopic);
+  DdeUninitialize(idInst);
+
+  end_server();
+  _exit(SIGTERM);
+}
+
+
+static int FindMenu(HMENU hMenu, char *strLook)
+{
+  int count, i;
+
+  count = GetMenuItemCount(hMenu);
+  for (i=0; i<count; i++)
+  { char str[20];
+    GetMenuString(hMenu, i, str, 20, MF_BYPOSITION);
+    if (!strcmp(str, strLook))
+      return i;
+  }
+
+  return -1;
+}
+
+static char **BuildArgs(char *command)
+{ int i, count;
+  char *pos;
+  char **args;
+
+  count = 1;
+  pos = strchr(command, ' ');
+  while (pos)
+  { count++;
+    pos++;
+    while ((pos[0] != '\0') && (pos[0] == ' '))
+      memmove(&pos[0], &pos[1], strlen(pos));
+    pos = strchr(pos, ' ');
+  }
+
+  args = (char **)malloc((count+1)*sizeof(char *));
+
+  for (i=0; i<count; i++)
+  { pos = strchr(command, ' ');
+    if (pos)
+      *pos = '\0';
+    args[i] = command;
+    command = pos+1;
+  }
+
+  args[count] = (char *)NULL;
+  return args;
+}
+
+static void FreeArgs(char ***p_command_args)
+{
+  free(*p_command_args);
+  *p_command_args = (char **)NULL;
+}
+
+static void RunIt(char *command)
+{ char          **command_args;
+  bool          wait_for_child = TRUE;
+  Object        *window;
+  int           rc;
+  bool          args_created;
+  static char   *default_args[] = {"shell", Null(char) };
+
+  args_created = FALSE;
+  if (command eq NULL)
+    command_args = default_args;
+  else
+  { command_args = BuildArgs(command);
+    args_created = TRUE;
+  }
+  if (bCreateWindow)
+  {
+    window = HCreateWindow(command_args[0]);
+    if (window eq Null(Object)) return;
+  }
+  else
+  {
+    window = HGetConsoleWindow();
+    if (window eq Null(Object)) return;
+  }
+  rc = RunCommand(command_args, window, wait_for_child);
+  (void) Delete(window, Null(char));
+  if (args_created)
+    FreeArgs(&command_args);
+  free(command);
+  return;
+}
+
+/**
+*** Creating a new window. This is done by getting an object for the
+*** current console server out of the environment.
+**/
+static Object *HCreateWindow(char *command_name)
+{ Object        *window_server;
+  Object        *new_window;
+  char          buffer[NameMax];
+  Environ       *env = getenviron();
+
+  if (env eq Null(Environ))
+   { fputs("run: corrupt environment.\n", stderr);
+     return(Null(Object));
+   }
+
+  { Object      **objv = env->Objv;
+    int         i;
+    for (i = 0; i <= OV_CServer; i++)
+     if (objv[i] eq Null(Object))
+      { fputs("run: incomplete environment.\n", stderr);
+        return(Null(Object));
+      }
+  }
+
+  window_server = env->Objv[OV_CServer];
+  if (window_server eq (Object *) MinInt)
+   { fputs("run: there is no window server in the current environment.\n",
+                 stderr);
+     return(Null(Object));
+   }
+
+  strncpy(buffer, objname(command_name), NameMax);
+  buffer[NameMax - 1] = '\0';
+  new_window = Create(window_server, buffer, Type_Stream, 0, Null(BYTE));
+  if (new_window eq Null(Object))
+   fprintf(stderr, "run : failed to Create window %s/%s", window_server->Name,
+                buffer);
+  return(new_window);
+}
+
+static Object *HGetConsoleWindow(void)
+{ Environ       *env = getenviron();
+
+  if (env eq Null(Environ))
+   { fputs("run: corrupt environment.\n", stderr);
+     return(Null(Object));
+   }
+
+  { Object      **objv = env->Objv;
+    int         i;
+    for (i = 0; i <= OV_CServer; i++)
+     if (objv[i] eq Null(Object))
+      { fputs("run: incomplete environment.\n", stderr);
+        return(Null(Object));
+      }
+  }
+
+  return env->Objv[OV_Console];
+}
+
+/**
+*** This runs a command using Helios calls only. An attempt is made to
+*** open the specified window. If successful the environment is built
+*** up, and an attempt is made to locate the program. If successful the
+*** program is loaded into memory on the same processor, executed
+*** locally, and is sent its environment. Unless the detach option has
+*** been given some signal handling is done, so that ctrl-C is forwarded
+*** to the child process. Also, run may or may not wait for the child to
+*** terminate.
+**/
+static int RunCommand(char **command_args, Object *window, bool wait_for_child)
+{ char          command_name[IOCDataMax];
+  Stream        *window_stream = Open(window, Null(char), O_ReadWrite);
+  Object        *objv[OV_End + 1];
+  Stream        *strv[5];
+  Environ       *my_environ = getenviron();
+  Environ       sending;
+  Stream        *program_stream = Null(Stream);
+  int           rc = (int)Err_Null;
+
+  objv[OV_Cdir]         = my_environ->Objv[OV_Cdir];
+  objv[OV_Task]         = (Object *) MinInt;
+  objv[OV_Code]         = (Object *) MinInt;
+  objv[OV_Source]       = (Object *) MinInt;
+  objv[OV_Parent]       = my_environ->Objv[OV_Task];
+  objv[OV_Home]         = my_environ->Objv[OV_Home];
+  objv[OV_Console]      = window;
+  objv[OV_CServer]      = my_environ->Objv[OV_CServer];
+  objv[OV_Session]      = my_environ->Objv[OV_Session];
+  objv[OV_TFM]          = my_environ->Objv[OV_TFM];
+  objv[OV_TForce]       = (Object *) MinInt;
+  objv[OV_End]          = Null(Object);
+
+  if (window_stream eq Null(Stream))
+   { fprintf(stderr, "run : failed to open window %s\n", window->Name);
+     goto fail;
+   }
+
+  window_stream->Flags |= Flags_OpenOnGet;
+  strv[0] = window_stream;
+  strv[1] = strv[2] = CopyStream(window_stream);
+  if (strv[1] eq NULL)
+   { fprintf(stderr, "run: out of memory\n");
+     goto fail;
+   }
+  strv[0]->Flags &= ~O_WriteOnly;
+  strv[1]->Flags &= ~O_ReadOnly;
+  strv[3] = my_environ->Strv[3];
+  strv[4] = (Stream *) MinInt;
+
+  sending.Strv = strv;
+  sending.Objv = objv;
+  sending.Envv = my_environ->Envv;
+  sending.Argv = command_args;
+
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+
+  objv[OV_Source] = Locate(CurrentDir, command_name);
+  if (objv[OV_Source] eq Null(Object))
+   { fprintf(stderr, "run : failed to locate command %s\n", command_args[0]);
+     goto fail;
+   }
+
+  objv[OV_Code] = (Object *) MinInt;
+
+  if (getenv("CDL") ne Null(char))
+   { Object     *tfm = my_environ->Objv[OV_TFM];
+     int        i;
+     for (i = 0; i < OV_TFM; i++)
+      if (my_environ->Objv[i] eq Null(Object))
+       { tfm = Null(Object); break; }
+     if (tfm eq (Object *) MinInt) tfm = Null(Object);
+     objv[OV_Task] = Execute(tfm, objv[OV_Source]);
+   }
+  else  /* run it locally */
+   objv[OV_Task] = Execute(Null(Object), objv[OV_Source]);
+
+  if (objv[OV_Task] eq Null(Object))
+   { fprintf(stderr, "run: failed to execute command %s\n",
+        objv[OV_Source]->Name);
+     goto fail;
+   }
+  program_stream = Open(objv[OV_Task], Null(char), O_ReadWrite);
+  if (program_stream eq Null(Stream))
+   { fprintf(stderr, "run: failed to open task %s\n", objv[OV_Task]->Name);
+     goto fail;
+   }
+
+  running_command = objv[OV_Task];
+
+  if (wait_for_child)
+   { struct sigaction   temp;
+     if (sigaction(SIGINT, Null(struct sigaction), &temp) ne 0)
+      { fprintf(stderr, "run: warning, failed to access signal handling facilities.\n");
+        goto skip_signal;
+      }
+     temp.sa_handler    = &mysignalhandler;
+     temp.sa_flags      |= SA_ASYNC;
+     if (sigaction(SIGINT, &temp, Null(struct sigaction)) ne 0)
+      fprintf(stderr, "run: warning, failed to modify signal handling facilities.\n");
+   }
+skip_signal:
+
+  (void) SendEnv(program_stream->Server, &sending);
+
+  if (wait_for_child)
+   { if (InitProgramInfo(program_stream, PS_Terminate) < Err_Null)
+      { fprintf(stderr, "run: failed to wait for task %s\n",
+                objv[OV_Task]->Name);
+        goto done;
+      }
+     rc = (int)GetProgramInfo(program_stream, (word*)NULL, -1);
+     if (rc ne 0)
+      { rc = rc >> 8;   /* ignore bottom byte */
+        Delay(OneSec / 2);
+      }
+   }
+  else
+   Delay(OneSec);
+
+done:
+  Close(window_stream);
+  Close(program_stream);
+  Close(objv[OV_Task]);
+  Close(objv[OV_Source]);
+  return(rc);
+
+fail:
+  if (window_stream ne Null(Stream)) Close(window_stream);
+  if (program_stream ne Null(Stream)) Close(program_stream);
+  if (objv[OV_Task] ne Null(Object))
+   { (void) Delete(objv[OV_Task], Null(char));
+     (void) Close(objv[OV_Task]);
+   }
+  if (objv[OV_Source] ne Null(Object)) Close(objv[OV_Source]);
+  return(EXIT_FAILURE);
+}
+
+static void mysignalhandler(int x)
+{ Stream        *program_stream = PseudoStream(running_command, O_ReadWrite);
+  if (program_stream ne Null(Stream))
+   { SendSignal(program_stream, SIGINT);
+     Close(program_stream);
+   }
+  x = x;
+}
+@
+
+
+1.8
+log
+@Patched it a bit more, particularly the Close handling
+@
+text
+@d1 550
+a550 1211
+/************************************************************************/
+/*									*/
+/* This is a windows server which will handle the passing of mouse      */
+/* events, requests to redraw screens and raw keyboard events from      */
+/* the Helios I/O server for windows to the relevant window.  This      */
+/* does this by allowing the graphics library to register a port with   */
+/* the server, and all data directed to that port will be transferred to*/
+/* necessary stream.  The server will also serves as the means of       */
+/* handling calls from menus which are registered with the I/O server,  */
+/* either user defined or system menus.                                 */
+/*									*/
+/************************************************************************/
+
+
+#include <helios.h>
+#include <string.h>
+#include <codes.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <task.h>
+#include <stdio.h>
+#include <nonansi.h>
+#include <ioevents.h>
+#include <message.h>
+#include <sem.h>
+#include <gsp.h>
+#include <unistd.h>
+#include <syslog.h>
+#include <stdlib.h>
+
+/* this should be defined in unistd.h */
+void 	find_file(char *, char*);
+
+/* some defines for the mouse and msevents */
+
+#define	Event_MSMouse 0x40L
+#define Event_MSEvent 0x80L
+
+/* this is the data which comes with an MSMouse event */
+
+typedef struct MSMouse_Event
+{
+   SHORT 	X;
+   SHORT 	Y;
+   WORD  	Buttons;
+   word  	WinID;
+}MSMouse_Event;
+
+/* this is the msevent data block structure */
+
+typedef struct MSEvent
+{
+   SHORT 	Type;        /* the type of the event kbd, repaint, etc     */
+   SHORT 	WinID;       /* the id number for which the event is meant  */
+   word  	Word1;       /* two words of data associated with the event */
+   word  	Word2;
+}MSEvent;
+
+/* MSEvent Types */
+
+#define MS_Menu  1
+
+static char *Run_Table[2] = { "shell",
+                              "help" };
+
+#define	MSMouse_EventSize (sizeof(IOEventHdr) + sizeof(MSMouse_Event))
+#define MSEvent_EventSize (sizeof(IOEventHdr) + sizeof(MSEvent))
+
+/* define the limit of the mouse message buffer */
+
+#define Message_Limit	64
+
+#define FG_EnableMouse      FG_PrivateFirst
+#define FG_EnableMSEvents   (FG_PrivateFirst+0x10)
+#define FG_RegisterWindow   (FG_PrivateFirst+0x20)  /* register open windows */
+#define FG_DeregisterWindow (FG_PrivateFirst+0x30)  /* remove them           */
+#define FG_DisableMouse     (FG_PrivateFirst+0x40)  
+
+/* some neat defines */
+
+#define eq ==
+#define ne !=
+
+/* The structure definition of a file node in the servers directory */
+/* structure */
+
+/* the EventData structure is used to store for either mouse or mswin */
+/* events.  The ListSem is to limit access into Windows, which stores */
+/* the windows with enabled mouse events in the mouse event and the   */
+/* generally open windows in the mswin events.                        */
+
+typedef struct EventData 
+{
+   Port 	Reply;
+   Semaphore 	Data_Ready;
+   Semaphore 	Buffers_Free;
+   int 		head_ptr;
+   int 		tail_ptr;
+   IOEvent 	*Buffer;
+   Semaphore 	ListSem;
+   List 	Windows;
+}EventData;
+
+typedef struct File 
+{
+   ObjNode   	ObjNode;
+   EventData 	Mouse;    /* Storage for mouse data */
+   EventData 	MSEvent;  /* Storage for other data */
+}File;
+		    
+/* the following structure is to store the list of window ID's using */
+/* Helios' List system.                                              */
+
+typedef struct WindowList
+{
+   Node 	Node;
+   word 	WinID;
+}WindowList;
+
+
+/* some defines to make variable accesses easier */
+
+#define FileSize  ObjNode.Size
+#define Users	  ObjNode.Account
+
+/* Root of the server */
+
+static	DirNode	Root;
+
+
+/* functions which are defined for the mouse event system */
+
+int  		Init_Mouse(void);
+void 		Tidy_Mouse(void);
+static 	void 	Mouse_Handler(File *);
+
+/* functions which are required to init and use msevents */
+
+int 		Init_MSEvents(void);
+void		Tidy_MSEvents(void);
+static 	void 	MSEvent_Handler(File *);
+static 	void 	MSMenu_Execute(word);
+
+/* Function definitions for function within server */
+
+static 	File 	*CreateNode(MCB *, DirNode *, string);
+static 	void 	CloseFile(MCB *, File *);
+
+/* Function declarations for functions called by dispatcher */
+
+static 	void 	do_open(ServInfo *);
+static 	void 	do_create(ServInfo *);
+static 	void 	do_delete(ServInfo *);
+
+
+/* Info required by the helios dispatcher */
+
+static DispatchInfo MSWININFO =
+{
+   &Root,
+   NullPort,
+   SS_Unknown,
+   NULL,
+   { NULL, 2000 },         	/* no private protocol */
+   {
+      { do_open, 	5000 },
+      { do_create, 	2000 },
+      { DoLocate, 	2000 },
+      { DoObjInfo, 	2000 },
+      { InvalidFn, 	2000 },	/* ServerInfo */
+      { do_delete, 	2000 }, /* Delete */
+      { DoRename, 	2000 },
+      { DoLink, 	2000 },
+      { DoProtect, 	2000 },
+      { DoSetDate, 	2000 },
+      { DoRefine, 	2000 },
+      { InvalidFn, 	2000 },	/* CloseObj */
+      { InvalidFn, 	2000 },	/* DoRevoke */
+      { InvalidFn, 	2000 },	/* Reserved 1 */
+      { InvalidFn, 	2000 } 	/* Reserved 2 */
+   }
+};
+    
+
+int main()
+{
+   char		mcname[100];
+   Object	*this_processor, *nte;
+   NameInfo	Info;
+   LinkNode	*Parent;
+
+   openlog ("/MSWIN", LOG_CONS, LOG_USER) ;
+   
+/*
+-- crf: 05/12/92
+-- Check if /MSWIN already exists ...
+*/
+   if (Locate ((Object *) NULL, "/MSWIN") != (Object *) NULL)
+   { syslog (LOG_ERR, "already exists"); Exit (1);}
+
+   if (!Init_Mouse()) 
+   {  syslog (LOG_ERR, "Unable to locate windows mouse"); Exit(1);}
+   
+   if (!Init_MSEvents())
+   {  syslog (LOG_ERR, "Unable to locate windows events"); Exit(1);}
+
+   InitNode((ObjNode *) &Root, "MSWIN", Type_Directory, 0, DefDirMatrix);
+   InitList(&Root.Entries);
+   Root.Nentries = 0;
+
+   MachineName(mcname);
+   this_processor = Locate(Null(Object), mcname);
+
+   MSWININFO.ParentName = mcname;
+
+   Info.Port	 = MSWININFO.ReqPort = NewPort();
+   Info.Flags	 = Flags_StripName;
+   Info.Matrix	 = DefDirMatrix;
+   Info.LoadData = NULL;
+
+   nte = Create(this_processor, Root.Name, Type_Name, sizeof(NameInfo), (byte *) &Info);
+   if (nte eq (Object *) NULL) 
+   {
+      syslog (LOG_ERR, "Unable to install server in name table");
+      FreePort(MSWININFO.ReqPort);
+      Close(this_processor);
+      Exit(1);
+   }
+
+   Parent = (LinkNode *) Malloc(sizeof(LinkNode) + (word)strlen(mcname));
+   if (Parent eq (LinkNode *) NULL)
+   {
+      syslog (LOG_ERR, "Out of memory initialising server");
+      FreePort(MSWININFO.ReqPort);
+      Close(this_processor);
+      Exit(1);
+   }
+
+   InitNode(&Parent->ObjNode, "..", Type_Link, 0, DefDirMatrix);
+   Parent->Cap = this_processor->Access;
+   strcpy(Parent->Link, mcname);
+   Root.Parent = (DirNode *) Parent;
+
+   Close(this_processor);
+
+   syslog (LOG_INFO, "booted");
+   Dispatch(&MSWININFO);   		/* Let server start receiving requests */
+   Delete(nte, Null(char)); 
+   return(0);
+}
+
+
+/* Routine to create a new file for the server */
+
+File *NewFile(DirNode *dir, string name, word flags, Matrix matrix)
+{
+   File *f = New(File);
+
+   if (f eq Null(File)) return(Null(File));   	/* not enough mem */
+
+   /* init stuff for mouse event */   
+   InitSemaphore(&(f->Mouse.Data_Ready), 0);
+   InitSemaphore(&(f->Mouse.Buffers_Free), Message_Limit);
+   f->Mouse.head_ptr 	= 0;
+   f->Mouse.tail_ptr 	= 0;
+   f->Mouse.Reply 	= NullPort;
+   InitSemaphore(&(f->Mouse.ListSem), 1);
+   
+   f->Mouse.Buffer 	= (IOEvent *) Malloc(sizeof(IOEvent) * Message_Limit);
+   if (f->Mouse.Buffer eq Null(IOEvent))   	/* not enough mem */
+   {  Free(f); 
+      return(Null(File));
+   }
+   
+   InitList(&(f->Mouse.Windows));    		/* init list of opened windows */
+
+   /* init stuff for MSEvent */
+   InitSemaphore(&(f->MSEvent.Data_Ready), 0);
+   InitSemaphore(&(f->MSEvent.Buffers_Free), Message_Limit);
+   f->MSEvent.head_ptr 	= 0;
+   f->MSEvent.tail_ptr 	= 0;
+   f->MSEvent.Reply 	= NullPort;
+   InitSemaphore(&(f->MSEvent.ListSem), 1);
+   
+   f->MSEvent.Buffer 	= (IOEvent *) Malloc(sizeof(IOEvent) * Message_Limit);
+   if (f->MSEvent.Buffer eq Null(IOEvent)) 
+   {  Free(f->Mouse.Buffer);
+      Free(f);
+      return(Null(File));   /* not enough mem */
+   }
+   
+   InitList(&(f->MSEvent.Windows));    /* init list of opened windows */
+
+   /* now add the node to the directory */
+
+   InitNode(&f->ObjNode, name, Type_File, (int)flags, matrix);
+   Insert(dir, &f->ObjNode, TRUE);
+   return((File *) f);
+}
+
+
+/* routine to create either a new file or a new directory in the server */
+
+static File *CreateNode(MCB *m, DirNode *d, string pathname)
+{
+   File		*f;
+   char      	*name;
+
+   name = objname(pathname);
+
+   f = NewFile(d, name, 0, DefFileMatrix);
+
+   if (f eq Null(File))
+      m->MsgHdr.FnRc |= EC_Error | EG_Create;
+
+   return((File *) f);
+}
+
+
+/* The following routine gets forked by the dispatcher to create a */
+/* directory or a file						   */
+
+static void do_create(ServInfo *servinfo)
+{
+   MCB	     	*m = servinfo->m;    		/* incoming message  */
+   MsgBuf    	*r;                  		/* for reply message */
+   DirNode   	*d;		  		/* for target dir    */
+   File      	*f;		  		/* for created file  */
+   IOCCreate 	*req = (IOCCreate *) (m->Control);
+   char      	*pathname = servinfo->Pathname; /* name to create */
+   int	     	access;
+
+   d = GetTargetDir(servinfo);   		/* find targets parent dir */
+   if (d == Null(DirNode)) 
+   {  ErrorMsg(m, EO_Directory); 
+      return;
+   }
+
+   /* remember access to parent directory as  we check access of the
+    * parent directory and not the target object as it does not exist
+    */
+   access = req->Common.Access.Access;
+
+   f = (File *) GetTargetObj(servinfo);
+   
+   if (f != Null(File)) 			/* if file/directory already exists, return error */
+   {  ErrorMsg(m, EC_Error + EG_InUse + EO_Name);
+      return;
+   }
+
+   /* After failure of GetTargetObj we must reset the subsystem code */
+   m->MsgHdr.FnRc = SS_Unknown;
+   
+   unless(CheckMask(access, AccMask_W))
+   {  ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+      return;
+   }
+
+   /* if the target is a directory - error - only allow files */
+   if (((IOCCreate *)m->Control)->Type eq Type_Directory) 
+   {  ErrorMsg(m, EC_Error + EG_Create + EO_Directory);
+      return;
+   }
+
+   r = New(MsgBuf);    				/* for reply to create request */
+   if (r == Null(MsgBuf)) 
+   {  ErrorMsg(m, EC_Error + EG_NoMemory + EO_Message);
+      return;
+   }
+
+   f = CreateNode(m, d, pathname);   		/* create file */
+   if (f eq Null(File)) 
+   {  ErrorMsg(m, EC_Error + EG_NoMemory + EO_File); 
+      Free(r);
+      return;
+   }
+
+   /* Reset the current access mask to full access so the creating client 
+    * has full authority to access the object
+    */  
+   req->Common.Access.Access = AccMask_Full;
+
+   /* set up reply to create request */
+   FormOpenReply(r, m, &f->ObjNode, 0, pathname);
+   PutMsg(&r->mcb);   				/* send reply */
+   Free(r);
+}
+
+
+/* The next routine deals with open requests for files/directories */
+static void do_open(ServInfo *servinfo)
+{
+   MCB	   *m 		= servinfo->m;		/* incoming message  */
+   MsgBuf  *r;                			/* for reply to open */
+   DirNode *d;
+   File    *f;
+   IOCMsg2 *req 	= (IOCMsg2 *) (m->Control);
+   Port    reqport;
+   byte    *data 	= m->Data;   		/* incoming data */
+   char    *pathname 	= servinfo->Pathname;  	/* name to open */
+   int	   dir_access;
+   int	   file_access;
+   
+   d = (DirNode *) GetTargetDir(servinfo);   	/* targets parent dir */
+
+   if (d == Null(DirNode)) 
+   {  ErrorMsg(m, EO_Directory);
+      return;
+   }
+
+   /* remember the access rights of the parent directory. We may need
+    * to check this if we have to create the object
+    */
+   dir_access = req->Common.Access.Access;
+
+   f = (File *) GetTargetObj(servinfo);   	/* find file to be opened */
+
+   /* if file does not exist we may have to create it */
+   if (f eq Null(File))
+   {  if ((req->Arg.Mode & O_Create) == 0)	/* check the create bit */
+      {  ErrorMsg(m, EO_File);
+         return;
+      } 
+
+      m->MsgHdr.FnRc = SS_Unknown;		/* repair due to failed GetTarget */
+      unless(CheckMask(dir_access, AccMask_W))  /* do we have enough access rights to parent directory */
+      {  ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+         return;
+      }
+
+      f = CreateNode(m, d, pathname);  		/* create file if non-existant */
+      if (f == Null(File)) 
+      {  ErrorMsg(m, EO_File);
+         return;
+      }
+      req->Common.Access.Access = AccMask_Full; /* client is owner, so give full access */
+      UnLockTarget(servinfo);
+      servinfo->Target = (ObjNode *) f;
+      LockTarget(servinfo);      
+   }
+   else
+   {  int mode = req->Arg.Mode & (O_Create + O_Exclusive);
+      /* create+exclusive -> file must not yet exist */
+      if (mode == (O_Create + O_Exclusive))
+      {  ErrorMsg(m, EC_Error + EG_InUse + EO_Name);
+         return;
+      }
+   }
+
+   file_access = req->Common.Access.Access;
+   unless(CheckMask(file_access, req->Arg.Mode & Flags_Mode)) 
+   {  ErrorMsg(m, EC_Error + EG_Protected + EO_File);
+      return;
+   }
+
+   r = New(MsgBuf);    				/* for reply to open request */
+   if (r eq Null(MsgBuf)) 
+   {  ErrorMsg(m, EC_Error + EG_NoMemory + EO_File);
+      return;
+   }
+
+   /* set up reply to open request */
+
+   FormOpenReply(r, m, &f->ObjNode, Flags_Server | Flags_Closeable, pathname);
+   reqport = NewPort(); /* message reply port, so client can call us again */
+   r->mcb.MsgHdr.Reply = reqport;
+   PutMsg(&r->mcb);     /* send reply */
+   Free(r);
+
+   /* let Helios handle arbitrary directory requests */
+   if (f->ObjNode.Type eq Type_Directory) {
+     DirServer(servinfo, m, reqport);
+     FreePort(reqport);  /* operation completed, dont need port any more */
+     return;
+   }
+
+   /* Now for file accesses */
+
+   f->Users++;
+   
+   forever 
+   {  /* handle stream requests */
+      word e;
+      WindowList *new_node, *node;
+      word WinID;
+	       
+      m->MsgHdr.Dest = reqport;         /* set up MCB to receive messages */
+      m->Timeout     = StreamTimeout;
+      m->Data	     = data;
+
+      UnLockTarget(servinfo);
+      e = GetMsg(m);
+      if (e < Err_Null) 
+      {  /* don't let the event stream timeout */
+         if (e == EK_Timeout) continue;
+	 e &= EC_Mask;
+	 if ((e == EC_Error) || (e == EC_Fatal))
+            break;
+         else
+            continue;
+      }
+      LockTarget(servinfo);
+
+      switch(e & FG_Mask) 
+      {
+         case FG_Close :                      /* close file */
+            goto done;		
+
+	 case FG_GetSize :                    /* return size of file */
+	    InitMCB(m, 0, m->MsgHdr.Reply, NullPort, Err_Null);
+            MarshalWord(m, 0);                /* return a size of 0 */
+	    PutMsg(m);
+	    break;
+	 case FG_EnableMouse :                /* enable events for a window */
+            WinID = m->Control[0];
+	    if ((WinID ne 0xffffffff) && (f->Mouse.Reply eq NullPort))
+	       break;
+	      
+	    Wait(&(f->Mouse.ListSem));
+	    if (WinID ne 0xffffffff)
+            {  /* if not init sequence */
+  	       for (new_node = (WindowList *)f->Mouse.Windows.Head;
+	               (new_node->Node.Next ne NULL) &&
+	               (new_node->WinID ne WinID);
+	               new_node = (WindowList *)new_node->Node.Next);
+	               
+	       if (new_node->Node.Next eq NULL) 
+               {  /* if not found - we can enable by adding to list */
+	          new_node = New(WindowList);
+	          new_node->WinID = WinID;
+	          AddHead(&(f->Mouse.Windows), (Node *)new_node);
+	       }
+	    }
+	    elif (f->Mouse.Reply eq NullPort)
+            {  /* not been enabled */
+               f->Mouse.Reply = m->MsgHdr.Reply;
+               InitMCB(m, MsgHdr_Flags_preserve, m->MsgHdr.Reply, NullPort, 0);
+               PutMsg(m);
+                 
+               /* boot a mouse handler for this instance */
+               Fork(2000, Mouse_Handler, sizeof(f), f);
+            }
+	    Signal(&(f->Mouse.ListSem));
+	    break;
+	       
+	 case FG_DisableMouse :             /* disable events for a window */
+	    WinID = m->Control[0];
+	    Wait(&(f->Mouse.ListSem));
+ 	    for (node = ((WindowList *)f->Mouse.Windows.Head);
+	            (node->Node.Next ne NULL) &&
+	            (node->WinID ne WinID);
+	            node = (WindowList *)node->Node.Next);
+	               
+	    if (node->WinID eq  WinID)
+	       /* if found - we can disable by removing from list */
+	       Remove((Node *)node);
+	    Signal(&(f->Mouse.ListSem));
+	    break;
+	       
+	 case FG_EnableMSEvents :
+	    if (f->MSEvent.Reply eq NullPort)
+            {  f->MSEvent.Reply = m->MsgHdr.Reply;  /* save reply port */
+               InitMCB(m, MsgHdr_Flags_preserve, m->MsgHdr.Reply, NullPort, 0);
+               PutMsg(m);
+	       /* now boot a msevent handler */
+	       Fork(2000, MSEvent_Handler, sizeof(f), f);
+	    }
+	          
+	 case FG_RegisterWindow :
+	    /* when a window is opened, it is registered for other events */
+	    WinID = m->Control[0];
+
+	    /* check if the MSEvents have been enabled */
+	    if (f->MSEvent.Reply eq NullPort)   break;
+	       
+	    /* first wait for exclusive use of list structure */
+	    Wait(&(f->MSEvent.ListSem));
+  	    for (node = (WindowList *)f->MSEvent.Windows.Head;
+	            (node->Node.Next ne NULL) &&
+	            (node->WinID ne WinID);
+	            node = (WindowList *)node->Node.Next);
+	               
+	    if (node->Node.Next eq NULL)
+            {  /* if not found - we can enable by adding to list */
+	       new_node = New(WindowList);
+	       new_node->WinID = WinID;
+	       AddHead(&(f->MSEvent.Windows), (Node *)new_node);
+	    }
+	    Signal(&(f->MSEvent.ListSem));
+	    break;
+	       
+	 case FG_DeregisterWindow :
+	    WinID = m->Control[0];
+	    Wait(&(f->MSEvent.ListSem));
+ 	    for (node = (WindowList *)f->MSEvent.Windows.Head;
+	            (node->Node.Next ne NULL) &&
+	            (node->WinID ne WinID);
+	            node = (WindowList *)node->Node.Next);
+	               
+	    if (node->WinID eq  WinID)
+	       /* if found - we can disable by removing from list */
+	       Remove((Node *)node);
+	    Signal(&(f->MSEvent.ListSem));
+	    break;
+	       
+	 default :             /* all other requests return errors */
+	    ErrorMsg(m, EC_Error + EG_FnCode + EO_File);
+	    break;
+      }
+   }
+done:
+   f->Users--;
+   FreePort(reqport);
+
+   if (f->Users <= 0)
+   {
+	CloseFile(m, f);
+        Free(f);
+   }
+}
+
+static void do_delete(ServInfo *servinfo)
+{
+   MCB	     	*m = servinfo->m;    		/* incoming message  */
+   File      	*f;		  		/* for file  */
+   IOCCommon 	*req = (IOCCommon *) (m->Control);
+
+   unless (CheckMask(req->Access.Access, AccMask_D))
+   {  ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+      return;
+   }
+
+   f = (File *) GetTarget(servinfo);		/* do not remove if active objects present */
+   if (f->ObjNode.Type == Type_Directory)
+   {  if (f->ObjNode.Size != 0)
+      {  ErrorMsg(m, EC_Error + EG_InUse + EO_Directory); 
+         return;
+      }
+   }
+
+   if (&(f->ObjNode) == ((ObjNode *) &Root))	/* clear whole server test */
+   {  ErrorMsg(m, Err_Null);			/* send back success */
+      syslog (LOG_INFO, "exiting");
+      AbortPort(MSWININFO.ReqPort, EC_Fatal + EG_Exception +EE_Abort);
+   }
+   else
+   {  CloseFile(m, f);				/* delete target */
+      servinfo->TargetLocked = FALSE;		/* unlock access */
+      Free(f);					/* free resources */
+   }
+}
+
+static void CloseFile(MCB * m, File * f)
+{
+   WindowList *node;
+   
+   if (f->Mouse.Reply ne NullPort)
+      FreePort(f->Mouse.Reply);
+   if (f->MSEvent.Reply ne NullPort)
+      FreePort(f->MSEvent.Reply);
+   f->Mouse.Reply 	= NullPort;
+   f->MSEvent.Reply 	= NullPort;
+   Free(f->Mouse.Buffer);
+   Free(f->MSEvent.Buffer);
+   
+   /* we now free the waiting reader process, so that it can terminate */
+   Signal(&(f->Mouse.Data_Ready));
+   Signal(&(f->MSEvent.Data_Ready));
+   
+   /* now remove the list of windows registered with mouse and msevent */
+   Wait(&(f->Mouse.ListSem));
+   for (node = (WindowList *)f->Mouse.Windows.Head; node->Node.Next ne NULL; )
+   {  WindowList *tnode = node;
+      node = (WindowList *)node->Node.Next;
+      Free(tnode);
+   }
+   InitList(&(f->Mouse.Windows));
+   Signal(&(f->Mouse.ListSem));
+  
+   Wait(&(f->MSEvent.ListSem));
+   for (node = (WindowList *)f->MSEvent.Windows.Head; node->Node.Next ne NULL; )
+   {  WindowList *tnode = node;
+      node = (WindowList *)node->Node.Next;
+      Free(tnode);
+   }
+   InitList(&(f->MSEvent.Windows));
+   Signal(&(f->MSEvent.ListSem));
+  
+   Unlink(&f->ObjNode, FALSE);
+   ErrorMsg(m, Err_Null);        /* return value to caller */
+}
+
+/**********************************************************************
+ * this stuff is for handling the mouse events                        *
+ **********************************************************************/
+ 
+/* extern prototypes not in ioevents.h */
+extern void Acknowledge(Stream *, WORD);
+extern void NegAcknowledge(Stream *, WORD);
+
+/* forked process prototypes */
+static void Mouse_Wait(Port);
+
+static MCB mouse_mcb;
+static BYTE mouse_data[IOCDataMax];     /* static buffer for event */
+
+
+/* buffers and semaphores to hold events before processing */
+
+static Stream *Mouse_Stream;
+
+int Init_Mouse(void)
+{
+   Object *Mouse_obj;
+   Port Mouse_port;
+   
+   /* standard readers and writers semaphore settings */
+   /* now locate the mouse server */
+   if ((Mouse_obj = Locate(NULL, "/msmouse")) == (Object *) NULL)
+      return(FALSE);      /* function failed */
+      
+   if ((Mouse_Stream = Open(Mouse_obj, NULL, O_ReadOnly)) == (Stream *) NULL)
+   {  Close(Mouse_obj);
+      return(FALSE);      /* failed to open stream to mouse server */
+   }
+
+   /* release the object */
+   Close(Mouse_obj);
+   
+   /* now try to enable the events */
+   if ((Mouse_port = EnableEvents(Mouse_Stream, Event_MSMouse)) == NullPort)
+   {  /* if it failed */
+      Close(Mouse_Stream);
+      return(FALSE);
+   }
+   
+   /* we can now fork the reader/writer processes */
+   if (!Fork(5000, Mouse_Wait, 4, Mouse_port))
+   {  /* if one of the two processes could not be forked */
+      Close(Mouse_Stream);
+      return(FALSE);
+   }
+   
+   /* all complete and working so indicate success */
+   return(TRUE);
+}
+
+
+
+/* This function is to disable the mouse events */
+void Tidy_Mouse(void)
+{
+   (void)Close(Mouse_Stream);
+}
+
+
+ 
+static void Mouse_Wait(Port mouse_port)
+{
+   int i;
+   IOEvent *current_event;
+   File *node;
+   WindowList *windows;
+   word expected_counter = -1;
+   WORD fnrc;
+   word WinID;
+   int neg_ack = 0;
+   int found;
+   
+   /* set up the message buffer */
+   mouse_mcb.Data = &(mouse_data[0]);
+   
+   forever 
+   {  mouse_mcb.MsgHdr.Dest = mouse_port;
+      mouse_mcb.Timeout = MaxInt;
+      if ((fnrc = GetMsg(&mouse_mcb)) < 0)
+         continue;   /* if it timed out */
+      for (i=0, current_event = (IOEvent *)mouse_data;
+           i < (mouse_mcb.MsgHdr.DataSize / MSMouse_EventSize);
+           i++,  current_event++) {
+         if (current_event->Counter < expected_counter)
+            continue;   /* we have already received this message */
+            
+         if (current_event->Counter > expected_counter) {
+            if (expected_counter == -1)
+               /* first event */
+               expected_counter = current_event->Counter;
+            else
+               /* some have been lost */
+               if (fnrc == EventRc_IgnoreLost)
+                  expected_counter = current_event->Counter;
+               elif (!neg_ack)
+               {  /* we need to NegAcknowledge */
+                  NegAcknowledge(Mouse_Stream, expected_counter);
+                  neg_ack = 1;
+                  break;
+               }
+               else
+                  expected_counter = current_event->Counter;
+         }
+         /* we have a valid message, so let us add it to the buffer */
+         WinID = ((MSMouse_Event *)&(current_event->Device.Mouse))->WinID;
+         node = (File *)Root.Entries.Head;   /* head of the file list */
+         neg_ack = 0;    /* we can clear this */
+         
+	 for (node = (File *)Root.Entries.Head, found = 0;
+	      (node->ObjNode.Node.Next ne NULL) && (!found);
+	      node = (File *)node->ObjNode.Node.Next) {
+
+            Wait(&(node->Mouse.ListSem));   /* wait for exclusive access */
+
+            for (windows = (WindowList *)node->Mouse.Windows.Head;
+                 (windows->Node.Next ne NULL) && (windows->WinID ne WinID);
+                 windows = (WindowList *)windows->Node.Next);
+
+            if (windows->WinID eq WinID) {
+               /* if we have found the correct window for the event */
+               found = 1;
+               Wait(&(node->Mouse.Buffers_Free));
+               memcpy(&(node->Mouse.Buffer[node->Mouse.head_ptr]), 
+                      current_event, sizeof(IOEvent));
+               node->Mouse.head_ptr = (node->Mouse.head_ptr + 1) & (Message_Limit - 1);
+         
+               /* signal that we have an event */
+               Signal(&(node->Mouse.Data_Ready));
+            }
+            Signal(&(node->Mouse.ListSem));   /* relinquish exclusive access */
+         }
+
+         /* if the device requested an acknowledge, send it */
+         if (fnrc == EventRc_Acknowledge)
+         {  Acknowledge(Mouse_Stream, current_event->Counter);
+            fnrc = 0;
+         }
+         
+         /* increment the expected counter */
+         expected_counter++;
+      }
+   }
+}
+
+static void Mouse_Handler(File *f)
+{
+   MCB mcb;
+  
+   forever {
+      Wait(&(f->Mouse.Data_Ready));
+      if (f->Mouse.Reply eq NullPort)  break;  /* no longer valid */
+      
+      /* send the data to the port */
+      InitMCB(&mcb, MsgHdr_Flags_preserve, f->Mouse.Reply, NullPort, 0);
+      mcb.Data = (char *)&(f->Mouse.Buffer[f->Mouse.tail_ptr]);
+      mcb.MsgHdr.DataSize = sizeof(IOEvent);
+      PutMsg(&mcb);
+      
+      f->Mouse.tail_ptr = (f->Mouse.tail_ptr + 1) & (Message_Limit - 1);
+      Signal(&(f->Mouse.Buffers_Free));
+   }
+}
+
+/**********************************************************************
+ * this stuff is for handling the msevents                            *
+ **********************************************************************/
+ 
+/* forked process prototypes */
+static void MSEvent_Wait(Port);
+
+static MCB msevent_mcb;
+static BYTE msevent_data[IOCDataMax];     /* static buffer for event */
+
+
+/* buffers and semaphores to hold events before processing */
+
+static Stream *MSEvent_Stream;
+
+int Init_MSEvents(void)
+{
+   Object *MSEvent_obj;
+   Port MSEvent_port;
+   
+   /* standard readers and writers semaphore settings */
+   /* now locate the msevent server */
+   if ((MSEvent_obj = Locate(NULL, "/msevents")) == (Object *) NULL)
+      return(FALSE);      /* function failed */
+      
+   if ((MSEvent_Stream = Open(MSEvent_obj, NULL, O_ReadOnly)) == (Stream *) NULL) {
+      Close(MSEvent_obj);
+      return(FALSE);      /* failed to open stream to msevent server */
+   }
+
+   /* release the object */
+   Close(MSEvent_obj);
+   
+   /* now try to enable the events */
+   if ((MSEvent_port = EnableEvents(MSEvent_Stream, Event_MSEvent)) == NullPort) {
+      /* if it failed */
+      Close(MSEvent_Stream);
+      return(FALSE);
+   }
+   
+   /* we can now fork the reader/writer processes */
+   if (!Fork(5000, MSEvent_Wait, 4, MSEvent_port)) {
+      /* if one of the two processes could not be forked */
+      Close(MSEvent_Stream);
+      return(FALSE);
+   }
+   
+   /* all complete and working so indicate success */
+   return(TRUE);
+}
+
+
+
+/* This function is to disable the msevents events */
+void Tidy_MSEvents(void)
+{
+   (void)Close(MSEvent_Stream);
+}
+
+
+ 
+static void MSEvent_Wait(Port msevent_port)
+{
+   int i;
+   IOEvent *current_event;
+   File *node;
+   WindowList *windows;
+   word expected_counter = -1;
+   WORD fnrc;
+   word WinID;
+   int neg_ack = 0;
+   int found;
+   MSEvent *event;
+   
+   /* set up the message buffer */
+   msevent_mcb.Data = &(msevent_data[0]);
+   
+   forever {
+      msevent_mcb.MsgHdr.Dest = msevent_port;
+      msevent_mcb.Timeout = MaxInt;
+      if ((fnrc = GetMsg(&msevent_mcb)) < 0)
+         continue;   /* if it timed out */
+      for (i=0, current_event = (IOEvent *)msevent_data;
+           i < (msevent_mcb.MsgHdr.DataSize / MSEvent_EventSize);
+           i++,  current_event++) {
+         if (current_event->Counter < expected_counter)
+            continue;   /* we have already received this message */
+            
+         if (current_event->Counter > expected_counter) {
+            if (expected_counter == -1)
+               /* first event */
+               expected_counter = current_event->Counter;
+            else
+               /* some have been lost */
+               if (fnrc == EventRc_IgnoreLost)
+                  expected_counter = current_event->Counter;
+               elif (!neg_ack) {
+                  /* we need to NegAcknowledge */
+                  NegAcknowledge(MSEvent_Stream, expected_counter);
+                  neg_ack = 1;
+                  break;
+               }
+               else
+                  expected_counter = current_event->Counter;
+         }
+         /* we have a valid message, so let us add it to the buffer */
+
+         event = (MSEvent *)&(current_event->Device.Mouse);
+         if ((event->Type eq MS_Menu) && (event->WinID eq -1)) {
+            if (!Fork(3000, MSMenu_Execute, sizeof(word), event->Word1))
+               syslog (LOG_ERR, "Insufficient memory to run %s", Run_Table[event->Word1]);
+         }
+         else {
+
+            WinID = event->WinID;
+            node = (File *)Root.Entries.Head;   /* head of the file list */
+            neg_ack = 0;    /* we can clear this */
+         
+   	    for (node = (File *)Root.Entries.Head, found = 0;
+	         (node->ObjNode.Node.Next ne NULL) && (!found);
+	         node = (File *)node->ObjNode.Node.Next) {
+
+               Wait(&(node->MSEvent.ListSem));   /* wait for exclusive access */
+               for (windows = (WindowList *)node->MSEvent.Windows.Head;
+                    (windows->Node.Next ne NULL) && (windows->WinID ne WinID);
+                    windows = (WindowList *)windows->Node.Next);
+               
+               if (windows->WinID eq WinID) {
+                  /* if we have found the correct window for the event */
+                  found = 1;
+                  Wait(&(node->MSEvent.Buffers_Free));
+                  memcpy(&(node->MSEvent.Buffer[node->MSEvent.head_ptr]), 
+                         current_event, sizeof(IOEvent));
+                  node->MSEvent.head_ptr = (node->MSEvent.head_ptr + 1) & (Message_Limit - 1);
+         
+                  /* signal that we have an event */
+                  Signal(&(node->MSEvent.Data_Ready));
+               }
+               Signal(&(node->MSEvent.ListSem));   /* relinquish exclusive access */
+            }
+         }
+
+         /* if the device requested an acknowledge, send it */
+         if (fnrc == EventRc_Acknowledge) {
+            Acknowledge(MSEvent_Stream, current_event->Counter);
+            fnrc = 0;
+         }
+         
+         /* increment the expected counter */
+         expected_counter++;
+      }
+   }
+}
+
+static void MSEvent_Handler(File *f)
+{
+   MCB mcb;
+  
+   forever {
+      Wait(&(f->MSEvent.Data_Ready));
+      if (f->MSEvent.Reply eq NullPort)  break;  /* no longer valid */
+      
+      /* send the data to the port */
+      InitMCB(&mcb, MsgHdr_Flags_preserve, f->MSEvent.Reply, NullPort, 0);
+      mcb.Data = (char *)&(f->MSEvent.Buffer[f->MSEvent.tail_ptr]);
+      mcb.MsgHdr.DataSize = sizeof(IOEvent);
+      PutMsg(&mcb);
+      
+      f->MSEvent.tail_ptr = (f->MSEvent.tail_ptr + 1) & (Message_Limit - 1);
+      Signal(&(f->MSEvent.Buffers_Free));
+   }
+}
+
+/*
+-- crf: 18/11/92
+-- Environment not being sent correctly to help, hence get error on opening
+-- help window from menu.
+-- I have not attempted to fix any of the specfic problems ... instead, I 
+-- have tossed away the entire MSMenuExecute() routine, and brought in the
+-- relevant pieces of BLV's run.c code to do the job properly.
+-- In general, there is a lot that needs to be done to this progam (a re-write
+-- is highly desirable) ... when there is some time.
+*/
+
+static Object	*CreateWindow(char *);
+static int	RunCommand(char **, Object *);
+static Object	*running_command;
+
+static void MSMenu_Execute(word index)
+{
+  Object	*window;
+  int		rc;
+  char	*command_args[2] ;
+  command_args[0] = Run_Table [index] ;
+  command_args[1] = (char *) NULL ;
+   
+  window = CreateWindow(command_args[0]);
+  if (window eq Null(Object))
+  {
+    syslog (LOG_ERR, "Failed to create window") ;
+    return;  
+  }
+  rc = RunCommand(command_args, window);
+  if (rc)
+  {
+    syslog (LOG_ERR, "Failed to run command") ;
+    return;  
+  }
+  (void) Delete(window, Null(char));
+  return;
+}
+
+static Object *CreateWindow(char *command_name)
+{ Object	*window_server;
+  Object	*new_window;
+  char		buffer[NameMax];
+  Environ	*env = getenviron();
+  
+  if (env eq Null(Environ))
+   { syslog (LOG_ERR, "corrupt environment");
+     return(Null(Object));
+   }
+  
+  { Object	**objv = env->Objv;
+    int		i;
+    for (i = 0; i <= OV_CServer; i++)  
+     if (objv[i] eq Null(Object))
+      { syslog (LOG_ERR, "incomplete environment");
+        return(Null(Object));
+      }
+  }
+
+  window_server = env->Objv[OV_CServer];
+  if (window_server eq (Object *) MinInt)
+   { syslog (LOG_ERR, "there is no window server in the current environment");
+     return(Null(Object));
+   }
+   
+  strncpy(buffer, objname(command_name), NameMax);
+  buffer[NameMax - 1] = '\0';
+  new_window = Create(window_server, buffer, Type_Stream, 0, Null(BYTE));
+  if (new_window eq Null(Object))
+   syslog (LOG_ERR, "failed to Create window %s/%s", window_server->Name,
+   		buffer);
+  return(new_window);
+}
+
+static int RunCommand(char **command_args, Object *window)
+{ char		command_name[IOCDataMax];
+  Stream	*window_stream = Open(window, Null(char), O_ReadWrite);
+  Object	*objv[OV_End + 1];
+  Stream	*strv[5];
+  Environ	*my_environ = getenviron();
+  Environ	sending;
+  Stream	*program_stream = Null(Stream);
+  int		rc = Err_Null;
+          
+  objv[OV_Cdir]		= my_environ->Objv[OV_Cdir];
+  objv[OV_Task]		= (Object *) MinInt;
+  objv[OV_Code]		= (Object *) MinInt;
+  objv[OV_Source]	= (Object *) MinInt;
+  objv[OV_Parent]	= my_environ->Objv[OV_Task];
+  objv[OV_Home]		= my_environ->Objv[OV_Home];
+  objv[OV_Console]	= window;
+  objv[OV_CServer]	= my_environ->Objv[OV_CServer];
+  objv[OV_Session]	= my_environ->Objv[OV_Session];
+  objv[OV_TFM]		= my_environ->Objv[OV_TFM];
+  objv[OV_TForce]	= (Object *) MinInt;
+  objv[OV_End]		= Null(Object);
+
+  if (window_stream eq Null(Stream))
+   { syslog (LOG_ERR, "failed to open window %s\n", window->Name);
+     goto fail;
+   }
+
+  window_stream->Flags |= Flags_OpenOnGet;   
+  strv[0] = window_stream;
+  strv[1] = strv[2] = CopyStream(window_stream);
+  if (strv[1] eq NULL)
+   { syslog (LOG_ERR, "out of memory\n");
+     goto fail;
+   }
+  strv[0]->Flags &= ~O_WriteOnly;
+  strv[1]->Flags &= ~O_ReadOnly;
+  strv[3] = my_environ->Strv[3];
+  strv[4] = (Stream *) MinInt;
+  
+  sending.Strv = strv;
+  sending.Objv = objv;
+  sending.Envv = my_environ->Envv;
+  sending.Argv = command_args;
+    
+  if (*(command_args[0]) eq '/')
+   strcpy(command_name, command_args[0]);
+  else
+   find_file(command_name, command_args[0]);
+
+  objv[OV_Source] = Locate(CurrentDir, command_name);
+  if (objv[OV_Source] eq Null(Object))
+   { syslog (LOG_ERR, "failed to locate command %s\n", command_args[0]);
+     goto fail;
+   }  
+  
+  objv[OV_Code] = (Object *) MinInt;
+
+  if (getenv("CDL") ne Null(char))
+   { Object	*tfm = my_environ->Objv[OV_TFM];
+     int	i;
+     for (i = 0; i < OV_TFM; i++)
+      if (my_environ->Objv[i] eq Null(Object))
+       { tfm = Null(Object); break; }
+     if (tfm eq (Object *) MinInt) tfm = Null(Object);       
+     objv[OV_Task] = Execute(tfm, objv[OV_Source]);
+   }
+  else	/* run it locally */
+   objv[OV_Task] = Execute(Null(Object), objv[OV_Source]);
+
+  if (objv[OV_Task] eq Null(Object))
+   { syslog (LOG_ERR, "failed to execute command %s\n",
+   	objv[OV_Source]->Name);
+     goto fail;
+   }
+  program_stream = Open(objv[OV_Task], Null(char), O_ReadWrite);
+  if (program_stream eq Null(Stream))
+   { syslog (LOG_ERR, "failed to open task %s\n", objv[OV_Task]->Name);
+     goto fail;
+   }
+
+  running_command = objv[OV_Task];
+
+  (void) SendEnv(program_stream->Server, &sending);   
+
+ Delay(OneSec);
+   
+  Close(window_stream);
+  Close(program_stream);
+  Close(objv[OV_Task]);
+  Close(objv[OV_Source]);
+  return(rc);
+  
+fail:  
+  if (window_stream ne Null(Stream)) Close(window_stream);
+  if (program_stream ne Null(Stream)) Close(program_stream);
+  if (objv[OV_Task] ne Null(Object))
+   { (void) Delete(objv[OV_Task], Null(char));
+     (void) Close(objv[OV_Task]);
+   }
+  if (objv[OV_Source] ne Null(Object)) Close(objv[OV_Source]);
+  return(EXIT_FAILURE);
+} 
+
+@
+
+
+1.7
+log
+@1) do_open() was leaving the entire /MSWIN server locked when a close
+   was received.
+2) the code to install event handlers was rather original, involving
+   message ports being passed in the control vector between startws and
+   the graphics library. This has interesting effects in multiprocessor
+   systems and, more importantly, the KillTask code in the kernel failed
+   to cope with a task waiting on a message port owned by another task
+   and left a thread running.
+@
+text
+@a492 1
+
+d507 2
+a508 4
+	    CloseFile(m, f);
+            Free(f);
+            FreePort(reqport);
+	    return;
+d611 1
+d614 6
+@
+
+
+1.6
+log
+@General tidy up bu Jon.  Fixes bug # 988, (timeout on streams)
+@
+text
+@d437 3
+d539 1
+a539 1
+               f->Mouse.Reply = NewPort();
+a540 2
+               m->Control[0] = (word)f->Mouse.Reply;
+               m->MsgHdr.ContSize = 1;
+d566 2
+d811 1
+a811 1
+               
+@
+
+
+1.5
+log
+@Changed "booted" IOdebug to syslog (note: the documentation makes specific
+reference to the IOdebug (i.e. "+++ MSWIN Server booted") - however, the
+documentation has to change anyway 'cos of the decision to invode startws
+from initrc rather than login)
+@
+text
+@d3 1
+a3 1
+/* This is a test windows server which will handle the passing of mouse */
+d5 4
+a8 4
+/* the Helios I/O server for windows to the relevant window.  This will */
+/* do this by allowing the graphics library to register a port with the */
+/* server, and all data directed to that port will be transferred to    */
+/* necessary stream.  The server will also serve as the means of        */
+d31 3
+d36 1
+a36 1
+#define Event_MSMouse 0x40L
+d41 7
+a47 6
+typedef struct MSMouse_Event {
+   SHORT X;
+   SHORT Y;
+   WORD  Buttons;
+   word  WinID;
+} MSMouse_Event;
+d51 7
+a57 6
+typedef struct MSEvent {
+   SHORT Type;        /* the type of the event kbd, repaint, etc     */
+   SHORT WinID;       /* the id number for which the event is meant  */
+   word  Word1;       /* two words of data associated with the event */
+   word  Word2;
+} MSEvent;
+a62 4
+#if 0 /* OLD */
+static char Run_Table[2][20] = { "/helios/bin/wsh",
+                                 "/helios/bin/help" };
+#else
+a64 1
+#endif
+d66 1
+a66 1
+#define MSMouse_EventSize (sizeof(IOEventHdr) + sizeof(MSMouse_Event))
+a68 1
+
+d71 1
+a71 1
+#define Message_Limit     64
+d92 18
+a109 16
+typedef struct EventData {
+                           Port Reply;
+                           Semaphore Data_Ready;
+                           Semaphore Buffers_Free;
+                           int head_ptr;
+                           int tail_ptr;
+                           IOEvent *Buffer;
+                           Semaphore ListSem;
+                           List Windows;
+                         } EventData;
+
+typedef struct File {
+		      ObjNode ObjNode;
+		      EventData Mouse;    /* Storage for mouse data */
+		      EventData MSEvent;  /* Storage for other data */
+		    } File;
+d114 5
+a118 4
+typedef struct WindowList {
+                            Node Node;
+                            word WinID;
+                          } WindowList;
+d128 1
+a128 1
+DirNode Root;
+d133 3
+a135 3
+int Init_Mouse(void);
+void Tidy_Mouse(void);
+static void Mouse_Handler(File *);
+d139 4
+a142 4
+int Init_MSEvents(void);
+void Tidy_MSEvents(void);
+static void MSEvent_Handler(File *);
+static void MSMenu_Execute(word);
+d146 2
+a147 2
+static File *CreateNode(MCB *, DirNode *, string);
+static void CloseFile(MCB *, File *);
+d151 3
+a153 2
+static void do_open(ServInfo *);
+static void do_create(ServInfo *);
+d158 25
+a182 24
+static DispatchInfo MSWININFO = {
+       &Root,
+       NullPort,
+       SS_Unknown,
+       NULL,
+       { NULL, 0 },          /* no private protocol */
+       {
+	 { do_open, 5000 },
+	 { do_create, 2000 },
+	 { DoLocate, 2000 },
+	 { DoObjInfo, 2000 },
+	 { NullFn, 2000 },
+	 { NullFn, 2000 },
+	 { DoRename, 2000 },
+	 { DoLink, 2000 },
+	 { DoProtect, 2000 },
+	 { DoSetDate, 2000 },
+	 { DoRefine, 2000 },
+	 { NullFn, 2000 },
+	 { NullFn, 2000 },   /* the last three routines are new to 1.2   */
+	 { NullFn, 2000 },   /* I dont know what they are, so I set them */
+	 { NullFn, 2000 }    /* to be null functions    		 */
+       }
+    };
+d187 4
+a190 5
+   char     mcname[100];
+   Object   *o, *nte;
+   NameInfo Info;
+   LinkNode *Parent;
+   Environ  *env;
+d199 1
+a199 4
+   {
+      syslog (LOG_ERR, "already exists") ;
+      Exit (1) ;
+   }
+d201 2
+a202 9
+   if (!Init_Mouse()) {
+      syslog (LOG_ERR, "Unable to locate windows mouse");
+      Exit(0);
+   }
+   
+   if (!Init_MSEvents()) {
+      syslog (LOG_ERR, "Unable to locate windows events");
+      Exit(0);
+   }
+d204 2
+a205 1
+   env = getenviron();
+a206 4
+   MachineName(mcname);
+
+   MSWININFO.ParentName = mcname;
+
+a207 1
+
+d211 2
+a212 1
+   MSWININFO.ReqPort = NewPort();
+d214 1
+a214 6
+   o = Locate(NULL, mcname);
+   if (o eq (Object *) NULL) {
+      syslog (LOG_ERR, "Unable to locate machine name %s", mcname);
+      FreePort(MSWININFO.ReqPort);
+      Exit(0);
+   }
+d216 1
+a216 1
+   Info.Port	 = MSWININFO.ReqPort;
+d221 3
+a223 2
+   nte = Create(o, Root.Name, Type_Name, sizeof(NameInfo), (byte *) &Info);
+   if (nte eq (Object *) NULL) {
+d226 2
+a227 2
+      Close(o);
+      Exit(0);
+d231 2
+a232 1
+   if (Parent eq (LinkNode *) NULL) {
+d235 2
+a236 2
+      Close(o);
+      Exit(0);
+d240 1
+a240 1
+   Parent->Cap = o->Access;
+d244 1
+a244 1
+   Close(o);
+d247 3
+a249 3
+   Dispatch(&MSWININFO);   /* Let server start receiving requests */
+
+   Exit(0);
+d259 1
+a259 1
+   if (f eq (File *) NULL) return((File *) NULL);   /* not enough mem */
+d264 3
+a266 3
+   f->Mouse.head_ptr = 0;
+   f->Mouse.tail_ptr = 0;
+   f->Mouse.Reply = NullPort;
+d269 4
+a272 4
+   f->Mouse.Buffer = (IOEvent *) Malloc(sizeof(IOEvent) * Message_Limit);
+   if (f->Mouse.Buffer eq (IOEvent *) NULL) {
+      Free(f);
+      return((File *) NULL);   /* not enough mem */
+d275 1
+a275 1
+   InitList(&(f->Mouse.Windows));    /* init list of opened windows */
+d280 3
+a282 3
+   f->MSEvent.head_ptr = 0;
+   f->MSEvent.tail_ptr = 0;
+   f->MSEvent.Reply = NullPort;
+d285 3
+a287 3
+   f->MSEvent.Buffer = (IOEvent *) Malloc(sizeof(IOEvent) * Message_Limit);
+   if (f->MSEvent.Buffer eq (IOEvent *) NULL) {
+      Free(f->Mouse.Buffer);
+d289 1
+a289 1
+      return((File *) NULL);   /* not enough mem */
+a296 1
+
+a297 1
+
+d306 2
+a307 3
+   File      *f;
+   char      *name;
+   IOCCreate *req = (IOCCreate *) (m->Control);
+d311 1
+a311 4
+   if (req->Type eq Type_Directory) 
+     f = (File *) NULL;     /* only allow the creation of files */
+   else 
+     f = NewFile(d, name, 0, DefFileMatrix);
+d313 1
+a313 1
+   if (f eq (File *) NULL)
+d325 11
+a335 11
+   MCB	     *m = servinfo->m;    /* incoming message  */
+   MsgBuf    *r;                  /* for reply message */
+   DirNode   *d;		  /* for target dir    */
+   File      *f;		  /* for created file  */
+   IOCCreate *req = (IOCCreate *) (m->Control);
+   char      *pathname = servinfo->Pathname; /* name to create */
+
+   d = GetTargetDir(servinfo);   /* find targets parent dir */
+
+   if (d eq (DirNode *) NULL) {
+      ErrorMsg(m, EO_Directory);
+d339 4
+a342 1
+   m->MsgHdr.FnRc = SS_Unknown;  /* reset error mask */
+d345 3
+a347 5
+
+/* if file/directory already exists, cant create it, so return error */
+
+   if (f ne (File *) NULL) {
+      ErrorMsg(m, EC_Error + EG_Create + EO_File);
+d350 3
+d354 2
+a355 3
+/* if the target is a directory - error - only allow files */
+   if (((IOCCreate *)m->Control)->Type eq Type_Directory) {
+      ErrorMsg(m, EC_Error + EG_Create + EO_Directory);
+d359 3
+a361 4
+/* Check access mask of parent to see if we can create there */
+
+   unless(CheckMask(req->Common.Access.Access, AccMask_W)) {
+      ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+d365 3
+a367 3
+   r = New(MsgBuf);    /* for reply to create request */
+   if (r eq (MsgBuf *) NULL) {
+      ErrorMsg(m, EC_Error + EG_NoMemory + EO_File);
+d371 3
+a373 3
+   f = CreateNode(m, d, pathname);   /* create file */
+   if (f eq (File *) NULL) {
+      ErrorMsg(m, EC_Error + EG_NoMemory + EO_File);
+d378 4
+a381 1
+/* set up reply to create request */
+d383 1
+d385 1
+a385 1
+   PutMsg(&r->mcb);   /* send reply */
+a389 1
+
+a390 2
+
+
+d393 2
+a394 2
+   MCB	   *m = servinfo->m;  /* incoming message  */
+   MsgBuf  *r;                /* for reply to open */
+d397 1
+a397 1
+   IOCMsg2 *req = (IOCMsg2 *) (m->Control);
+d399 4
+a402 2
+   byte    *data = m->Data;   /* incoming data */
+   char    *pathname = servinfo->Pathname;  /* name to open */
+d404 1
+a404 1
+   d = (DirNode *) GetTargetDir(servinfo);   /* targets parent dir */
+d406 2
+a407 2
+   if (d eq (DirNode *) NULL) {
+      ErrorMsg(m, EO_Directory);
+d411 13
+a423 5
+   r = New(MsgBuf);    /* for reply to open request */
+   if (r eq (MsgBuf *) NULL) {
+      ErrorMsg(m, EC_Error + EG_NoMemory + EO_File);
+      return;
+   }
+d425 5
+a429 1
+   f = (File *) GetTargetObj(servinfo);   /* find file to be opened */
+d431 15
+a445 1
+/* if file does not exist we may have to create it */
+d447 3
+a449 16
+   if (f eq (File *) NULL && (req->Arg.Mode & O_Create)) {
+     m->MsgHdr.FnRc = SS_Unknown;
+     unless(CheckMask(req->Common.Access.Access, AccMask_W)) {
+        ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+        Free(r);
+        return;
+     }
+     f = CreateNode(m, d, pathname);  /* create file if non-existant */
+   }
+
+/* if file eq NULL, file does not exist, and open request did not have */
+/* create bit set.						       */
+	
+   if (f eq (File *) NULL) {
+      ErrorMsg(m, EO_File);
+      Free(r);
+d453 3
+a455 6
+/* Check access mask of parent to see if it is protected */
+
+   unless(CheckMask(req->Common.Access.Access,
+	  (int)(req->Arg.Mode & Flags_Mode))) {
+      ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+      Free(r);
+d459 1
+a459 1
+/* set up reply to open request */
+d467 1
+a467 2
+/* let Helios handle arbitrary directory requests */
+
+d474 1
+a474 1
+/* Now for file accesses */
+d477 3
+a479 3
+   UnLockTarget(servinfo);
+
+   forever {   /* handle stream requests */
+d488 1
+d491 8
+a498 3
+      if (e eq EK_Timeout) {
+         syslog (LOG_WARNING, "Timeout");
+         break;
+d500 1
+d502 15
+a516 16
+      if (e < Err_Null)
+         continue;
+
+      Wait(&f->ObjNode.Lock);   /* lock file, so we have sole access to file */
+
+      switch(m->MsgHdr.FnRc & FG_Mask) {
+	case FG_Close :                      /* close file */
+	       CloseFile(m, f);
+               Free(f);
+	       FreePort(reqport);
+	       return;
+
+	case FG_GetSize :                    /* return size of file */
+	       InitMCB(m, 0, m->MsgHdr.Reply, NullPort, Err_Null);
+               MarshalWord(m, 0);            /* return a size of 0 */
+	       PutMsg(m);
+d518 5
+a522 10
+
+	case FG_EnableMouse :              /* enable events for a window */
+	       WinID = m->Control[0];
+	       if ((WinID ne 0xffffffff) && (f->Mouse.Reply eq NullPort))
+	          break;
+	       
+	       Wait(&(f->Mouse.ListSem));
+	       if (WinID ne 0xffffffff) {
+	       	  /* if not init sequence */
+  	          for (new_node = (WindowList *)f->Mouse.Windows.Head;
+d527 5
+a531 6
+	          if (new_node->Node.Next eq NULL) {
+	             /* if not found - we can enable by adding to list */
+	             new_node = New(WindowList);
+	             new_node->WinID = WinID;
+	             AddHead(&(f->Mouse.Windows), (Node *)new_node);
+	          }
+d533 14
+a546 13
+	       elif (f->Mouse.Reply eq NullPort) {
+	       	  /* not been enabled */
+                  f->Mouse.Reply = NewPort();
+                  InitMCB(m, MsgHdr_Flags_preserve, m->MsgHdr.Reply, NullPort, 0);
+                  m->Control[0] = (word)f->Mouse.Reply;
+                  m->MsgHdr.ContSize = 1;
+                  PutMsg(m);
+                  
+                  /* boot a mouse handler for this instance */
+                  Fork(2000, Mouse_Handler, sizeof(f), f);
+               }
+	       Signal(&(f->Mouse.ListSem));
+	       break;
+d548 4
+a551 4
+	case FG_DisableMouse :             /* disable events for a window */
+	       WinID = m->Control[0];
+	       Wait(&(f->Mouse.ListSem));
+ 	       for (node = ((WindowList *)f->Mouse.Windows.Head);
+d556 5
+a560 5
+	       if (node->WinID eq  WinID)
+	          /* if found - we can disable by removing from list */
+	          Remove((Node *)node);
+	       Signal(&(f->Mouse.ListSem));
+	       break;
+d562 6
+a567 6
+	case FG_EnableMSEvents :
+	       if (f->MSEvent.Reply eq NullPort) {
+	          f->MSEvent.Reply = m->MsgHdr.Reply;  /* save reply port */
+	          /* now boot a msevent handler */
+	          Fork(2000, MSEvent_Handler, sizeof(f), f);
+	       }
+d569 3
+a571 3
+	case FG_RegisterWindow :
+	       /* when a window is opened, it is registered for other events */
+	       WinID = m->Control[0];
+d573 2
+a574 2
+	       /* check if the MSEvents have been enabled */
+	       if (f->MSEvent.Reply eq NullPort)   break;
+d576 3
+a578 3
+	       /* first wait for exclusive use of list structure */
+	       Wait(&(f->MSEvent.ListSem));
+  	       for (node = (WindowList *)f->MSEvent.Windows.Head;
+d583 8
+a590 8
+	       if (node->Node.Next eq NULL) {
+	          /* if not found - we can enable by adding to list */
+	          new_node = New(WindowList);
+	          new_node->WinID = WinID;
+	          AddHead(&(f->MSEvent.Windows), (Node *)new_node);
+	       }
+	       Signal(&(f->MSEvent.ListSem));
+	       break;
+d592 4
+a595 4
+	case FG_DeregisterWindow :
+	       WinID = m->Control[0];
+	       Wait(&(f->MSEvent.ListSem));
+ 	       for (node = (WindowList *)f->MSEvent.Windows.Head;
+d600 5
+a604 5
+	       if (node->WinID eq  WinID)
+	          /* if found - we can disable by removing from list */
+	          Remove((Node *)node);
+	       Signal(&(f->MSEvent.ListSem));
+	       break;
+d606 3
+a608 3
+	default :             /* all other requests return errors */
+	       ErrorMsg(m, EC_Error + EG_FnCode + EO_File);
+	       break;
+a609 1
+      Signal(&f->ObjNode.Lock);   /* unlock file again */
+a610 3
+
+/* On timeout error, the file is automatically closed */
+
+d615 30
+d646 1
+a646 3
+static void CloseFile(m, f)
+   MCB *m;
+   File *f;
+d654 2
+a655 2
+   f->Mouse.Reply = NullPort;
+   f->MSEvent.Reply = NullPort;
+d665 2
+a666 3
+   for (node = (WindowList *)f->Mouse.Windows.Head;
+        node->Node.Next ne NULL; )  {
+      WindowList *tnode = node;
+d674 2
+a675 3
+   for (node = (WindowList *)f->MSEvent.Windows.Head;
+        node->Node.Next ne NULL; ) {
+      WindowList *tnode = node;
+d715 2
+a716 2
+   if ((Mouse_Stream = Open(Mouse_obj, NULL, O_ReadOnly)) == (Stream *) NULL) {
+      Close(Mouse_obj);
+d724 2
+a725 2
+   if ((Mouse_port = EnableEvents(Mouse_Stream, Event_MSMouse)) == NullPort) {
+      /* if it failed */
+d731 2
+a732 2
+   if (!Fork(5000, Mouse_Wait, 4, Mouse_port)) {
+      /* if one of the two processes could not be forked */
+d766 2
+a767 2
+   forever {
+      mouse_mcb.MsgHdr.Dest = mouse_port;
+d785 2
+a786 2
+               elif (!neg_ack) {
+                  /* we need to NegAcknowledge */
+d824 2
+a825 2
+         if (fnrc == EventRc_Acknowledge) {
+            Acknowledge(Mouse_Stream, current_event->Counter);
+a1026 90
+#if 0 /* OLD */
+
+static void MSMenu_Execute(index)
+   word index;
+{
+   char mcname[100];
+   Object *code, *pm;
+   Object *prog;
+   Environ *env2;
+   Stream *s;
+   word e;
+
+   MachineName(mcname);
+   strcat(mcname,"/tasks");
+
+   if (index == 1) {
+      /* helios help function requires special handling */
+      Object *window;
+      Stream *help;
+      char argv[3][20];
+      Stream *strv[4];
+      Object *objv[2];
+      Environ env;
+      char *dummy = Null(char);
+      
+      window = Locate((Object *)NULL, "/window");
+      help = Open(window, "HELP", O_Create | O_ReadWrite);
+
+      pm = Locate(CurrentDir,mcname);
+
+      code = Locate(CurrentDir,Run_Table[index]);
+		
+      if (code == NULL)
+      {
+         IOdebug("MSWin server error: unable to locate (%d) %s", index, Run_Table[index]);
+         return;
+      }
+
+      prog = Execute(pm, code);
+      s = Open(prog, NULL, O_WriteOnly);
+
+      strcpy(argv[0], "help");
+      argv[1][0] = '\0';
+	
+      env2 = getenviron();
+
+      objv[0] = CurrentDir;
+      objv[1] = Null(Object);
+      
+      strv[0] = help;
+      strv[1] = help;
+      strv[2] = help;
+      strv[3] = Null(Stream);
+
+      env.Argv = &dummy;
+      env.Envv = &dummy;
+      env.Objv = &objv[0];
+      env.Strv = &strv[0];
+      e = SendEnv(s->Server, &env);
+      
+      Close(help);
+      Close(window);
+   }
+   else {
+      pm = Locate(CurrentDir,mcname);
+
+      code = Locate(CurrentDir,Run_Table[index]);
+		
+      if (code == NULL)
+      {
+         IOdebug("MSWin server error: unable to locate (%d) %s", index, Run_Table[index]);
+         return;
+      }
+
+      prog = Execute(pm, code);
+      s = Open(prog, NULL, O_WriteOnly);
+
+      env2 = getenviron();
+      e = SendEnv(s->Server, env2);
+   }
+
+   Close(code);
+   Close(s);
+   Close(prog);
+   Close(pm);
+	
+   return;
+}
+
+#else
+a1204 1
+#endif
+@
+
+
+1.4
+log
+@Terminate if /MSWIN is already present
+@
+text
+@d259 1
+a259 4
+/*
+-- crf: need to keep this IOdebug in 'cos it is in the documentation (!)
+*/
+   IOdebug ("MSWin Server booted");
+@
+
+
+1.3
+log
+@Environment not being passed correctly to help. Have stripped out
+MSMenu_Execute() and replaced it with pieces of BLV's run.c code. Sorry,
+this is the best I can do in the time available.
+@
+text
+@d191 10
+@
+
+
+1.2
+log
+@fixed compile time warnings
+@
+text
+@d28 2
+a30 1
+
+d58 1
+d61 4
+d188 2
+d192 1
+a192 2
+      IOdebug("MSWin - Unable to locate windows mouse");
+      IOdebug("MSWin Server aborting!\n\n");
+d197 1
+a197 2
+      IOdebug("MSWin - Unable to locate windows events");
+      IOdebug("MSWin Server aborting!\n\n");
+d216 1
+a216 2
+      IOdebug("MSWin - Unable to locate machine name %s\n\n", mcname);
+      IOdebug("MSWin Server aborting!\n\n");
+d228 1
+a228 3
+      IOdebug("MSWin - Unable install server in name table!\n\n");
+      IOdebug("A MSWin server probably already exists!");
+      IOdebug("MSWin Server aborting!\n\n");
+d236 1
+a236 2
+      IOdebug("MSWin - Out of memory initialising server!\n\n");
+      IOdebug("MSWin Server aborting!\n\n");
+d249 4
+a252 1
+   IOdebug("MSWin Server booted");
+d489 1
+a489 1
+         IOdebug("MSWIN - Timeout!");
+d939 1
+a939 1
+               IOdebug("MSWin server error: insufficient memory to run %s", Run_Table[event->Word1]);
+d1002 1
+d1090 181
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 1083
+a1083 1084
+/************************************************************************/
+/*									*/
+/* This is a test windows server which will handle the passing of mouse */
+/* events, requests to redraw screens and raw keyboard events from      */
+/* the Helios I/O server for windows to the relevant window.  This will */
+/* do this by allowing the graphics library to register a port with the */
+/* server, and all data directed to that port will be transferred to    */
+/* necessary stream.  The server will also serve as the means of        */
+/* handling calls from menus which are registered with the I/O server,  */
+/* either user defined or system menus.                                 */
+/*									*/
+/************************************************************************/
+
+
+#include <helios.h>
+#include <string.h>
+#include <codes.h>
+#include <syslib.h>
+#include <servlib.h>
+#include <task.h>
+#include <stdio.h>
+#include <nonansi.h>
+#include <ioevents.h>
+#include <message.h>
+#include <sem.h>
+#include <gsp.h>
+#include <unistd.h>
+
+
+/* some defines for the mouse and msevents */
+
+#define Event_MSMouse 0x40L
+#define Event_MSEvent 0x80L
+
+/* this is the data which comes with an MSMouse event */
+
+typedef struct MSMouse_Event {
+   SHORT X;
+   SHORT Y;
+   WORD  Buttons;
+   word  WinID;
+} MSMouse_Event;
+
+/* this is the msevent data block structure */
+
+typedef struct MSEvent {
+   SHORT Type;        /* the type of the event kbd, repaint, etc     */
+   SHORT WinID;       /* the id number for which the event is meant  */
+   word  Word1;       /* two words of data associated with the event */
+   word  Word2;
+} MSEvent;
+
+/* MSEvent Types */
+
+#define MS_Menu  1
+
+static char Run_Table[2][20] = { "/helios/bin/wsh",
+                                 "/helios/bin/help" };
+
+#define MSMouse_EventSize (sizeof(IOEventHdr) + sizeof(MSMouse_Event))
+#define MSEvent_EventSize (sizeof(IOEventHdr) + sizeof(MSEvent))
+
+
+/* define the limit of the mouse message buffer */
+
+#define Message_Limit     64
+
+#define FG_EnableMouse      FG_PrivateFirst
+#define FG_EnableMSEvents   (FG_PrivateFirst+0x10)
+#define FG_RegisterWindow   (FG_PrivateFirst+0x20)  /* register open windows */
+#define FG_DeregisterWindow (FG_PrivateFirst+0x30)  /* remove them           */
+#define FG_DisableMouse     (FG_PrivateFirst+0x40)  
+
+/* some neat defines */
+
+#define eq ==
+#define ne !=
+
+/* The structure definition of a file node in the servers directory */
+/* structure */
+
+/* the EventData structure is used to store for either mouse or mswin */
+/* events.  The ListSem is to limit access into Windows, which stores */
+/* the windows with enabled mouse events in the mouse event and the   */
+/* generally open windows in the mswin events.                        */
+
+typedef struct EventData {
+                           Port Reply;
+                           Semaphore Data_Ready;
+                           Semaphore Buffers_Free;
+                           int head_ptr;
+                           int tail_ptr;
+                           IOEvent *Buffer;
+                           Semaphore ListSem;
+                           List Windows;
+                         } EventData;
+
+typedef struct File {
+		      ObjNode ObjNode;
+		      EventData Mouse;    /* Storage for mouse data */
+		      EventData MSEvent;  /* Storage for other data */
+		    } File;
+		    
+/* the following structure is to store the list of window ID's using */
+/* Helios' List system.                                              */
+
+typedef struct WindowList {
+                            Node Node;
+                            word WinID;
+                          } WindowList;
+
+
+/* some defines to make variable accesses easier */
+
+#define FileSize  ObjNode.Size
+#define Users	  ObjNode.Account
+
+/* Root of the server */
+
+DirNode Root;
+
+
+/* functions which are defined for the mouse event system */
+
+int Init_Mouse(void);
+void Tidy_Mouse(void);
+static void Mouse_Handler(File *);
+
+/* functions which are required to init and use msevents */
+
+int Init_MSEvents(void);
+void Tidy_MSEvents(void);
+static void MSEvent_Handler(File *);
+static void MSMenu_Execute(word);
+
+/* Function definitions for function within server */
+
+static File *CreateNode(MCB *, DirNode *, string);
+static void CloseFile(MCB *, File *);
+
+/* Function declarations for functions called by dispatcher */
+
+static void do_open(ServInfo *);
+static void do_create(ServInfo *);
+
+
+/* Info required by the helios dispatcher */
+
+static DispatchInfo MSWININFO = {
+       &Root,
+       NullPort,
+       SS_Unknown,
+       NULL,
+       { NULL, 0 },          /* no private protocol */
+       {
+	 { do_open, 5000 },
+	 { do_create, 2000 },
+	 { DoLocate, 2000 },
+	 { DoObjInfo, 2000 },
+	 { NullFn, 2000 },
+	 { NullFn, 2000 },
+	 { DoRename, 2000 },
+	 { DoLink, 2000 },
+	 { DoProtect, 2000 },
+	 { DoSetDate, 2000 },
+	 { DoRefine, 2000 },
+	 { NullFn, 2000 },
+	 { NullFn, 2000 },   /* the last three routines are new to 1.2   */
+	 { NullFn, 2000 },   /* I dont know what they are, so I set them */
+	 { NullFn, 2000 }    /* to be null functions    		 */
+       }
+    };
+    
+
+int main()
+{
+   char     mcname[100];
+   Object   *o, *nte;
+   NameInfo Info;
+   LinkNode *Parent;
+   Environ  *env;
+   
+   if (!Init_Mouse()) {
+      IOdebug("MSWin - Unable to locate windows mouse");
+      IOdebug("MSWin Server aborting!\n\n");
+      Exit(0);
+   }
+   
+   if (!Init_MSEvents()) {
+      IOdebug("MSWin - Unable to locate windows events");
+      IOdebug("MSWin Server aborting!\n\n");
+      Exit(0);
+   }
+   
+   env = getenviron();
+
+   MachineName(mcname);
+
+   MSWININFO.ParentName = mcname;
+
+   InitNode((ObjNode *) &Root, "MSWIN", Type_Directory, 0, DefDirMatrix);
+
+   InitList(&Root.Entries);
+   Root.Nentries = 0;
+
+   MSWININFO.ReqPort = NewPort();
+
+   o = Locate(NULL, mcname);
+   if (o eq (Object *) NULL) {
+      IOdebug("MSWin - Unable to locate machine name %s\n\n", mcname);
+      IOdebug("MSWin Server aborting!\n\n");
+      FreePort(MSWININFO.ReqPort);
+      Exit(0);
+   }
+
+   Info.Port	 = MSWININFO.ReqPort;
+   Info.Flags	 = Flags_StripName;
+   Info.Matrix	 = DefDirMatrix;
+   Info.LoadData = NULL;
+
+   nte = Create(o, Root.Name, Type_Name, sizeof(NameInfo), (byte *) &Info);
+   if (nte eq (Object *) NULL) {
+      IOdebug("MSWin - Unable install server in name table!\n\n");
+      IOdebug("A MSWin server probably already exists!");
+      IOdebug("MSWin Server aborting!\n\n");
+      FreePort(MSWININFO.ReqPort);
+      Close(o);
+      Exit(0);
+   }
+
+   Parent = (LinkNode *) Malloc(sizeof(LinkNode) + strlen(mcname));
+   if (Parent eq (LinkNode *) NULL) {
+      IOdebug("MSWin - Out of memory initialising server!\n\n");
+      IOdebug("MSWin Server aborting!\n\n");
+      FreePort(MSWININFO.ReqPort);
+      Close(o);
+      Exit(0);
+   }
+
+   InitNode(&Parent->ObjNode, "..", Type_Link, 0, DefDirMatrix);
+   Parent->Cap = o->Access;
+   strcpy(Parent->Link, mcname);
+   Root.Parent = (DirNode *) Parent;
+
+   Close(o);
+
+   IOdebug("MSWin Server booted");
+   Dispatch(&MSWININFO);   /* Let server start receiving requests */
+
+   Exit(0);
+}
+
+
+/* Routine to create a new file for the server */
+
+File *NewFile(DirNode *dir, string name, word flags, Matrix matrix)
+{
+   File *f = New(File);
+
+   if (f eq (File *) NULL) return((File *) NULL);   /* not enough mem */
+
+   /* init stuff for mouse event */   
+   InitSemaphore(&(f->Mouse.Data_Ready), 0);
+   InitSemaphore(&(f->Mouse.Buffers_Free), Message_Limit);
+   f->Mouse.head_ptr = 0;
+   f->Mouse.tail_ptr = 0;
+   f->Mouse.Reply = NullPort;
+   InitSemaphore(&(f->Mouse.ListSem), 1);
+   
+   f->Mouse.Buffer = (IOEvent *) Malloc(sizeof(IOEvent) * Message_Limit);
+   if (f->Mouse.Buffer eq (IOEvent *) NULL) {
+      Free(f);
+      return((File *) NULL);   /* not enough mem */
+   }
+   
+   InitList(&(f->Mouse.Windows));    /* init list of opened windows */
+
+   /* init stuff for MSEvent */
+   InitSemaphore(&(f->MSEvent.Data_Ready), 0);
+   InitSemaphore(&(f->MSEvent.Buffers_Free), Message_Limit);
+   f->MSEvent.head_ptr = 0;
+   f->MSEvent.tail_ptr = 0;
+   f->MSEvent.Reply = NullPort;
+   InitSemaphore(&(f->MSEvent.ListSem), 1);
+   
+   f->MSEvent.Buffer = (IOEvent *) Malloc(sizeof(IOEvent) * Message_Limit);
+   if (f->MSEvent.Buffer eq (IOEvent *) NULL) {
+      Free(f->Mouse.Buffer);
+      Free(f);
+      return((File *) NULL);   /* not enough mem */
+   }
+   
+   InitList(&(f->MSEvent.Windows));    /* init list of opened windows */
+
+   /* now add the node to the directory */
+
+   InitNode(&f->ObjNode, name, Type_File, flags, matrix);
+
+   Insert(dir, &f->ObjNode, TRUE);
+
+   return((File *) f);
+}
+
+
+/* routine to create either a new file or a new directory in the server */
+
+static File *CreateNode(MCB *m, DirNode *d, string pathname)
+{
+   File      *f;
+   char      *name;
+   IOCCreate *req = (IOCCreate *) (m->Control);
+
+   name = objname(pathname);
+
+   if (req->Type eq Type_Directory) 
+     f = (File *) NULL;     /* only allow the creation of files */
+   else 
+     f = NewFile(d, name, 0, DefFileMatrix);
+
+   if (f eq (File *) NULL)
+      m->MsgHdr.FnRc |= EC_Error | EG_Create;
+
+   return((File *) f);
+}
+
+
+/* The following routine gets forked by the dispatcher to create a */
+/* directory or a file						   */
+
+static void do_create(ServInfo *servinfo)
+{
+   MCB	     *m = servinfo->m;    /* incoming message  */
+   MsgBuf    *r;                  /* for reply message */
+   DirNode   *d;		  /* for target dir    */
+   File      *f;		  /* for created file  */
+   IOCCreate *req = (IOCCreate *) (m->Control);
+   char      *pathname = servinfo->Pathname; /* name to create */
+
+   d = GetTargetDir(servinfo);   /* find targets parent dir */
+
+   if (d eq (DirNode *) NULL) {
+      ErrorMsg(m, EO_Directory);
+      return;
+   }
+
+   m->MsgHdr.FnRc = SS_Unknown;  /* reset error mask */
+
+   f = (File *) GetTargetObj(servinfo);
+
+/* if file/directory already exists, cant create it, so return error */
+
+   if (f ne (File *) NULL) {
+      ErrorMsg(m, EC_Error + EG_Create + EO_File);
+      return;
+   }
+   
+/* if the target is a directory - error - only allow files */
+   if (((IOCCreate *)m->Control)->Type eq Type_Directory) {
+      ErrorMsg(m, EC_Error + EG_Create + EO_Directory);
+      return;
+   }
+
+/* Check access mask of parent to see if we can create there */
+
+   unless(CheckMask(req->Common.Access.Access, AccMask_W)) {
+      ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+      return;
+   }
+
+   r = New(MsgBuf);    /* for reply to create request */
+   if (r eq (MsgBuf *) NULL) {
+      ErrorMsg(m, EC_Error + EG_NoMemory + EO_File);
+      return;
+   }
+
+   f = CreateNode(m, d, pathname);   /* create file */
+   if (f eq (File *) NULL) {
+      ErrorMsg(m, EC_Error + EG_NoMemory + EO_File);
+      Free(r);
+      return;
+   }
+
+/* set up reply to create request */
+
+   FormOpenReply(r, m, &f->ObjNode, 0, pathname);
+   PutMsg(&r->mcb);   /* send reply */
+   Free(r);
+}
+
+
+
+/* The next routine deals with open requests for files/directories */
+
+
+static void do_open(ServInfo *servinfo)
+{
+   MCB	   *m = servinfo->m;  /* incoming message  */
+   MsgBuf  *r;                /* for reply to open */
+   DirNode *d;
+   File    *f;
+   IOCMsg2 *req = (IOCMsg2 *) (m->Control);
+   Port    reqport;
+   byte    *data = m->Data;   /* incoming data */
+   char    *pathname = servinfo->Pathname;  /* name to open */
+   
+   d = (DirNode *) GetTargetDir(servinfo);   /* targets parent dir */
+
+   if (d eq (DirNode *) NULL) {
+      ErrorMsg(m, EO_Directory);
+      return;
+   }
+
+   r = New(MsgBuf);    /* for reply to open request */
+   if (r eq (MsgBuf *) NULL) {
+      ErrorMsg(m, EC_Error + EG_NoMemory + EO_File);
+      return;
+   }
+
+   f = (File *) GetTargetObj(servinfo);   /* find file to be opened */
+
+/* if file does not exist we may have to create it */
+
+   if (f eq (File *) NULL && (req->Arg.Mode & O_Create)) {
+     m->MsgHdr.FnRc = SS_Unknown;
+     unless(CheckMask(req->Common.Access.Access, AccMask_W)) {
+        ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+        Free(r);
+        return;
+     }
+     f = CreateNode(m, d, pathname);  /* create file if non-existant */
+   }
+
+/* if file eq NULL, file does not exist, and open request did not have */
+/* create bit set.						       */
+	
+   if (f eq (File *) NULL) {
+      ErrorMsg(m, EO_File);
+      Free(r);
+      return;
+   }
+
+/* Check access mask of parent to see if it is protected */
+
+   unless(CheckMask(req->Common.Access.Access,
+	  req->Arg.Mode & Flags_Mode)) {
+      ErrorMsg(m, EC_Error + EG_Protected + EO_Directory);
+      Free(r);
+      return;
+   }
+
+/* set up reply to open request */
+
+   FormOpenReply(r, m, &f->ObjNode, Flags_Server | Flags_Closeable, pathname);
+   reqport = NewPort(); /* message reply port, so client can call us again */
+   r->mcb.MsgHdr.Reply = reqport;
+   PutMsg(&r->mcb);     /* send reply */
+   Free(r);
+
+/* let Helios handle arbitrary directory requests */
+
+   if (f->ObjNode.Type eq Type_Directory) {
+     DirServer(servinfo, m, reqport);
+     FreePort(reqport);  /* operation completed, dont need port any more */
+     return;
+   }
+
+/* Now for file accesses */
+
+   f->Users++;
+   UnLockTarget(servinfo);
+
+   forever {   /* handle stream requests */
+      word e;
+      WindowList *new_node, *node;
+      word WinID;
+	       
+      m->MsgHdr.Dest = reqport;         /* set up MCB to receive messages */
+      m->Timeout     = StreamTimeout;
+      m->Data	     = data;
+
+      e = GetMsg(m);
+
+      if (e eq EK_Timeout) {
+         IOdebug("MSWIN - Timeout!");
+         break;
+      }
+
+      if (e < Err_Null)
+         continue;
+
+      Wait(&f->ObjNode.Lock);   /* lock file, so we have sole access to file */
+
+      switch(m->MsgHdr.FnRc & FG_Mask) {
+	case FG_Close :                      /* close file */
+	       CloseFile(m, f);
+               Free(f);
+	       FreePort(reqport);
+	       return;
+
+	case FG_GetSize :                    /* return size of file */
+	       InitMCB(m, 0, m->MsgHdr.Reply, NullPort, Err_Null);
+               MarshalWord(m, 0);            /* return a size of 0 */
+	       PutMsg(m);
+	       break;
+
+	case FG_EnableMouse :              /* enable events for a window */
+	       WinID = m->Control[0];
+	       if ((WinID ne 0xffffffff) && (f->Mouse.Reply eq NullPort))
+	          break;
+	       
+	       Wait(&(f->Mouse.ListSem));
+	       if (WinID ne 0xffffffff) {
+	       	  /* if not init sequence */
+  	          for (new_node = (WindowList *)f->Mouse.Windows.Head;
+	               (new_node->Node.Next ne NULL) &&
+	               (new_node->WinID ne WinID);
+	               new_node = (WindowList *)new_node->Node.Next);
+	               
+	          if (new_node->Node.Next eq NULL) {
+	             /* if not found - we can enable by adding to list */
+	             new_node = New(WindowList);
+	             new_node->WinID = WinID;
+	             AddHead(&(f->Mouse.Windows), (Node *)new_node);
+	          }
+	       }
+	       elif (f->Mouse.Reply eq NullPort) {
+	       	  /* not been enabled */
+                  f->Mouse.Reply = NewPort();
+                  InitMCB(m, MsgHdr_Flags_preserve, m->MsgHdr.Reply, NullPort, 0);
+                  m->Control[0] = (word)f->Mouse.Reply;
+                  m->MsgHdr.ContSize = 1;
+                  PutMsg(m);
+                  
+                  /* boot a mouse handler for this instance */
+                  Fork(2000, Mouse_Handler, sizeof(f), f);
+               }
+	       Signal(&(f->Mouse.ListSem));
+	       break;
+	       
+	case FG_DisableMouse :             /* disable events for a window */
+	       WinID = m->Control[0];
+	       Wait(&(f->Mouse.ListSem));
+ 	       for (node = ((WindowList *)f->Mouse.Windows.Head);
+	            (node->Node.Next ne NULL) &&
+	            (node->WinID ne WinID);
+	            node = (WindowList *)node->Node.Next);
+	               
+	       if (node->WinID eq  WinID)
+	          /* if found - we can disable by removing from list */
+	          Remove((Node *)node);
+	       Signal(&(f->Mouse.ListSem));
+	       break;
+	       
+	case FG_EnableMSEvents :
+	       if (f->MSEvent.Reply eq NullPort) {
+	          f->MSEvent.Reply = m->MsgHdr.Reply;  /* save reply port */
+	          /* now boot a msevent handler */
+	          Fork(2000, MSEvent_Handler, sizeof(f), f);
+	       }
+	          
+	case FG_RegisterWindow :
+	       /* when a window is opened, it is registered for other events */
+	       WinID = m->Control[0];
+
+	       /* check if the MSEvents have been enabled */
+	       if (f->MSEvent.Reply eq NullPort)   break;
+	       
+	       /* first wait for exclusive use of list structure */
+	       Wait(&(f->MSEvent.ListSem));
+  	       for (node = (WindowList *)f->MSEvent.Windows.Head;
+	            (node->Node.Next ne NULL) &&
+	            (node->WinID ne WinID);
+	            node = (WindowList *)node->Node.Next);
+	               
+	       if (node->Node.Next eq NULL) {
+	          /* if not found - we can enable by adding to list */
+	          new_node = New(WindowList);
+	          new_node->WinID = WinID;
+	          AddHead(&(f->MSEvent.Windows), (Node *)new_node);
+	       }
+	       Signal(&(f->MSEvent.ListSem));
+	       break;
+	       
+	case FG_DeregisterWindow :
+	       WinID = m->Control[0];
+	       Wait(&(f->MSEvent.ListSem));
+ 	       for (node = (WindowList *)f->MSEvent.Windows.Head;
+	            (node->Node.Next ne NULL) &&
+	            (node->WinID ne WinID);
+	            node = (WindowList *)node->Node.Next);
+	               
+	       if (node->WinID eq  WinID)
+	          /* if found - we can disable by removing from list */
+	          Remove((Node *)node);
+	       Signal(&(f->MSEvent.ListSem));
+	       break;
+	       
+	default :             /* all other requests return errors */
+	       ErrorMsg(m, EC_Error + EG_FnCode + EO_File);
+	       break;
+      }
+      Signal(&f->ObjNode.Lock);   /* unlock file again */
+   }
+
+/* On timeout error, the file is automatically closed */
+
+   f->Users--;
+   FreePort(reqport);
+}
+
+
+static void CloseFile(m, f)
+   MCB *m;
+   File *f;
+{
+   WindowList *node;
+   
+   if (f->Mouse.Reply ne NullPort)
+      FreePort(f->Mouse.Reply);
+   if (f->MSEvent.Reply ne NullPort)
+      FreePort(f->MSEvent.Reply);
+   f->Mouse.Reply = NullPort;
+   f->MSEvent.Reply = NullPort;
+   Free(f->Mouse.Buffer);
+   Free(f->MSEvent.Buffer);
+   
+   /* we now free the waiting reader process, so that it can terminate */
+   Signal(&(f->Mouse.Data_Ready));
+   Signal(&(f->MSEvent.Data_Ready));
+   
+   /* now remove the list of windows registered with mouse and msevent */
+   Wait(&(f->Mouse.ListSem));
+   for (node = (WindowList *)f->Mouse.Windows.Head;
+        node->Node.Next ne NULL; )  {
+      WindowList *tnode = node;
+      node = (WindowList *)node->Node.Next;
+      Free(tnode);
+   }
+   InitList(&(f->Mouse.Windows));
+   Signal(&(f->Mouse.ListSem));
+  
+   Wait(&(f->MSEvent.ListSem));
+   for (node = (WindowList *)f->MSEvent.Windows.Head;
+        node->Node.Next ne NULL; ) {
+      WindowList *tnode = node;
+      node = (WindowList *)node->Node.Next;
+      Free(tnode);
+   }
+   InitList(&(f->MSEvent.Windows));
+   Signal(&(f->MSEvent.ListSem));
+  
+   Unlink(&f->ObjNode, FALSE);
+   ErrorMsg(m, Err_Null);        /* return value to caller */
+}
+
+/**********************************************************************
+ * this stuff is for handling the mouse events                        *
+ **********************************************************************/
+ 
+/* extern prototypes not in ioevents.h */
+extern void Acknowledge(Stream *, WORD);
+extern void NegAcknowledge(Stream *, WORD);
+
+/* forked process prototypes */
+static void Mouse_Wait(Port);
+
+static MCB mouse_mcb;
+static BYTE mouse_data[IOCDataMax];     /* static buffer for event */
+
+
+/* buffers and semaphores to hold events before processing */
+
+static Stream *Mouse_Stream;
+
+int Init_Mouse(void)
+{
+   Object *Mouse_obj;
+   Port Mouse_port;
+   
+   /* standard readers and writers semaphore settings */
+   /* now locate the mouse server */
+   if ((Mouse_obj = Locate(NULL, "/msmouse")) == (Object *) NULL)
+      return(FALSE);      /* function failed */
+      
+   if ((Mouse_Stream = Open(Mouse_obj, NULL, O_ReadOnly)) == (Stream *) NULL) {
+      Close(Mouse_obj);
+      return(FALSE);      /* failed to open stream to mouse server */
+   }
+
+   /* release the object */
+   Close(Mouse_obj);
+   
+   /* now try to enable the events */
+   if ((Mouse_port = EnableEvents(Mouse_Stream, Event_MSMouse)) == NullPort) {
+      /* if it failed */
+      Close(Mouse_Stream);
+      return(FALSE);
+   }
+   
+   /* we can now fork the reader/writer processes */
+   if (!Fork(5000, Mouse_Wait, 4, Mouse_port)) {
+      /* if one of the two processes could not be forked */
+      Close(Mouse_Stream);
+      return(FALSE);
+   }
+   
+   /* all complete and working so indicate success */
+   return(TRUE);
+}
+
+
+
+/* This function is to disable the mouse events */
+void Tidy_Mouse(void)
+{
+   (void)Close(Mouse_Stream);
+}
+
+
+ 
+static void Mouse_Wait(Port mouse_port)
+{
+   int i;
+   IOEvent *current_event;
+   File *node;
+   WindowList *windows;
+   int expected_counter = -1;
+   WORD fnrc;
+   word WinID;
+   int neg_ack = 0;
+   int found;
+   
+   /* set up the message buffer */
+   mouse_mcb.Data = &(mouse_data[0]);
+   
+   forever {
+      mouse_mcb.MsgHdr.Dest = mouse_port;
+      mouse_mcb.Timeout = MaxInt;
+      if ((fnrc = GetMsg(&mouse_mcb)) < 0)
+         continue;   /* if it timed out */
+      for (i=0, current_event = (IOEvent *)mouse_data;
+           i < (mouse_mcb.MsgHdr.DataSize / MSMouse_EventSize);
+           i++,  current_event++) {
+         if (current_event->Counter < expected_counter)
+            continue;   /* we have already received this message */
+            
+         if (current_event->Counter > expected_counter) {
+            if (expected_counter == -1)
+               /* first event */
+               expected_counter = current_event->Counter;
+            else
+               /* some have been lost */
+               if (fnrc == EventRc_IgnoreLost)
+                  expected_counter = current_event->Counter;
+               elif (!neg_ack) {
+                  /* we need to NegAcknowledge */
+                  NegAcknowledge(Mouse_Stream, expected_counter);
+                  neg_ack = 1;
+                  break;
+               }
+               else
+                  expected_counter = current_event->Counter;
+         }
+         /* we have a valid message, so let us add it to the buffer */
+         WinID = ((MSMouse_Event *)&(current_event->Device.Mouse))->WinID;
+         node = (File *)Root.Entries.Head;   /* head of the file list */
+         neg_ack = 0;    /* we can clear this */
+         
+	 for (node = (File *)Root.Entries.Head, found = 0;
+	      (node->ObjNode.Node.Next ne NULL) && (!found);
+	      node = (File *)node->ObjNode.Node.Next) {
+
+            Wait(&(node->Mouse.ListSem));   /* wait for exclusive access */
+
+            for (windows = (WindowList *)node->Mouse.Windows.Head;
+                 (windows->Node.Next ne NULL) && (windows->WinID ne WinID);
+                 windows = (WindowList *)windows->Node.Next);
+               
+            if (windows->WinID eq WinID) {
+               /* if we have found the correct window for the event */
+               found = 1;
+               Wait(&(node->Mouse.Buffers_Free));
+               memcpy(&(node->Mouse.Buffer[node->Mouse.head_ptr]), 
+                      current_event, sizeof(IOEvent));
+               node->Mouse.head_ptr = (node->Mouse.head_ptr + 1) & (Message_Limit - 1);
+         
+               /* signal that we have an event */
+               Signal(&(node->Mouse.Data_Ready));
+            }
+            Signal(&(node->Mouse.ListSem));   /* relinquish exclusive access */
+         }
+
+         /* if the device requested an acknowledge, send it */
+         if (fnrc == EventRc_Acknowledge) {
+            Acknowledge(Mouse_Stream, current_event->Counter);
+            fnrc = 0;
+         }
+         
+         /* increment the expected counter */
+         expected_counter++;
+      }
+   }
+}
+
+static void Mouse_Handler(File *f)
+{
+   MCB mcb;
+  
+   forever {
+      Wait(&(f->Mouse.Data_Ready));
+      if (f->Mouse.Reply eq NullPort)  break;  /* no longer valid */
+      
+      /* send the data to the port */
+      InitMCB(&mcb, MsgHdr_Flags_preserve, f->Mouse.Reply, NullPort, 0);
+      mcb.Data = (char *)&(f->Mouse.Buffer[f->Mouse.tail_ptr]);
+      mcb.MsgHdr.DataSize = sizeof(IOEvent);
+      PutMsg(&mcb);
+      
+      f->Mouse.tail_ptr = (f->Mouse.tail_ptr + 1) & (Message_Limit - 1);
+      Signal(&(f->Mouse.Buffers_Free));
+   }
+}
+
+/**********************************************************************
+ * this stuff is for handling the msevents                            *
+ **********************************************************************/
+ 
+/* forked process prototypes */
+static void MSEvent_Wait(Port);
+
+static MCB msevent_mcb;
+static BYTE msevent_data[IOCDataMax];     /* static buffer for event */
+
+
+/* buffers and semaphores to hold events before processing */
+
+static Stream *MSEvent_Stream;
+
+int Init_MSEvents(void)
+{
+   Object *MSEvent_obj;
+   Port MSEvent_port;
+   
+   /* standard readers and writers semaphore settings */
+   /* now locate the msevent server */
+   if ((MSEvent_obj = Locate(NULL, "/msevents")) == (Object *) NULL)
+      return(FALSE);      /* function failed */
+      
+   if ((MSEvent_Stream = Open(MSEvent_obj, NULL, O_ReadOnly)) == (Stream *) NULL) {
+      Close(MSEvent_obj);
+      return(FALSE);      /* failed to open stream to msevent server */
+   }
+
+   /* release the object */
+   Close(MSEvent_obj);
+   
+   /* now try to enable the events */
+   if ((MSEvent_port = EnableEvents(MSEvent_Stream, Event_MSEvent)) == NullPort) {
+      /* if it failed */
+      Close(MSEvent_Stream);
+      return(FALSE);
+   }
+   
+   /* we can now fork the reader/writer processes */
+   if (!Fork(5000, MSEvent_Wait, 4, MSEvent_port)) {
+      /* if one of the two processes could not be forked */
+      Close(MSEvent_Stream);
+      return(FALSE);
+   }
+   
+   /* all complete and working so indicate success */
+   return(TRUE);
+}
+
+
+
+/* This function is to disable the msevents events */
+void Tidy_MSEvents(void)
+{
+   (void)Close(MSEvent_Stream);
+}
+
+
+ 
+static void MSEvent_Wait(Port msevent_port)
+{
+   int i;
+   IOEvent *current_event;
+   File *node;
+   WindowList *windows;
+   int expected_counter = -1;
+   WORD fnrc;
+   word WinID;
+   int neg_ack = 0;
+   int found;
+   MSEvent *event;
+   
+   /* set up the message buffer */
+   msevent_mcb.Data = &(msevent_data[0]);
+   
+   forever {
+      msevent_mcb.MsgHdr.Dest = msevent_port;
+      msevent_mcb.Timeout = MaxInt;
+      if ((fnrc = GetMsg(&msevent_mcb)) < 0)
+         continue;   /* if it timed out */
+      for (i=0, current_event = (IOEvent *)msevent_data;
+           i < (msevent_mcb.MsgHdr.DataSize / MSEvent_EventSize);
+           i++,  current_event++) {
+         if (current_event->Counter < expected_counter)
+            continue;   /* we have already received this message */
+            
+         if (current_event->Counter > expected_counter) {
+            if (expected_counter == -1)
+               /* first event */
+               expected_counter = current_event->Counter;
+            else
+               /* some have been lost */
+               if (fnrc == EventRc_IgnoreLost)
+                  expected_counter = current_event->Counter;
+               elif (!neg_ack) {
+                  /* we need to NegAcknowledge */
+                  NegAcknowledge(MSEvent_Stream, expected_counter);
+                  neg_ack = 1;
+                  break;
+               }
+               else
+                  expected_counter = current_event->Counter;
+         }
+         /* we have a valid message, so let us add it to the buffer */
+
+         event = (MSEvent *)&(current_event->Device.Mouse);
+         if ((event->Type eq MS_Menu) && (event->WinID eq -1)) {
+            if (!Fork(3000, MSMenu_Execute, sizeof(word), event->Word1))
+               IOdebug("MSWin server error: insufficient memory to run %s", Run_Table[event->Word1]);
+         }
+         else {
+
+            WinID = event->WinID;
+            node = (File *)Root.Entries.Head;   /* head of the file list */
+            neg_ack = 0;    /* we can clear this */
+         
+   	    for (node = (File *)Root.Entries.Head, found = 0;
+	         (node->ObjNode.Node.Next ne NULL) && (!found);
+	         node = (File *)node->ObjNode.Node.Next) {
+
+               Wait(&(node->MSEvent.ListSem));   /* wait for exclusive access */
+               for (windows = (WindowList *)node->MSEvent.Windows.Head;
+                    (windows->Node.Next ne NULL) && (windows->WinID ne WinID);
+                    windows = (WindowList *)windows->Node.Next);
+               
+               if (windows->WinID eq WinID) {
+                  /* if we have found the correct window for the event */
+                  found = 1;
+                  Wait(&(node->MSEvent.Buffers_Free));
+                  memcpy(&(node->MSEvent.Buffer[node->MSEvent.head_ptr]), 
+                         current_event, sizeof(IOEvent));
+                  node->MSEvent.head_ptr = (node->MSEvent.head_ptr + 1) & (Message_Limit - 1);
+         
+                  /* signal that we have an event */
+                  Signal(&(node->MSEvent.Data_Ready));
+               }
+               Signal(&(node->MSEvent.ListSem));   /* relinquish exclusive access */
+            }
+         }
+
+         /* if the device requested an acknowledge, send it */
+         if (fnrc == EventRc_Acknowledge) {
+            Acknowledge(MSEvent_Stream, current_event->Counter);
+            fnrc = 0;
+         }
+         
+         /* increment the expected counter */
+         expected_counter++;
+      }
+   }
+}
+
+static void MSEvent_Handler(File *f)
+{
+   MCB mcb;
+  
+   forever {
+      Wait(&(f->MSEvent.Data_Ready));
+      if (f->MSEvent.Reply eq NullPort)  break;  /* no longer valid */
+      
+      /* send the data to the port */
+      InitMCB(&mcb, MsgHdr_Flags_preserve, f->MSEvent.Reply, NullPort, 0);
+      mcb.Data = (char *)&(f->MSEvent.Buffer[f->MSEvent.tail_ptr]);
+      mcb.MsgHdr.DataSize = sizeof(IOEvent);
+      PutMsg(&mcb);
+      
+      f->MSEvent.tail_ptr = (f->MSEvent.tail_ptr + 1) & (Message_Limit - 1);
+      Signal(&(f->MSEvent.Buffers_Free));
+   }
+}
+
+
+static void MSMenu_Execute(index)
+   word index;
+{
+   extern Object *CurrentDir;
+   char mcname[100];
+   Object *code, *pm;
+   Object *prog;
+   Environ *env2;
+   Stream *s;
+   word e;
+
+   MachineName(mcname);
+   strcat(mcname,"/tasks");
+
+   if (index == 1) {
+      /* helios help function requires special handling */
+      Object *window;
+      Stream *help;
+      char argv[3][20];
+      Stream *strv[4];
+      Object *objv[2];
+      Environ env;
+      char *dummy = Null(char);
+      
+      window = Locate((Object *)NULL, "/window");
+      help = Open(window, "HELP", O_Create | O_ReadWrite);
+
+      pm = Locate(CurrentDir,mcname);
+
+      code = Locate(CurrentDir,Run_Table[index]);
+		
+      if (code == NULL)
+      {
+         IOdebug("MSWin server error: unable to locate (%d) %s", index, Run_Table[index]);
+         return;
+      }
+
+      prog = Execute(pm, code);
+      s = Open(prog, NULL, O_WriteOnly);
+
+      strcpy(argv[0], "help");
+      argv[1][0] = '\0';
+	
+      env2 = getenviron();
+
+      objv[0] = CurrentDir;
+      objv[1] = Null(Object);
+      
+      strv[0] = help;
+      strv[1] = help;
+      strv[2] = help;
+      strv[3] = Null(Stream);
+
+      env.Argv = &dummy;
+      env.Envv = &dummy;
+      env.Objv = &objv[0];
+      env.Strv = &strv[0];
+      e = SendEnv(s->Server, &env);
+      
+      Close(help);
+      Close(window);
+   }
+   else {
+      pm = Locate(CurrentDir,mcname);
+
+      code = Locate(CurrentDir,Run_Table[index]);
+		
+      if (code == NULL)
+      {
+         IOdebug("MSWin server error: unable to locate (%d) %s", index, Run_Table[index]);
+         return;
+      }
+
+      prog = Execute(pm, code);
+      s = Open(prog, NULL, O_WriteOnly);
+
+      env2 = getenviron();
+      e = SendEnv(s->Server, env2);
+   }
+
+   Close(code);
+   Close(s);
+   Close(prog);
+   Close(pm);
+	
+   return;
+}
+@

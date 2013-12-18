@@ -1,0 +1,2199 @@
+head     1.1;
+branch   ;
+access   ;
+symbols  ;
+locks    ; strict;
+comment  @! @;
+
+
+1.1
+date     91.03.10.23.53.41;  author paul;  state Exp;
+branches ;
+next     ;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@        SUBT    Executive SWI handler and routines              > loswi/s
+        ; Copyright (c) 1989, Active Book Company, Cambridge, United Kingdom.
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ARM HELIOS Executive (process scheduler and interrupt handlers)
+        ;
+        ; Author:               James G Smith
+        ; History:      891024  Split from main source file "loexec.s"
+        ;               900413  (Brian Knight) Functional Prototype version
+        ;
+        ; ---------------------------------------------------------------------
+        ; -- Executive SWIs ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+HeliosExecutiveSWI
+        ; in:   r0..r10 : from caller
+        ;       r11     : undefined
+        ;       r12     : SWI comment field (bits 18..0)
+        ;       svc_r13 : FD stack (containing entry r11 and r12)
+        ;       svc_r14 : return address and entry PSR state
+        ;       SVC mode; IRQs disabled; FIQs undefined.
+        ; out:  r0..r10 : modified as per SWI reason code
+        ;       r11     : entry r11
+        ;       r12     : entry r12
+        ;       svc_r13 : FD stack
+        ;       svc_r14 : undefined
+        ;       callers mode, IRQ and FIQ state.
+        ;
+        ; The "swi_exec/swi_noexec" bit must be clear for this vector to have
+        ; been taken.
+        ; Unknown SWIs should exit through the system error vector.
+        ;
+        ; NOTE: The SWI branch table needs to be kept in step with the SWI
+        ;       numbering scheme in "SWI.a"
+
+        AND     r11,svc_r14,#INTflags           ; entry IRQ and FIQ state
+        TEQP    r11,#SVCmode                    ; preserve SVC mode
+
+        BIC     r12,r12,#(swi_Xbit :OR: swi_spare)
+        ; error and spare bits are unused in Executive SWIs
+
+        ADR     r11,exec_SWI_table
+        CMP     r12,#numSWIs
+        ADDCC   pc,r11,r12,LSL #2       ; pc = r11 + (r12 * 4)
+        B       exec_UndefinedSWI       ; bad SWI number
+exec_SWI_table
+SWItable        SETL    {TRUE}          ; build the branch table
+        GET     /hsrc/include/hobjasm/SWI.s
+end_exec_SWI_table
+numSWIs         *       ((end_exec_SWI_table - exec_SWI_table) / 4)
+
+        ; ---------------------------------------------------------------------
+        ; -- Helios SWIs ------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+HeliosSWI       ; there are none at the moment (generate a system error)
+        ; in:   r0..r10 : parameters
+        ;       r11     : undefined
+        ;       r12     : SWI comment (OS field NULL and HE bit set)
+        ;       r13     : FD stack (containing entry r11 and r12)
+        ;       r14     : callers return address
+        ;       SVC mode; IRQs disabled; FIQs undefined.
+
+        ; temporarily store the svc_r14 (corrupting the reset vector)
+        STR     svc_r14,[r0,-r0]
+
+        ; recover the entry r11 and r12
+        LDMFD   sp!,{r11,r12}
+
+        ; place all the un-mapped registers into the register dump area
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        ADRL    r0,message_heliosSWI
+        MOV     r1,#err_SWInotimp
+        B       generic_handler
+
+        ; ---------------------------------------------------------------------
+        ; -- non-Helios SWIs --------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+otherSWI        ; there are none at the moment (generate a system error)
+        ; in:   r0..r10 : parameters
+        ;       r11,r12 : general work registers
+        ;       r13     : FD stack (containing entry r11 and r12)
+        ;       r14     : callers return address
+        ;       SVC mode; IRQs disabled; FIQs undefined.
+
+        ; temporarily store the svc_r14 (corrupting the reset vector)
+        STR     svc_r14,[r0,-r0]
+
+        ; recover the entry r11 and r12
+        LDMFD   sp!,{r11,r12}
+
+        ; place all the un-mapped registers into the register dump area
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        ADRL    r0,message_otherSWI
+        MOV     r1,#err_SWInotimp
+        B       generic_handler
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_UndefinedSWI ------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+exec_UndefinedSWI
+        ; in:  r0..r10 : parameters
+        ;      r11,r12 : general work registers
+        ;      r13     : FD stack (containing entry r11 and r12)
+        ;      r14     : callers return address
+        ;      SVC mode; IRQs undefined; FIQs undefined.
+
+        AND     r11,svc_r14,#Fbit               ; entry FIQ state
+        TEQP    r11,#(Ibit :OR: SVCmode)        ; disable IRQs
+
+        LDMFD   sp!,{r11,r12}   ; recover entry r11 and r12
+
+        ; temporarily store the svc_r14 (corrupting the reset vector)
+        STR     svc_r14,[r0,-r0]
+
+        ; place all the un-mapped registers into the register dump area
+
+        LDR     svc_r14,=register_dump
+        STMIA   svc_r14,{r0-r7}
+
+        ADRL    r0,message_unknownSWI
+        MOV     r1,#err_unknownSWI
+        B       generic_handler
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_SVCCall -----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Execute the given function in SVC mode (hi-priority processes only).
+        ; in:  r4  : address of function to call in SVC mode
+        ;      r0  : arg0
+        ;      r1  : arg1
+        ;      r2  : arg2
+        ;      r3  : arg3
+        ;      SVC mode; IRQs undefined; FIQs undefined
+        ;      r11,r12 scratch registers
+        ;      r13 : FD stack (containing entry r11 and r12)
+        ; out: All registers preserved (other than possible return argument in
+        ;      r0).
+        ;      Callers processor state preserved (apart from any
+        ; flags/registers modified by the called function)
+
+code_exec_SVCCall
+        ; recover entry r11 and r12
+        LDMFD   sp!,{r11,r12}
+
+        ; SVC mode; IRQs undefined; FIQs undefined
+        ; r0..r3 as caller
+        ; r4..r12 undefined (should be preserved)
+        ; svc_r13 : FD stack
+        ; svc_r14 : return address
+        MOV     pc,r4                           ; and call the code
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_GenerateError -----------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Generate a system error. This call exits through the system error
+        ; vector. It is assumed that higher level run-time systems will place
+        ; suitable handler functions onto this vector.
+        ; in:  r0..r10 : registers active at instance of SWI instruction
+        ;      SVC mode; IRQs undefined; FIQs undefined
+        ;      r11,r12 : scratch registers
+        ;      r13 : FD stack (containing entry r11 and r12)
+        ;      r14 : return address (and PSR of caller)
+        ; out: <does NOT return>
+        ;
+        ; Dump registers to the register save area and execute through the
+        ; system error vector.
+code_exec_GenerateError
+        [       (generrIRQoff)
+        AND     r11,svc_r14,#Fbit               ; entry FIQ state
+        TEQP    r11,#(Ibit :OR: SVCmode)        ; disable IRQs
+        |
+        AND     r11,svc_r14,#(Fbit :OR: Ibit)   ; entry FIQ/IRQ state
+        TEQP    r11,#SVCmode
+        ]
+        ; The return address actually points to a system error block.
+
+        LDR     r11,=register_dump
+        STMIA   r11,{r0-r10}
+        ADD     r0,r11,#(11 * &04)              ; address r11-r15 space
+        LDMFD   sp!,{r11,r12}                   ; recover entry r11 and r12
+        STMIA   r0!,{r11-r14}^                  ; USR mode registers written
+        NOP
+        SUB     r1,r14,#&04                     ; PC of SWI instruction
+        STR     r1,[r0,#&00]                    ; dumped_r15
+
+        BIC     r0,r1,#PSRflags                 ; remove PSR flags
+        ADD     r1,r0,#&08                      ; address the error text
+        LDR     r0,[r0,#&04]                    ; and load the error number
+        MOV     r3,#&00                         ; recoverable
+
+        B       enter_error_vector      
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_ExecHalt ----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Terminate executive (enter debugging mode).
+        ; in:  r0 : error condition
+        ;      SVC mode; IRQs undefined; FIQs undefined
+        ;      r11,r12 : scratch registers
+        ;      r13 : FD stack (containing entry r11 and r12)
+        ;      r14 : return address (and PSR of caller)
+        ; out: <does NOT normally return>
+        ;
+        ; Dump registers to the register save area and execute through the
+        ; system error vector
+code_exec_ExecHalt
+        AND     r11,svc_r14,#Fbit               ; entry FIQ state
+        TEQP    r11,#(Ibit :OR: SVCmode)        ; disable IRQs
+
+        LDMFD   sp!,{r11,r12}           ; recover entry r11 and r12
+
+        ; The value in "r0" marks the type of error we have had.
+        ; At the moment we provide a generic message, but preserve the error
+        ; number. This system should be upgraded to actually decode the
+        ; error number into a message.
+
+        STMFD   sp!,{r0}                ; user error number
+
+        ; We should store the USER registers in the register dump
+        LDR     r0,=register_dump
+        STMIA   r0,{r0-r14}^            ; USR mode registers written
+        NOP
+        ; and the PC + PSR of the instruction after the SWI instruction
+        STR     r14,[r0,#(dumped_r15 - register_dump)]
+
+        LDMFD   sp!,{r0}                ; user error number
+        ADRL    r1,message_halted
+
+        ; and fall through to generate the error
+
+        ; ---------------------------------------------------------------------
+        ; -- enter_error_vector -----------------------------------------------
+        ; ---------------------------------------------------------------------
+enter_error_vector
+        ; in:   r0      = 32bit error number
+        ;       r1      = error message pointer
+        ;       r2      = undefined
+        ;       r3      = non-recoverable boolean
+        ;       r4->r12 = undefined
+        ;       svc_r13 = valid FD stack
+        ;       svc_r14 = callers return address and PSR
+        ;       SVC mode; IRQs undefined; FIQs as caller
+        ; out:  <does not return>
+
+        ; If the error occurred in SVC, FIQ or IRQ it is unrecoverable.
+        ; If the error occurred in USR mode it may be recoverable. Note: This
+        ; may cause further errors if register/memory corruption has occurred
+        ; ("dp" lost or address exception in the stack).
+        ; If the "sp" of the USR thread is beneath "sl" then the process
+        ; is un-recoverable (we assume that the error has occurred in the
+        ; stack-overflow handler).
+        ;
+        ; Recoverable errors are passed as signals to the run-time system
+        ; of the currently executing task. They ARE the thread of the error
+        ; process. We can use their stack to continue the processing.
+        ; USR mode un-recoverable errors are passed through the handler (all
+        ; they do is terminate the task the error thread was active in).
+        ;
+        ; For IRQ mode errors we should look at the "dp" register. If it
+        ; is != -1 then we have a handle onto the task that owns the interrupt
+        ; handler. We can call the error handler with the un-recoverable
+        ; state so that the IRQ task is killed. If the "dp == -1" then the
+        ; error has occurred in the Executive. The best we can do is to
+        ; stop Helios immediately (without calling the handler) and provide a
+        ; register dump for the user.
+        ; If FIQ code is viewed as a system specific feature (Executive
+        ; only) then we treat FIQ errors like the IRQ "dp == -1" errors.
+        ; If we ever provide FIQ externally (like IRQ), the same scheme would
+        ; have to be applied.
+        ; All SVC code exists in the Executive. No external code should
+        ; execute in SVC mode. This allows SVC code to be treated like the
+        ; IRQ "dp == -1" case.
+        ; The major flaw with this scheme is that "r9/dp" becomes an unusable
+        ; register, or code that does use it guarantees never to generate
+        ; any system errors.
+
+        ; If error thread had IRQs/FIQs enabled, that is what we want
+        AND     r2,svc_r14,#INTflags            ; entry IRQ and FIQ state
+        TEQP    r2,#SVCmode                     ; preserve SVC mode
+
+        LDR     r2,=register_dump       ; always address the register dump
+        AND     ip,svc_r14,#SVCmode     ; ip == error thread processor mode
+
+        ADD     pc,pc,ip,LSL #2         ; branch through handler table
+        NOP                             ; padding (DO NOT REMOVE)
+        B       handleUSR
+        B       handleFIQ
+        B       handleIRQ
+        B       handleSVC
+
+handleIRQ       ; call the handler if "dp != -1"
+        MOV     r3,#-1                  ; ensure error is unrecoverable
+        LDR     dp,[r2,#(dumped_r9 - register_dump)]
+        ; we should call the handler in SVC mode
+        CMP     dp,#-1                  ; can we reference the task?
+        BNE     call_error_handler      ; YES - so call the handler
+        ; otherwise it is a serious Executive error
+handleSVC
+handleFIQ
+        ; Fatal system error. There is nothing we can do but report it to
+        ; the user and then stop the system.
+        ; We should disable all interrupt sources, and then loop forever.
+
+        ; DISABLE INTERRUPT SOURCES
+        !       0,"TODO: **** FATAL ERROR DEBUGGING OUTPUT ****"
+        ; PROVIDE REGISTER DUMP (to the screen?)
+
+        B       FatalError
+
+handleUSR       ; we can always call the handler for these cases
+
+        !       0,"TODO: sort out why 'dp' restoration isn't working"
+        [       {FALSE}
+        ; load the "dp" given to the process during "CreateProcess"
+        ; (Note: IRQs are enabled if the error thread had them enabled)
+        LDR     dp,=ROOT_start
+        LDR     dp,[dp,#ExecRoot_initial_dp]
+        |
+        LDR     dp,[r2,#(dumped_r9 - register_dump)]
+        ]       ; {TRUE/FALSE}
+        ; we should call the handler in USR mode
+call_error_handler
+        ADD     ip,r2,#(dumped_r4 - register_dump)
+        LDMIA   ip,{r4,r5,r6,r7,r8}
+        ADD     ip,r2,#(dumped_r10 - register_dump)
+        LDMIA   ip,{sl,fp}
+        ; Since we are in SVC mode, the error thread "sp" and "lk" have not
+        ; been corrupted.
+
+        ; We should enter the Error handler function with the following state:
+        ; a1 = int signum
+        ; a2 = char *errtext
+        ; a3 = word *regset
+        ; a4 = word  recoverable
+        ; v1 = preserved
+        ; v2 = preserved
+        ; v3 = preserved
+        ; v4 = preserved
+        ; v5 = preserved
+        ; dp = loaded from "ExecRoot_initial_dp"
+        ; sl = preserved
+        ; fp = preserved
+        ; ip = UNDEFINED
+        ; sp = preserved
+        ; lk = preserved
+
+        LDR     ip,=software_vectors
+        TEQ     r3,#&00000000           ; recoverable
+
+        ; Call the handler in USR mode (even if it is non-recoverable)
+        LDR     ip,[ip,#(vec_systemError * &04)]
+        LDR     r3,[r2,#(dumped_r14 - register_dump)]
+        AND     r3,r3,#HIflags
+        ORR     ip,ip,r3                ; error thread PSR state
+        BIC     ip,ip,#SVCmode          ; and ensure in USR mode
+        MOVEQ   r3,#&00000000           ; mark as recoverable again
+        MOVEQ   r3,#&FFFFFFFF           ; mark as non-recoverable again
+        MOVS    pc,ip                   ; and enter the handler function
+
+        ; ---------------------------------------------------------------------
+        ; -- SystemError ------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+	LTORG
+        GET     lodebug.s       	; lo-level debugger
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_VectorPatch -------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Update a software vector.
+        ; in:   r0  = vector number
+        ;       r1  = address to place in vector (&00000000 to read old value)
+        ;       r11 = undefined
+        ;       r12 = undefined
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = callers return address (and PSR)
+        ; out:  r0  = preserved
+        ;       r1  = old contents of the vector
+        ;
+        ; This allows the software vectors (installed by the Executive) to be
+        ; patched at run_time. Hardware vectors can be changed by specific
+        ; routines (since these live at a known fixed address, and should not
+        ; really be changed except in extreme circumstances).
+
+        ; Note: The undefined instruction vector is in low memory
+        ; for addressability reasons, not with the others.
+
+
+code_exec_VectorPatch
+        LDR     r12,=software_vectors
+        CMP     r0,#vec_undef_instruction  ; Test this one specially
+        MOVEQ   r12,#software_vector_undef ; Vector in low memory
+        ADDNE   r12,r12,r0,LSL #2          ; Vec in table: r12 = r12 + (r0 * 4)
+
+        ; r12 = vector table entry address
+        CMP     r1,#&00000000
+
+        MOV     r11,r1
+
+        ; Note: We should NOT need to protect this code with IRQs off, since
+        ;       the vector update occurs with a single instruction. It could,
+        ;       though, lead to the wrong "old contents" being returned.
+        ;       However, this is a problem anyway, since it requires the
+        ;       users to restore the "old contents" in the order they patched
+        ;       the vector to make any real use of the "old contents" value.
+        LDR     r1,[r12,#&00]           ; old contents
+        STRNE   r11,[r12,#&00]          ; and store new value if non-zero
+
+exit_vectorpatch
+        LDMFD   sp!,{r11,r12}           ; recover entry r11 and r12
+        BICS    pc,link,#Vbit           ; and return with V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_DefineHandler -----------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Define the root interrupt handler. This is a C function called
+        ; within the IRQ handler.
+        ; in:   r0  = function address
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = callers return address (and PSR)
+        ; out:  r0  = preserved
+        ;       V clear = OK, handler registered
+        ;       V set   = FAILED, handler already defined
+        ;
+code_exec_DefineHandler
+        LDR     r11,=ROOT_start
+        LDR     r12,[r11,#ExecRoot_devhand]
+        TEQ     r12,#&00000000
+        LDMNEFD sp!,{r11,r12}           ; recover entry r11 and r12
+        ORRNES  pc,link,#Vbit           ; and return with V set
+
+        STR     r0,[r11,#ExecRoot_devhand]
+
+        LDMFD   sp!,{r11,r12}           ; recover entry r11 and r12
+        BICS    pc,link,#Vbit           ; and return with V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_EnterSVC ----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Enter SVC mode for the caller.
+        ; in:   all registers undefined
+        ; out:  all registers preserved
+        ;
+        ; This call returns to the caller with SVC mode
+        ; (as RISC OS "OS_EnterOS")
+code_exec_EnterSVC
+        LDMFD   sp!,{r11,r12}           ; recover entry r11 and r12
+        BIC     svc_r14,svc_r14,#Vbit   ; clear V
+        ORRS    pc,svc_r14,#SVCmode     ; return setting SVC mode bits
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_FindExecRoot ------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Return the address of the ExecRoot data structure.
+        ; in:  r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: r0  = address of Executive "ExecRoot" data structure
+code_exec_FindExecRoot
+        LDR     r0,=ROOT_start
+        LDMFD   sp!,{r11,r12}           ; recover entry r11 and r12
+        BICS    pc,link,#Vbit           ; and return with V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_LinkWriteC --------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; in:  r0  = ASCII character to output
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = callers return address
+        ;      SVC mode; IRQs undefined; FIQ undefined
+        ; out: r0  = preserved
+        ;      V clear => character written succesfully
+        ;      V set   => unable to write character
+WriteCharacter
+        ; local call: so stack r11 and r12 to simulate SWI entry
+        STMFD   sp!,{r11,r12}
+code_exec_LinkWriteC
+	[	(hercules)
+	MOV	r11,#LINK_base
+	|
+        MOV     r11,#inmos_link_base
+	]
+
+        ; Include check for out-standing interrupt transfer
+        ; This exits with an error because we cannot guarantee that the
+        ; transfer will succeed (even if we disable IRQs), since an interrupt
+        ; driven transfer may start after the check, but before we poll.
+        ; If an interrupt then occurs, the IRQ handler will process the
+        ; interrupt and send the data, and we may corrupt that transfer.
+        LDR     r12,=txbuffer_count
+        LDR     r12,[r12,#&00]
+        CMP     r12,#&00000000
+        BNE     no_character_write
+
+        ; r0  = ASCII character
+        ; r11 = hardware base address
+link_writeC_wait
+        ; Poll "write status" until "write register" free.
+	[	(hercules)
+	LDRB	r12,[r11,#LINK_wstatus]
+	TST	r12,#LINK_data		; bit set marks ready state
+	|
+        LDRB    r12,[r11,#link_wstatus]
+        TST     r12,#linkw_data         ; bit set marks ready state
+	]
+        BEQ     link_writeC_wait
+
+        ; We can place the character into the write register.
+	[	(hercules)
+	STRB	r0,[r11,#LINK_write]
+	|
+        STRB    r0,[r11,#link_write]
+	]
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_LinkReadC ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; in:  r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = callers return address
+        ; out: V clear => r0 = byte read from link adaptor
+        ;      V set   => r0 = undefined (unable to read character)
+ReadCharacter
+        ; local call, so simulate SWI entry
+        STMFD   sp!,{r11,r12}
+code_exec_LinkReadC
+	[	(hercules)
+	MOV	r11,#LINK_base
+	|
+        MOV     r11,#inmos_link_base
+	]
+
+        ; Include check for out-standing interrupt transfer
+        ; This exits with an error because we cannot guarantee that the
+        ; transfer will succeed (even if we disable IRQs), since an interrupt
+        ; driven transfer may start after the check, but before we poll/read.
+        ; If an interrupt then occurs, the IRQ handler will process the
+        ; interrupt and eat the data, and we may possibly read invalid data.
+        LDR     r12,=rxbuffer_count
+        LDR     r12,[r12,#&00]
+        CMP     r12,#&00000000
+        BNE     no_character_read
+
+link_readC_wait
+        PLED    &0E,r0,"when in ReadC polling loop"
+
+        ; Poll "read status" until "read register" full.
+	[	(hercules)
+	LDRB	r0,[r11,#LINK_rstatus]
+	TST	r0,#LINK_data
+	|
+        LDRB    r0,[r11,#link_rstatus]
+        TST     r0,#linkr_data          ; bit set marks ready state
+	]
+        BEQ     link_readC_wait
+
+        ; We can now read the character.
+	[	(hercules)
+	LDRB	r0,[r11,#LINK_read]
+	|
+        LDRB    r0,[r11,#link_read]
+	]
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+no_character_read
+no_character_write
+        ; error return (set V)
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_LinkWPoll ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; in:  r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = callers return address
+        ; out: V clear => C clear => link adaptor write buffer empty
+        ;                 C set   => buffer not empty
+        ;      V set   => no link adaptor
+code_exec_LinkWPoll
+        ; If there is a transmit interrupt process going then return C set
+        LDR     r11,=txbuffer_count
+        LDR     r11,[r11,#&00]
+        TEQ     r11,#&00000000
+        LDMNEFD sp!,{r11,r12}
+        ORRNE   link,link,#Cbit         ; "non-zero" so return C set
+        BICNES  pc,link,#Vbit           ; and return with V clear
+
+	[	(hercules)
+	MOV	r11,#LINK_base
+	LDRB	r12,[r11,#LINK_wstatus]
+	TST	r12,#LINK_data
+	|
+        MOV     r11,#inmos_link_base
+
+        LDRB    r12,[r11,#link_wstatus]
+        TST     r12,#linkw_data         ; bit set marks ready state
+	]
+
+        LDMFD   sp!,{r11,r12}
+        BICNE   link,link,#Cbit         ; flag set so return C clear
+        ORREQ   link,link,#Cbit         ; flag clear so return C set
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_LinkRPoll ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; in:  r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = callers return address
+        ; out: V clear => C clear => link adaptor read buffer is full
+        ;                 C set   => no character present in buffer
+        ;      V set   => no link adaptor
+code_exec_LinkRPoll
+        ; If there is a receive interrupt process going then return C set
+        LDR     r11,=rxbuffer_count
+        LDR     r11,[r11,#&00]
+        TEQ     r11,#&00000000
+        LDMNEFD sp!,{r11,r12}
+        ORRNE   link,link,#Cbit         ; "non-zero" so return C set
+        BICNES  pc,link,#Vbit           ; and return with V clear
+
+	[	(hercules)
+	MOV	r11,#LINK_base
+	LDRB	r12,[r11,#LINK_rstatus]
+	TST	r12,#LINK_data
+	|
+        MOV     r11,#inmos_link_base
+
+        LDRB    r12,[r11,#link_rstatus]
+        TST     r12,#linkr_data         ; bit set marks ready state
+	]
+
+        LDMFD   sp!,{r11,r12}
+        BICNE   link,link,#Cbit         ; flag set so return C clear
+        ORREQ   link,link,#Cbit         ; flag clear so return C set
+        BICS    pc,link,#Vbit           ; clear V flag
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_CPUTime -----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Return the time elapsed since system startup.
+        ; in:  r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = callers return address
+        ; out: r0  = centi-seconds elapsed since system initialised
+code_exec_CPUTime
+        ; load the "ticks" time from the "ExecRoot" structure
+        LDR     r0,=ROOT_start
+        LDR     r0,[r0,#ExecRoot_cstimer]
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_NumPris -----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Return the number of lo-priority levels (1..n).
+        ; in:  r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = callers return address
+        ; out: r0  = number of lo-priority levels
+code_exec_NumPris
+        MOV     r0,#NumberPris
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_InitClock ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Timer (clock) initialisation.
+        ; in:  r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ;      SVC mode; IRQs undefined; FIQs undefined
+        ; out: <no conditions>
+code_exec_InitClock
+        AND     r11,svc_r14,#Fbit               ; entry FIQ state
+        TEQP    r11,#(Ibit :OR: SVCmode)        ; disable IRQs
+
+	[	(hercules)
+	MOV	r11,#TIMER_regs			; address the TIMER hardware
+	MOV	r12,#(TIMER_enable :OR: (centisecondtick :AND: TIMER_psn_mask))
+	STRB	r12,[r11,#TIMER_control]	; start timer
+
+	; now enable the timer interrupt
+	MOV	r11,#INT_regs
+	MOV	r12,#(IRQ_set :OR: INT_TIM)	; timer interrupt source bit
+	STR	r12,[r11,#IRQ_control]		; enable timer interrupt
+	LDR	r11,=IRQ_mask_copy
+	STR	r12,[r11,#&00]
+	; --- needs updating --- overwrites current soft-copy ---
+
+	|	; middle (hercules)
+        ; Functional Prototype
+        ; Program timer clock 0 with our delay (10milli-second tick).
+        ; Set timer into mode 2 (free-running, with pulse every time
+        ; count reaches 0). Use binary count.
+
+        MOV     r11,#timer_base
+        MOV     r12,#(timer_con_mode2 :OR: timer_con_rwlm :OR: timer_con_sc0)
+        STRB    r12,[r11,#timer_control]        ; Set control word
+
+        ; Now write the two bytes of the initial count (lo then hi)
+        MOV     r12,#((centisecondtick :AND: &00FF) :SHR: 0)
+        STRB    r12,[r11,#timer_ctr0_data]
+        MOV     r12,#((centisecondtick :AND: &FF00) :SHR: 8)
+        STRB    r12,[r11,#timer_ctr0_data]
+
+        ; Enable the timer interrupt (IRQ)
+        LDR     r11,=irq_mask           ; IRQ enable register
+        [       (linkIRQ)
+        ; This is a hack. We should really update from the soft-copy
+        MOV     r12,#(int_timer0 :OR: int_link1)
+        |
+        MOV     r12,#int_timer0         ; Enable timer clock 0
+        ]
+        STRB    r12,[r11,#0]
+        LDR     r11,=IRQ_mask_copy      ; Set soft copy too
+        STR     r12,[r11,#0]
+	]
+
+        ; Recover entry state
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_InitBackplane -----------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Initialise link adaptor.
+        ; in:  SVC mode; IRQs undefined; FIQs undefined
+        ;      r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: processor mode preserved
+        ;      V clear => Backplane initialised OK
+        ;      V set   => failed to initialise backplane (no link adaptor!)
+code_exec_InitBackplane
+        AND     r11,svc_r14,#Fbit               ; entry FIQ state
+        TEQP    r11,#(Ibit :OR: SVCmode)        ; disable IRQs (stay in SVC)
+
+	[	(hercules)
+	MOV	r11,#LINK_base
+	MOV	r12,#&00
+	STRB	r12,[r11,#LINK_rstatus]		; disable read interrupts
+	STRB	r12,[r11,#LINK_wstatus]		; disable write interrupts
+	|
+        MOV     r11,#inmos_link_base
+        MOV     r12,#&00
+        STRB    r12,[r11,#link_rstatus] ; disable read interrupts
+        STRB    r12,[r11,#link_wstatus] ; disable write interrupts
+	]
+
+        ; ensure processor FIQs are enabled
+        BIC     link,link,#Fbit
+
+	[	(hercules)
+	[	(linkIRQ)
+	; enable link adaptor IRQs
+	MOV	r11,#INT_regs
+	LDR	r12,=(IRQ_set :OR: LINK_interrupt)
+	STR	r12,[r11,#IRQ_control]
+	LDR	r11,=IRQ_mask_copy
+	STR	r12,[r11,#&00]
+	|
+	; enable link adaptor FIQs
+	MOV	r11,#INT_regs
+	LDR	r12,=(FIQ_set :OR: LINK_interrupt)
+	STR	r12,[r11,#FIQ_control]
+	LDR	r11,=FIQ_mask_copy
+	STR	r12,[r11,#&00]
+	]	; EOF (linkIRQ)
+	|	; middle (hercules)
+        [       (linkIRQ)
+        ; enable link1 IRQs
+        LDR     r11,=irq_mask           ; IRQ enable register
+        MOV     r12,#int_link1          ; enable link1 IRQs
+        STRB    r12,[r11,#&00]
+        LDR     r11,=IRQ_mask_copy      ; and ensure the soft copy is set too
+        STR     r12,[r11,#&00]
+        |
+        ; enable link1 FIQs
+        LDR     r11,=fiq_mask           ; FIQ enable register
+        MOV     r12,#int_link1          ; Enable link1 FIQs
+        STRB    r12,[r11,#0]
+        LDR     r11,=FIQ_mask_copy      ; Set soft copy too
+        STR     r12,[r11,#0]
+        ]	; EOF (linkIRQ)
+	]	; EOF (hercules)
+
+        ; We should call the podule device drivers to perform a soft reset
+        ; on their hardware. This will allow "InitBackplane" to be called
+        ; whenever hardware devices need reset (without resorting to resetting
+        ; the whole machine). Unfortunately... the Executive does not know
+        ; about IO devices other than its link. The device drivers loaded
+        ; by the Nucleus should ensure that their hardware is sensible
+        ; before performing any operations.
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_SizeMemory --------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Calculate the size of memory in bytes.
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r0  = base address or &FFFFFFFF
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = end address + 1
+        ;       processor mode restored
+localSizeMemory
+        ; provide a local entry to the "SizeMemory" code
+        STMFD   sp!,{r11,r12}
+code_exec_SizeMemory
+        ADDS    r11,r0,#&01             ; if r0 was &FFFFFFFF, Z flag is set
+        LDREQ   r11,=userRAMbase        ; start of user RAM
+        LDRNE   r11,=userRAMtop         ; end of user RAM + 1
+        LDR     r0,[r11,#&00]
+exit_SizeMemory
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; return V clear, restoring callers
+                                        ; IRQ and FIQ state
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_NucleusBase -------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; This call returns the address of the nucleus code.
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = Nucleus start address
+        ;       processor mode restored
+localNucleusBase
+        ; provide a local entry to the "NucleusBase" routine
+        STMFD   sp!,{r11,r12}
+code_exec_NucleusBase
+        STMFD   sp!,{link}
+
+        ; Search for the "nucleus" code in the ROM item structure
+        ADRL    r0,NucleusItemName
+        BL      local_FindROMItem       ; look for the named item
+        BVS     RAMbased_nucleus
+
+	[	(newCODE)
+	LDR	r11,[r0,#OBJECTOffset]	; offset to OBJECT data
+	|
+        LDR     r11,[r0,#ObjectOffset]
+	]
+        ADD     r0,r0,r11               ; r0 = nucleus image base address
+
+        B       NucleusBase_out
+RAMbased_nucleus
+        ; We assume the Nucleus is at the start of user memory
+        ; SizeMemory(-1)
+        MOV     r0,#&FFFFFFFF
+        BL      localSizeMemory
+NucleusBase_out
+        LDMFD   sp!,{link}
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; return V clear, restoring callers
+                                        ; IRQ and FIQ state
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_RAMBase -----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; This call returns the address of the first available RAM location.
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = Available RAM start address
+        ;       processor mode restored
+code_exec_RAMBase
+        LDR     r11,=userRAMbase        ; start of user RAM
+        LDR     r0,[r11,#&00]
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; return V clear, restoring callers
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_StartLinkTx -------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Place the arguments into memory accessible from the link adaptor
+        ; interrupt handler. Enable link adaptor buffer transmit empty
+        ; interrupts.
+        ; in:  SVC mode; IRQs undefined; FIQs undefined
+        ;      r0  = transfer buffer address
+        ;      r1  = transfer data amount (bytes)
+        ;      r2  = (SaveState *) reference to process to re-start
+        ;      r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: r0  = preserved
+        ;      r1  = preserved
+        ;      r2  = preserved
+        ;      processor mode restored
+        ;      V clear => interrupt handler ready
+        ;      V set   => interrupt transfer out-standing (not replaced)
+        ;                 or no link adaptor podule
+        ;
+        ; An out-standing interrupt transfer is marked by the location
+        ; "txbuffer_count" containing a non-zero value. If this contains zero
+        ; then we can over-write the variables with our new values.
+        ; (This is because the interrupt handler executes with IRQs disabled,
+        ; so we cannot possibly update the variables when the interrupt
+        ; routine is executing, and the interrupt routine will check for a
+        ; transfer count of zero before exiting).
+code_exec_StartLinkTx
+        LDR     r11,=txbuffer_address
+        LDR     r12,[r11,#(txbuffer_count - txbuffer_address)]
+        CMP     r12,#&00000000          ; is transfer count NULL?
+
+        ; "NE" then we have an out-standing TX interrupt
+        LDMNEFD sp!,{r11,r12}           ; NO: then recover entry state
+        ORRNES  pc,link,#Vbit           ;     and return V set
+
+        STMIA   r11,{r0,r1,r2}          ; YES: then update registers
+
+        ; check if we are waiting for the timer interrupt to re-start a
+        ; blocked process... if we are then we should wait here until
+        ; the process has been re-started...
+        ; THIS IS VERY BAD, SINCE IT MEANS THAT THE COMPLETE SYSTEM WILL BE
+        ; BLOCKED UNTIL THE NEXT CLOCK INTERRUPT OCCURS.
+        ; WE SHOULD REALLY MOVE THE POLL CHECK TO THE "Scheduler" AND THEN
+        ; DISPATCH OURSELVES. THE PROBLEM IS THAT THE "Scheduler" CURRENTLY
+        ; RETURNS TO HI-PRIORITY PROCESSES BEFORE PERFORMING ANY PROCESS
+        ; RE-SCHEDULING.
+
+        ; We need to wait until the next clock interrupt has re-scheduled
+        ; the last transfer
+txpoll_delay
+        LDR     r2,[r11,#(txpoll_savestate - txbuffer_address)]
+        CMP     r2,#&00000000
+        BNE     txpoll_delay
+        ; we can now define the new process
+
+	[	(hercules)
+	MOV	r11,#LINK_base
+	MOV	r12,#LINK_intenable
+	STRB	r12,[r11,#LINK_wstatus]	; enable TX interrupts
+	|
+        MOV     r11,#inmos_link_base
+
+        ; r11 = link adaptor base address
+        MOV     r12,#linkw_interrupt    ; enable write interrupts
+        STRB    r12,[r11,#link_wstatus]
+	]
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; return V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_AbortLinkTx -------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Place the arguments into memory accessible from the link adaptor
+        ; interrupt handler. Enable link adaptor receive buffer full
+        ; interrupts.
+        ; in:  SVC mode; IRQs undefined; FIQs undefined
+        ;      r0  = undefined (really "LinkInfo *")
+        ;      r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: r0  = buffer address of next byte to be written
+        ;      r1  = number of bytes remaining to be written
+        ;      r2  = pointer to the SaveState structure for the blocked process
+        ;      processor mode restored
+        ;      V clear => information valid
+        ;      V set   => no link adaptor podule
+code_exec_AbortLinkTx
+	[	(hercules)
+	MOV	r11,#LINK_base
+	MOV	r12,#&00
+	STRB	r12,[r11,#LINK_wstatus]
+	|
+        MOV     r11,#inmos_link_base
+
+        ; disable link adaptor transmit buffer empty interrupt
+        ; r11 = link adaptor base address
+        MOV     r12,#&00                ; disable write interrupts
+        STRB    r12,[r11,#link_wstatus]
+	]
+
+        ; We can now update the "LinkTx" control variables since the
+        ; hardware should not be generating any interrupts.
+
+        ; return the current "txbuffer" variable contents
+        LDR     r11,=txbuffer_address
+        LDMIA   r11,{r0,r1,r2}
+        STR     r12,[r11],#&04          ; "r12" holds zero from above
+        STR     r12,[r11],#&04
+        STR     r12,[r11,#&00]
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; return V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_StartLinkRx -------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; in:  SVC mode; IRQs undefined; FIQs undefined
+        ;      r0  = transfer buffer address
+        ;      r1  = transfer data amount (bytes)
+        ;      r2  = (SaveState *) reference to process to re-start
+        ;      r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: r0  = preserved
+        ;      r1  = preserved
+        ;      r2  = preserved
+        ;      processor mode restored
+        ;      V clear => interrupt handler ready
+        ;      V set   => interrupt transfer out-standing (not replaced)
+        ;                 or no link adaptor podule
+code_exec_StartLinkRx
+        LDR     r11,=rxbuffer_address
+        LDR     r12,[r11,#(rxbuffer_count - rxbuffer_address)]
+        CMP     r12,#&00000000          ; is transfer count NULL?
+
+        ; "NE" => there is a Rx interrupt transfer already active
+        LDMNEFD sp!,{r11,r12}
+        ORRNES  pc,link,#Vbit
+
+        STMIA   r11,{r0,r1,r2}          ; YES: then update registers
+
+        ; check if we are waiting for the timer interrupt to re-start a
+        ; blocked process... if we are then we should wait here until
+        ; the process has been re-started... since we do NOT wish to start
+        ; a transfer that may complete before the polling routine has
+        ; recovered the previous savestate...
+        ; THIS IS VERY BAD, SINCE IT MEANS THAT THE COMPLETE SYSTEM WILL BE
+        ; BLOCKED UNTIL THE NEXT CLOCK INTERRUPT OCCURS.
+        ; WE SHOULD REALLY MOVE THE POLL CHECK TO THE "Scheduler" AND THEN
+        ; DISPATCH OURSELVES. THE PROBLEM IS THAT THE "Scheduler" CURRENTLY
+        ; RETURNS TO HI-PRIORITY PROCESSES BEFORE PERFORMING ANY PROCESS
+        ; RE-SCHEDULING.
+
+        ; We need to wait until the next clock interrupt has re-scheduled
+        ; the last transfer
+rxpoll_delay
+        ; r11 = rxbuffer_address
+
+        ; We should NOT get stuck in this loop when bootstrapping helios
+        PLED    &0F,r12,"when waiting for clock interrupt"
+        PLED    &00,r12,"when waiting for clock interrupt"
+
+        LDR     r12,[r11,#(rxpoll_savestate - rxbuffer_address)]
+        CMP     r12,#&00000000
+        BNE     rxpoll_delay
+        ; we can now define the new process
+
+	[	(hercules)
+	MOV	r11,#LINK_base
+	MOV	r12,#LINK_intenable
+	STRB	r12,[r11,#LINK_rstatus]
+	|
+        MOV     r11,#inmos_link_base
+
+        ; r11 = link adaptor base address
+        MOV     r12,#linkr_interrupt    ; enable read interrupts
+        STRB    r12,[r11,#link_rstatus]
+	]
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; return V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_AbortLinkRx -------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; in:  SVC mode; IRQs undefined; FIQs undefined
+        ;      r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: r0  = buffer address of next byte to be read
+        ;      r1  = number of bytes remaining to be read
+        ;      r2  = pointer to the SaveState structure of the blocked process
+        ;      processor mode restored
+code_exec_AbortLinkRx
+	[	(hercules)
+	MOV	r11,#LINK_base
+	MOV	r12,#&00
+	STRB	r12,[r11,#LINK_rstatus]
+	|
+        MOV     r11,#inmos_link_base
+
+        ; disable the link adaptor receive buffer full interrupt
+        ; r11 = link adaptor base address
+        MOV     r12,#&00                ; disable read interrupts
+        STRB    r12,[r11,#link_rstatus]
+	]
+
+        ; We can now update the "LinkRx" control variables since the
+        ; hardware should not be generating any interrupts.
+
+        ; return the current "rxbuffer" variable contents (zeroing contents)
+        LDR     r11,=rxbuffer_address
+        LDMIA   r11,{r0,r1,r2}
+        STR     r12,[r11],#&04          ; "r12" holds zero from above
+        STR     r12,[r11],#&04
+        STR     r12,[r11,#&00]
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; return V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_IntsOff -----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Disable IRQs.
+        ; Update the callers PSR to have IRQs disabled (Ibit set).
+        ; in:  r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: no conditions
+code_exec_IntsOff
+        LDMFD   sp!,{r11,r12}
+        BIC     svc_r14,svc_r14,#Vbit           ; clear V
+local_disableIRQs
+        ORRS    pc,svc_r14,#Ibit                ; set I
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_IntsOn ------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Enable IRQs.
+        ; Update the callers PSR to have IRQs enabled (Ibit clear).
+        ; in:  r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: no conditions
+code_exec_IntsOn
+        LDMFD   sp!,{r11,r12}
+local_enableIRQs
+        BICS    pc,svc_r14,#(Ibit :OR: Vbit)    ; clear I and V
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_DisableIRQ --------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Disable the specified IRQ sources.
+        ; in:  r0  = mask with bits set for sources to be disabled
+        ;      r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: r0  = old IRQ mask
+        ; Is it necessary to disable all IRQs to make this update atomic??
+code_exec_DisableIRQ
+        MOV     r12,r0                  ; Copy mask argument
+        LDR     r11,=IRQ_mask_copy      ; Address of mask soft copy
+        LDR     r0,[r11,#0]             ; Get old mask in result reg
+        BIC     r12,r0,r12              ; Clear the specified bits
+        STR     r12,[r11,#0]            ; Update the soft copy
+	[	(hercules)
+	MOV	r11,#INT_regs		; address of hardware interrupt regs
+	STRB	r12,[r11,#IRQ_control]	; store mask
+	|
+        LDR     r11,=irq_mask           ; Address of h/w mask register
+        STRB    r12,[r11,#0]            ; Store (byte) mask
+	]
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; Return with V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_EnableIRQ ---------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Enable the specified IRQ sources.
+        ; in:  r0  = mask with bits set for sources to be enabled
+        ;      r11 = undefined (work register)
+        ;      r12 = undefined (work register)
+        ;      r13 = FD stack (containing entry r11 and r12)
+        ;      r14 = return address
+        ; out: r0  = old IRQ mask
+        ; Is it necessary to disable all IRQs to make this update atomic??
+code_exec_EnableIRQ
+        MOV     r12,r0                  ; Copy mask argument
+        LDR     r11,=IRQ_mask_copy      ; Address of mask soft copy
+        LDR     r0,[r11,#0]             ; Get old mask in result reg
+        ORR     r12,r0,r12              ; Set the specified bits
+        STR     r12,[r11,#0]            ; Update the soft copy
+	[	(hercules)
+	MOV	r11,#INT_regs		; hardware interrupt registers
+	STRB	r12,[r11,#IRQ_control]	; store mask
+	|
+        LDR     r11,=irq_mask           ; Address of h/w mask register
+        STRB    r12,[r11,#0]            ; Store (byte) mask
+	]
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit           ; Return with V clear
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_FindROMItem -------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Search for a named ITEM within the ROM or FlashEPROM. The ROM is
+        ; searched first. If the ITEM appears in the ROM then the FlashEPROM
+        ; is checked in-case a newer copy is provided. If the ITEM is not
+        ; found in the ROM then the FlashEPROM is checked anyway.
+        ; The system ROM starts at "ROMbase".
+        ; The FlashEPROM starts at "flash_base".
+        ; We do not need to know the size of these areas, since they should
+        ; always have a valid structure.
+local_FindROMItem
+        STMFD   sp!,{r11,r12}
+code_exec_FindROMItem
+        ; in:   r0  : NULL terminated ASCII string
+        ;       r11 : undefined (work register)
+        ;       r12 : undefined (work register)
+        ;       r13 : FD stack (containing entry r11 and r12)
+        ;       r14 : return address
+        ; out:  V clear -> item found           r0 = item base address
+        ;                                       r1 = item length
+        ;       V set   -> item not found       r0 = preserved
+        ;                                       r1 = preserved
+
+	[	(newCODE)
+	; A BLOCK descriptor is found at the start of the system ROM and
+	; the FlashEPROM. We must reference through this to the start of
+	; the ITEM chain.
+	STMFD	sp!,{r0,r1,r2,link}	; preserve work registers
+
+	MOV	r2,#&00000000		; system ROM ITEM find flag
+
+	[	(ROMcode)
+	[	(hercules)
+	MOV	r11,#ROM_base		; start of the system ROM BLOCK
+	|
+	MOV	r11,#ROMbase		; start of the system ROM BLOCK
+	]
+	|
+	MOV	r11,#baseAddr		; RAM loaded system base address
+	]
+	LDR	r12,=BLOCKMagic		; r12 = the BLOCK ID word
+	LDR	r1,[r11,#BLOCKID]	; load the stored ID word
+	TEQ	r1,r12			; and check against the real value
+	BNE	find_failed		; system ROM BLOCK not found
+
+	LDR	r1,[r11,#BLOCKData]	; load the offset to the first ITEM
+	ADD	r11,r11,r1		; r11 = start of the first ITEM
+	LDR	r12,=ITEMMagic		; r12 = the ITEM ID word
+	; Search for the ITEM in the system ROM
+ROMfind_loop
+	LDR	r1,[r11,#ITEMID]	; read the ITEM magic word
+	TEQ	r1,r12			; and check against the real value
+	BNE	ROMfind_failed		; ITEM is not in the system ROM
+
+        ; The ITEM magic word has been found, check that we are pointing at
+	; a ROM ITEM.
+	LDR	r1,[r11,#ITEMExtensions]	; extensions bitmask
+	TST	r1,#ITEMhdrROM			; is this a ROM item?
+	BEQ	ROMfind_failed			; invalid ITEM (end of chain)
+        ; These checks are NOT fool-proof. However they should guard against
+	; accidental generation of an invalid ROM image, since we follow the
+	; information given in the ITEM headers and do not search individual
+	; OBJECTs for the marker word.
+
+        ; Check that the names match (we do not care about case)
+        ADD     r1,r11,#ITEMName	; start of the full name
+        BL      local_WCompare
+	; VS = names are different
+        LDRVS   r1,[r11,#ITEMLength]	; complete length of this ITEM
+        ADDVS   r11,r11,r1              ; step over this ITEM
+        BVS     ROMfind_loop            ; and see if the next ITEM matches
+
+	; If we reach this point the ITEM names are the same.
+        MOV     r2,r11                  ; remember the ROM ITEM base address
+
+ROMfind_failed
+	; Search for the ITEM in the FlashEPROM. r2 will either be &00000000
+	; or the address of the system ROM ITEM found.
+
+	MOV	r11,#flash_base		; start of the FlashEPROM BLOCK
+	LDR	r12,=BLOCKMagic		; r12 = the BLOCK ID word
+	LDR	r1,[r11,#BLOCKID]	; load the stored ID word
+	TEQ	r1,r12			; and check against the real value
+	BNE	FlashEPROMfind_failed	; FlashEPROM BLOCK not found
+
+	LDR	r1,[r11,#BLOCKData]	; load the offset to the first ITEM
+	ADD	r11,r11,r1		; r11 = start of the first ITEM
+	LDR	r12,=ITEMMagic		; r12 = the ITEM ID word
+	; Search for the ITEM in the FlashEPROM
+FlashEPROMfind_loop
+	LDR	r1,[r11,#ITEMID]	; read the ITEM magic word
+	TEQ	r1,r12			; and check against the real value
+	BNE	FlashEPROMfind_failed	; ITEM is not in the FlashEPROM
+
+        ; The ITEM magic word has been found, check that we are pointing at
+	; a ROM ITEM.
+	LDR	r1,[r11,#ITEMExtensions]	; extensions bitmask
+	TST	r1,#ITEMhdrROM			; is this a ROM item?
+	BEQ	FlashEPROMfind_failed		; invalid ITEM (end of chain)
+        ; These checks are NOT fool-proof. However they should guard against
+	; accidental generation of an invalid ROM image, since we follow the
+	; information given in the ITEM headers and do not search individual
+	; OBJECTs for the marker word.
+
+        ; Check that the names match (we do not care about case)
+        ADD     r1,r11,#ITEMName	; start of the full name
+        BL      local_WCompare
+	; VS = names are different
+        LDRVS   r1,[r11,#ITEMLength]	; complete length of this ITEM
+        ADDVS   r11,r11,r1              ; step over this ITEM
+        BVS     FlashEPROMfind_loop     ; and see if the next ITEM matches
+	MOV	r2,r11			; ITEM found in FlashEPROM
+FlashEPROMfind_failed
+
+	TEQ	r2,#&00000000		; ITEM found in the system ROM
+	BEQ	find_failed		; NO - then ITEM has NOT been found
+
+	MOV	r0,r2			; copy base address over entry name
+	LDR	r1,[r0,#ITEMLength]
+        ; r0 = ITEM base address
+        ; r1 = ITEM length
+	ADD	sp,sp,#&08		; dump the entry r0 and r1
+        LDMFD   sp!,{r2,link}	        ; recover the entry r2 and link
+        LDMFD   sp!,{r11,r12}           ; and also entry r11 and r12
+        BICS    pc,link,#Vbit           ; ensure V clear
+
+find_failed
+        ; The specified object could NOT be found
+        LDMFD   sp!,{r0,r1,r2,link}	; recover entry r0, r1 and r2
+        LDMFD   sp!,{r11,r12}		; and also entry r11 and r12
+        ORRS    pc,link,#Vbit           ; ensure V set
+
+	|	; middle (newCODE)
+
+        ; To find a particular ROM item we must start at "ROMbase + 4"
+        ; and follow the contiguous chain of marked items.
+        STMFD   sp!,{r0,r1,link}
+
+	[	(ROMcode)
+	[	(hercules)
+        MOV     r11,#ROM_base           ; start of the item list
+	|
+        MOV     r11,#ROMbase            ; start of the item list
+	]
+	|
+	MOV	r11,#baseAddr		; RAM loaded system base address
+	]
+        ADD     r11,r11,#&04            ; and step over the bootstrap word
+        LDR     r12,=Item_Magic         ; the item ID word
+find_loop
+        LDR     r1,[r11,#ItemID]        ; read the item magic number
+        CMP     r1,r12                  ; and check against the true value
+        BNE     find_failed             ; invalid item (at end of list)
+
+        ; The item magic word has been found... cross-check with the version
+        ; number (the top 16bits should be clear)
+        LDR     r1,[r11,#ItemVersion]
+        TST     r1,#&FF000000
+        TSTEQ   r1,#&00FF0000
+        BNE     find_failed     ; invalid item (at end of list)
+
+        ; The above checks are NOT fool-proof. However they should guard
+        ; against accidental generation of an invalid ROM image since we follow
+        ; the information given in the ROM header, and do not search individual
+        ; objects for the marker word.
+        ; Check that the names match (we do not care about case)
+
+        ADD     r1,r11,#ItemName        ; start of the full name
+        BL      local_WCompare
+        LDRVS   r1,[r11,#ItemLength]
+        ADDVS   r11,r11,r1              ; step over this item
+        BVS     find_loop               ; and see if the next item matches
+
+        ; Names are the same, so return the position of this item
+        ; r0 = Item base address
+        ; r1 = Item length
+        MOV     r0,r11                  ; item base address
+        LDR     r1,[r11,#ItemLength]    ; item length
+        LDMFD   sp!,{r11,r12,link}      ; dump entry r0 and r1 (recover r11)
+        LDMFD   sp!,{r11,r12}           ; and recover entry r11 and r12
+        BICS    pc,link,#Vbit           ; ensure V clear
+
+find_failed
+        ; The specified object could NOT be found
+        LDMFD   sp!,{r0,r1,link}
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,link,#Vbit           ; ensure V set
+	]	; EOF (newCODE)
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_FindNEXTItem ------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; Enumerate the contents of the ROM or FlashEPROM.
+        ; If the request is for ROM, the FlashEPROM will still be searched to
+        ; perform file over-loading. The FlashEPROM can be enumerated to
+        ; provide the "/00/rom/patch" directory.
+        ; The enumeration could be speeded up by, rather than using an ITEM
+        ; number index, we could use a direct address index. This would tie
+        ; the caller into NOT updating the index between calls, which would
+        ; require a slight change to the SWI parameters.
+code_exec_FindNEXTItem
+	[	(newCODE)
+        ; in:   r0  : ROM item index
+        ;       r1  : "typeROM" or "typeFlashEPROM"
+        ;       r11 : undefined (work register)
+        ;       r12 : undefined (work register)
+        ;       r13 : FD stack (containing entry r11 and r12)
+        ;       r14 : return address
+        ; out:  V clear -> item found           r0 = item base address
+        ;                                       r1 = item length
+        ;       V set   -> item not found       r0 = preserved
+        ;                                       r1 = preserved
+
+        STMFD   sp!,{r0,r1,r2,link}
+
+	[	(ROMcode)
+	[	(hercules)
+	MOV	r11,#ROM_base		; start of the system ROM BLOCK
+	|
+	MOV	r11,#ROMbase		; start of the system ROM BLOCK
+	]
+	|
+	MOV	r11,#baseAddr		; RAM loaded system base address
+	]
+	TEQ	r1,#typeROM
+	MOVNE	r11,#flash_base		; start of the FlashEPROM BLOCK
+	TEQNE	r1,#typeFlashEPROM
+	BNE	FindROM_failed		; unknown selection
+
+	LDR	r12,=BLOCKMagic		; r12 = the BLOCK ID word
+	LDR	r1,[r11,#BLOCKID]	; load the stored ID word
+	TEQ	r1,r12			; and check against the real value
+	BNE	FindROM_failed		; the relevant BLOCK does not exist
+
+	LDR	r1,[r11,#BLOCKData]	; load the offset to the first ITEM
+	ADD	r11,r11,r1		; r11 = start of the first ITEM
+        MOV     r2,#&00000000           ; starting index
+        LDR     r12,=ITEMMagic		; the ITEM ID word
+FindROM_loop
+        LDR     r1,[r11,#ITEMID]        ; read the ITEM magic number
+        TEQ     r1,r12                  ; and check against the real value
+        BNE     FindROM_failed          ; invalid item (at end of list)
+
+        ; The item magic word has been found, check that we are pointing at
+	; a ROM ITEM.
+	LDR	r1,[r11,#ITEMExtensions]	; extensions bitmask
+	TST	r1,#ITEMhdrROM			; is this a ROM ITEM?
+	BEQ	FindROM_failed			; clear - not ROM
+
+        CMP     r0,r2                   ; is this the index we want?
+        ADDNE   r2,r2,#&01              ; NO, then increment index count
+        LDRNE   r1,[r11,#ITEMLength]    ; get the length of this object
+        ADDNE   r11,r11,r1              ; step over this ITEM
+        BNE     FindROM_loop            ; and see if the next ITEM matches
+
+        ; Index number is OK, so return the position of this ITEM
+	[	{TRUE}
+	; If we were searching the system ROM, we should check for a newer
+	; version of the file in FlashEPROM.
+	LDR	r0,[sp,#&04]		; load entry r1
+	TEQ	r0,#typeROM		; searching system ROM?
+	BNE	FindROM_ok		; NO, so leave with found ITEM
+	; Search the FlashEPROM for an object with name "r11.ITEMName".
+	ADD	r0,r11,#ITEMName	; index the ITEM name we are comparing
+	; r0  = ITEM name we are looking for
+	; r1  = undefined
+	; r2  = undefined
+	; r11 = ITEM we have found in the system ROM
+	; r12 = undefined
+	MOV	r2,#flash_base		; start of the FlashEPROM BLOCK
+	LDR	r12,=BLOCKMagic		; r12 = the BLOCK ID word
+	LDR	r1,[r2,#BLOCKID]	; load the stored ID word
+	TEQ	r1,r12			; and check against the real value
+	BNE	FindFlashEPROM_failed	; FlashEPROM BLOCK not found
+
+	LDR	r1,[r2,#BLOCKData]	; load the offset to the first ITEM
+	ADD	r2,r2,r1		; r2 = start of the first ITEM
+	LDR	r12,=ITEMMagic		; r12 = the ITEM ID word
+	; Search for the ITEM in the FlashEPROM
+FindFlashEPROM_loop
+	LDR	r1,[r2,#ITEMID]		; read the ITEM magic word
+	TEQ	r1,r12			; and check against the real value
+	BNE	FindFlashEPROM_failed	; ITEM is not in the FlashEPROM
+
+        ; The ITEM magic word has been found, check that we are pointing at
+	; a ROM ITEM
+	LDR	r1,[r2,#ITEMExtensions]		; extensions bitmask
+	TST	r1,#ITEMhdrROM			; is this a ROM item?
+	BEQ	FindFlashEPROM_failed		; invalid ITEM (end of chain)
+        ; These checks are NOT fool-proof. However they should guard against
+	; accidental generation of an invalid ROM image, since we follow the
+	; information given in the ITEM headers and do not search individual
+	; OBJECTs for the marker word.
+
+        ; Check that the names match (we do not care about case)
+        ADD     r1,r2,#ITEMName			; start of the full name
+        BL      local_WCompare
+	; VS = names are different
+        LDRVS   r1,[r2,#ITEMLength]	; complete length of this ITEM
+        ADDVS   r2,r2,r1                ; step over this ITEM
+        BVS     FindFlashEPROM_loop     ; and see if the next ITEM matches
+	MOV	r11,r2			; ITEM found in FlashEPROM
+FindFlashEPROM_failed
+FindROM_ok
+	; r11 = found ITEM base address
+	]	; EOF {TRUE}
+
+        MOV     r0,r11                  ; ITEM base address
+        LDR     r1,[r0,#ITEMLength]     ; ITEM length
+	
+	ADD	sp,sp,#&08		; dump the entry r0 and r1
+	LDMFD	sp!,{r2,link}		; recover the entry r2 and link
+        LDMFD   sp!,{r11,r12}           ; and recover entry r11 and r12
+        BICS    pc,link,#Vbit           ; ensure V clear
+
+FindROM_failed
+        ; The specified object could NOT be found
+        LDMFD   sp!,{r0,r1,r2,link}	; recover entry r0, r1 and r2
+        LDMFD   sp!,{r11,r12}		; and also entry r11 and r12
+        ORRS    pc,link,#Vbit           ; ensure V set
+
+	|	; middle (newCODE)
+
+        ; in:   r0  : ROM item index
+        ;       r11 : undefined (work register)
+        ;       r12 : undefined (work register)
+        ;       r13 : FD stack (containing entry r11 and r12)
+        ;       r14 : return address
+        ; out:  V clear -> item found           r0 = item base address
+        ;                                       r1 = item length
+        ;       V set   -> item not found       r0 = preserved
+        ;                                       r1 = preserved
+
+        ; To find a particular ROM item we must start at "ROMbase + 4"
+        ; and follow the contiguous chain of marked items.
+        STMFD   sp!,{r0,r1,r2,link}
+
+        MOV     r2,#&00000000           ; starting index
+	[	(ROMcode)
+	[	(hercules)
+        MOV     r11,#ROM_base           ; start of the ROM image
+	|
+        MOV     r11,#ROMbase            ; start of the ROM image
+	]
+	|
+	MOV	r11,#baseAddr		; RAM loaded system base address
+	]
+        ADD     r11,r11,#&04            ; and step over the bootstrap word
+        LDR     r12,=Item_Magic         ; the item ID word
+ROMfind_loop
+        LDR     r1,[r11,#ItemID]        ; read the item magic number
+        CMP     r1,r12                  ; and check against the true value
+        BNE     ROMfind_failed          ; invalid item (at end of list)
+
+        ; The item magic word has been found... cross-check with the version
+        ; number (the top 16bits should be clear)
+        LDR     r1,[r11,#ItemVersion]
+        TST     r1,#&FF000000
+        TSTEQ   r1,#&00FF0000
+        BNE     ROMfind_failed          ; invalid item (at end of list)
+
+        ; The above checks are NOT fool-proof. However they should guard
+        ; against accidental generation of an invalid ROM image since we follow
+        ; the information given in the ROM header, and do not search individual
+        ; objects for the marker word.
+        CMP     r0,r2                   ; is this the one we want
+        ADDNE   r2,r2,#&01              ; NO, then increment index count
+        LDRNE   r1,[r11,#ItemLength]    ; get the length of this object
+        ADDNE   r11,r11,r1              ; step over this item
+        BNE     ROMfind_loop            ; and see if the next item matches
+
+        ; index number is OK, so return the position of this item
+        ; r0 = Item base address
+        ; r1 = Item length
+        MOV     r0,r11                  ; item base address
+        LDR     r1,[r11,#ItemLength]    ; item length
+        LDMFD   sp!,{r11,r12,r2,link}   ; dump the entry r0 and r1 (NOT r2)
+        LDMFD   sp!,{r11,r12}           ; and recover entry r11 and r12
+        BICS    pc,link,#Vbit           ; ensure V clear
+
+ROMfind_failed
+        ; The specified object could NOT be found
+        LDMFD   sp!,{r0,r1,r2,link}
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,link,#Vbit           ; ensure V set
+	]	; EOF (newCODE)
+
+        ; ---------------------------------------------------------------------
+        ; -- exec_WCompare ----------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; NOTE: This code has been converted from a piece of 'C'. It should be
+        ;       tidied up and optimised.
+local_WCompare
+        ; simulate the SWI entry
+        STMFD   sp!,{r11,r12}
+        ; perform the operation
+code_exec_WCompare
+        ; in:   r0 = NULL terminated wildcarded object name
+        ;       r1 = NULL terminated full object name
+gptr    RN      r0
+fptr    RN      r1
+        ; out:  r0 = preserved
+        ;       r1 = preserved
+        ;       V clear -> objects match
+        ;       V set   -> objects different
+        STMFD   sp!,{gptr,fptr,link}    ; we are going to call sub-functions
+
+        LDRB    r12,[fptr,#&00]         ; check for fullname termination
+        CMP     r12,#null
+        BNE     check_gptr              ; NO, then check wildcard name
+
+        LDRB    r11,[gptr,#&00]
+        CMP     r11,#wcmult             ; multiple wildcard character
+        BNE     check_end_state
+
+        ADD     gptr,gptr,#&01          ; increment wildcard string index
+        BL      local_WCompare          ; and compare from here
+        BVS     objects_different
+        BVC     objects_matched
+
+check_end_state 
+        ; r12 = current fullname character
+        ; r11 = current wildcard character
+        CMP     r11,#null
+        BEQ     objects_matched         ; wildcard termination
+        BNE     objects_different       ; different characters
+
+check_gptr
+        ; r12 = fullname character
+        LDRB    r11,[gptr,#&00]         ; check for wildcard name termination
+        CMP     r11,#null
+        BEQ     objects_different       ; wildcard terminates early
+
+        CMP     r11,#wcsing
+        BEQ     check_next              ; single wildcard always matches
+
+        ; make r11 lower-case (corrupts link)
+        CMP     r11,#"A"
+        RSBGES  link,r11,#"Z"   ; use "link" register as temporary
+        ORRGE   r11,r11,#&20
+
+        ; make r12 lower-case
+        CMP     r12,#"A"
+        RSBGES  link,r12,#"Z"   ; use "link" register as temporary
+        ORRGE   r12,r12,#&20
+        CMP     r11,r12
+        BNE     check_multiple          ; characters do not match
+check_next
+        ADD     fptr,fptr,#&01          ; increment fullname string index
+        ADD     gptr,gptr,#&01          ; increment wildcard string index
+        BL      local_WCompare          ; and compare from here
+        BVS     objects_different
+        BVC     objects_matched
+
+check_multiple
+        CMP     r11,#wcmult
+        BNE     objects_different       ; not a wildcard character
+
+        ADD     gptr,gptr,#&01          ; increment wildcard string index
+        BL      local_WCompare          ; and compare from here
+        BVC     objects_matched
+        ; FALSE
+        ADD     fptr,fptr,#&01          ; increment fullname string index
+        SUB     gptr,gptr,#&01          ; decrement wildcard string index
+        BL      local_WCompare          ; and compare from here
+        BVS     objects_different
+        ; and fall through to...
+objects_matched
+        ; The objects are identical, so return with V clear
+        LDMFD   sp!,{gptr,fptr,link}
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+objects_different
+        ; The objects are different, so return with V set
+        LDMFD   sp!,{gptr,fptr,link}
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; Return the Executive version information.
+code_exec_Version
+        ; in:   no conditions
+        ; out:  a1 = BCD version number
+        ;       a2 = pointer to identity string
+        ;       a3 = external date stamp
+
+	; We do the search this way rather than directly accessing the header
+	; at the start of this ITEM, so that Executive replacement works
+	; correctly.
+        ADR     r0,search_name
+        BL      local_FindROMItem
+        LDMVSFD sp!,{r11,r12}
+        ORRVSS  pc,link,#Vbit                   ; error - ROM ITEM not found
+        ; r0 = base address of ROM ITEM
+        ; r1 = length of ROM ITEM
+	[	(newCODE)
+	LDR	r2,[r0,#(ITEMDate + &04)]	; external Unix style timestamp
+	LDRB	r1,[r0,#ITEMNameLength]		; length of the name field
+	ADD	r1,r1,#ITEMName			; plus the offset to the name
+	ADD	r0,r0,r1			; start of ROM specific header
+	LDR	r0,[r0,#ITEMVersion]		; BCD version number
+        ADR     r1,return_information		; textual description
+	|
+        ADR     r1,return_information
+        LDR     r2,[r0,#(ItemDate + &04)]       ; external Unix style timestamp
+        LDR     r0,[r0,#ItemVersion]            ; BCD version number
+	]
+
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+search_name
+        =       "$objectname",&00
+return_information
+        =       "Active Book Executive (ARM Helios)",&00
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+
+code_exec_DisplayInfo
+        ; in:   r11 : undefined (work register)
+        ;       r12 : undefined (work register)
+        ;       r13 : FS stack (containing entry r11 and r12)
+        ;       r14 : return address
+        ; out:  V clear : OK     : r0 = display type and description
+        ;                          r1 = display X (width pixels)
+        ;                          r2 = display Y (height rasters)
+        ;                          r3 = display base address (byte aligned)
+        ;       V set   : FAILED : return parameters undefined
+        ;
+        ; The default screens are assumed to be 640x400 1bpp
+
+	[	(hercules)
+	MOV	r1,#(LCD_displaywidth * 8)	; X width in pixels
+	MOV	r2,#LCD_height
+        ; r0 = LCD split-screen (1bpp)
+        MOV     r0,#(display_type_LCD :OR: display_type_mono)
+        ORR     r0,r0,#((0 :SHL: display_bpp_shift) :AND: display_bpp_mask)
+	[	{TRUE}
+	MOV	r3,#(&00600000 + &00140000)	; logical screen address
+	|
+	LDR	r3,=LCD_base			; physical LCD screen address
+	]
+	|
+        MOV     r1,#640         ; X width in pixels
+        MOV     r2,#400         ; Y height in rasters
+
+        ; AB1 Functional-prototype
+        ; r0 = LCD split-screen (1bpp)
+        MOV     r0,#(display_type_LCD :OR: display_type_mono)
+        ORR     r0,r0,#((0 :SHL: display_bpp_shift) :AND: display_bpp_mask)
+        ; r3 = base address
+        MOV     r3,#lcd_base            ; start of physical LCD memory
+	]	; EOF (hercules)
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+
+code_exec_AttachSFIQ
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r0  = hardware source address           (unused)
+        ;       r1  = 32bit source mask                 (unused)
+        ;       r2  = handler code address
+        ;       r3  = handler code length
+        ;       r4  = default register set address      (r8..r13)
+        ;       r11 = undefined                         (work register)
+        ;       r12 = undefined                         (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r1  = preserved
+        ;       r2  = preserved
+        ;       r3  = preserved
+        ;       r4  = preserved
+        ;       processor mode restored
+        ;       V clear => FIQ handler attached; r0 = undefined
+        ;       V set   => attach failed; r0 = error code
+        ;                                       = -1 : FIQ handlers active
+        ;                                       = -2 : code too large
+        ;
+        ; Attach a single FIQ user (locking out other users). This will fail
+        ; if anybody currently has a FIQ handler defined.
+
+        [       (newFIQ)
+        ; The following code should possibly be performed with IRQs
+        ; disabled. This will only be necessary if the multiple FIQ
+        ; structures are interrogated, or updated by IRQ routines.
+
+        ; FIQ_SH_bit set then cannot attach FIQ handler
+        LDR     r11,=FIQ_state
+        LDR     r12,[r11,#&00]          ; load FIQ state word
+        TST     r12,#FIQ_SH_bit
+        BNE     FIQ_active_exit         ; cannot claim FIQ
+
+        ; If any bit in "FIQ_state_mask" is set then cannot attach FIQ handler
+        ANDS    r12,r12,#FIQ_state_mask ; active array bits
+        BNE     FIQ_active_exit
+
+        ; set FIQ_SH_bit
+        MOV     r12,#FIQ_SH_bit
+        STR     r12,[r11,#&00]
+
+        [       {FALSE}
+        ; Check that the supplied code is NOT too large for the FIQ space.
+        .. this is WRONG (top_FIQ_stack is well into the dataRAMblk)
+        CMP     r3,#(top_FIQ_stack - vec_FIQ)
+        BCS     FIQ_codesize_exit
+        ]
+
+        ; Copy most of the code to (single_FIQ_code + &04)
+        MOV     r0,#(single_FIQ_code + &04)     ; destination
+        MOV     r11,#&04                        ; loop index
+move_FIQcode_loop
+        LDR     r12,[r2,r11]
+        STR     r12,[r0,r11]
+        ADD     r11,r11,#&04                    ; onto the next word
+        CMP     r11,r3                          ; check for completion
+        BCC     move_FIQcode_loop
+
+        ; Disable FIQ
+        MOV     r12,#(Fbit :OR: FIQmode)
+        TEQP    r12,#&00000000          ; enter FIQ mode, FIQs disabled
+        NOP                             ; wait for registers to be remapped
+
+        ; Copy first word of code to &0000001C
+        MOV     r11,#single_FIQ_code    ; address of the first word
+        LDR     r12,[r2,#&00]           ; first word of referenced code
+        STR     r12,[r11,#&00]          ; and store into the FIQ area
+
+        ; Initialise FIQ r8..r13 from passed values
+        LDMIA   r4,{r8-r13}
+
+        TEQP    pc,#PSRflags            ; SVC mode; IRQs/FIQs disabled
+        NOP                             ; wait for registers to be remapped
+        LDMFD   sp!,{r11,r12}           ; recover work registers
+        BICS    pc,link,#Vbit           ; and exit (restoring FIQ and IRQ)
+
+FIQ_codesize_exit
+        MOV     r0,#-2                  ; the supplied code is too large
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,link,#Vbit
+FIQ_active_exit
+        MOV     r0,#-1                  ; we already have at least 1 FIQ user
+        ]       ; EOF (newFIQ)
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+
+local_FIQAttach ; simulate the SWI entry
+        STMFD   sp!,{r11,r12}
+code_exec_AttachFIQ
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r0  = hardware source address
+        ;       r1  = 32bit source mask
+        ;       r2  = handler code address
+        ;       r3  = handler code length
+        ;       r4  = default register set address
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r1  = preserved
+        ;       r2  = preserved
+        ;       r3  = preserved
+        ;       r4  = preserved
+        ;       processor mode restored
+        ;       V clear => FIQ handler attached; r0 = preserved
+        ;       V set   => attach failed; r0 = error code
+        ;                                       = -1 : cannot share FIQ
+        ;                                       = -2 : code too large
+        ;                                       = -3 : too many handlers
+        ;
+        ; Attach a multiple FIQ handler. This will fail if there is a single
+        ; FIQ user or all the array entries are full.
+
+        [       (newFIQ)
+        STMFD   sp!,{r4,r5,r6,r7,r8,r9,r10}
+
+        !       0,"TODO: disable IRQs in FIQ handler attach"
+        ; IRQs should be disabled during the search for an empty slot.
+        ; This SWI can then be used safely from IRQ and USR mode code.
+
+        ; Find a free array element for this FIQ handler
+        LDR     r11,=FIQ_state
+        LDR     r12,[r11,#&00]          ; load FIQ state word
+        ; test for single FIQ claiming the complete system
+        TST     r12,#FIQ_SH_bit
+        BNE     single_FIQ_exit
+        ; find if we have a free FIQ array slot
+        MOV     r5,#&00                 ; array index
+        MOV     r6,#&01                 ; array entry mask
+        AND     r7,r12,#FIQ_state_mask  ; active array bits
+array_find_loop
+        MOVS    r7,r7,LSR #1            ; C = lowest bit
+        ADDCS   r5,r5,#&01              ; used - so onto the next array entry
+        MOVCS   r6,r6,LSL #1            ; mask = mask << 1
+        BCS     array_find_loop
+        CMP     r5,#FIQ_handlers
+        BCS     toomany_exit            ; no free array slots
+        ; mark array index "r5" as used
+        ORR     r12,r12,r6              ; set bit in array mask
+        STR     r12,[r11,#&00]          ; and update real copy of FIQ state
+
+        ; Copy the information and code into the array element
+        ; entry address = FIQ_array + (r5 * FIQ_array_entry_size)
+        MOV     r7,#FIQ_array_entry_size
+        LDR     r8,=FIQ_array
+        MLA     r5,r7,r5,r8             ; r5 = (r7 * r5) + r8
+        ; r5 = array entry address
+        STR     r0,[r5,#FIQ_hardware]   ; hardware address
+        STR     r1,[r5,#FIQ_mask]       ; hardware source mask
+        ADD     r7,r5,#FIQ_r8           ; FIQ banked registers
+        LDMIA   r4!,{r8,r9,r10}         ; r8..r10
+        STMIA   r7!,{r8,r9,r10}
+        LDMIA   r4,{r8,r9,r10}          ; r11..r13
+        STMIA   r7!,{r8,r9,r10}
+        ; r10 = FIQ handler stack value
+        ; If this is the same as the default FIQ stack, then mark the entry
+        ; code as NOT having to preserve r13.
+        MOV     r6,r6,LSL #8            ; move array entry bit into STACK field
+        LDR     r9,=top_FIQ_stack       ; not 8bit constant
+        CMP     r10,r9
+        ORRNE   r12,r12,r6              ; set bit if different
+        BICEQ   r12,r12,r6              ; clear bit if identical
+        STR     r12,[r11,#&00]          ; store the updated STACK mask
+        ; Entry IRQ state can be restored at this point
+        [       (FIQ_code_start = (FIQ_r13 + &04))
+        ; r7 preserved from above
+        |
+        ADD     r7,r5,#FIQ_code_start
+        ]
+        ; Check that the user supplied code will fit into the array buffer
+
+        ; Copy the code into the array entry (r7 = start of code field)
+
+
+        ; If this is the only FIQ handler then copy the code to &0000001C
+
+
+        ; If this is the 2nd handler, we need to copy branch to the system
+        ; handler to &0000001C
+
+
+        LDMFD   sp!,{r4,r5,r6,r7,r8,r9,r10,r11,r12}
+        BICS    pc,link,#Vbit
+
+toomany_exit
+        MOV     r0,#-3                  ; all handler slots full
+        B       AttachFIQ_error_exit
+codetoobig_exit
+        MOV     r0,#-2                  ; code too large
+        B       AttachFIQ_error_exit
+single_FIQ_exit
+        MOV     r0,#-1                  ; cannot share FIQ
+AttachFIQ_error_exit
+        LDMFD   sp!,{r4,r5,r6,r7,r8,r9,r10,r11,r12}
+        ORRS    pc,link,#Vbit
+
+default_code_stack      ; pull/push r8..r13 when calling handler
+        ; fiq_r13 = top_FIQ_stack
+        ; fiq_r8 corrupted by this code
+        ADD     r12,r12,#FIQ_r8         ; index to start of register set
+        STMFD   sp!,{r12}               ; remember the register set address
+        LDMIA   r12,{r8-r13}            ; and load the handler registers
+
+        ; user FIQ handler code here
+
+        STMFD   sp!,{r12}               ; remember r12 (on handlers stack)
+        LDR     r12,=top_FIQ_stack      ; not 8bit constant
+        LDR     r12,[r12,#-4]           ; recover the register set address
+        STMIA   r12!,{r8-r11}           ; store r8..r11
+        LDMFD   sp!,{r8}                ; recover r12 (and r13)
+        STMIA   r12,{r8,r13}            ; store r12..r13
+        LDR     r13,=top_FIQ_stack      ; restore entry r13 (not 8bit constant)
+        SUBS    pc,fiq_r14,#&04         ; restore mode and return
+end_default_code_stack
+        
+default_code_nostack    ; pull/push r8..r12 when calling handler
+        ; ... to be done ...
+        |
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,lk,#Vbit
+        ]       ; EOF (newFIQ)
+
+        ; ---------------------------------------------------------------------
+
+code_exec_ReleaseFIQ
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r0  = hardware source address
+        ;       r1  = 32bit source mask
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = preserved
+        ;       r1  = preserved
+        ;       processor mode restored
+        ;       V clear => FIQ handler released
+        ;       V set   => FIQ handler not found
+        ;
+
+        ; If we are releasing a single user, we do not need the r0 and r1
+        ; values.
+
+        !       0,"TODO: code the FIQ handler release SWI"
+
+        LDMFD   sp!,{r11,r12}
+        ORRS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+
+code_exec_DefaultFIQStack
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = default FIQ r13 (FD stack)
+        ;       processor mode restored
+        ;       always returns with V clear
+
+        LDR     r0,=top_FIQ_stack       ; not 8bit constant
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+        ; ---------------------------------------------------------------------
+
+local_TerminalOut
+        STMFD   sp!,{r11,r12}   ; simulate SWI entry
+code_exec_TerminalOut
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r0  = 8bit ASCII character to be displayed
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = preserved
+        ;       processor mode restored
+        ;       always returns with V clear
+
+	[	(hercules)
+	; We do not have a 2nd link adaptor
+	!	0,"Note: VOID function TerminalOut"
+	|
+        MOV     r11,#link0_base         ; base address of 2nd link adaptor
+TerminalOut_poll
+        LDRB    r12,[r11,#link_wstatus] ; load status flag
+        TST     r12,#linkw_data         ; set PSR on mask bit
+        BEQ     TerminalOut_poll        ; clear, then buffer is full
+        ; buffer is empty, so write the byte
+        STRB    r0,[r11,#link_write]
+	]
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+
+local_Output
+        STMFD   sp!,{r11,r12}
+code_exec_Output
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r0  = NULL terminated ASCII string
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = preserved
+        ;       processor mode restored
+        ;       always returns with V clear
+	[	(hercules)
+	; We do not have a 2nd link adaptor
+	!	0,"Note: VOID function Output"
+	LDMFD	sp!,{r11,r12}
+	BICS	pc,link,#Vbit
+	|
+        STMFD   sp!,{r0,r1}
+        MOV     r1,#link0_base          ; base address of 2nd link adaptor
+Output_loop
+        LDRB    r12,[r0],#&01           ; load character
+        CMP     r12,#&00                ; NULL terminator?
+        LDMEQFD sp!,{r0,r1}             ; (this can be merged with the next)
+        LDMEQFD sp!,{r11,r12}
+        BICEQS  pc,link,#Vbit           ; YES, then exit with V clear
+        ; non-NULL character
+Output_poll
+        LDRB    r11,[r1,#link_wstatus]  ; load status flag
+        TST     r11,#linkw_data         ; set PSR on mask bit
+        BEQ     Output_poll             ; clear, then buffer is full
+        ; buffer is empty, so write the byte
+        STRB    r12,[r1,#link_write]
+        B       Output_loop
+	]	; EOF (hercules)
+
+        ; ---------------------------------------------------------------------
+
+local_WriteHex8
+        STMFD   sp!,{r11,r12}
+code_exec_WriteHex8
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r0  = 32bit unsigned value
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  r0  = preserved
+        ;       processor mode restored
+        ;       always returns with V clear
+
+        STMFD   sp!,{r0,r1,r2,r3,r4,link}
+
+        MOV     r1,r0
+        MOV     r2,#&00000020           ; number of bits in a word
+        ADR     r3,HexString            ; and the character set we use
+WriteHex_loop
+        SUB     r2,r2,#&04              ; the size of a nybble
+
+        MOV     r4,r1,LSR r2
+        AND     r4,r4,#&0000000F        ; and mask out all but the nybble
+
+        LDRB    r0,[r3,r4]              ; get the ASCII equivalent
+        BL      local_TerminalOut       ; display the character
+
+        CMP     r2,#&00000000           ; are we at the end of the word
+        BNE     WriteHex_loop
+
+        LDMFD   sp!,{r0,r1,r2,r3,r4,link}
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+HexString
+        =       "0123456789ABCDEF"
+        ALIGN
+
+        ; ---------------------------------------------------------------------
+
+local_NewLine
+        STMFD   sp!,{r11,r12}
+code_exec_NewLine
+        ; in:   SVC mode; IRQs undefined; FIQs undefined
+        ;       r11 = undefined (work register)
+        ;       r12 = undefined (work register)
+        ;       r13 = FD stack (containing entry r11 and r12)
+        ;       r14 = return address
+        ; out:  processor mode restored
+        ;       always returns with V clear
+
+        STMFD   sp!,{r0,link}
+        MOV     r0,#&0A
+        BL      local_TerminalOut
+        LDMFD   sp!,{r0,link}
+        LDMFD   sp!,{r11,r12}
+        BICS    pc,link,#Vbit
+
+        ; ---------------------------------------------------------------------
+
+        LTORG
+
+        ; ---------------------------------------------------------------------
+        LNK     losched.s
+@

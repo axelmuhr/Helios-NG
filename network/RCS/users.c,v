@@ -1,0 +1,297 @@
+head	1.5;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	C40_Field_Test_R1:1.3
+	Helios13_beta:1.3
+	Helios1_2_2_Fault:1.3
+	Helios1_2_2_Native:1.3
+	Helios1_2_2_native_beta:1.3
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.3
+	Helios1_2_1:1.3
+	Helios1_2:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.5
+date	94.03.10.17.13.00;	author nickc;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	93.08.11.10.56.21;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	91.03.01.17.17.50;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.14.14.47.01;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.15.18.03;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@added initialisation of Nodes in SYSDEB world
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- users.c								--
+--                                                                      --
+--	display all users currently logged in on a single line		--
+--                                                                      --
+--	Author:  BLV 13/7/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/users.c,v 1.4 1993/08/11 10:56:21 bart Exp nickc $*/
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include <queue.h>
+#include "session.h"
+#include "netutils.h"
+#include "exports.h"
+
+#define eq ==
+#define ne !=
+
+typedef struct User {
+	Node	Node;
+	char	Name[1];
+} User;
+
+static void usage(void);
+static word free_node(Node *);
+static word ReadDir(Object *sm, List *);
+static void SortList(List *);
+static void ShowUser(User *);
+
+int main(int argc, char **argv)
+{ Object	*SessionManager = Null(Object);
+  int		rc = EXIT_FAILURE;
+  List		UserList;
+  
+  if (argc ne 1) usage();
+  argv = argv;		/* suppress warning */
+  
+  InitList(&UserList);
+
+  SessionManager = RmGetSessionManager();
+  if (SessionManager eq Null(Object))
+   { fprintf(stderr, "users: failed to locate session manager.\n");
+     goto done;
+   }
+
+  rc = (int) ReadDir(SessionManager, &UserList);
+  if (rc ne EXIT_FAILURE)
+   { WalkList(&UserList, (WordFnPtr) &ShowUser);
+     putchar('\n');
+   }
+      
+done:
+  if (SessionManager ne Null(Object)) Close(SessionManager);
+
+  WalkList(&UserList, &free_node);	/* no FreeList in kernel */
+				       /* (kernel does not know about free() )*/
+
+  return(rc);
+}
+
+static void usage(void)
+{ fprintf(stderr, "users : usage, users\n");
+  exit(EXIT_FAILURE);
+}
+
+static word free_node(Node *node)
+{ Remove(node);
+  free(node);
+  return(0);
+}
+
+static void ShowUser(User *user)
+{ fputs(user->Name, stdout); putchar(' ');
+}
+
+static word ReadDir(Object *SessionManager, List *Users)
+{ Stream	*SM = Null(Stream);
+  int		Size;
+  int		rc = EXIT_SUCCESS;
+  DirEntry	*Entries = Null(DirEntry);
+  DirEntry	*Current;
+  int		NumberUsers = 0;
+  
+  SM = Open(SessionManager, Null(char), O_ReadOnly);
+  if (SM eq Null(Stream))
+   { fprintf(stderr, "users : failed to open Session Manager.\n");
+     rc = EXIT_FAILURE;
+     goto done;
+   }
+
+  Size = (int) GetFileSize(SM);
+  if (Size <= 0)
+   { fprintf(stderr, "users : error accessing Session Manager.\n");
+     rc = EXIT_FAILURE;
+     goto done;
+   }
+
+  Entries = (DirEntry *) malloc(Size);
+  if (Entries eq Null(DirEntry))
+   { fprintf(stderr, "users : out of memory when examing user sessions.\n");
+     rc = EXIT_FAILURE;
+     goto done;
+   }
+   
+  if (Read(SM, (BYTE *) Entries, Size, -1) < Size)
+   { fprintf(stderr, "users : error reading Session Manager.\n");
+     rc = EXIT_FAILURE;
+     goto done;
+   }
+   
+  for (Current = Entries; Size > 0; Current++, Size -= sizeof(DirEntry))
+   { User	*ThisUser;
+
+     if (!strcmp(Current->Name, ".")) continue;
+     if (!strcmp(Current->Name, "..")) continue;
+     if (Current->Type ne Type_Session) continue;
+    
+     ThisUser = (User *) malloc(sizeof(User) + strlen(Current->Name));
+     if (ThisUser eq  Null(User))
+      { fprintf(stderr, "users : out of memory when building list of users.\n");
+        return(EXIT_FAILURE);
+      }
+     strcpy(ThisUser->Name, Current->Name);
+#ifdef SYSDEB
+     ThisUser->Node.Next = ThisUser->Node.Prev = &ThisUser->Node;
+#endif
+     AddTail(Users, &(ThisUser->Node));
+     NumberUsers++;
+   }
+
+  free(Entries); Entries = Null(DirEntry);
+  Close(SM); SM = Null(Stream);
+  
+  if (NumberUsers eq 0)
+   { fprintf(stderr, "users : nobody is logged in.\n");
+     return(EXIT_SUCCESS);
+   }
+
+  SortList(Users);
+     
+done:
+  if (SM ne Null(Stream)) Close(SM);
+  if (Entries ne Null(DirEntry)) free(Entries);
+  return(rc);
+}
+
+/**
+*** Something vaguely resembling bubble sort. Very inefficient but
+*** the number of users will be small.
+**/
+static void SortList(List *Users)
+{ int		changes = 1;
+  User		*Current, *Next;
+
+  until (changes eq 0)
+   { Current = (User *) Users->Head;
+     Next    = (User *) Current->Node.Next;
+     changes = 0;
+     
+     until (Next->Node.Next eq Null(Node))
+      { 
+        if (strcmp(Current->Name, Next->Name) > 0)
+         { Remove(&(Current->Node));
+           PostInsert(&(Next->Node), &(Current->Node));
+           changes = 1;
+           Next    = (User *) Current->Node.Next;
+         }
+        else
+         { Current = Next;
+           Next    = (User *) Current->Node.Next;
+         }
+      }
+   }
+}
+@
+
+
+1.4
+log
+@memory reduction
+@
+text
+@d16 1
+a16 1
+/* RcsId: $Header: /hsrc/network/RCS/users.c,v 1.3 1991/03/01 17:17:50 bart Exp $*/
+d58 1
+a58 1
+  rc = ReadDir(SessionManager, &UserList);
+d103 1
+a103 1
+  Size = GetFileSize(SM);
+d136 3
+@
+
+
+1.3
+log
+@Various files were left checked out before, cleaning up.
+@
+text
+@d16 1
+a16 2
+
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/users.c,v 1.2 90/09/14 14:47:01 bart Exp Locker: bart $";
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/users.c,v 1.1 90/09/12 15:18:03 jon Exp Locker: bart $";
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header$";
+d25 1
+a25 1
+#include <session.h>
+@

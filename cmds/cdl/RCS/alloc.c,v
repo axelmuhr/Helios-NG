@@ -1,0 +1,255 @@
+head	1.3;
+access;
+symbols
+	Helios_1_3_1:1.3
+	Helios_C40_1_3_Official_Release:1.3
+	Alenia_release:1.3
+	Helios1_3:1.3
+	C40_Field_Test_2:1.3
+	Helios13_beta:1.3
+	Helios1_2_2:1.3
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1
+	Helios1_2:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.3
+date	91.09.12.15.24.47;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	91.09.09.15.15.22;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.28.10.35.40;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Finally fixed the problem with taskforce components having exactly
+17 streams - I hope. The channel vector is now given one extra slot
+when it is allocated or reallocated, and this extra slot is always
+set to NULL.
+@
+text
+@/**
+*
+* Title:  CDL Compiler - Stream Allocation.
+*
+* Author: Andy England
+*
+* Date:   May 1988
+*
+*         (c) Copyright 1988, Perihelion Software Ltd.
+*
+*         All Rights Reserved.
+*
+**/
+static char *rcsid = "$Header: /users/bart/hsrc/cmds/cdl/RCS/alloc.c,v 1.2 1991/09/09 15:15:22 bart Exp $";
+
+#include "cdl.h"
+
+void resolvechannels(COMPONENT *component)
+{
+  CHANNEL *channel;
+  int fd;
+
+  for (fd = 0; component->chanv->channels[fd] != NULL; fd++)
+  {
+    unless ((channel = component->chanv->channels[fd]) == STDCHAN)
+     channel->fifo = usefifo(channel->name, channel->mode);
+  }
+}
+
+void allocchannels(cmd)
+CMD *cmd;
+{
+  char *name;
+
+  DEBUG("allocchannels()");
+  if (cmd == NULL) return;
+  switch (cmd->op)
+  {
+    case T_COMMA:
+    case T_PAR:
+    break;
+
+    case T_PIPE:
+    name = inventname();
+    addstream(cmd->this, 1, newchannel(name, NULL, O_WriteOnly));
+    addstream(cmd->next, 0, newchannel(name, NULL, O_ReadOnly));
+    break;
+
+    case T_REVPIPE:
+    name = inventname();
+    addstream(cmd->this, 0, newchannel(name, NULL, O_ReadOnly));
+    addstream(cmd->next, 1, newchannel(name, NULL, O_WriteOnly));
+    break;
+
+    case T_SUBORDINATE:
+    name = inventname();
+    addstream(cmd->this, 5, newchannel(name, NULL, O_WriteOnly));
+    addstream(cmd->next, 0, newchannel(name, NULL, O_ReadOnly));
+    name = inventname();
+    addstream(cmd->this, 4, newchannel(name, NULL, O_ReadOnly));
+    addstream(cmd->next, 1, newchannel(name, NULL, O_WriteOnly));
+    break;
+
+    case T_SEMICOLON:
+    case T_AMPERSAND:
+    case T_AND:
+    case T_OR:
+    break;
+
+    case T_LIST:
+    allocchannels(cmd->this);
+    allocauxlist(cmd, cmd->next, 4);
+    return;
+
+    case T_SIMPLE:
+    allocauxlist(cmd, ((SIMPLE *)cmd)->aux, 4);
+    resolvechannels(((SIMPLE *)cmd)->component);
+    return;
+
+    default:
+    bug("Unexpected command type in allocchannels");
+    return;
+  }
+  allocchannels(cmd->this);
+  allocchannels(cmd->next);
+}
+
+void addstream(CMD *cmd, int fd, CHANNEL *channel)
+{
+  DEBUG("addstream()");
+  if (cmd == NULL) return;
+  switch (cmd->op)
+  {
+    case T_SIMPLE:
+    addchannel(((SIMPLE *)cmd)->component->chanv, fd, channel);
+    break;
+
+    case T_LIST:
+    addstream(cmd->this, fd, channel);
+    break;
+
+    case T_PAR:
+    addstream(cmd->this, fd, channel);
+    addstream(cmd->next, fd, channel);
+    break;
+
+    case T_PIPE:
+    unless (fd == 1) addstream(cmd->this, fd, channel);
+    unless (fd == 0) addstream(cmd->next, fd, channel);
+    break;
+
+    case T_REVPIPE:
+    unless (fd == 0) addstream(cmd->this, fd, channel);
+    unless (fd == 1) addstream(cmd->next, fd, channel);
+    break;
+
+    case T_SUBORDINATE:
+    unless (fd == 4 OR fd == 5) addstream(cmd->this, fd, channel);
+    unless (fd == 0 OR fd == 1) addstream(cmd->next, fd, channel);
+    break;
+
+    default:
+    bug("Unexpected command type in addstream");
+    return;
+  }
+}
+
+int allocauxlist(CMD *cmd, CMD *auxlist, int fd)
+{
+  DEBUG("allocauxlist()");
+  if (auxlist == NULL) return fd;
+  if (auxlist->op == T_COMMA)
+  {
+    fd = allocauxlist(cmd, auxlist->this, fd);
+    return allocauxlist(cmd, auxlist->next, fd);
+  }
+  return allocaux(cmd, auxlist, fd);
+}
+
+int allocaux(CMD *cmd, CMD *aux, int fd)
+{
+  char *name;
+
+  DEBUG("allocaux()");
+  switch (aux->op)
+  {
+    case T_PAR:
+    break;
+
+    case T_PIPE:
+    name = inventname();
+    addstream(cmd, fd + 1, newchannel(name, NULL, O_WriteOnly));
+    addstream(aux->next, 0, newchannel(name, NULL, O_ReadOnly));
+    break;
+
+    case T_REVPIPE:
+    name = inventname();
+    addstream(cmd, fd, newchannel(name, NULL, O_ReadOnly));
+    addstream(aux->next, 1, newchannel(name, NULL, O_WriteOnly));
+    break;
+
+    case T_SUBORDINATE:
+    name = inventname();
+    addstream(cmd, fd + 1, newchannel(name, NULL, O_WriteOnly));
+    addstream(aux->next, 0, newchannel(name, NULL, O_ReadOnly));
+    name = inventname();
+    addstream(cmd, fd, newchannel(name, NULL, O_ReadOnly));
+    addstream(aux->next, 1, newchannel(name, NULL, O_WriteOnly));
+    break;
+
+    default:
+    bug("Unexpected command type in allocaux");
+    return fd;
+  }
+  allocchannels(aux->next);
+  return fd + 2;
+}
+@
+
+
+1.2
+log
+@If a component had exactly 16 channels then a test for the end of the
+table of channels failed. The test checked for a NULL channel at the end
+of the table, but not for reaching the table limit.
+@
+text
+@d14 1
+a14 1
+static char *rcsid = "$Header: /users/bart/hsrc/cmds/cdl/RCS/alloc.c,v 1.1 1990/08/28 10:35:40 james Exp $";
+d23 1
+a23 3
+  for (fd = 0;
+       (component->chanv->channels[fd] != NULL) && (fd < component->chanv->size); 
+       fd++)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d14 1
+a14 1
+static char *rcsid = "$Header$";
+d23 3
+a25 1
+  for (fd = 0; component->chanv->channels[fd] != NULL; fd++)
+@

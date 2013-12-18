@@ -1,0 +1,394 @@
+--------------------------------------------------------------------------
+--                                                                      --
+--                     P O S I X    L I B R A R Y			--
+--                     --------------------------                       --
+--                                                                      --
+--             Copyright (C) 1987, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- string.a								--
+--                                                                      --
+--	String manipulation routines					--
+--                                                                      --
+--	Author:  NHG 21/05/88						--
+--                                                                      --
+--------------------------------------------------------------------------
+
+
+include basic.m
+include procs.m
+include structs.m
+
+	StartModule String -1 1000
+
+--	sccsid [%W%	%I% Copyright (C) 1987, Perihelion Software Ltd.]
+
+	static
+	[
+		extern func	strlen
+		extern func	strcpy
+		extern func	strncpy
+		extern func	strcat
+		extern func	strncat
+		extern func	strcmp
+		extern func	strncmp
+		extern func	memset
+		extern func	memcpy
+	]
+
+
+-- The following two macros implement a bit of magic which causes
+-- word_has_nullbyte to generate a non-zero result if the given word
+-- has a null byte in it. Don't ask me how it works!
+
+_defq 'nullbyte_prologue
+[
+	ldc #01010101 store ones
+	ones ldc 7 shl store eights
+]
+
+_defq 'word_has_nullbyte['_w]
+[ _w ones diff _w not and eights and ]
+
+
+
+proc strlen
+[
+	word		a
+]
+[
+	word		w
+	word		ones
+	word		eights
+	word		x
+]
+[
+	a store x
+
+	while[ cne0 [ a ldc 3 and] ]
+	[
+		if[ ceq0 [a lb] ] [ a x diff return ]
+		a adc 1 store a
+	]
+
+	nullbyte_prologue
+
+	while[ ceq0 [ a ldnl 0 store w word_has_nullbyte w ] ]
+	[ a adc 4 store a ]
+
+	while[ cne0 [a lb] ] [ a adc 1 store a]
+
+	a x diff
+]
+
+proc strcpy
+[
+	word		a
+	word		b
+]
+[
+	word		i
+	word		w
+	word		ones
+	word		eights
+	word		p
+]
+[
+	a store p
+
+	-- if word-aligned, copy words until the last
+	if[ ceq0 [ p b or ldc 3 and] ]
+	[
+		nullbyte_prologue
+		while[ ceq0 [b ldnl 0 store w word_has_nullbyte w] ]
+		[
+			w p stnl 0
+			p ldnlp 1 store p
+			b ldnlp 1 store b
+		]
+
+		-- copy remaining bytes using w
+		forever
+		[
+			w p sb
+			if[ ceq0 [ptr w lb] ] [ a return ]
+			w ldc 8 shr store w
+			p adc 1 store p
+		]
+	]
+
+	-- else copy byte-by-byte
+	while[ cne0 [ b lb store i i p sb i] ]
+	[
+		p adc 1 store p
+		b adc 1 store b
+	]
+	a
+]
+
+proc strncpy
+[
+	word		a
+	word		b
+	word		n
+]
+[
+	word		w
+	word		ones
+	word		eights
+	word		p
+]
+[
+	a store p
+
+	-- if word-aligned, copy words until the last
+	if[ ceq0 [ p b or ldc 3 and] ]
+	[
+		nullbyte_prologue
+		while[ cge n [ldc 4] ]
+		[
+			b ldnl 0 store w 
+			if[ word_has_nullbyte w ] [ break ]
+			w p stnl 0
+			p ldnlp 1 store p
+			b ldnlp 1 store b
+			n adc -4 store n
+		]
+	]
+
+	-- copy byte-by-byte
+	while[ cne0 n ]
+	[
+		b lb p sb 
+		if [ ceq0 [b lb] ]
+		[
+			-- ANSI requires zero padding
+			while[ cne0 n ]
+			[
+				ldc 0 p sb
+				p adc 1 store p
+				n adc -1 store n
+			]
+			a
+			return
+		]
+		p adc 1 store p
+		b adc 1 store b
+		n adc -1 store n
+	]
+	a
+]
+
+proc strcat
+[
+	word		a
+	word		b
+]
+[
+	word		p
+]
+[
+	a store p
+
+	while[ cne0 [ p lb ] ] [ p adc 1 store p]
+
+	forever
+	[
+		b lb p sb
+		if[ ceq0 [ p lb ] ] break
+		p adc 1 store p
+		b adc 1 store b
+	]
+	a
+]
+
+proc strncat
+[
+	word		a
+	word		b
+	word		n
+]
+[
+	word		p
+]
+[
+	a store p
+
+	while[ cne0 [ p lb ] ] [ p adc 1 store p]
+
+	while[ cne0 n ]
+	[
+		b lb p sb
+		if[ ceq0 [ p lb ] ] [ a return ]
+		p adc 1 store p
+		b adc 1 store b
+		n adc -1 store n
+	]
+	ldc 0 p sb
+	a
+]
+
+proc strcmp
+[
+	word		a
+	word		b
+]
+[
+	word		w
+	word		ones
+	word		eights
+	word		c1
+]
+[
+	if[ ceq0 [a b or ldc 3 and] ]
+	[
+		nullbyte_prologue
+
+		while[ ceq [a ldnl 0 store w w] [b ldnl 0] ]
+		[
+			if[ word_has_nullbyte w ] break
+			a ldnlp 1 store a
+			b ldnlp 1 store b
+		]
+	]
+
+	forever
+	[
+		a lb store c1
+		if[ cne c1 [b lb] ] [ c1 b lb diff return ]
+		if[ ceq0 c1 ] [ ldc 0 return ]
+		a adc 1 store a
+		b adc 1 store b
+	]
+]
+
+proc strncmp
+[
+	word		a
+	word		b
+	word		n
+]
+[
+	word		w
+	word		ones
+	word		eights
+	word		c1
+]
+[
+	if[ ceq0 [a b or ldc 3 and] ]
+	[
+		nullbyte_prologue
+
+		while[ cge n [ldc 4] ]
+		[
+			if[ cne [a ldnl 0 store w w] [b ldnl 0] ] break
+			if[ word_has_nullbyte w ] break
+			a ldnlp 1 store a
+			b ldnlp 1 store b
+			n adc -4 store n
+		]
+	]
+
+	while[ cgt n [ldc 0] ]
+	[
+		a lb store c1
+		if[ cne c1 [b lb] ] [ c1 b lb diff return ]
+		if[ ceq0 c1 ] [ ldc 0 return ]
+		a adc 1 store a
+		b adc 1 store b
+		n adc -1 store n
+	]
+	ldc 0
+]
+
+proc memset
+[
+	word		s
+	word		c
+	word		n
+]
+[
+	word		p
+	word		ones
+	word		eights
+	word		w
+]
+[
+	s store p
+
+
+	while[ cgt n [ldc 0] ]
+	[
+		test[ ceq0 [p ldc 3 and] ]		-- word boundary ?
+		[
+			if[ clt n [ldc 4] ] [j ..cp1]	-- at least 4 to go ?
+			ldc #01010101 c mul store w	-- get a word full
+			forever				-- fill words
+			[
+				w p stnl 0
+				p ldnlp 1 store p
+				n adc -4 store n
+				if [ clt n [ldc 4] ] break -- until < 4 bytes left
+			]
+		]
+		-- else copy 1 at a time until at word boundary
+		[
+		..cp1:
+			c p sb
+			p adc 1 store p
+			n adc -1 store n
+		]
+	]
+	s
+]
+
+proc memcpy
+[
+	word		a
+	word		b
+	word		n
+]
+[]
+[
+	b
+	a
+	n
+	move
+	a
+]
+
+proc memcmp
+[
+	word		a
+	word		b
+	word		n
+]
+[
+	word		c1
+]
+[
+	if[ ceq0 [a b or ldc 3 and] ]
+	[
+		while[ cge n [ldc 4] ]
+		[
+			if[ cne [a ldnl 0] [b ldnl 0] ] break
+			a ldnlp 1 store a
+			b ldnlp 1 store b
+			n adc -4 store n
+		]
+	]
+
+	while[ cgt n [ldc 0] ]
+	[
+		a lb store c1
+		if[ cne c1 [b lb] ] [ c1 b lb diff return ]
+		a adc 1 store a
+		b adc 1 store b
+		n adc -1 store n
+	]
+	ldc 0
+]
+
+	EndModule
+
+-- end of string.a

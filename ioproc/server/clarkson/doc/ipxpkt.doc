@@ -1,0 +1,163 @@
+IPXPKT
+
+The standard packet drivers allow applications such as Novell and TCP/IP
+to share a single ethernet card in a workstation. A user logged onto
+a Novell fileserver may run TCP/IP to connect to a TCP/IP host on the
+same network. However, there are a number of circumstances in which
+this cannot be done:
+
+1. If the workstation is connected to a Novell fileserver or bridge
+   rather than the network backbone. Packet drivers are not available
+   for most non-ethernet topologies, and Novell servers and bridges will
+   only forward IPX packets, not TCP/IP packets which they do not
+   recognise.
+2. Packet drivers are not available for all ethernet cards e.g.
+   Univation (we still have a few which haven't yet died).
+
+A solution to the above problems has been developed by Paul Kranenburg of
+Leiden University in Holland. His IPXPKT program is a packet driver which sends
+and receives packets via Novell's IPX.COM rather than directly from the network
+card. It receives packets from an application, adds the IPX headers and passes
+them to IPX for transmission. It also does the converse i.e. receives packets
+>from IPX, strips off the IPX header and forwards the packet to the application.
+
+IPXPKT allows any application configured with a packet driver interface
+(e.g. NCSA Telnet) to function from any workstation anywhere on a Novell
+network regardless of the network topology.
+
+A typical network setup might be:
+
+                   +-------------+        +----------+   +--------+
+                   | IPX <-> IP  |        | Unix Box |   |   VAX  |
+                   |router using |        |  TCP/IP  |   | TCP/IP |
+                   |   IPXPKT    |        |          |   |        |
+                   +-------------+        +----------+   + -------+
+     Ethernet          |     |                  |             |
+   ----------------------------------------------------------------------
+          |
+      +----------+
+      |  Novell  |    Arcnet, token ring, ethernet or whatever
+      |fileserver|---------------------------------------------------
+      |          |             |                         |
+      +----------+       +------------+             +------------+
+                         |    work    |             |    work    |
+                         |   station  |             |   station  |
+                         |      1     |             |      2     |
+                         +------------+             +------------+
+
+
+Because the packets are transmitted by IPX.COM, IPXPKT works on any
+topology supported by Netware. Version 2 of IPXPKT allows packets to
+be transmitted through Novell fileservers and bridges.
+
+The IPX <-> IP router on the network backbone receives the IPX packets, strips
+off the IPX headers and retransmits Ethernet II packets which can be picked up
+by TCP/IP hosts. Additional software is required in the router to route the
+packets between the two interfaces. Phil Karn's NET.EXE is commonly used, but
+PCROUTE configured for one or two packet driver interfaces is an alternative.
+NET.EXE is available via anonymous FTP from THUMPER.BELLCORE.COM (128.96.41.1).
+
+An autoexec.bat for the IPX <-> IP router is:
+
+    wd8003e 0x60 0x7 0x360 0xd000
+    ipx
+    ipxpkt 0x61
+    net
+
+NET is configured to use two Packet driver interfaces. The first sends and
+receives Ethernet II packets via the wd8003e packet driver which uses the WD
+Ethernet card configured to IRQ 7 and I/O Base 360h. The second sends and
+receives Ethernet II packets via IPXPKT using software interupt 0x61. IPXPKT
+sends and receives packets via IPX.COM, wrapping IPX headers around packets to
+be transmitted before passing them to IPX.COM, and stripping off IPX headers
+>from packets received from IPX.COM before passing them to NET. IPX.COM is
+configured to match the second Ethernet card in the router. 
+
+Note that NET could be configured to communicate with the first WD card
+directly. I got it working first using the packet driver, and haven't
+bothered to change it.
+
+The configuration I'm using for the second ethernet card is:
+
+LAN Option: WD Star/Ethercard PLUS v2.11.3 (111188)
+Hardware configuration: IRQ=3, I/O Base=280h, ram at C400:0 for 8k, no DMA
+
+NET requires a configuration file named AUTOEXEC.NET. An example is:
+
+ip address [138.75.30.1]
+hostname ipxrouter
+#
+# Our VAX cluster and link to Canterbury use the network 138.75.10.0
+# Workstations using WD cards on the network backbone also use 138.75.10.0
+# All other Novell w/s (GNET, Univation etc) use 138.75.30.0
+#
+# This router uses the address 138.75.10.11 on the VAX side and 138.75.30.1
+# on the IPXPKT side
+#
+attach packet 0x60 wd0 15  1500 [138.75.10.11]
+ifconfig wd0 ipaddress 138.75.10.11 netmask 0xffffff00 broadcast 138.75.10.255
+#
+attach packet 0x61 pkt 15 1500 [138.75.30.1]
+ifconfig pkt ipaddress 138.75.30.1 netmask 0xffffff00 broadcast 138.75.30.255
+#
+route add [138.75.30]/24 pkt
+route add [138.75.10]/24 wd0
+#
+arp add [138.75.30.255] ether ff:ff:ff:ff:ff:ff
+arp add [138.75.10.255] ether ff:ff:ff:ff:ff:ff
+#
+start rip
+#
+rip add [138.75.30.255] 30
+rip add [138.75.10.255] 30
+#
+ip ttl 16
+#
+tcp window 1024
+#
+tcp mss 1024
+#
+start echo
+start discard
+
+As mentioned above, version 2.0 or higher of IPXPKT must be used to
+establish connections with TCP/IP hosts through Novell servers or
+bridges. If version 2.0 is not in the packet driver distribution set
+(it wasn't in the 6.0a set), it can be obtained from Leiden University.
+Send a message to archive-server@cs.leidenuniv.nl containing
+'send source ipxpkt.asm' as the first and only line.
+
+To assemble IPXPKT, you will need the packet driver distribution and
+Borland's Turbo Assembler. Issue the following commands
+
+tasm head           ;head.asm is in the packet driver distribution
+tasm ipxpkt         ;requires defs.asm from the packet driver distribution
+tasm tail           ;tail.asm is from the packet driver distribution
+tlink head ipxpkt tail
+exe2bin head.exe ipxpkt.com
+
+Once the router is functioning, any application which uses a packet driver
+may be run from anywhere on the network. The bat file I use to run
+NCSA's FTP is:
+
+   @echo off
+   map w:=sys:ncsa
+   w:ncsacfg
+   if not errorlevel 1 goto skip
+   w:marknet f:marknet.mrk
+   w:ipxpkt 0x60
+   :skip
+   w:ftpbin %1
+   del config.tel
+   if exist f:marknet.mrk w:relnet f:marknet.mrk
+
+The program ncsacfg creates config.tel in the users current directory. It
+uses the workstations network address and physical station number to
+determine whether or not ipxpkt is needed, and concocts a unique IP
+address accordingly. Note that this program is specific to Lincoln's setup.
+Marknet and Relnet are used to remove ipxpkt from memory.
+
+John Baird
+j.baird@lincoln.ac.nz
+
+

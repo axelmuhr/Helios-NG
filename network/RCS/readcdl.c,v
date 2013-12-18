@@ -1,0 +1,857 @@
+head	1.15;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.12
+	Alenia_release:1.10
+	Helios1_3:1.10
+	C40_Field_Test_2:1.10
+	C40_Field_Test_R1:1.10
+	Helios13_beta:1.10
+	Helios1_2_2_Fault:1.9
+	Helios1_2_2_Native:1.9
+	Helios1_2_2_native_beta:1.8
+	Helios1_2_2:1.7
+	Helios1_2_2Beta:1.5
+	Helios1_2_1:1.4
+	Helios1_2:1.4;
+locks; strict;
+comment	@ * @;
+
+
+1.15
+date	93.12.20.13.33.39;	author nickc;	state Exp;
+branches;
+next	1.14;
+
+1.14
+date	93.08.12.14.13.50;	author nickc;	state Exp;
+branches;
+next	1.13;
+
+1.13
+date	93.08.11.10.41.46;	author bart;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	93.01.11.17.15.11;	author bart;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	93.01.04.16.31.30;	author bart;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.03.25.18.03.41;	author bart;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	92.01.14.15.52.33;	author bart;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	92.01.14.14.20.34;	author bart;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.10.30.16.38.41;	author bart;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	91.09.02.11.57.18;	author bart;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	91.06.03.13.13.41;	author bart;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.11.01.14.55.17;	author bart;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.09.24.18.48.21;	author bart;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.09.13.11.04.04;	author bart;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.09.12.14.48.08;	author jon;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.15
+log
+@fixed compile time warnings (ARM world)
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--           H E L I O S   N E T W O R K I N G   S O F T W A R E	--
+--           ---------------------------------------------------	--
+--                                                                      --
+--             Copyright (C) 1990, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+-- readcdl.c								--
+--                                                                      --
+--	Purpose : read an old-style CDL binary and convert it to a	--
+--	Taskforce structure.						--
+--                                                                      --
+--	Author:  BLV 26/7/90						--
+--                                                                      --
+------------------------------------------------------------------------*/
+/* RcsId: $Header: /hsrc/network/RCS/readcdl.c,v 1.14 1993/08/12 14:13:50 nickc Exp nickc $*/
+
+/*{{{  headers */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdarg.h>
+#include <message.h>
+#include <syslib.h>
+#include <nonansi.h>
+#include <posix.h>
+#include "private.h"
+#include "exports.h"
+#include "netutils.h"
+#include "rmlib.h"
+
+#ifdef Malloc
+#undef Malloc
+#endif
+/*}}}*/
+/*{{{  old CDL binary format */
+/**
+*** The old format of a CDL binary. The same structure is used in the
+*** binary file and in memory. All the strings occur at the end of the
+*** file, and some arithmetic is needed to figure out where these
+*** start. Then there are various indices into the table of strings.
+***
+*** First there is a fixed size header. This contains a magic number,
+*** which should have been followed by a Flags field (zero for now) and
+*** an image size. This would have given compatibility with binary programs.
+*** Instead there are no Flags or size fields.
+***
+*** At the start of the header are various counts. These can be used to
+*** determine the start of the strings.
+**/
+
+typedef struct CDL_Header {
+	WORD		Type;		/* should be 0x12345677 */
+	WORD		NoComponents;	/* Not FLAGS !!! @@%*!&!;@@! */
+	WORD		NoCStreams;
+	WORD		NoIStreams;
+	WORD		NoAttribs;
+	WORD		Ignore1;	/* actually char * */
+	WORD		CurrentDirIndex;
+	WORD		Ignore2;	/* another char * */
+	WORD		TfNameIndex;
+} CDL_Header;
+
+/**
+*** Following the commands are all the components. This contains large
+*** quantities of junk.
+**/
+
+typedef enum { ANY_PROCESSOR, T212, T414, T800 } PTYPE;
+
+typedef struct CDL_Component {
+	WORD		Ignore3;	/* char * for name */
+	WORD		NameIndex;
+	WORD		Flags;
+	WORD		Ignore4;	/* Object pointer to code */
+	WORD		Ignore5;	/* char * for processor name */
+	WORD		PuidIndex;
+	PTYPE		Ptype;		/* enum */
+	WORD		NumberAttribs;
+	WORD		AttribIndex;	/* to first attribute */
+	List		Ignore6;
+	UWORD		Memory;
+	WORD		LifeTime;	/* Mortal or immortal */
+	UWORD		TimeLimit;
+	WORD		Priority;
+	WORD		NumberArguments;
+	WORD		Ignore7;	/* char * for arguments */
+	WORD		ArgumentsIndex;
+	WORD		NoIStreams;
+	WORD		IStreamIndex;
+	WORD		Ignore8;	/* pointer to table of IStreams */
+} CDL_Component;
+
+/**
+*** CDL_CStreams. These form a table of the pipes used for communication.
+*** Every task maintains a number of CDL_IStreams, some of which index
+*** into this table.
+**/
+typedef struct	CDL_CStream {
+	WORD	Ignore8;
+	WORD	NameIndex;
+	WORD	Flags;
+	WORD	Count;
+} CDL_CStream;
+
+/**
+*** CDL_IStream. Every component has a number of these. The Index may be
+*** an index into the table of CDL_CStreams, indicating that this stream
+*** is used for communicating. Alternatively it may be -1 indicating that
+*** the stream is inherited from the parent. The mode can be 1, 2, or 3,
+*** read-only, write-only, read-write. The index is the standard stream
+*** number within this task.
+**/
+typedef struct CDL_IStream {
+	WORD	Index;
+	WORD	Mode;
+	WORD	Standard;
+} CDL_IStream;
+
+/**
+*** And attributes
+**/
+typedef struct CDL_Attribute {
+	Node	Node;
+	WORD	Count;
+	WORD	Ignore;
+	WORD	Index;
+} CDL_Attribute;
+
+/**
+*** This structure is used when setting up the communications.
+**/
+typedef struct	Comms {
+	RmTask		Writer;
+	int		WriterChannel;
+	RmTask		Reader;
+	int		ReaderChannel;
+	char		*FileName;
+	int		OpenMode;
+} Comms;
+
+/**
+*** This structure is used internally to contain various pointers as
+*** the CDL binary is being analysed.
+**/
+typedef struct Pointers {
+	CDL_IStream	*IStreams;
+	CDL_Attribute	*Attribs;
+	Comms		*Comms;
+	char		*Strings;
+	Object		*CurrentDirectory;
+} Pointers;
+/*}}}*/
+/*{{{  forward declarations */
+/**
+*** Forward declarations.
+**/
+static RmTaskforce	extract_taskforce(BYTE *buffer);
+static RmTaskforce	extract_header(CDL_Header *, Pointers *);
+static RmTask		extract_component(CDL_Component *, Pointers *);
+static bool		handle_redirection(Comms *Comms, Pointers *);
+/*}}}*/
+/*{{{  RmReadCDL() - entry point for this module */
+
+RmTaskforce RmReadCDL(Stream *CDLFile, ImageHdr *hdr, int Size)
+{ BYTE		*Buffer = Null(BYTE);  
+  RmTaskforce	Taskforce = (RmTaskforce) NULL;
+
+  Buffer = (BYTE *) Malloc(Size);
+  if (Buffer eq Null(BYTE)) goto done;
+  memcpy(Buffer, hdr, sizeof(ImageHdr));
+  if (Read(CDLFile, &(Buffer[sizeof(ImageHdr)]), (word)Size - sizeof(ImageHdr), -1)
+  	  ne ((word)Size - sizeof(ImageHdr)))
+   goto done;
+
+  (void) Close(CDLFile); CDLFile = Null(Stream);
+
+  Taskforce = extract_taskforce(Buffer);
+done:  
+  if (CDLFile ne Null(Stream)) Close(CDLFile);
+  if (Buffer  ne Null(BYTE)) Free(Buffer);
+  return(Taskforce);
+}
+
+/*}}}*/
+/*{{{  extract_taskforce(buffer) */
+static RmTaskforce	extract_taskforce(BYTE *Buffer)
+{ CDL_Header	*Header		= (CDL_Header *) Buffer;
+  CDL_Component	*Component	= (CDL_Component *)
+  				  &(Buffer[sizeof(CDL_Header)]);
+  CDL_CStream	*CStreams;
+  RmTaskforce	Taskforce	= (RmTaskforce) NULL;
+  Pointers	pointers;
+  int		i;
+  bool		success		= FALSE;
+  int		rc;
+
+  CStreams	    = (CDL_CStream *) (Buffer + sizeof(CDL_Header) +
+  		(Header->NoComponents * sizeof(CDL_Component)));
+  pointers.IStreams = (CDL_IStream *) (((BYTE *) CStreams) +
+  		(Header->NoCStreams * sizeof(CDL_CStream)));
+  pointers.Attribs  = (CDL_Attribute *) (((BYTE *) pointers.IStreams) +
+  		(Header->NoIStreams * sizeof(CDL_IStream)));
+  pointers.Strings  = ((char *) pointers.Attribs) +
+  		(Header->NoAttribs * sizeof(CDL_Attribute)) +
+		sizeof(int);
+  pointers.CurrentDirectory = Null(Object);
+
+  pointers.Comms = (Comms *) Malloc(Header->NoCStreams * sizeof(Comms));
+  if (pointers.Comms eq Null(Comms)) goto done;
+  for (i = 0; i < Header->NoCStreams; i++)
+   { pointers.Comms[i].Writer	= (RmTask) NULL;
+     pointers.Comms[i].Reader	= (RmTask) NULL;
+     if (CStreams[i].Flags & 0x80000000)	/* Indicates file */
+      { pointers.Comms[i].FileName = &(pointers.Strings[CStreams[i].NameIndex]);
+        if (CStreams[i].Flags & O_Create)
+         pointers.Comms[i].OpenMode	= O_Create | O_Truncate;
+        else
+         pointers.Comms[i].OpenMode	= O_Append | O_Create;
+      }      
+     else
+      { pointers.Comms[i].FileName	= Null(char);
+        pointers.Comms[i].OpenMode	= 0;
+      }
+   }
+
+  Taskforce = extract_header(Header, &pointers);
+  if (Taskforce eq (RmTaskforce) NULL) goto done;
+
+  for (i = 0; i < Header->NoComponents; i++, Component++)
+   { RmTask	task = extract_component(Component, &pointers);
+     if (task eq (RmTask) NULL) goto done;
+     if (RmAddheadTask(Taskforce, task) ne task)
+      { RmFreeTask(task); goto done; }
+   }
+
+  for (i = 0; i < Header->NoCStreams; i++)
+   { Comms	*Comms = &(pointers.Comms[i]);
+     if (Comms->FileName ne Null(char))
+      { unless(handle_redirection(Comms, &pointers)) goto done; }
+     else
+      { if ((rc = RmMakeChannel(Comms->Writer, Comms->WriterChannel,
+			 Comms->Reader, Comms->ReaderChannel))
+	   ne RmE_Success)
+	 goto done;
+      }
+   }
+
+  success = TRUE;
+  
+done:
+  if (pointers.CurrentDirectory ne Null(Object))
+   Close(pointers.CurrentDirectory);
+  if (pointers.Comms ne Null(Comms)) Free(pointers.Comms);
+  if (!success)
+   { if (Taskforce ne (RmTaskforce) NULL) RmFreeTaskforce(Taskforce);
+     return((RmTaskforce) NULL);
+   }
+  return(Taskforce);
+}
+/*}}}*/
+/*{{{  extract_header() */
+static RmTaskforce	extract_header(CDL_Header *Header, Pointers *pointers)
+{ RmTaskforce	Taskforce	= RmNewTaskforce();
+  char		*Strings	= pointers->Strings;
+  char		*DirectoryName;
+
+  if (Taskforce eq (RmTaskforce) NULL) return((RmTaskforce) NULL);
+  if (RmSetTaskforceId(Taskforce, objname(&(Strings[Header->TfNameIndex])))
+      ne RmE_Success)
+   { RmFreeTaskforce(Taskforce); return((RmTaskforce) NULL); }
+  
+  DirectoryName = &(Strings[Header->CurrentDirIndex]);
+  pointers->CurrentDirectory = Locate(Null(Object), DirectoryName); 
+  if (pointers->CurrentDirectory eq Null(Object))
+   { RmFreeTaskforce(Taskforce); return((RmTaskforce) NULL); }
+   
+  return(Taskforce);
+}
+/*}}}*/
+/*{{{  extract_component() */
+
+static RmTask	extract_component(CDL_Component *Component, Pointers *pointers)
+{ RmTask	task		= RmNewTask();
+  bool		success		= FALSE;
+  char		*Strings	= pointers->Strings;
+  CDL_IStream	*IStreams	= pointers->IStreams;
+      
+  if (task eq (RmTask) NULL) goto done;
+
+  if (Strings[Component->NameIndex] eq '/')
+   { if (RmSetTaskCode(task, &(Strings[Component->NameIndex])) ne RmE_Success)
+      goto done;
+   }
+  else
+   { char *	 buf = (char *) Malloc(IOCDataMax);
+     int	 rc;
+     if (buf eq NULL) goto done;
+     strcpy(buf, pointers->CurrentDirectory->Name);
+     pathcat(buf, &(Strings[Component->NameIndex]));
+     rc = RmSetTaskCode(task, buf);
+     Free(buf);
+     if (rc ne RmE_Success) goto done;
+   }
+
+	/* Skip the flags, set to non-zero iff binaries included, but	*/
+	/* that option is no longer supported.				*/
+
+	/* The CDL binary appears to always contain puid strings, but	*/
+	/* they tend to be empty.					*/
+  if (Component->PuidIndex >= 0)
+   if (strlen(&(Strings[Component->PuidIndex])) > 0)
+    { char	*puid = &(Strings[Component->PuidIndex]);
+      char	*buf  = (char *) Malloc(IOCDataMax);
+      if (buf eq Null(char)) goto done;
+
+      strcpy(buf, "puid=");
+      strcat(buf, puid);
+      if (RmAddTaskAttribute(task, buf) ne RmE_Success)
+       { Free(buf); goto done; }
+      Free(buf);
+   }
+ 
+  { int		ptype	= RmT_Default;
+    switch(Component->Ptype)
+     { case	T212	: ptype = RmT_T212; break;
+       case	T414	: ptype = RmT_T414; break;
+       case	T800	: ptype = RmT_T800; break;
+     }
+    if (RmSetTaskType(task, ptype) ne RmE_Success) goto done;
+  }
+
+  if (Component->Memory ne 0)
+   if (RmSetTaskMemory(task, Component->Memory) ne RmE_Success) goto done;
+
+  if (Component->NumberAttribs > 0)
+   { CDL_Attribute *attr	= pointers->Attribs;
+     int	    i;
+     char	*attrib;
+     
+     attr = &(attr[Component->AttribIndex]);
+     for (i = 0; i < Component->NumberAttribs; i++, attr++)
+      { attrib = &(Strings[attr->Index]);
+        if (RmAddTaskAttribute(task, attrib) ne RmE_Success) goto done;
+      }
+   }
+
+  { char	*arg	= objname(&(Strings[Component->ArgumentsIndex]));
+    int		i;
+    if (RmSetTaskId(task, arg) ne RmE_Success) goto done;
+    if (Component->NumberArguments > 1)
+     { for (i = 1; i < Component->NumberArguments; i++)
+        { arg += (strlen(arg) + 1);
+          if (RmAddTaskArgument(task, i, arg) ne RmE_Success) goto done;
+        }
+     }
+  }
+
+	/* Interpretation of the IStream structure...		*/
+	/* The index field can be -1 to indicate a standard	*/
+	/* stream that is inherited from the environment.	*/
+	/* These can be ignored. Alternatively it is an index	*/
+	/* into the CStream table. This may mean that the	*/
+	/* channel should be connected to a named file, in	*/
+	/* case the file name has been resolved already.	*/
+	/* Otherwise it refers to a pipe between two components.*/
+  { CDL_IStream	*stream = &(IStreams[Component->IStreamIndex]);
+    int		i;
+    int		index;
+    Comms	*Comms = pointers->Comms;
+    
+    for (i = 0; i < Component->NoIStreams; i++, stream++)
+     { if (stream->Index eq -1)
+        continue;		/* This stream is inherited */
+       index = (int) stream->Index;
+       if (Comms[index].FileName ne Null(char))
+        { 	/* mode = 80000001 for read-only */
+        	/* 1 for write-only or append, depending on create bit */
+          if (stream->Mode eq 0x80000001)
+           Comms[index].OpenMode = O_ReadOnly;
+          else
+           Comms[index].OpenMode |= O_WriteOnly;
+          Comms[index].Writer		= task;
+          Comms[index].WriterChannel	= (int) stream->Standard;
+        }
+       else
+        { if (stream->Mode eq O_ReadOnly)
+           { Comms[index].Reader	= task;
+             Comms[index].ReaderChannel	= (int) stream->Standard;
+           }
+          else
+           { Comms[index].Writer	= task;
+             Comms[index].WriterChannel	= (int) stream->Standard;
+           }
+        }
+     }
+  }
+
+  success = TRUE;
+
+done:
+  if (!success)
+   if (task ne (RmTask) NULL) RmFreeTask(task);
+  return(task);
+}
+
+/*}}}*/
+/*{{{  handle_redirection() */
+static bool handle_redirection(Comms *Comms, Pointers *pointers)
+{ char	*name = Comms->FileName;
+  char	*buffer;
+  int	length, rc;
+        
+	/* The name to be put into the Taskforce. This causes problems. */
+	/* The name may be relative to the current directory, in which	*/
+	/* case I turn it into an absolute name here. Otherwise the	*/
+	/* name may be absolute. Either way the current CDL compiler	*/
+	/* does not store any capabilities so in a protected mode 	*/
+	/* it does not work anyway.					*/
+  if (name[0] eq '/')
+   length = strlen(name) + 1;
+  else
+   length = strlen(pointers->CurrentDirectory->Name) + strlen(name) + 2;
+
+  buffer = (char *) Malloc(length);
+  if (buffer eq Null(char)) return(FALSE);
+  if (name[0] eq '/')
+   strcpy(buffer, name);
+  else
+   { strcpy(buffer, pointers->CurrentDirectory->Name);
+     pathcat(buffer, name);
+   }
+
+  rc = RmConnectChannelToFile(Comms->Writer, Comms->WriterChannel,
+        			buffer, Comms->OpenMode);
+  Free(buffer);
+  return((rc eq RmE_Success) ? TRUE : FALSE);
+}
+/*}}}*/
+
+@
+
+
+1.14
+log
+@fixed compile time warnings
+@
+text
+@d17 1
+a17 1
+/* RcsId: $Header: /hsrc/network/RCS/readcdl.c,v 1.13 1993/08/11 10:41:46 bart Exp nickc $*/
+d298 1
+a298 1
+   { char	*buf	= Malloc(IOCDataMax);
+d316 1
+a316 1
+      char	*buf  = Malloc(IOCDataMax);
+@
+
+
+1.13
+log
+@memory reduction
+@
+text
+@d17 1
+a17 1
+/* RcsId: $Header: /hsrc/network/RCS/readcdl.c,v 1.12 1993/01/11 17:15:11 bart Exp $*/
+d166 1
+d174 2
+a175 2
+  if (Read(CDLFile, &(Buffer[sizeof(ImageHdr)]), Size - sizeof(ImageHdr), -1)
+  	  ne (Size - sizeof(ImageHdr)))
+d186 1
+d284 1
+d377 1
+a377 1
+       index = stream->Index;
+d386 1
+a386 1
+          Comms[index].WriterChannel	= stream->Standard;
+d391 1
+a391 1
+             Comms[index].ReaderChannel	= stream->Standard;
+d395 1
+a395 1
+             Comms[index].WriterChannel	= stream->Standard;
+d408 1
+@
+
+
+1.12
+log
+@When the shell generates a CDL binary it sometimes uses relative pathnames
+for the commands instead of absolute ones. The TFM was not coping with
+that.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/readcdl.c,v 1.11 1993/01/04 16:31:30 bart Exp $";
+@
+
+
+1.11
+log
+@There were problems with the various open modes. In particular using
+append mode >> in a CDL script failed if the file did not exist yet.
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/readcdl.c,v 1.10 1992/03/25 18:03:41 bart Exp $";
+d290 15
+a304 2
+  if (RmSetTaskCode(task, &(Strings[Component->NameIndex])) ne RmE_Success)
+   goto done;
+@
+
+
+1.10
+log
+@Various changes including:
+1) first attempt at C40 support
+2) RmLib execute support (not yet fully tested)
+3) faster bootstrap, taskforce load, and better mapping
+@
+text
+@d17 1
+a17 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/readcdl.c,v 1.9 1992/01/14 15:52:33 bart Exp $";
+d217 1
+a217 1
+         pointers.Comms[i].OpenMode	= O_Create;
+d219 1
+a219 1
+         pointers.Comms[i].OpenMode	= O_Append;
+@
+
+
+1.9
+log
+@Minor changes to match Helios1_2_2_Native final release
+@
+text
+@d17 1
+d19 1
+a19 3
+
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/readcdl.c,v 1.3 1991/10/30 16:05:55 bart Exp $";
+
+d37 2
+a38 1
+
+d155 2
+a156 2
+
+
+d164 2
+a165 1
+
+d185 2
+a186 1
+
+d261 2
+a262 1
+
+d280 2
+a281 1
+
+d392 2
+a393 1
+
+d424 1
+@
+
+
+1.8
+log
+@Major update of networking sources, to match Helios1_2_2_native_beta
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /users/bart/netbak/network/RCS/readcdl.c,v 1.1 1991/08/06 17:32:53 bart Exp $";
+d195 1
+d264 1
+a264 1
+  
+d266 1
+a266 1
+  if (RmSetTaskforceId(Taskforce, &(Strings[Header->TfNameIndex]))
+d330 1
+a330 1
+  { char	*arg	= &(Strings[Component->ArgumentsIndex]);
+@
+
+
+1.7
+log
+@It could not cope with component names being absolute pathnames rather
+than true component names if the pathname exceeded 31 characters.
+Added an objname().
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/readcdl.c,v 1.6 1991/09/02 11:57:18 bart Exp bart $";
+d214 1
+a214 1
+         pointers.Comms[i].OpenMode	= RmO_Create;
+d216 1
+a216 1
+         pointers.Comms[i].OpenMode	= RmO_Append;
+d230 1
+a230 1
+     if (RmAddHeadTask(Taskforce, task) ne task)
+d265 1
+a265 1
+  if (RmSetTaskforceID(Taskforce, objname(&(Strings[Header->TfNameIndex])))
+d329 1
+a329 1
+  { char	*arg	= objname(&(Strings[Component->ArgumentsIndex]));
+d331 1
+a331 1
+    if (RmSetTaskID(task, arg) ne RmE_Success) goto done;
+d335 1
+a335 1
+          if (RmSetTaskArgument(task, i, arg) ne RmE_Success) goto done;
+@
+
+
+1.6
+log
+@If the taskforce being executed was in a subdirectory, for example
+"cdl pi_ring/pi.cdl 3" instead of "cdl pi.cdl 3", then the taskforce
+was given the name pi_ring/pi.cdl instead of just pi.cdl. Hence a name
+containing a slash was put into the directory tree and, although the
+taskforce could be executed, it could not be opened. There is now
+an objname() call to strip off the initial part of the name if any.
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /users/bart/hsrc/network/RCS/readcdl.c,v 1.5 1991/06/03 13:13:41 bart Exp bart $";
+d329 1
+a329 1
+  { char	*arg	= &(Strings[Component->ArgumentsIndex]);
+@
+
+
+1.5
+log
+@stack checking now enabled.
+,
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /giga/HeliosRoot/Helios/network/RCS/readcdl.c,v 1.4 90/11/01 14:55:17 bart Exp $";
+d265 1
+a265 1
+  if (RmSetTaskforceID(Taskforce, &(Strings[Header->TfNameIndex]))
+@
+
+
+1.4
+log
+@sources update after visit to Parsytec 22.10.90-31.10.90
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/readcdl.c,v 1.2 90/09/13 11:04:04 bart Exp $";
+a37 3
+
+#pragma	-s1
+#pragma -g0
+@
+
+
+1.3
+log
+@Plugged various memory leaks
+@
+text
+@d168 2
+a169 3
+RmTaskforce RmReadCDL(Stream *CDLFile, ImageHdr *hdr)
+{ int		Size;
+  BYTE		*Buffer = Null(BYTE);  
+a171 3
+  Size = GetFileSize(CDLFile);
+  if (Size < 0) goto done;
+
+d233 1
+a233 1
+     if (RmAddTailTask(Taskforce, task) ne task)
+d293 15
+a307 1
+	/* Puid is not currently supported.				*/	
+@
+
+
+1.2
+log
+@the RmReadCDL routine now takes an open stream and an image header rather
+than an object, to cope with fifo's as used by the shell and the CDL 
+compiler
+@
+text
+@d19 1
+a19 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/network/RCS/readcdl.c,v 1.1 90/09/12 14:48:08 jon Exp Locker: bart $";
+d256 3
+a262 1
+  if (pointers.Comms ne Null(Comms)) Free(pointers.Comms);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a17 1
+static char *rcsid = "$Header$";
+d19 2
+d168 2
+a169 3
+RmTaskforce RmReadCDL(Object *CDLBinary)
+{ Stream	*CDLFile = Null(Stream);
+  int		Size;
+a171 3
+     
+  CDLFile = Open(CDLBinary, Null(char), O_ReadOnly);
+  if (CDLFile eq Null(Stream)) goto done;
+d174 1
+a174 1
+  if (Size < 0) return((RmTaskforce) NULL);
+d177 5
+a181 3
+  if (Buffer eq Null(BYTE)) return((RmTaskforce) NULL);
+   
+  if (Read(CDLFile, Buffer, Size, -1)  ne Size) return((RmTaskforce) NULL);
+a185 1
+  
+a201 1
+  
+@

@@ -1,0 +1,469 @@
+head	1.1;
+access;
+symbols
+	Helios_1_3_1:1.1
+	Helios_C40_1_3_Official_Release:1.1
+	Alenia_release:1.1
+	Helios1_3:1.1
+	C40_Field_Test_2:1.1
+	Helios13_beta:1.1
+	Helios1_2_2:1.1
+	Helios1_2_2Beta:1.1
+	Helios1_2_1:1.1;
+locks; strict;
+comment	@ * @;
+
+
+1.1
+date	91.02.11.10.13.57;	author al;	state Exp;
+branches;
+next	;
+
+
+desc
+@telnet source
+@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/*
+ * Copyright (c) 1988 Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms are permitted
+ * provided that the above copyright notice and this paragraph are
+ * duplicated in all such forms and that any documentation,
+ * advertising materials, and other materials related to such
+ * distribution and use acknowledge that the software was developed
+ * by the University of California, Berkeley.  The name of the
+ * University may not be used to endorse or promote products derived
+ * from this software without specific prior written permission.
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+ * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ */
+
+#ifndef lint
+static char sccsid[] = "@@(#)sys_bsd.c	1.14 (Berkeley) 8/28/88";
+#endif /* not lint */
+
+/*
+ * The following routines try to encapsulate what is system dependent
+ * (at least between 4.x and dos) which is used in telnet.c.
+ */
+
+#if	defined(__HELIOS)
+
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+#include <signal.h>
+#include <errno.h>
+
+#include "ring.h"
+
+#include "defines.h"
+#include "externs.h"
+#include "types.h"
+
+#include <attrib.h>
+
+int
+	tout,			/* Output file descriptor */
+	tin,			/* Input file descriptor */
+	net,
+	HaveInput;		/* There is input available to scan */
+
+static Attributes oattr, nattr;
+
+static fd_set ibits, obits, xbits;
+
+
+init_sys()
+{
+    tout = fileno(stdout);
+    tin = fileno(stdin);
+    FD_ZERO(&ibits);
+    FD_ZERO(&obits);
+    FD_ZERO(&xbits);
+
+    errno = 0;
+}
+
+
+TerminalWrite(buf, n)
+char	*buf;
+int	n;
+{
+    return write(tout, buf, n);
+}
+
+TerminalRead(buf, n)
+char	*buf;
+int	n;
+{
+	n = Read(fdstream(tin),buf,n,0);
+	if( n == -1 ) n = -2;
+	return n;
+}
+
+/*
+ *
+ */
+
+int
+TerminalAutoFlush()
+{
+    return 1;
+}
+
+/*
+ * TerminalSpecialChars()
+ *
+ * Look at an input character to see if it is a special character
+ * and decide what to do.
+ *
+ * Output:
+ *
+ *	0	Don't add this character.
+ *	1	Do add this character
+ */
+#define ctrl(x) (x-'@@')
+int
+TerminalSpecialChars(c)
+int	c;
+{
+    void xmitAO(), xmitEL(), xmitEC(), intp(), sendbrk();
+
+    if (c == ctrl('C')) {
+	intp();
+	return 0;
+    } else if (c == ctrl('\\')) {
+	sendbrk();
+	return 0;
+    } else if (c == ctrl('O')) {
+	xmitAO();		/* Transmit Abort Output */
+	return 0;
+    } else if (!MODE_LOCAL_CHARS(globalmode)) {
+	if (c == ctrl('U')) {
+	    xmitEL();
+	    return 0;
+	} else if (c == ctrl('?')) {
+	    xmitEC();		/* Transmit Erase Character */
+	    return 0;
+	}
+    }
+    return 1;
+}
+
+
+/*
+ * Flush output to the terminal
+ */
+ 
+void
+TerminalFlushOutput()
+{
+}
+
+void
+TerminalSaveState()
+{
+	GetAttributes(fdstream(1),&oattr);
+	nattr = oattr;
+
+    termEofChar 	= ctrl('D');
+    termEraseChar 	= ctrl('H');
+    termFlushChar 	= ctrl('O'); 
+    termIntChar 	= ctrl('C');
+    termKillChar 	= ctrl('U');
+    termQuitChar 	= ctrl('\\');
+}
+
+void
+TerminalRestoreState()
+{
+	SetAttributes(fdstream(1),&oattr);
+}
+
+/*
+ * TerminalNewMode - set up terminal to a specific mode.
+ */
+
+
+void
+TerminalNewMode(f)
+register int f;
+{
+    static int prevmode = 0;
+    int onoff;
+    int old;
+    Attributes nattr = oattr;
+    Attributes *attr = &nattr;
+
+    globalmode = f;
+    if (prevmode == f)
+	return;
+    old = prevmode;
+    prevmode = f;
+
+    switch (f) {
+
+    case 0:
+	onoff = 0;
+	attr = &oattr;
+	break;
+
+    case 1:		/* remote character processing, remote echo */
+    	RemoveAttribute(attr,ConsoleEcho);
+    	AddAttribute(attr,ConsoleRawInput);
+    	AddAttribute(attr,ConsoleRawOutput);
+	RemoveAttribute(attr,ConsolePause);
+	RemoveAttribute(attr,ConsoleIgnoreBreak);
+	RemoveAttribute(attr,ConsoleBreakInterrupt);
+    	break;
+    	
+    case 2:		/* remote character processing, local echo */
+    	AddAttribute(attr,ConsoleEcho);
+    	AddAttribute(attr,ConsoleRawInput);
+    	AddAttribute(attr,ConsoleRawOutput);
+	RemoveAttribute(attr,ConsolePause);
+	RemoveAttribute(attr,ConsoleIgnoreBreak);
+	RemoveAttribute(attr,ConsoleBreakInterrupt);
+    	break;
+
+    case 5:		/* local character processing, no echo */
+    case 3:		/* local character processing, remote echo */
+    	RemoveAttribute(attr,ConsoleEcho);
+    	RemoveAttribute(attr,ConsoleRawInput);
+    	RemoveAttribute(attr,ConsoleRawOutput);
+	RemoveAttribute(attr,ConsolePause);
+	RemoveAttribute(attr,ConsoleIgnoreBreak);
+	RemoveAttribute(attr,ConsoleBreakInterrupt);
+    	break;
+    	
+    case 4:		/* local character processing, local echo */
+    	AddAttribute(attr,ConsoleEcho);
+    	RemoveAttribute(attr,ConsoleRawInput);
+    	RemoveAttribute(attr,ConsoleRawOutput);
+	RemoveAttribute(attr,ConsolePause);
+	RemoveAttribute(attr,ConsoleIgnoreBreak);
+	RemoveAttribute(attr,ConsoleBreakInterrupt);
+    	break;
+
+    default:
+  		IOdebug("TerminalNewMode unknown mode %d",f);
+	    return;
+    }
+    SetAttributes(fdstream(1),attr);
+}
+
+
+int
+NetClose(fd)
+int	fd;
+{
+    return close(fd);
+}
+
+
+void
+NetNonblockingIO(fd, onoff)
+int
+	fd,
+	onoff;
+{
+    setsockopt(fd, SOL_IOCTL, FIONBIO, (char *)&onoff, sizeof(onoff));
+}
+
+/*
+ * Various signal handling routines.
+ */
+
+static void
+deadpeer()
+{
+	setcommandmode();
+	longjmp(peerdied, -1);
+}
+
+static void
+intr()
+{
+    if (localchars) {
+	intp();
+	return;
+    }
+    setcommandmode();
+    longjmp(toplevel, -1);
+}
+
+static void
+intr2()
+{
+    if (localchars) {
+	sendbrk();
+	return;
+    }
+}
+
+static void
+doescape()
+{
+    command(0);
+}
+
+void
+sys_telnet_init()
+{
+    (void) signal(SIGINT, (int (*)())intr);
+    (void) signal(SIGQUIT, (int (*)())intr2);
+    (void) signal(SIGPIPE, (int (*)())deadpeer);
+
+    setconnmode();
+
+    NetNonblockingIO(net, 1);
+
+#if	defined(SO_OOBINLINE)
+    if (SetSockOpt(net, SOL_SOCKET, SO_OOBINLINE, 1) == -1) {
+	perror("SetSockOpt");
+    }
+#endif	/* defined(SO_OOBINLINE) */
+
+/*   Fork(2000,TermReader,0);*/
+}
+
+/*
+ * Process rings -
+ *
+ *	This routine tries to fill up/empty our various rings.
+ *
+ *	The parameter specifies whether this is a poll operation,
+ *	or a block-until-something-happens operation.
+ *
+ *	The return value is 1 if something happened, 0 if not.
+ */
+
+int
+process_rings(netin, netout, netex, ttyin, ttyout, poll)
+int netin, netout, netex, ttyin, ttyout;
+int poll;		/* If 0, then block until something to do */
+{
+    register int c;
+		/* One wants to be a bit careful about setting returnValue
+		 * to one, since a one implies we did some useful work,
+		 * and therefore probably won't be called to block next
+		 * time (TN3270 mode only).
+		 */
+    int returnValue = 0;
+    struct timeval TimeValue;
+
+    TimeValue.tv_usec = 0;
+    TimeValue.tv_sec = 0;
+retry:
+    if (ttyin) {
+	c = TerminalRead(ttyiring.supply, ring_empty_consecutive(&ttyiring));
+	if (c < 0 && errno == EWOULDBLOCK) {
+	    c = 0;
+	} else {
+	    /* EOF detection for line mode!!!! */
+	    if ((c == -2) && MODE_LOCAL_CHARS(globalmode) && isatty(tin)) {
+			/* must be an EOF... */
+		*ttyiring.supply = termEofChar;
+		c = 1;
+	    }
+	    if (c > 0) {
+	    	ring_supplied(&ttyiring, c);
+	    }
+	}
+	if( c ) returnValue |= 1;		/* did something useful */	
+    }
+    if (ttyout) {
+	returnValue |= ttyflush(SYNCHing|flushout);
+    }
+    if( !poll && returnValue ) return returnValue;
+    
+    if (netout) {
+	FD_SET(net, &obits);
+    } 
+    if (netin) {
+	FD_SET(net, &ibits);
+    }
+#if 0
+    if (netex) {
+	FD_SET(net, &xbits);
+    }
+#endif
+    if ((c = select(16, &ibits, &obits, &xbits, &TimeValue)) < 0) {
+	if (c == -1) {
+		    /*
+		     * we can get EINTR if we are in line mode,
+		     * and the user does an escape (TSTP), or
+		     * some other signal generator.
+		     */
+	    if (errno == EINTR) {
+		return 0;
+	    }
+		    /* I don't like this, does it ever happen? */
+	    printf("sleep(5) from telnet, after select\r\n");
+	    sleep(5);
+	}
+	return 0;
+    }
+done:
+    if( c == 0 )
+    {
+    	if( !poll )
+    	{
+    		Delay(100000);
+    		goto retry;
+    	}
+    }
+#if 0
+    /*
+     * Any urgent data?
+     */
+    if (FD_ISSET(net, &xbits)) {
+IOdebug("urgent data");    	
+	FD_CLR(net, &xbits);
+	SYNCHing = 1;
+	ttyflush(1);	/* flush already enqueued data */
+    }
+#endif
+    /*
+     * Something to read from the network...
+     */
+    if (FD_ISSET(net, &ibits)) {
+	int canread;
+	FD_CLR(net, &ibits);
+	canread = ring_empty_consecutive(&netiring);
+	c = recv(net, netiring.supply, canread, 0);
+	if (c < 0 && errno == EWOULDBLOCK) {
+	    c = 0;
+	} else if (c <= 0) {
+	    return -1;
+	}
+	if (netdata) {
+	    Dump('<', netiring.supply, c);
+	}
+	if (c)
+	    ring_supplied(&netiring, c);
+	returnValue = 1;
+    }
+
+    if ( FD_ISSET(net, &obits)) 
+	{
+	FD_CLR(net, &obits);
+	returnValue |= netflush();
+    }
+
+    return returnValue;
+}
+#endif	/* defined(unix) */
+@

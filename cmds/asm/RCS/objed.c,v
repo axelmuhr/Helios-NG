@@ -1,0 +1,374 @@
+head	1.12;
+access;
+symbols
+	Helios1_3:1.10
+	Helios13_beta:1.9
+	Helios1_2_2:1.8
+	Helios1_2_2Beta:1.8
+	Helios1_2_1:1.7;
+locks; strict;
+comment	@ * @;
+
+
+1.12
+date	94.08.09.16.43.25;	author al;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	93.06.10.14.04.35;	author bart;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	92.09.25.10.41.21;	author paul;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	91.12.02.15.13.43;	author martyn;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	91.06.07.07.30.14;	author nickc;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	91.03.04.11.41.10;	author martyn;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	90.12.19.14.45.18;	author martyn;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	90.09.28.13.19.39;	author nick;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	90.09.11.18.40.39;	author jon;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	90.08.28.09.49.28;	author james;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	90.08.24.16.55.41;	author james;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	90.08.24.16.37.54;	author james;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.12
+log
+@Ported to MS-DOS under WATCOM
+@
+text
+@/****************************************************************/
+/* File: objed.c                                                */
+/*                                                              */
+/*                                                              */
+/* Author: NHG 16-May-88                                        */
+/*								*/
+/****************************************************************/
+/* $Id: objed.c,v 1.11 1993/06/10 14:04:35 bart Exp $ */
+
+/* do NOT include asm.h */
+
+#if defined(SUN4) || defined(RS6000) || defined (__DOS386)
+#include <stdio.h>
+#include "ttypes.h"
+#ifndef __helios_h
+#define __helios_h 1
+#endif
+#include <module.h>
+
+#ifndef __DOS386
+#include <sys/file.h>
+#ifndef SEEK_SET
+#define SEEK_SET L_SET
+#endif
+#endif /* __DOS386 */
+
+extern int errno;
+#else
+#include <stdio.h>
+#include <module.h>
+#endif
+
+extern FILE *verfd;
+extern WORD verbose;
+
+long swap(x)
+long x;
+
+#if defined(HOSTISBIGENDIAN)
+{
+	long r;
+	char *a = (char *)&x;
+	char *b = (char *)&r;
+
+	b[0] = a[3];
+	b[1] = a[2];
+	b[2] = a[1];
+	b[3] = a[0];
+
+	return r;
+}
+#else
+{ return (x); }
+#endif
+
+void objed(fd,name,stacksize,heapsize)
+FILE *fd;
+char *name;
+long stacksize;
+long heapsize;
+{
+	Program prog;
+	ImageHdr hdr;
+	int info = verbose;
+	int size;
+	long progtype;
+	char *type;
+
+	fseek(fd,0,SEEK_SET);	/* ensure we are at start of file */
+	
+	size = fread(&hdr,1,sizeof(ImageHdr),fd);
+
+	if( size != sizeof(ImageHdr) )
+		error("Read failure: %d",size);
+
+
+	if( swap(hdr.Magic) != Image_Magic )
+		error("File not object image");
+
+	size = fread(&prog,1,sizeof(Program),fd);
+
+	if( size != sizeof(Program) )
+		error("Read failure: %d",size);
+
+	progtype = swap(prog.Module.Type);
+
+	if      ( progtype == T_Program ) type = "Program";
+	else if ( progtype == T_Module  ) type = "Module";
+	else if ( progtype == T_ResRef  ) type = "ResRef"; 
+	else if ( progtype == T_Device  ) type = "Device"; 
+	else type = "Unknown";
+
+report("Image:           Type   %16s Size           %8ld",type,swap(hdr.Size));
+
+report("Header Fields:                       Old                     New");
+	
+	if( info ) 
+report("                 Name %18s      %18s",prog.Module.Name,name?name:"");
+
+	if( name != 0 )
+	{
+		int i;
+		for(i=0; i<32; i++ ) prog.Module.Name[i] = 0;
+		strncpy(prog.Module.Name,name,31);
+	}
+
+	if( swap(prog.Module.Type) == T_Program )
+	{
+		if ( info ) fprintf(verfd,"                 Stacksize      %8ld",swap(prog.Stacksize));
+		if( stacksize != -1 )
+		{
+			prog.Stacksize = swap(stacksize);
+			if ( info ) fprintf(verfd,"                %8ld",stacksize);
+		}
+		if ( info ) fprintf(verfd,"\n                 Heapsize       %8ld",swap(prog.Heapsize));
+		if( heapsize != -1 )
+		{
+			prog.Heapsize = swap(heapsize);
+			if ( info ) fprintf(verfd,"                %8ld",heapsize);
+		}
+		if ( info ) putc('\n',verfd);
+	}
+
+	fseek(fd,0,SEEK_SET);	/* ensure we are at start of file */
+	
+	size = fwrite(&hdr,1,sizeof(ImageHdr),fd);
+
+	if( size != sizeof(ImageHdr) )
+		error("Failed to write back image header: %d %d",size,errno);
+
+	size = fwrite(&prog,1,sizeof(Program),fd);
+
+	if( size != sizeof(Program) )
+		error("Failed to write back program header: %d %d",size,errno);
+
+}
+@
+
+
+1.11
+log
+@First attempt at porting to RS6000
+@
+text
+@d8 1
+a8 1
+/* $Id: objed.c,v 1.10 1992/09/25 10:41:21 paul Exp bart $ */
+d12 1
+a12 1
+#if defined(SUN4) || defined(RS6000)
+d19 2
+d25 1
+@
+
+
+1.10
+log
+@Cleaned up all the different flags used into a standard coherent set. The
+asm now builds for all targets correctly again
+@
+text
+@d8 1
+a8 1
+/* $Id: objed.c,v 1.9 1991/12/02 15:13:43 martyn Exp $ */
+d12 1
+a12 1
+#if defined(SUN4)
+@
+
+
+1.9
+log
+@finally removed ORION
+@
+text
+@d8 1
+a8 1
+/* $Id: objed.c,v 1.8 1991/06/07 07:30:14 nickc Exp martyn $ */
+d35 2
+a36 3
+#if defined(NORCROFT)
+{ return (x); }
+#else
+d49 2
+@
+
+
+1.8
+log
+@new improved version (50% speed increase)
+@
+text
+@d8 1
+a8 1
+/* $Id: objed.c,v 1.7 1991/03/04 11:41:10 martyn Exp $ */
+d12 1
+a12 1
+#if defined(ORION) || defined(SUN4)
+d35 1
+a35 1
+#if defined(ORION) || defined(NORCROFT)
+@
+
+
+1.7
+log
+@changed SPARKY to SUN4.
+@
+text
+@d8 1
+a8 1
+/* $Id: objed.c,v 1.6 90/12/19 14:45:18 martyn Exp Locker: martyn $ */
+d15 1
+d17 1
+d20 1
+d22 2
+@
+
+
+1.6
+log
+@added sparky stuff
+@
+text
+@d8 1
+a8 1
+/* $Id: objed.c,v 1.5 90/09/28 13:19:39 nick Exp Locker: martyn $ */
+d12 1
+a12 1
+#if defined(ORION) || defined(SPARKY)
+@
+
+
+1.5
+log
+@tidied
+@
+text
+@d8 1
+a8 1
+/* $Id$ */
+d12 1
+a12 1
+#ifdef ORION
+@
+
+
+1.4
+log
+@no change
+@
+text
+@d8 1
+a8 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/asm/RCS/objed.c,v 1.3 90/08/28 09:49:28 james Exp Locker: jon $";
+@
+
+
+1.3
+log
+@uses local copy of ttypes.h
+@
+text
+@d8 1
+a8 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/asm/RCS/objed.c,v 1.2 90/08/24 16:55:41 james Exp Locker: james $";
+@
+
+
+1.2
+log
+@*** empty log message ***
+@
+text
+@d8 1
+a8 1
+static char *rcsid = "$Header: /usr/perihelion/Helios/cmds/asm/RCS/objed.c,v 1.1 90/08/24 16:37:54 james Exp Locker: james $";
+d14 1
+a14 1
+#include <ttypes.h>
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d8 1
+a8 1
+static char *rcsid = "$Header$";
+@

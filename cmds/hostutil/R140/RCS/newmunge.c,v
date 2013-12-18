@@ -1,0 +1,907 @@
+head	1.2;
+access;
+symbols
+	Helios_C40_1_3_Official_Release:1.2
+	Helios-C40:1.2
+	Alenia_release:1.2
+	Helios1_2_1:1.2;
+locks; strict;
+comment	@ * @;
+
+
+1.2
+date	91.01.23.12.27.20;	author paul;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	91.01.22.13.46.31;	author paul;	state Exp;
+branches;
+next	;
+
+
+desc
+@new version of munge that can cope with riscix hosted "objsam" derivatives
+of a.out files
+@
+
+
+1.2
+log
+@
+@
+text
+@/*------------------------------------------------------------------------
+--                                                                      --
+--				NEWMUNGE.C				--
+--                      --------------------------                      --
+--                                                                      --
+--             Copyright (C) 1989, Perihelion Software Ltd.             --
+--                        All Rights Reserved.                          --
+--                                                                      --
+--                                                                      --
+-- Converts an ARM assembler "a.out" file into a Helios object file.	--
+--                                                                      --
+-- The assembly file must have been 'preprocessed' by the ampp munge 	--
+-- macros. These macros incorporate pseudo Helios object directives	--
+-- into the symbol table. The munger then converts these pseudo		--
+-- directives into true Helios directives, leaving behind the unix	--
+-- header, symbol and relocation info in the process.			--
+--									--
+--									--
+--	Author:  PAB 10/4/89						--
+--									--
+-- Updated 891011 by JGSmith ("objASM" code)				--
+-- Updated 900105 by JGSmith						--
+--	Remove the limitation of Helios labels beginning with ".H_".	--
+--	This is required because the "objASM" assembler will only allow	--
+--	macro parameter substitution on labels beginning with an	--
+--	alphabetic character, and containing only alphanumerics		--
+--	and "_". We will allow the directive labels to start with the	--
+--	sequence "HD_".							--
+--                                                                      --
+------------------------------------------------------------------------*/
+
+static char *SccsId = " %W% %G% Copyright (C) 1990, ABC Ltd.\n" ;
+
+#include <stdio.h>
+#include <a.out.h>
+#include <stab.h>
+#include <alloc.h>
+
+static char *whoami = "newmunge" ;	/* the name of our program */
+
+/*---------------------------------------------------------------------------*/
+
+#define	FALSE	0
+#define TRUE	1
+
+/*---------------------------------------------------------------------------*/
+/* Helios object code directives */
+
+#define OBJCODE           (0x001)
+#define OBJBSS            (0x002)
+#define OBJINIT           (0x003)
+#define OBJBYTE           (0x009)
+#define OBJSHORT          (0x00A)
+#define OBJWORD           (0x00C)
+#define OBJIMAGESIZE      (0x00E)
+#define OBJLABELREF       (0x00F)
+#define OBJMODULE         (0x020)
+#define OBJGLOBAL         (0x022)
+#define OBJLABEL          (0x023)
+#define OBJDATA           (0x024)
+#define OBJCOMMON         (0x025)
+#define OBJDATASYMB       (0x010)
+#define OBJDATAMODULE     (0x011)
+#define OBJMODNUM         (0x012)
+#define PATCHMIN          (0x013)
+#define PATCHMAX          (0x01F)
+
+#define PATCH_SHIFT       (0x014) /* patch shift (shifts next patch value by specified amount) */
+#define	PATCH_ARM_DT      (0x015) /* Data transfer instruction patch (bits 0-11) */
+#define	PATCH_ARM_DP      (0x016) /* Data processing instruction patch (bits 0-8 + shift of instruction) */
+#define	PATCH_ARM_JP      (0x017) /* Branch instruction patch (bits 0-23 rshift 2) */
+#define	PATCH_ARM_DP_LSB  (0x018) /* Data processing instruction patch (bits 0-7 of patch value) */
+#define	PATCH_ARM_DP_REST (0x019) /* Data processing instruction patch (bits 8-16) */
+
+/*---------------------------------------------------------------------------*/
+/* macros to determine the file position of different segments in "a.out" */
+#define TextREL(x) (N_TXTOFF(x) + (x).a_text+(x).a_data)
+#define DataREL(x) (N_TXTOFF(x) + (x).a_text+(x).a_data + (x).a_trsize)
+#define SYMTAB(x)  (N_TXTOFF(x) + (x).a_text+(x).a_data + (x).a_trsize + \
+			(x).a_drsize)
+#define STRTAB(x)  (N_TXTOFF(x) + (x).a_text+(x).a_data + (x).a_trsize + \
+			(x).a_drsize + (x).a_syms)
+
+#define PARTCMP(x,y)	(strncmp(x,y,sizeof(y) - 1) == 0)
+
+#define ENC_MORE (0x80)	/* number encoding - another byte to follow */
+#define ENC_NEG  (0x40)	/* number encoding - number is neg */
+#define BOT6BITS (0x3F)
+#define BOT7BITS (0x7F)
+
+/*---------------------------------------------------------------------------*/
+
+void     write_enc() ;
+unsigned Enc() ;
+int      read_enc() ;
+void     read_and_check_header() ;
+void     printsyms() ;
+int      cmp_symbols() ;
+void     sort_symbols() ;
+void     munge() ;
+
+/*---------------------------------------------------------------------------*/
+
+void usage(void)
+{
+ fprintf(stderr,"Usage: %s [-s] [-o helios-objectfile] bsd-objectfile\n",whoami) ;
+ exit(1) ;
+}
+
+/*---------------------------------------------------------------------------*/
+
+int opt_printsyms = FALSE ;
+
+int main(int argc,char **argv)
+{
+ FILE	      *outf = stdout ;
+ FILE	      *inf = stdin ;
+ struct exec   ohead ;
+ int	       i ;
+ char	      *cp ;
+ char         *text_seg ;
+ int           num_symbols ;
+ int           str_tab_size ;
+ struct nlist *symbol_table ;
+ char         *symbol_names ;
+
+ for (i = 1; (i < argc) ; i++)
+  {
+   if (argv[i][0] == '-')
+    {
+     switch(argv[i][1])
+      {
+       case 'o' :
+                  if (argv[i][2] == '\0')
+                   cp = argv[++i] ;
+                  else
+		   cp = &argv[i][2] ;
+#ifdef __STDC__ /* ANSI */
+		  if ((outf = fopen(cp,"wb")) == NULL)
+#else
+		  if ((outf = fopen(cp,"w")) == NULL)
+#endif
+		   {
+		    fprintf(stderr,"%s: Cannot open output file\n",whoami) ;
+		    exit(2) ;
+                   }
+		  break ;
+		
+       case 's' :
+		  opt_printsyms = TRUE ;
+                  break ;
+				
+       default  :
+		  usage() ;
+      }
+    }
+   else
+    {
+     if ((inf = fopen(argv[i],"r")) == NULL)
+      {
+       fprintf(stderr,"%s: cannot open input file\n",whoami) ;
+       exit(3) ;
+      }
+    }
+  }
+
+ /* end of arg processing */
+
+ read_and_check_header(inf,&ohead) ;
+
+
+ /* read in "a.out" text segment */
+
+ if (ohead.a_text != 0)
+  {
+   if ((text_seg = malloc((unsigned)ohead.a_text)) == NULL)
+    {
+     fprintf(stderr,"%s: out of memory\n",whoami) ;
+     exit(4) ;
+    }
+   if (fread(text_seg,ohead.a_text,1,inf) != 1)
+    {
+     fprintf(stderr,"%s: Couldn't read text segment from input file\n",whoami) ;
+     exit(4) ;
+    }
+  }
+ else
+  fprintf(stderr,"%s: Warning no text segment in input file\n",whoami) ;
+
+ /* read in "a.out" symbol table */
+
+ if (ohead.a_syms == 0)
+  {
+   fprintf(stderr,"%s: Warning input file has no symbol table\n",whoami) ;
+  }
+
+ symbol_table = (struct nlist *)malloc(ohead.a_syms) ;
+ num_symbols = ohead.a_syms / sizeof(struct nlist) ;
+
+ if (fseek(inf,SYMTAB(ohead),0) || (fread((char *)symbol_table,sizeof(struct nlist),num_symbols,inf) != num_symbols))
+  {
+   printf("%s: Error reading symbol table\n",whoami) ;
+   exit(8) ;
+  }
+
+ /* read in string table (names of symbols) */
+
+ if (fread(&str_tab_size,sizeof(long),1,inf) != 1)
+  {
+   printf("%s: error reading string table size\n",whoami) ;
+   exit(9) ;
+  }
+ symbol_names = (char *)malloc(str_tab_size) ;
+ if (str_tab_size <= 4) /* size includes itself */
+  fprintf(stderr,"%s: Warning, input file contains no string table\n",whoami) ;
+ else
+  {
+   if (fseek(inf,STRTAB(ohead),0) || (fread(symbol_names,1,str_tab_size,inf) != str_tab_size))
+    {
+     printf("%s: Error reading string table\n",whoami) ;
+     exit(10) ;
+    }
+  }
+
+ /* sort symbols into pc offset order */
+ sort_symbols(symbol_table,num_symbols,symbol_names) ;
+
+ if (opt_printsyms)
+  printsyms(symbol_table,num_symbols,symbol_names) ;
+ else
+  /* munge the ARM "a.out" text segment to a Helios one outputing result in outf */
+  munge(text_seg,ohead.a_text,symbol_table,num_symbols,symbol_names,outf) ;
+
+ /* tidy up */
+ free(symbol_table) ;
+ free(symbol_names) ;
+ free(text_seg) ;
+ fclose(inf) ;
+ fclose(outf) ;
+ exit(0) ;
+ SccsId = SccsId ; /* remove warning */
+}
+
+/*---------------------------------------------------------------------------*/
+
+void read_and_check_header(FILE *inf,struct exec *ohead)
+{
+ if (fread((char *)ohead,sizeof(struct exec),1,inf) != 1)
+  {
+   fprintf(stderr,"%s: Error - Could not read input file header\n",whoami) ;
+   exit(4) ;
+  }
+
+ if (ohead->a_magic != OMAGIC)
+  {
+   fprintf(stderr,"%s: Error - Input file is not RISC-iX assembler \"a.out\" file\n",whoami) ;
+   exit(5) ;
+  }
+
+ if (ohead->a_trsize != 0)
+  {
+   fprintf(stderr,"%s: Error - Input file contains text relocation information\n",whoami) ;
+   exit(6) ;
+  }
+ if (ohead->a_drsize != 0)
+  {
+   fprintf(stderr,"%s: Error - Input file contains data relocation information\n",whoami) ;
+   exit(6) ;
+  }
+ if ((ohead->a_data + ohead->a_bss) != 0)
+  {
+   fprintf(stderr,"%s: Error - Input file contains data and/or bss segments\n",whoami) ;
+   exit(7) ;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+
+void printsyms(struct nlist *symbol_table,int num_symbols,char *symbol_names)
+{
+ int item ;
+
+ printf("\nSymbol Table:\n") ;
+ printf("-------------\n") ;
+
+ for (item = 0; (item < num_symbols); item++)
+  {
+   printf("\nSymbol No: %d\n",item+1) ;
+   {
+    char *name = &symbol_names[symbol_table[item].n_un.n_strx] ;
+
+    if (name == NULL)
+     printf("Symbol has no name\n") ;
+    else
+     printf("Name: %s\n",name) ;
+   }
+   printf("n_type: ") ;
+   switch (symbol_table[item].n_type & N_TYPE)
+    {
+     case N_UNDF :
+		   printf("Undefined") ;
+		   break ;
+
+     case N_ABS  :
+		   printf("Absolute") ;
+		   break ;
+
+     case N_TEXT :
+		   printf("Text") ;
+		   break ;
+
+     case N_DATA :
+		   printf("Data") ;
+		   break ;
+
+     case N_BSS  :
+		   printf("BSS") ;
+		   break ;
+
+     case N_COMM :
+		   printf("Common (internal to ld)") ;
+		   break ;
+
+     case N_FN   :
+	           printf("File name symbol") ;
+		   break ;
+
+     default     :
+		   printf("UNKNOWN n_type") ;
+    }
+
+   if (symbol_table[item].n_type & N_EXT)
+    printf(" - Externally defined (global)\n") ;
+   else
+    putchar('\n') ;
+
+   switch(symbol_table[item].n_type & N_STAB)
+    {
+     case N_GSYM  :
+		    printf("Stab = N_GSYM - global symbol: name,,0,type,0\n") ;
+		    break ;
+
+     case N_FNAME :
+		    printf("Stab = N_FNAME - procedure name (f77 kludge): name,,0\n") ;
+		    break ;
+
+     case N_FUN   :
+		    printf("Stab = N_FUN - procedure: name,,0,linenumber,address\n") ;
+		    break ;
+
+     case N_STSYM :
+		    printf("Stab = N_STSYM - static symbol: name,,0,type,address\n") ;
+		    break ;
+
+     case N_LCSYM :
+		    printf("Stab = N_LCSYM - .lcomm symbol: name,,0,type,address\n") ;
+		    break ;
+
+     case N_RSYM  :
+		    printf("Stab = N_RSYM - register sym: name,,0,type,register\n") ;
+		    break ;
+
+     case N_SLINE :
+		    printf("Stab = N_SLINE - src line: 0,,0,linenumber,address\n") ;
+		    break ;
+
+     case N_SSYM  :
+		    printf("Stab = N_SSYM - structure elt: name,,0,type,struct_offset\n") ;
+		    break ;
+
+     case N_SO    :
+		    printf("Stab = N_SO - source file name: name,,0,0,address\n") ;
+		    break ;
+
+     case N_LSYM  :
+		    printf("Stab = N_LSYM - local sym: name,,0,type,offset\n") ;
+		    break ;
+
+     case N_SOL   :
+		    printf("Stab = N_SOL - #included file name: name,,0,0,address\n") ;
+		    break ;
+
+     case N_PSYM  :
+		    printf("Stab = N_PSYM - parameter: name,,0,type,offset\n") ;
+		    break ;
+
+     case N_ENTRY :
+		    printf("Stab = N_ENTRY - alternate entry: name,linenumber,address\n") ;
+		    break ;
+
+     case N_LBRAC :
+		    printf("Stab = N_LBRAC - left bracket: 0,,0,nesting level,address\n") ;
+		    break ;
+
+     case N_RBRAC :
+		    printf("Stab = N_RBRAC - right bracket: 0,,0,nesting level,address\n") ;
+		    break ;
+
+     case N_BCOMM :
+		    printf("Stab = N_BCOMM - begin common: name,,\n") ;
+		    break ;
+
+     case N_ECOMM :
+		    printf("Stab = N_ECOMM - end common: name,,\n") ;
+		    break ;
+
+     case N_ECOML :
+		    printf("Stab = N_ECOML - end common (local name): ,,address\n") ;
+		    break ;
+
+     case N_LENG  :
+		    printf("Stab = N_LENG - second stab entry with length information\n") ;
+		    break ;
+
+     case N_PC    :
+		    printf("Stab = N_PC - global pascal symbol: name,,0,subtype,line\n") ;
+		    break ;
+
+     default      :
+		    printf("No stab bits set\n") ;
+    }
+
+   printf("n_type: %#x, n_other: %#x, n_desc: %#x\n",symbol_table[item].n_type,symbol_table[item].n_other,symbol_table[item].n_desc) ;
+   printf("Value of symbol (or offset): %#x\n",symbol_table[item].n_value) ;
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/* compare offsets of two symbols */
+/* return -neg if (A < B), 0 if == or > 0 if (A > B) */
+int cmp_symbols(struct nlist *a,struct nlist *b)
+{
+ return(a->n_value - b->n_value) ;
+}
+
+/*---------------------------------------------------------------------------*/
+/* Sort symbols into pc offset order */
+/* Unfortunately the ARM assembler throws out its symbols in a completely */
+/* aribitary order, so we have to sort via pc offset and fix some problems */
+/* of ordering within each pc offset */
+void sort_symbols(struct nlist *symbol_table,int num_symbols,char *symbol_names)
+{
+ int           thisoffset ;
+ struct nlist *last_free_pos ;
+ struct nlist  tmp ;
+ int	       i = 0 ;
+ int           oldposX ;
+ int           posX = 0 ;
+ int           dataNlen ;
+ int           dataN = 1 ;
+ char          dataWanted[50] ;
+
+ /* sort into pc offset order */
+ qsort(symbol_table,num_symbols,sizeof(struct nlist),cmp_symbols) ;
+
+ /* make sure that if a module directive is at offset 0, that it is
+  * the first directive to be output to the object file
+  */
+
+ /* if any labels at offset 0 and first is not a module directive */
+ /* (must also check for any absolute symbol (equ) that may be at  */
+ /*  start as this doesn't contain a valid offset) */
+#ifdef oldCODE
+ if (((symbol_table->n_type & N_TYPE) != N_TEXT) || ((symbol_table->n_value == 0) && !PARTCMP(&symbol_names[symbol_table->n_un.n_strx],".H_module_")))
+#else
+ if (((symbol_table->n_type & N_TYPE) != N_TEXT) || ((symbol_table->n_value == 0) && (!PARTCMP(&symbol_names[symbol_table->n_un.n_strx],".H_module_") && !PARTCMP(&symbol_names[symbol_table->n_un.n_strx],"HD_module_"))))
+#endif /* oldCODE */
+  {
+   /* look at all symbols at offset 0 */
+   for (i = 1; (i < num_symbols) && (symbol_table[i].n_value == 0 || (symbol_table[i].n_type & N_TYPE) != N_TEXT); i++)
+    {
+     /* if we found it */
+#ifdef oldCODE
+     if (PARTCMP(&symbol_names[symbol_table[i].n_un.n_strx],".H_module_"))
+#else
+     if (PARTCMP(&symbol_names[symbol_table[i].n_un.n_strx],".H_module_") || PARTCMP(&symbol_names[symbol_table[i].n_un.n_strx],"HD_module_"))
+#endif /* oldCODE */
+      {
+       /* swap module directive to first label */
+       tmp = *symbol_table ;
+       *symbol_table = symbol_table[i] ;
+       symbol_table[i] = tmp ;
+       break ;
+      }
+    }
+#ifdef oldCODE
+   if (!PARTCMP(&symbol_names[symbol_table[0].n_un.n_strx],".H_module_"))
+#else
+   if (!PARTCMP(&symbol_names[symbol_table[0].n_un.n_strx],".H_module_") && !PARTCMP(&symbol_names[symbol_table[0].n_un.n_strx],"HD_module_"))
+#endif /* oldCODE */
+    {
+     fprintf(stderr,"%s: Warning - no module directive at offset zero\n",whoami) ;
+     i = 0 ;
+    }
+   else
+    i = 1 ; /* skip past module diretive */
+  }
+
+ /* make sure that any offsets that share a number of directives */
+ /* always have their labels defined first so that subsequent */
+ /* directives at the same offset dont change the offset */
+ /* under the labels feet so to speak! */
+ while (i < num_symbols )
+  {
+   last_free_pos = NULL ;
+   thisoffset = symbol_table[i].n_value ;
+	
+   /* while multiple directives/labels at same offset */
+   while(symbol_table[i].n_value == thisoffset)
+    {
+     /* if not a real label */
+#ifdef oldCODE
+     if (PARTCMP(&symbol_names[symbol_table[i].n_un.n_strx],".H_"))
+#else
+     if (PARTCMP(&symbol_names[symbol_table[i].n_un.n_strx],".H_") || PARTCMP(&symbol_names[symbol_table[i].n_un.n_strx],"HD_"))
+#endif /* oldCODE */
+      {
+       if (!last_free_pos)
+	last_free_pos = &symbol_table[i] ;
+      }
+     /* is a label and directives preceed it */
+     else
+      if (last_free_pos)
+       {
+	/* swap label to first free non label pos */
+	/* at this offset */
+	tmp = *last_free_pos ;
+	*last_free_pos = symbol_table[i] ;
+	symbol_table[i] = tmp ;
+	/* find next free pos */
+	/* guaranteed to find one at this offset */
+	/* as we have just swapped */
+#ifdef oldCODE
+	while (!PARTCMP(&symbol_names[(++last_free_pos)->n_un.n_strx],".H_")) ; /* null statement */
+#else
+	while (!PARTCMP(&symbol_names[(++last_free_pos)->n_un.n_strx],".H_") && !PARTCMP(&symbol_names[(++last_free_pos)->n_un.n_strx],"HD_")) ; /* null statement */
+#endif /* oldCODE */
+       }
+     if (++i >= num_symbols)
+      break ;
+    }		
+  }
+	
+ /* make sure that any data directives in the symbol table are */
+ /* in the correct order (otherwise .def files and their associated */
+ /* libraries will be inconsistent! */
+
+ while(posX < num_symbols)
+  {
+   /* work out target data directive */
+   dataNlen = sprintf(dataWanted,".H_data_%d_",dataN) ;
+
+   /* find next data directive */
+#ifdef oldCODE
+   while(!PARTCMP(&symbol_names[symbol_table[posX].n_un.n_strx],".H_data_"))
+#else
+   while(!PARTCMP(&symbol_names[symbol_table[posX].n_un.n_strx],".H_data_") && !PARTCMP(&symbol_names[symbol_table[posX].n_un.n_strx],"HD_data_"))
+#endif /* oldCODE */
+    {
+     if (++posX >= num_symbols)
+      goto NoMoreSyms ;
+    }
+
+   /* is the data directive in correct sequence? */
+   if (strncmp(&symbol_names[symbol_table[posX].n_un.n_strx],dataWanted,dataNlen) != 0)
+    {
+     /* not in sequence, so find correct data dir and swap */
+     oldposX = posX ; /* remember out of seq pos */
+     while (strncmp(&symbol_names[symbol_table[posX].n_un.n_strx],dataWanted,dataNlen) != 0)
+      {
+       if (++posX >= num_symbols)
+	goto NoMoreSyms ;
+      }	  	
+
+     /* swap next data directive in sequnce with out of seq dir. */
+     tmp = symbol_table[posX] ;
+     symbol_table[posX] = symbol_table[oldposX] ;
+     symbol_table[oldposX] = tmp ;
+
+     posX = oldposX ; /* find next dir after one we swapped */
+    }
+
+   posX++ ;
+   dataN++ ; /* look for next data dir in sequence */
+  }
+ NoMoreSyms: ;
+}
+
+/*---------------------------------------------------------------------------*/
+
+void munge(char *text_seg,int text_size,struct nlist *symbol_table,int num_symbols,char *symbol_names,FILE *outf)
+{
+ int   next_dir_offset = symbol_table->n_value ; /* offset of first directive */
+ int   current_dir = 0 ;
+ int   text_offset = 0 ;
+ int   block ;
+ char *name ;
+
+ while ((text_offset < text_size) || (current_dir < num_symbols))
+  {
+   if (text_offset < next_dir_offset)
+    {
+     /* generate a CODE block */
+     block = next_dir_offset - text_offset ; /* size of code block */
+#if 0
+/* debug -- printf("+++ generate a CODE block size = %d\n",block) ; */
+/* debug */ printf("+++ text_offset = %d\n",text_offset) ;
+/* debug */ printf("+++ text_size= %d\n",text_size) ;
+/* debug */ printf("+++ next_dir_offset = %d\n",next_dir_offset) ;
+/* debug */ printf("+++ current_dir, num_symb= %d,%d\n",current_dir,num_symbols) ;
+#endif
+     putc(OBJCODE,outf) ;			/* code block header */
+     write_enc(block,outf) ;			/* encoded size */
+
+     if (fwrite(&text_seg[text_offset],block,1,outf) != 1)
+      {
+       fprintf(stderr,"%s: Error writing output file\n",whoami) ;
+       exit(11) ;
+      }
+
+     text_offset += block ;
+    }
+   else
+    {
+     /* generate Helios directives */
+     /* extract name of symb from string table */
+     name = &symbol_names[symbol_table[current_dir].n_un.n_strx] ;
+			
+#ifdef oldCODE
+     if (!PARTCMP(name,".H_")) /* embedded directive? */
+#else
+     if (!PARTCMP(name,".H_") && !PARTCMP(name,"HD_")) /* embedded directive? */
+#endif /* oldCODE */
+      {
+       if ((symbol_table[current_dir].n_type & N_TYPE) == N_TEXT)
+	{
+	 /* generate a LABELREF for a normal symbol */
+	 putc(OBJLABEL,outf) ;
+	 fputs(name,outf) ;
+	 fputc('\0',outf) ;
+	}
+      }
+     else
+      {
+       /* generate a directive embedded in symbol name */
+       name += 3 ; /* skip ".H_" or "HD_" prefix */
+
+       if (PARTCMP(name,"init"))
+	{
+         putc(OBJINIT,outf) ;
+	 text_offset += 4 ; /* remove place holder (used to keep pc relative addressing correct) */
+	}
+       else
+        if (PARTCMP(name,"module"))
+	 {
+	  putc(OBJMODULE,outf) ;
+	  /* skip past 'module_xxx_' */
+	  name += sizeof("module_") - 1 ;
+	  while (*name++ != '_') ; /* null statement */
+	  if (strcmp(name,"undef") == 0)
+	   write_enc(-1,outf) ;
+	  else
+	   write_enc(atoi(name),outf) ;
+	 }
+	else
+	 if (PARTCMP(name,"data"))
+	  {
+	   putc(OBJDATA,outf) ;
+	   name += sizeof("data_") - 1 ;
+	   while (*name++ != '_') ; /* step over number */
+	   write_enc(atoi(name),outf) ; /* size of data */
+	   while(*name++ != '_') ; /* null statement */
+	   fputs(name,outf) ; /* data label */
+	   fputc('\0',outf) ;
+	  }
+	 else
+	  if (PARTCMP(name,"common"))
+	   {
+	    putc(OBJCOMMON,outf) ;
+	    name += sizeof("common_") - 1 ;
+	    write_enc(atoi(name),outf) ; /* size of common */
+	    while(*name++ != '_') ; /* null statement */
+	    fputs(name,outf) ; /* common data label */
+	    fputc('\0',outf) ;
+	   }
+	  else
+	   if (PARTCMP(name,"global"))
+	    {
+	     putc(OBJGLOBAL,outf) ;
+	     name += sizeof("global_") - 1 ;
+             while(*name++ != '_') ; /* null statement */
+	     fputs(name,outf) ;
+	     fputc('\0',outf) ;
+	    }
+	   else
+	    if (PARTCMP(name,"patch_"))
+	     {
+	      name += sizeof("patch_") - 1 ;
+
+	      if (PARTCMP(name,"byte"))
+	       {
+		putc(OBJBYTE,outf) ;
+		text_offset++ ; /* adjust pc rel place holder */
+		name += sizeof("byte_") - 1 ;
+	       }
+	      else
+	       if (PARTCMP(name,"shrt"))
+		{
+		 putc(OBJSHORT,outf) ;
+		 text_offset += 2 ;
+		 name += sizeof("shrt_") - 1 ;
+		}
+	       else
+	        if (PARTCMP(name,"word"))
+		 {
+		  putc(OBJWORD,outf) ;
+		  text_offset += 4 ;
+		  name += sizeof("word_") - 1 ;
+		 }
+		else
+		 if (PARTCMP(name,"armdt"))
+		  {
+		   putc(OBJWORD,outf) ;
+		   putc(PATCH_ARM_DT,outf) ;
+		   name += sizeof("armdt_") - 1 ;
+		   /* write out data for patch to work on */
+		   write_enc(*(long *)&text_seg[text_offset],outf) ;
+		   text_offset += 4 ;
+		  }
+		 else
+		  if (PARTCMP(name,"armdp_"))
+		   {
+		    putc(OBJWORD,outf) ;
+		    putc(PATCH_ARM_DP,outf) ;
+		    name += sizeof("armdp_") - 1 ;
+		    write_enc(*(long *)&text_seg[text_offset],outf) ;
+		    text_offset += 4 ;
+	           }
+		  else
+		   if (PARTCMP(name,"armlsbdp_"))
+		    {
+		     putc(OBJWORD,outf) ;
+		     putc(PATCH_ARM_DP_LSB,outf) ;
+		     name += sizeof("armlsbdp_") - 1 ;
+		     write_enc(*(long *)&text_seg[text_offset],outf) ;
+		     text_offset += 4 ;
+		    }
+		   else
+		    if (PARTCMP(name,"armrestdp_"))
+		     {
+		      putc(OBJWORD,outf) ;
+		      putc(PATCH_ARM_DP_REST,outf) ;
+		      name += sizeof("armrestdp_") - 1 ;
+		      write_enc(*(long *)&text_seg[text_offset],outf) ;
+		      text_offset += 4 ;
+		     }
+		    else
+		     if (PARTCMP(name,"armjp"))
+		      {
+		       putc(OBJWORD,outf) ;
+		       putc(PATCH_ARM_JP,outf) ;
+		       name += sizeof("armjp_") - 1 ;
+		       write_enc(*(long *)&text_seg[text_offset],outf) ;
+		       text_offset += 4 ;
+		      }
+		     else
+		      {
+		       fprintf(stderr,"%s: Error, unrecognised patch type\n",whoami) ;
+                       exit(13) ;
+                      }
+
+       /* generate common parts of patch directives */
+       if (PARTCMP(name,"imagesize"))
+	putc(OBJIMAGESIZE,outf) ;
+       else
+        if (PARTCMP(name,"modnum"))
+	 putc(OBJMODNUM,outf) ;
+	else
+	 if (PARTCMP(name,"modtaboff"))
+	  {
+	   putc(PATCH_SHIFT,outf) ;
+	   putc(2,outf) ;
+	   putc(OBJMODNUM,outf) ;
+	  }
+	 else
+	  if (PARTCMP(name,"datasymb"))
+	   {
+	    putc(OBJDATASYMB,outf) ;
+	    name += sizeof("datasymb_") - 1 ;
+	    while(*name++ != '_') ; /* null statement */
+	    fputs(name,outf) ;
+	    fputc('\0',outf) ;
+	   }
+          else
+           if (PARTCMP(name,"datamodule"))
+	    {
+	     putc(OBJDATAMODULE,outf) ;
+	     name += sizeof("datamodule_") - 1 ;
+	     while(*name++ != '_') ; /* null statement */
+	     fputs(name,outf) ;
+	     fputc('\0',outf) ;
+	    }
+           else
+            if (PARTCMP(name,"labelref"))
+	     {
+	      putc(OBJLABELREF,outf) ;
+	      name += sizeof("labelref_") - 1 ;
+	      while(*name++ != '_') ; /* null statement */
+	      fputs(name,outf) ;
+	      fputc('\0',outf) ;
+	     }
+	    else
+	     {
+	      fprintf(stderr,"%s: Error, unknown patch type in patch\n",whoami) ;
+	      exit(12) ;
+	     }
+        }
+       else
+        {
+         fprintf(stderr,"%s: Error, unknown Helios directive embedded in symbol table\n",whoami) ;
+         exit(15) ;
+        }
+      }
+
+     if (++current_dir < num_symbols)
+      while ((symbol_table[current_dir].n_type & N_TYPE) != N_TEXT && (++current_dir < num_symbols) ) ; /* null statement */
+
+     if (current_dir < num_symbols)
+      next_dir_offset = symbol_table[current_dir].n_value ;
+     else
+      next_dir_offset = text_size ; /* code block size is distance to next symbol */
+    }
+  }
+}
+
+/*---------------------------------------------------------------------------*/
+/************************************************************************/
+/* Write/Read in a number out in Helios encoded format.			*/
+/* This is similar to the encoding of the transputer instruction set.	*/
+/* Only use as many bytes as necessary to describe a number:		*/
+/* Set top bit of byte if another follows it, set penultimate top bit	*/
+/* of first byte if number is negative, continue setting top bit of	*/
+/* byte and shifting the number ad infinitum until number complete	*/
+/* the 'Helios Link Format for Non-Transputer Processors' document	*/
+/* describes this in more detail					*/
+/************************************************************************/
+void write_enc(int n,FILE *fp)
+{
+ putc(((n < 0) ? Enc(-n,ENC_NEG,fp) : Enc(n,0,fp)),fp) ;
+}
+
+/*---------------------------------------------------------------------------*/
+
+unsigned Enc(unsigned n,int nflag,FILE *fp)
+{
+ if (n >> 6 == 0)
+  return((n & BOT6BITS) | nflag) ;
+
+ putc((Enc((n >> 7),nflag,fp) | ENC_MORE),fp) ;
+
+ return(n & BOT7BITS) ;
+}
+
+/*---------------------------------------------------------------------------*/
+/*> EOF newmunge.c <*/
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@@
