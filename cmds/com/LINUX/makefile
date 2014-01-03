@@ -1,9 +1,9 @@
 #------------------------------------------------------------------------------
 # Helios generic make system - NATIVE HOST MAKEFILE -
 #-----------------------------------------------------------------------------
-# YYY Host specific make rules to make NATIVE HOST version of XXX component.
+# SUN Host specific make rules to make NATIVE HOST version of Generic Commands
 #
-# File: /HSRC/XXX/YYY/makefile
+# File: /HSRC/cmds/com/SUN4/makefile
 #
 # This file contains ALL the definitions and rules that are
 # required to make a NATIVE HOST version of this component.
@@ -14,17 +14,23 @@
 # All intermediate, object and binary files should be made in here.
 #
 # SccsId: %W% %G%
-# RcsId: $Id: makefile,v 1.6 1992/10/16 15:26:12 martyn Exp $
+# RcsId: $Id: makefile,v 1.3 1994/06/07 12:31:51 nickc Exp $
 #		(C) Copyright 1990 Perihelion Software
 #
 # WARNING: assumes you are using GNUmake.
 #-----------------------------------------------------------------------------
 # Manditory variables for a component:
 # name of COMPONENT directory relative to $(HSRC)
-COMPONENT = cmds/cc/compiler
+COMPONENT = cmds/com
 
 # Manditory includes
 include $(HSRC)/makeinc/$(HHOST).mak	# Default host system variables
+
+HOSTCC      = gcc 
+HOSTCFLAGS  = -D__SMT -DLINUX -D__LINUX -D__HELIOSLINUX -ansi \
+	      -I$(GCCINCLUDE) -D__$(HPROC) -D__HELIOS$(HPROC) -I/usr/include -I/hsrc/include
+HOSTLD      = gcc
+HOSTLDFLAGS = -ansi
 
 # Manditory phoney targets
 .PHONY: default clean
@@ -37,30 +43,30 @@ VPATH := $(HSRC)/$(COMPONENT)
 #-----------------------------------------------------------------------------
 # Note all final targets here
 
-TARGETS = nc
+TARGETS =  gdi sysbreak sysbuild
 
 default : $(TARGETS)
 
 install	: $(TARGETS)
-	$(CP) nc $(HHOSTBIN)/nc
+	$(CP) $(TARGETS) $(HHOSTBIN)
 	$(TOUCH) install
+
 clean	:
-	-$(RM)	$(OBJECTS) $(TARGETS) mkout core ../mkout install
+	-$(RM)	$(OBJECTS) $(TARGETS) mkout core ../mkout install \
+	$(POSSIBLECPUTARGETS)
+
 
 # Note all sources
 SOURCES		= $(SOURCES.c) $(HEADERS.c) $(SOURCES.odd)
 
 # Object files
-OBJECTS		= $(SOURCES.c:.c=.o)
+OBJECTS		= gdi.o sysbreak.o
 
 # C source files
-SOURCES.c	= bind.c builtin.c driver.c stubs.c pp.c preparse.c \
-		  debug.c lex.c misc.c IEEEflt.c cg.c cg1.c cg2.c emit.c \
-		  sem.c syn.c synprint.c vargen.c showcode.c optimise.c
+SOURCES.c	= gdi.c sysbreak.c
 
 # C header files
-HEADERS.c	= AEops.h cchdr.h cg.h modes.h system.h util.h xpuops.h \
-		  xpuspec.h xrefs.h
+HEADERS.c	= 
 
 # Any other source files
 SOURCES.odd	= makefile
@@ -69,18 +75,18 @@ SOURCES.odd	= makefile
 #-----------------------------------------------------------------------------
 # Native Host targets and their dependencies:
 
-# uncomment if you have compiler or makedepend generated dependencies
-#include depends
+ifeq ($(HPROC),C40)
+HOSTCFLAGS	:= $(HOSTCFLAGS) -D__C40 -D__HELIOSC40 -I/usr/include -I$(INCLUDE)
+else
+  ifeq ($(HPROC),ARM)
+  HOSTCFLAGS	:= $(HOSTCFLAGS) -D__ARM -D__HELIOSARM -I/usr/include -I$(INCLUDE)
+  endif
+endif
 
-DEFINES := $(DEFINES) -DTARGET_IS_XPUTER -DOFFSETOF_FIX -DDBX -DNEWCAST
-DEFINES := $(DEFINES) -DCOMPILING_ON_SUN4
+gdi : gdi.c
+	$(HOSTCC) $(HOSTCFLAGS) -o $@ $<
 
-HOSTCC = cc
-HOSTCFLAGS := -w -I. -I.. -Iinclude $(DEFINES)
-
-nc : $(OBJECTS)
-	cc -Bstatic -o nc $(OBJECTS)
-
-
+sysbreak : sysbreak.c
+	$(HOSTCC) $(HOSTCFLAGS) -o $@ $<
 
 #-----------------------------------------------------------------------------

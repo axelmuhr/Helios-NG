@@ -1,9 +1,9 @@
 #-----------------------------------------------------------------------------
 # Helios generic make system - HOST SPECIFIC MAKEFILE -
 #-----------------------------------------------------------------------------
-# IBM/RS6000 Host system specific *DEFAULT* make rules.
-# 
-# File: /HSRC/makeinc/RS6000.mak
+# Linux Host system specific *DEFAULT* make rules.
+# (Was RS6000)
+# File: /HSRC/makeinc/LINUX.mak
 #
 # This file contains definitions of variables and rules which are
 # common to all Helios makefiles, or which need customizing to 
@@ -11,15 +11,17 @@
 # ifeq($(HPROC),XXX) directives. This will allow you for instance, to select
 # a particular compiler on this host to create XXX processor binaries.
 #
-# RcsId: $Id: RS6000.mak,v 1.10 1994/02/03 09:46:18 tony Exp tony $
-#		(c) Copyright 1994 Perihelion Software
 #
 # WARNING: assumes you are using GNUmake.
 #-----------------------------------------------------------------------------
 # Host system directories:
 
 ifndef HHOSTBIN
-  HHOSTBIN	= /usr/local/bin## Where to place host utilities e.g. IO Server
+  HHOSTBIN	= /giga/bin## Where to place host utilities e.g. IO Server
+endif
+
+ifndef GCCINCLUDE
+ GCCINCLUDE = /usr/lib/gcc/x86_64-redhat-linux/4.4.4/include
 endif
 
 #-----------------------------------------------------------------------------
@@ -29,10 +31,11 @@ endif
 # e.g. DISASS = -@echo#
 
 # Native host compiler (used to generate host utilities)
-HOSTCC = xlc
+HOSTCC = gcc
 
-TEMP =	/tmp	# Directory to place temporary files during a compilation.
-		# Essential for compiling with maketran (at least).
+# Directory to place temporary files during a compilation.
+# Essential for compiling with maketran (at least).
+TEMP =	/tmp
 
 # Native host compiler flags: ANSI mode, Split module table
 # If -DHOSTISBIGENDIAN is not set littleendian is defaulted to.
@@ -44,8 +47,11 @@ ifeq ($(HPROC),M68K)
 		-D_POSIX_SOURCE -D__$(HPROC) -D__HELIOS$(HPROC) \
 		-D__BIGENDIAN
 else
-  HOSTCFLAGS := $(HOSTCFLAGS)  -DHOSTISBIGENDIAN -D__SMT -D$(HHOST) \
-		-D_POSIX_SOURCE -D__$(HPROC) -D__HELIOS$(HPROC)
+#  HOSTCFLAGS := $(HOSTCFLAGS)  -D$(HHOST) -D__SMT \
+#		-D_POSIX_SOURCE -D__$(HPROC) -D__HELIOS$(HPROC)
+  HOSTCFLAGS := $(HOSTCFLAGS) -ansi -pipe -O -D$(HHOST) \
+        -D__$(HPROC) -D__HELIOS$(HPROC)
+
 endif
 
 # Cross C Compiler
@@ -272,4 +278,4 @@ srcnames:
 % :: RCS/%,v
 
 
-# End of RS6000.mak
+# End of LINUX.mak
