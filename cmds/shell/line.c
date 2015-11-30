@@ -12,6 +12,7 @@
 *
 * $Header: /hsrc/cmds/shell/RCS/line.c,v 1.8 1993/08/12 14:50:06 nickc Exp $
 *
+* AxM: Added TAB key to autocompletion feature - ESC sucks ;)
 **/
 #include "shell.h"
 
@@ -26,7 +27,7 @@ BOOL (*controlkeyaction[32])() =
   right,
   nothing,
   erasechar,
-  nothing,
+  complete,
   nothing,
   deletetoend,
   leftword,
