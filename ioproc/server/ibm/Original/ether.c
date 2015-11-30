@@ -17,13 +17,30 @@
 
 #include "helios.h"
 
+#ifdef OLD_ETHER
+#define MAXETHERPKT 1514
+#endif /* OLD_ETHER */
 
 PRIVATE bool     ethernet = FALSE;      /* do we have ethernet */       
+#ifdef OLD_ETHER
+PRIVATE unsigned int etherbase;         /* ether io port     */
+PRIVATE long ethermem;                  /* ether ram address */
+PRIVATE int      ethersize;             /* size of ether ram */
+#endif /* OLD_ETHER */
 PRIVATE unsigned char etheraddr[8];             /* ether net addr    */
+#ifdef OLD_ETHER
+PRIVATE unsigned char ethermult[8];             /* multicast address */
+PRIVATE unsigned char etherrcr;         /* ether receive config */
+PRIVATE int      etherlevel;            /* ether interrupt level */     
+PRIVATE int ethertype;			/* what type of board    */
+PRIVATE BYTE etherbuff[MAXETHERPKT];           /* place to store a mess */
+#endif /* OLD_ETHER */
 
 #include "esupport.c"
 
+#ifndef OLD_ETHER
 PRIVATE BYTE etherbuff[MAXETHERPKT];           /* place to store a mess */
+#endif /* !OLD_ETHER */
 
 typedef struct NetInfo
 {
@@ -61,17 +78,70 @@ WORD* result;
   if (!get_config("ETHERNET"))
    { *result = 0L; return; }
 
+#ifdef OLD_ETHER
+  if ((temp = get_int_config("ETHERBASE")) == Invalid_config)
+   etherbase = 0xFF;
+  else
+   etherbase = (unsigned int) temp;
+
+  if ((ethermem = get_int_config("ETHERMEM")) == Invalid_config)
+   ethermem = -1;
+
+  if ((temp = get_int_config("ETHERRCR")) == Invalid_config)
+   etherrcr = 0x04;	/* default is accept broadcast */
+  else 
+   etherrcr = (unsigned char) temp;
+
+  if ((temp = get_int_config("ETHERLEVEL")) == Invalid_config)
+   etherlevel = -1;
+  else
+   etherlevel = (int) temp;
+#else /* !OLD_ETHER */
   if ((temp = get_int_config (HOST_PKT_INT)) == Invalid_config)
     pkt_int_no = -1 ;
   else
     pkt_int_no = (int) temp;
+#endif /* !OLD_ETHER */
 
+#ifdef OLD_ETHER
+  board = get_config("ETHERTYPE");
+  if (board eq (char *)NULL)
+   ethertype = -1;
+  elif (!mystrcmp(board, "WD8003E"))
+   ethertype = BT_WESTERN_DIGITAL;
+  elif (!mystrcmp(board, "DLINK"))
+   ethertype = BT_DLINK;
+  else
+   { ServerDebug("I/O Server : unknown ethernet board %s", board);
+     ServerDebug("           : supported boards are WD8003E and DLINK");
+     ethertype = -1;
+   }
+#endif /* OLD_ETHER */
 
+#ifdef OLD_ETHER
+  if (!etherboardp()) 
+#else /* !OLD_ETHER */
   if (!clarksonp()) 
+#endif /* !OLD_ETHER */
    { *result = 0L;
+#ifdef OLD_ETHER
+     ServerDebug("I/O Server : /ether device not found");
+     ServerDebug("I/O Server : base %x, mem %lx, etherrcr %d, level %d, type %d",
+             etherbase, ethermem, etherrcr, etherlevel, ethertype);
+#endif /* OLD_ETHER */
      return;
    }
 
+#ifdef OLD_ETHER     
+#ifdef ETHERDEBUG    	
+      ServerDebug("/ether - Ethernet found at %04x %8lx", etherbase, ethermem);
+      ServerDebug("/ether - RCR %02x INTLEV %d", etherrcr, etherlevel);
+      ServerDebug("/ether - Address %02x%02x%02x%02x%02x%02x\n",  
+                   etheraddr[0], etheraddr[1],  etheraddr[2],        
+                   etheraddr[3], etheraddr[4], etheraddr[5]);        
+#endif                   
+/*      init_int_vector(); */
+#endif /* OLD_ETHER */
 
   ethernet = TRUE;
   *result  = 1L;
@@ -140,7 +210,11 @@ Conode* myco;
   {
     Request_Return(EC_Error + SS_IOProc + EG_WrongSize +
                   EO_Message, 0L,0L);
+#ifdef OLD_ETHER
+    ServerDebug("/ether - write Bad pkt Size");
+#else /* !OLD_ETHER */
     notify ("TX error - bad packet size (%d bytes)", asked);
+#endif /* !OLD_ETHER */
     return;
   }
 
@@ -193,8 +267,15 @@ Conode* myco;
      actual = mcb->MsgHdr.DataSize;
   }
 
+#ifdef OLD_ETHER
+  ether_something();
+#endif /* OLD_ETHER */
 
+#ifdef OLD_ETHER
+  unless (SendTxPkt(mcb->Data,actual)) 
+#else /* !OLD_ETHER */
   unless (SendTxPkt(mcb->Data, (USHORT) actual)) 
+#endif /* !OLD_ETHER */
 
   {
     memcpy(etherbuff,mcb->Data,(size_t)actual);
@@ -215,8 +296,15 @@ Conode* myco;
         break;
       }  
 
+#ifdef OLD_ETHER
+      ether_something();						/* poll int handler */
+#endif /* OLD_ETHER */
 
+#ifdef OLD_ETHER
+      if (SendTxPkt(etherbuff,actual)) break;
+#else /* !OLD_ETHER */
       if (SendTxPkt(etherbuff, (USHORT) actual)) break;
+#endif /* !OLD_ETHER */
     }
 
     PostInsert(Remove(&(myco->node)), Heliosnode);
@@ -245,7 +333,13 @@ Conode* myco;
   forever
   {
 
+#ifdef OLD_ETHER
+	ether_something();
+#endif /* OLD_ETHER */
 
+#ifdef OLD_ETHER
+    if (RxAvail())
+#else /* !OLD_ETHER */
 /*
 -- crf: not by any means the best way to handle rx errors. However, sufficient
 -- for our needs.
@@ -257,11 +351,15 @@ Conode* myco;
 )
 	notify_rx_error () ;
     if (pkt_rcvd)
+#endif /* !OLD_ETHER */
     {
       got = GetRxPkt(mcb->Data,toget);
       break;
     }
 
+#ifdef OLD_ETHER
+    if (ResetMe) resetboard();
+#endif /* OLD_ETHER */
 
     myco->type = CoReady;
 

@@ -7,7 +7,8 @@
 /* RcsId: $Id: sccs.h,v 1.48 1994/07/14 10:39:54 mgun Exp $ */
 
 static char SccsId1[] =
-" V3.115 14th July 1994";
+/* " V3.115 14th July 1994"; */
+" V3.115b 11th Nov. 2015";
 
 #ifdef DEMONSTRATION
 static char SccsId5 = "\n\rCopyright (C) Perihelion Distributed Software 1987-1994\r\n\

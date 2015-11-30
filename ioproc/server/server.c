@@ -337,11 +337,13 @@ skipargs:
   output(" I/O Server"); output(SccsId1); output(SccsId5);
 
   if (!init_boot())
-   { output("Helios "); output(SccsId2);
+   { 
+	// AxM: This is redundant!
+	/* output("Helios "); output(SccsId2);
 #ifdef SMALL
      output(" reduced");
 #endif
-     output(" I/O Server"); output(SccsId1); output(SccsId5);
+     output(" I/O Server"); output(SccsId1); output(SccsId5); */
      output("\r\nFailed to locate processor.\r\nExiting.\r\n\n");
 
      goto endpoint;

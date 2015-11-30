@@ -99,6 +99,7 @@ int init_boot()
   { if (!mystrcmp(conf, "T414") ||
         !mystrcmp(conf, "T800") ||
         !mystrcmp(conf, "T425") ||
+        !mystrcmp(conf, "T450") ||
         !mystrcmp(conf, "T400"))
      target_processor = Processor_Trannie;
     elif (!mystrcmp(conf, "ARM"))

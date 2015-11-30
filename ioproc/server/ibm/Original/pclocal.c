@@ -483,14 +483,6 @@ PRIVATE int dma_fetch_block(unsigned int count, byte *data, int timeout);
 PRIVATE int sang_send_block(unsigned int count, byte huge *data, int timeout);
 PRIVATE int sang_fetch_block(unsigned int count, byte huge *data, int timeout);
 
-PRIVATE void c_b004_reset( void );
-PRIVATE void c_b004_analyse ( void );
-PRIVATE unsigned char RecvByte( void );
-PRIVATE void SendByte( unsigned char b );
-PRIVATE unsigned int GetBiosTicker( void );
-
-#define inportb(x) 		inp(x)
-#define outportb(x,y)	outp(x,y)
 /*
  * additional definitions and additional varibles
  * for link and DMA handling
@@ -569,15 +561,6 @@ void resetlnk()
       longjmp(exit_jmpbuf, 1);
     }
 
-/*	Axels test for a better Tranny-Reset C-function 
-	Everything else is taken from the B004 settings */
-	
-if (!mystrcmp(box, "B004c")) {
-	reset_fn		= func(c_b004_reset);
-	analyse_fn		= func(c_b004_analyse);
-}
-
-
 #ifdef GEMINI
   { extern void unlock_gemini();
     unlock_gemini();
@@ -608,14 +591,14 @@ if (!mystrcmp(box, "B004c")) {
         mystrcmp(box, "HEPC2") &&
         mystrcmp(box, "TDMB409") &&
         mystrcmp(box, "TDB416") &&
-		mystrcmp(box, "DSP1") &&
+	mystrcmp(box, "DSP1") &&
         mystrcmp(box, "SPIRIT40") &&
         mystrcmp(box, "VY86PID") &&
         mystrcmp(box, "QPCV1") &&
         mystrcmp(box, "QPCV2") &&
         mystrcmp(box, "MEGALINKC40") &&
         /* mystrcmp(box, "DOSDEVICE") && */
-       (mystrcmp(box, "B004") && mystrcmp(box, "B004c") && mystrcmp(box, "B008") &&
+       (mystrcmp(box, "B004") && mystrcmp(box, "B008") &&
         mystrcmp(box, "SANG") &&
         mystrcmp(box, "MK026") && mystrcmp(box, "CESIUS") &&
         mystrcmp(box, "DOSDEVICE") ) )
@@ -625,8 +608,8 @@ if (!mystrcmp(box, "B004c")) {
       ServerDebug("Transputer: B004, B008, MK026, CESIUS, DOSDEVICE%q");
       ServerDebug(" and sang");
       ServerDebug("");
-      ServerDebug("C40       : TIM40, HEPC2, TDB416, DSP1, SPIRIT40");
-      ServerDebug("          : TDMB409, QPCV1, QPCV2, MEGALINKC40");
+      ServerDebug("C40       : TIM40, HEPC2, TDB416, DSP1, SPIRIT40, TDMB409, QPCV1, QPCV2,");
+      ServerDebug("          : MEGALINKC40");
       ServerDebug("Arm       : VY86PID");
       longjmp(exit_jmpbuf, 1);
     }
@@ -789,7 +772,7 @@ if (!mystrcmp(box, "B004c")) {
    
    /* TRANSPUTER 'box' implementations, also the DSP1 which uses a	*/
    /* transputer link adapter.						*/
-  if ((!mystrcmp(box, "b004")) || (!mystrcmp(box, "b004c")) || (!mystrcmp(box, "DSP1")))
+  if ((!mystrcmp(box, "b004")) || (!mystrcmp(box, "DSP1")))
    {
     link_base       = (conf_base eq Invalid_config) ? 0x150 : (int) conf_base;
     link_read       = link_base + 0x00;
@@ -4607,53 +4590,15 @@ void PC_restore_devices()
 #endif
 
 #if Ether_supported
-  { 
-	// AxM: This call is nowhere in the code. Reenabled the Coroutine.
-	// extern void tidy_ethernet();
+  { // extern void Ether_TidyServer(); 
+    //extern void tidy_ethernet();
+    // Ether_TidyServer();
+    //tidy_ethernet();
   }
 #endif
 
      /* restore the interrupt vectors */
   restore_interrupts();
-}
-
-/* Help routines for B004 I/O port comms */
-
-/* ------------------------------------------------------------------------ */
-unsigned char RecvByte( void ) {
-/* ------------------------------------------------------------------------ */
-
-    while (( inportb( link_in_status ) & 1 ) == 0 );
-    return inportb( link_read );
-}
-
-/* ------------------------------------------------------------------------ */
-void SendByte( unsigned char b ) {
-/* ------------------------------------------------------------------------ */
-
-    while (( inportb( link_out_status ) & 1 ) == 0 );
-    outportb( link_write, b );
-}
-
-/* ------------------------------------------------------------------------ */
-void c_b004_reset( void ) {
-/* ------------------------------------------------------------------------ */
-
-    outportb( link_reset, 1 );
-    goto_sleep( 100000L ); // 100ms
-    outportb( link_reset, 0 );
-    goto_sleep( 1000L );   // 1ms
-}
-
-void c_b004_analyse ( void ) {
-	
-	outportb ( link_analyse, 1 );
-	goto_sleep( 100000L ); // 100ms
-	
-	c_b004_reset ();
-	
-	outportb ( link_analyse, 0 );
-	goto_sleep( 100000L ); // 100ms
 }
 
 /*}}}*/

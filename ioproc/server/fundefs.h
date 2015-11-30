@@ -758,7 +758,9 @@ PUBLIC  word fn( Midi_initlist,         (List *, ComsPort **));
 
 #if Ether_supported
 #define Ether_InitServer                IgnoreVoid
-#define Ether_TidyServer                IgnoreVoid
+// #define Ether_TidyServer                IgnoreVoid
+// AxM: "Reactivated" this coroutine
+extern  void fn( Ether_TidyServer,      (Conode *));
 #define Ether_Private                   Invalidfn_handler
 extern  void fn( Ether_Testfun,         (bool *));
 extern  void fn( Ether_Open,            (Conode *));
